@@ -49,14 +49,14 @@ fn capture_region(region: Region) -> Result<RgbaImage, CaptureError> {
 struct OverlayResources<'a> {
     conn: &'a RustConnection,
     window: u32,
-    screen_pixmap: u32,
     screen_picture: u32,
     window_picture: u32,
     dim_picture: u32,
     dim_pixmap: u32,
     border_picture: u32,
     border_pixmap: u32,
-    colormap: u32,
+    cursor: u32,
+    cursor_font: u32,
 }
 
 impl<'a> Drop for OverlayResources<'a> {
@@ -67,11 +67,12 @@ impl<'a> Drop for OverlayResources<'a> {
         let _ = self.conn.free_pixmap(self.dim_pixmap);
         let _ = render::free_picture(self.conn, self.window_picture);
         let _ = render::free_picture(self.conn, self.screen_picture);
-        let _ = self.conn.free_pixmap(self.screen_pixmap);
         let _ = self.conn.unmap_window(self.window);
         let _ = self.conn.destroy_window(self.window);
-        let _ = self.conn.free_colormap(self.colormap);
+        let _ = self.conn.free_cursor(self.cursor);
+        let _ = self.conn.close_font(self.cursor_font);
         let _ = self.conn.flush();
+        // Note: screen_pixmap is NOT freed here — caller extracts from it after drop.
     }
 }
 
@@ -165,48 +166,6 @@ fn capture_screen_to_pixmap(
         .map_err(|e| CaptureError::X11(format!("flush: {e}")))?;
 
     Ok(pixmap)
-}
-
-/// Create a single-pixel Pixmap filled with a solid color and wrap it in a Picture
-/// with `repeat = true` so it acts as an infinite fill source.
-fn create_solid_fill(
-    conn: &RustConnection,
-    window: u32,
-    format: Pictformat,
-    r: u16,
-    g: u16,
-    b: u16,
-    a: u16,
-) -> Result<(u32, u32), CaptureError> {
-    let pixmap = conn
-        .generate_id()
-        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
-    conn.create_pixmap(32, pixmap, window, 1, 1)
-        .map_err(|e| CaptureError::X11(format!("create_pixmap fill: {e}")))?;
-
-    let picture = conn
-        .generate_id()
-        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
-    render::create_picture(
-        conn,
-        picture,
-        pixmap,
-        format,
-        &render::CreatePictureAux::new().repeat(render::Repeat::NORMAL),
-    )
-    .map_err(|e| CaptureError::X11(format!("create_picture fill: {e}")))?;
-
-    // Fill the 1×1 pixmap.
-    render::fill_rectangles(
-        conn,
-        render::PictOp::SRC,
-        picture,
-        render::Color { red: r, green: g, blue: b, alpha: a },
-        &[Rectangle { x: 0, y: 0, width: 1, height: 1 }],
-    )
-    .map_err(|e| CaptureError::X11(format!("fill_rectangles fill: {e}")))?;
-
-    Ok((pixmap, picture))
 }
 
 /// Compute normalised selection rectangle from drag start/current positions.
@@ -330,6 +289,31 @@ fn draw_overlay(
     Ok(())
 }
 
+/// Extract a region from a server-side Pixmap as an RgbaImage.
+fn extract_region_from_pixmap(
+    conn: &RustConnection,
+    pixmap: u32,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+) -> Result<RgbaImage, CaptureError> {
+    let reply = conn
+        .get_image(ImageFormat::Z_PIXMAP, pixmap, x, y, width, height, !0)
+        .map_err(|e| CaptureError::X11(format!("get_image from pixmap: {e}")))?
+        .reply()
+        .map_err(|e| CaptureError::X11(format!("get_image pixmap reply: {e}")))?;
+
+    let mut data = reply.data;
+    // X11 returns BGRA — convert to RGBA
+    for chunk in data.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
+
+    RgbaImage::from_raw(width as u32, height as u32, data)
+        .ok_or_else(|| CaptureError::X11("failed to create image from pixmap data".to_string()))
+}
+
 fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
     let (conn, screen_num) = connect()?;
     let screen = &conn.setup().roots[screen_num].clone();
@@ -342,8 +326,10 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
         .reply()
         .map_err(|e| CaptureError::X11(format!("render query_version reply: {e}")))?;
 
-    let (argb_visual, argb_depth, argb_format) = find_argb_visual_and_format(&conn, screen)?;
     let root_pictformat = find_pictformat_for_visual(&conn, screen.root_visual)?;
+    // Find a 32-bit ARGB pictformat for solid-fill sources (needed for alpha blending).
+    let argb_format = find_argb_visual_and_format(&conn, screen)
+        .map(|(_, _, fmt)| fmt)?;
 
     // ---- Capture screen ----
     let screen_pixmap = capture_screen_to_pixmap(&conn, screen)?;
@@ -360,22 +346,14 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
     )
     .map_err(|e| CaptureError::X11(format!("create_picture screen: {e}")))?;
 
-    // ---- Colormap for 32-bit visual ----
-    let colormap = conn
-        .generate_id()
-        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
-    conn.create_colormap(ColormapAlloc::NONE, colormap, screen.root, argb_visual)
-        .map_err(|e| CaptureError::X11(format!("create_colormap: {e}")))?;
-
-    // ---- Create overlay window ----
+    // ---- Create overlay window at root depth (avoids alpha/compositor issues) ----
     let window = conn
         .generate_id()
         .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
     let win_aux = CreateWindowAux::new()
         .override_redirect(1)
-        .background_pixel(0)
+        .background_pixel(screen.black_pixel)
         .border_pixel(0)
-        .colormap(colormap)
         .event_mask(
             EventMask::EXPOSURE
                 | EventMask::BUTTON_PRESS
@@ -384,7 +362,7 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
                 | EventMask::KEY_PRESS,
         );
     conn.create_window(
-        argb_depth,
+        screen.root_depth,
         window,
         screen.root,
         0,
@@ -393,7 +371,7 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
         sh,
         0,
         WindowClass::INPUT_OUTPUT,
-        argb_visual,
+        screen.root_visual,
         &win_aux,
     )
     .map_err(|e| CaptureError::X11(format!("create_window: {e}")))?;
@@ -403,7 +381,7 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
     conn.flush()
         .map_err(|e| CaptureError::X11(format!("flush: {e}")))?;
 
-    // ---- XRender pictures for the overlay window ----
+    // ---- XRender pictures for the overlay window (same format as root) ----
     let window_picture = conn
         .generate_id()
         .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
@@ -411,16 +389,83 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
         &conn,
         window_picture,
         window,
-        argb_format,
+        root_pictformat,
         &render::CreatePictureAux::new(),
     )
     .map_err(|e| CaptureError::X11(format!("create_picture window: {e}")))?;
 
-    // ---- Solid-fill sources ----
-    let (dim_pixmap, dim_picture) =
-        create_solid_fill(&conn, window, argb_format, 0, 0, 0, 0x8000)?;
-    let (border_pixmap, border_picture) =
-        create_solid_fill(&conn, window, argb_format, 0xffff, 0xffff, 0xffff, 0xffff)?;
+    // ---- Solid-fill sources (32-bit ARGB for alpha blending) ----
+    // These need a drawable compatible with 32-bit depth, use screen.root as parent.
+    let dim_pixmap = conn
+        .generate_id()
+        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
+    conn.create_pixmap(32, dim_pixmap, screen.root, 1, 1)
+        .map_err(|e| CaptureError::X11(format!("create_pixmap dim: {e}")))?;
+    let dim_picture = conn
+        .generate_id()
+        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
+    render::create_picture(
+        &conn,
+        dim_picture,
+        dim_pixmap,
+        argb_format,
+        &render::CreatePictureAux::new().repeat(render::Repeat::NORMAL),
+    )
+    .map_err(|e| CaptureError::X11(format!("create_picture dim: {e}")))?;
+    render::fill_rectangles(
+        &conn,
+        render::PictOp::SRC,
+        dim_picture,
+        render::Color { red: 0, green: 0, blue: 0, alpha: 0x8000 },
+        &[Rectangle { x: 0, y: 0, width: 1, height: 1 }],
+    )
+    .map_err(|e| CaptureError::X11(format!("fill dim: {e}")))?;
+
+    let border_pixmap = conn
+        .generate_id()
+        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
+    conn.create_pixmap(32, border_pixmap, screen.root, 1, 1)
+        .map_err(|e| CaptureError::X11(format!("create_pixmap border: {e}")))?;
+    let border_picture = conn
+        .generate_id()
+        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
+    render::create_picture(
+        &conn,
+        border_picture,
+        border_pixmap,
+        argb_format,
+        &render::CreatePictureAux::new().repeat(render::Repeat::NORMAL),
+    )
+    .map_err(|e| CaptureError::X11(format!("create_picture border: {e}")))?;
+    render::fill_rectangles(
+        &conn,
+        render::PictOp::SRC,
+        border_picture,
+        render::Color { red: 0xffff, green: 0xffff, blue: 0xffff, alpha: 0xffff },
+        &[Rectangle { x: 0, y: 0, width: 1, height: 1 }],
+    )
+    .map_err(|e| CaptureError::X11(format!("fill border: {e}")))?;
+
+    // ---- Crosshair cursor ----
+    let cursor_font = conn
+        .generate_id()
+        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
+    conn.open_font(cursor_font, b"cursor")
+        .map_err(|e| CaptureError::X11(format!("open_font cursor: {e}")))?;
+    let cursor = conn
+        .generate_id()
+        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
+    // Glyph 34 = crosshair in the cursor font, 35 = its mask
+    conn.create_glyph_cursor(
+        cursor,
+        cursor_font,
+        cursor_font,
+        34,
+        35,
+        0xffff, 0xffff, 0xffff, // foreground: white
+        0, 0, 0,                 // background: black
+    )
+    .map_err(|e| CaptureError::X11(format!("create_glyph_cursor: {e}")))?;
 
     // ---- Grab pointer and keyboard ----
     conn.grab_pointer(
@@ -433,7 +478,7 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
         GrabMode::ASYNC,
         GrabMode::ASYNC,
         window,
-        0u32,
+        cursor,
         Time::CURRENT_TIME,
     )
     .map_err(|e| CaptureError::X11(format!("grab_pointer: {e}")))?
@@ -448,14 +493,14 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
     let resources = OverlayResources {
         conn: &conn,
         window,
-        screen_pixmap,
         screen_picture,
         window_picture,
         dim_picture,
         dim_pixmap,
         border_picture,
         border_pixmap,
-        colormap,
+        cursor,
+        cursor_font,
     };
 
     // ---- Initial draw (fully dimmed) ----
@@ -473,7 +518,6 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
     // ---- Event loop ----
     let mut drag_start: Option<(i16, i16)> = None;
     let mut current_pos: (i16, i16) = (0, 0);
-    let result: Result<Region, CaptureError>;
 
     const ESCAPE_KEYCODE: u8 = 9;
 
@@ -526,33 +570,29 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
                                             let (rx, ry, rw, rh) =
                                                 compute_selection(sx, sy, current_pos.0, current_pos.1, sw, sh);
                                             if rw > 0 && rh > 0 {
-                                                result = Ok(Region {
-                                                    x: rx as i32,
-                                                    y: ry as i32,
-                                                    width: rw as u32,
-                                                    height: rh as u32,
-                                                });
+                                                let img = extract_region_from_pixmap(
+                                                    &conn, screen_pixmap, rx, ry, rw, rh,
+                                                )?;
                                                 drop(resources);
+                                                conn.free_pixmap(screen_pixmap)
+                                                    .map_err(|e| CaptureError::X11(format!("free pixmap: {e}")))?;
                                                 conn.ungrab_pointer(Time::CURRENT_TIME)
                                                     .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
                                                 conn.ungrab_keyboard(Time::CURRENT_TIME)
                                                     .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
                                                 conn.flush()
                                                     .map_err(|e| CaptureError::X11(format!("flush: {e}")))?;
-                                                let region = result?;
-                                                return capture_region(region);
+                                                return Ok(img);
                                             }
                                         }
                                         drag_start = None;
                                     }
                                     x11rb::protocol::Event::KeyPress(ev) if ev.detail == ESCAPE_KEYCODE => {
                                         drop(resources);
-                                        conn.ungrab_pointer(Time::CURRENT_TIME)
-                                            .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
-                                        conn.ungrab_keyboard(Time::CURRENT_TIME)
-                                            .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
-                                        conn.flush()
-                                            .map_err(|e| CaptureError::X11(format!("flush: {e}")))?;
+                                        let _ = conn.free_pixmap(screen_pixmap);
+                                        let _ = conn.ungrab_pointer(Time::CURRENT_TIME);
+                                        let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
+                                        let _ = conn.flush();
                                         return Err(CaptureError::SelectionCancelled);
                                     }
                                     _ => {}
@@ -582,20 +622,19 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
                         let (rx, ry, rw, rh) =
                             compute_selection(sx, sy, ev.event_x, ev.event_y, sw, sh);
                         if rw > 0 && rh > 0 {
+                            let img = extract_region_from_pixmap(
+                                &conn, screen_pixmap, rx, ry, rw, rh,
+                            )?;
                             drop(resources);
+                            conn.free_pixmap(screen_pixmap)
+                                .map_err(|e| CaptureError::X11(format!("free pixmap: {e}")))?;
                             conn.ungrab_pointer(Time::CURRENT_TIME)
                                 .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
                             conn.ungrab_keyboard(Time::CURRENT_TIME)
                                 .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
                             conn.flush()
                                 .map_err(|e| CaptureError::X11(format!("flush: {e}")))?;
-                            let region = Region {
-                                x: rx as i32,
-                                y: ry as i32,
-                                width: rw as u32,
-                                height: rh as u32,
-                            };
-                            return capture_region(region);
+                            return Ok(img);
                         }
                     }
                     drag_start = None;
@@ -604,12 +643,10 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
             x11rb::protocol::Event::KeyPress(ev) => {
                 if ev.detail == ESCAPE_KEYCODE {
                     drop(resources);
-                    conn.ungrab_pointer(Time::CURRENT_TIME)
-                        .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
-                    conn.ungrab_keyboard(Time::CURRENT_TIME)
-                        .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
-                    conn.flush()
-                        .map_err(|e| CaptureError::X11(format!("flush: {e}")))?;
+                    let _ = conn.free_pixmap(screen_pixmap);
+                    let _ = conn.ungrab_pointer(Time::CURRENT_TIME);
+                    let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
+                    let _ = conn.flush();
                     return Err(CaptureError::SelectionCancelled);
                 }
             }
