@@ -15,7 +15,7 @@ thiserror = "2"
 trash = "5"
 
 # X11 capture
-x11rb = { version = "0.13", features = ["allow-unsafe-code", "render"] }
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "render", "randr"] }
 
 # Wayland capture (XDG Desktop Portal)
 ashpd = "0.10"

@@ -2,6 +2,7 @@ pub mod wayland;
 pub mod x11;
 
 use image::RgbaImage;
+use std::fmt;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -34,6 +35,36 @@ pub struct Region {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Monitor {
+    pub name: String,
+    pub x: i16,
+    pub y: i16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl fmt::Display for Monitor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: {}x{}+{}+{}",
+            self.name, self.width, self.height, self.x, self.y
+        )
+    }
+}
+
+impl Monitor {
+    pub fn to_region(&self) -> Region {
+        Region {
+            x: self.x as i32,
+            y: self.y as i32,
+            width: self.width as u32,
+            height: self.height as u32,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,12 +102,47 @@ pub fn detect_display_server() -> Result<DisplayServer, CaptureError> {
     Err(CaptureError::NoDisplay)
 }
 
-pub fn capture(mode: &CaptureMode) -> Result<RgbaImage, CaptureError> {
+pub fn capture(mode: &CaptureMode, display_bounds: Option<Region>) -> Result<RgbaImage, CaptureError> {
     let display = detect_display_server()?;
     match display {
-        DisplayServer::X11 => x11::capture(mode),
+        DisplayServer::X11 => x11::capture(mode, display_bounds),
         DisplayServer::Wayland => wayland::capture(mode),
     }
+}
+
+pub fn list_monitors() -> Result<Vec<Monitor>, CaptureError> {
+    let display = detect_display_server()?;
+    match display {
+        DisplayServer::X11 => x11::list_monitors(),
+        DisplayServer::Wayland => Err(CaptureError::Other(
+            "monitor listing not yet supported on Wayland".to_string(),
+        )),
+    }
+}
+
+/// Resolve a display specifier (name like "HDMI-1" or index like "0") to a Monitor.
+pub fn resolve_display(spec: &str) -> Result<Monitor, CaptureError> {
+    let monitors = list_monitors()?;
+    if monitors.is_empty() {
+        return Err(CaptureError::Other("no monitors found".to_string()));
+    }
+
+    // Try as index first
+    if let Ok(idx) = spec.parse::<usize>() {
+        let count = monitors.len();
+        return monitors.into_iter().nth(idx).ok_or_else(|| {
+            CaptureError::Other(format!(
+                "display index {idx} out of range (0..{})",
+                count - 1
+            ))
+        });
+    }
+
+    // Try as name
+    monitors
+        .into_iter()
+        .find(|m| m.name == spec)
+        .ok_or_else(|| CaptureError::Other(format!("no display named '{spec}'")))
 }
 
 /// Parse a region string like "100,200,800,600" or "800x600+100+200"

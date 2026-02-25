@@ -17,6 +17,10 @@ enum Commands {
     #[command(subcommand)]
     Capture(CaptureCommand),
 
+    /// List or query connected displays/monitors
+    #[command(subcommand)]
+    Display(DisplayCommand),
+
     /// List recent screenshots
     List {
         /// Maximum number of screenshots to show
@@ -61,6 +65,12 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum DisplayCommand {
+    /// List connected displays with their geometry
+    List,
+}
+
 #[derive(Args, Clone)]
 struct CaptureOpts {
     /// Image format (png, jpeg, webp — overrides config)
@@ -74,6 +84,10 @@ struct CaptureOpts {
     /// Save to specific path instead of default storage
     #[arg(short, long)]
     output: Option<String>,
+
+    /// Target a specific display (name like "HDMI-1" or index like "0")
+    #[arg(short, long)]
+    display: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -146,6 +160,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Capture(cmd) => cmd_capture(config, cmd),
+        Commands::Display(cmd) => cmd_display(cmd),
         Commands::List { limit, tag } => cmd_list(config, limit, tag),
         Commands::Open { id } => cmd_open(config, id),
         Commands::Tag { id, tags } => cmd_tag(config, id, tags),
@@ -159,10 +174,21 @@ fn cmd_capture(config: Config, cmd: CaptureCommand) -> Result<()> {
     let capture_mode = cmd.to_capture_mode()?;
     let opts = cmd.opts().clone();
 
+    // Resolve --display to monitor bounds
+    let display_bounds = match &opts.display {
+        Some(spec) => {
+            let monitor = capture::resolve_display(spec)
+                .context("failed to resolve display")?;
+            eprintln!("display: {monitor}");
+            Some(monitor.to_region())
+        }
+        None => None,
+    };
+
     let display_server = capture::detect_display_server()?;
     eprintln!("capturing ({display_server})...");
 
-    let image = capture::capture(&capture_mode)?;
+    let image = capture::capture(&capture_mode, display_bounds)?;
     eprintln!("captured {}x{}", image.width(), image.height());
 
     // Save to custom output or default storage
@@ -192,6 +218,23 @@ fn cmd_capture(config: Config, cmd: CaptureCommand) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn cmd_display(cmd: DisplayCommand) -> Result<()> {
+    match cmd {
+        DisplayCommand::List => {
+            let monitors = capture::list_monitors()
+                .context("failed to list monitors")?;
+            if monitors.is_empty() {
+                eprintln!("no monitors found");
+                return Ok(());
+            }
+            for (i, m) in monitors.iter().enumerate() {
+                println!("{i}: {m}");
+            }
+            Ok(())
+        }
+    }
 }
 
 fn cmd_list(config: Config, limit: usize, tag: Option<String>) -> Result<()> {

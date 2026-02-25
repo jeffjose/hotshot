@@ -1,17 +1,54 @@
-use super::{CaptureError, CaptureMode, Region};
+use super::{CaptureError, CaptureMode, Monitor, Region};
 use image::RgbaImage;
 use x11rb::connection::{Connection, RequestConnection};
+use x11rb::protocol::randr;
 use x11rb::protocol::render::{self, Pictformat};
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 
-pub fn capture(mode: &CaptureMode) -> Result<RgbaImage, CaptureError> {
+pub fn capture(mode: &CaptureMode, display_bounds: Option<Region>) -> Result<RgbaImage, CaptureError> {
     match mode {
-        CaptureMode::Fullscreen => capture_fullscreen(),
+        CaptureMode::Fullscreen => {
+            if let Some(bounds) = display_bounds {
+                capture_region(bounds)
+            } else {
+                capture_fullscreen()
+            }
+        }
         CaptureMode::Region(region) => capture_region(*region),
-        CaptureMode::RegionInteractive => capture_region_interactive(),
+        CaptureMode::RegionInteractive => capture_region_interactive(display_bounds),
         CaptureMode::ActiveWindow => capture_active_window(),
     }
+}
+
+pub fn list_monitors() -> Result<Vec<Monitor>, CaptureError> {
+    let (conn, screen_num) = connect()?;
+    let screen = &conn.setup().roots[screen_num];
+    let root = screen.root;
+
+    let monitors = randr::get_monitors(&conn, root, true)
+        .map_err(|e| CaptureError::X11(format!("randr get_monitors: {e}")))?
+        .reply()
+        .map_err(|e| CaptureError::X11(format!("randr get_monitors reply: {e}")))?;
+
+    let mut result = Vec::new();
+    for info in &monitors.monitors {
+        let name = conn
+            .get_atom_name(info.name)
+            .map_err(|e| CaptureError::X11(format!("get_atom_name: {e}")))?
+            .reply()
+            .map_err(|e| CaptureError::X11(format!("get_atom_name reply: {e}")))?;
+        let name = String::from_utf8_lossy(&name.name).to_string();
+        result.push(Monitor {
+            name,
+            x: info.x,
+            y: info.y,
+            width: info.width,
+            height: info.height,
+        });
+    }
+
+    Ok(result)
 }
 
 fn connect() -> Result<(RustConnection, usize), CaptureError> {
@@ -140,7 +177,10 @@ fn find_pictformat_for_visual(
     )))
 }
 
-/// Capture the entire root window into a server-side Pixmap.
+/// Capture a region of the root window into a server-side Pixmap.
+///
+/// When `bounds` is `None`, captures the entire root window.
+/// When `bounds` is `Some(region)`, captures only that region.
 ///
 /// Uses `get_image` (reads through the compositor) + chunked `put_image`
 /// because `copy_area` from the root window on composited desktops returns
@@ -148,15 +188,19 @@ fn find_pictformat_for_visual(
 fn capture_screen_to_pixmap(
     conn: &RustConnection,
     screen: &Screen,
+    bounds: Option<Region>,
 ) -> Result<u32, CaptureError> {
     let root = screen.root;
-    let w = screen.width_in_pixels;
-    let h = screen.height_in_pixels;
     let depth = screen.root_depth;
+
+    let (src_x, src_y, w, h) = match bounds {
+        Some(b) => (b.x as i16, b.y as i16, b.width as u16, b.height as u16),
+        None => (0i16, 0i16, screen.width_in_pixels, screen.height_in_pixels),
+    };
 
     // Read composited screen content via get_image.
     let img = conn
-        .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, w, h, !0)
+        .get_image(ImageFormat::Z_PIXMAP, root, src_x, src_y, w, h, !0)
         .map_err(|e| CaptureError::X11(format!("get_image root: {e}")))?
         .reply()
         .map_err(|e| CaptureError::X11(format!("get_image root reply: {e}")))?;
@@ -366,11 +410,16 @@ fn extract_region_from_pixmap(
         .ok_or_else(|| CaptureError::X11("failed to create image from pixmap data".to_string()))
 }
 
-fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
+fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImage, CaptureError> {
     let (conn, screen_num) = connect()?;
     let screen = &conn.setup().roots[screen_num].clone();
-    let sw = screen.width_in_pixels;
-    let sh = screen.height_in_pixels;
+
+    // When display_bounds is set, constrain the overlay to that display.
+    // ox/oy are the overlay origin in root coordinates; sw/sh are the overlay dimensions.
+    let (ox, oy, sw, sh) = match display_bounds {
+        Some(b) => (b.x as i16, b.y as i16, b.width as u16, b.height as u16),
+        None => (0i16, 0i16, screen.width_in_pixels, screen.height_in_pixels),
+    };
 
     // ---- XRender init ----
     render::query_version(&conn, 0, 11)
@@ -383,8 +432,8 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
     let argb_format = find_argb_visual_and_format(&conn, screen)
         .map(|(_, _, fmt)| fmt)?;
 
-    // ---- Capture screen ----
-    let screen_pixmap = capture_screen_to_pixmap(&conn, screen)?;
+    // ---- Capture screen (only the target display if constrained) ----
+    let screen_pixmap = capture_screen_to_pixmap(&conn, screen, display_bounds)?;
 
     let screen_picture = conn
         .generate_id()
@@ -417,8 +466,8 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
         screen.root_depth,
         window,
         screen.root,
-        0,
-        0,
+        ox,
+        oy,
         sw,
         sh,
         0,
