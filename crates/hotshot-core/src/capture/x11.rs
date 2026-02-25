@@ -51,6 +51,8 @@ struct OverlayResources<'a> {
     window: u32,
     screen_picture: u32,
     window_picture: u32,
+    back_pixmap: u32,
+    back_picture: u32,
     dim_picture: u32,
     dim_pixmap: u32,
     border_picture: u32,
@@ -65,6 +67,8 @@ impl<'a> Drop for OverlayResources<'a> {
         let _ = self.conn.free_pixmap(self.border_pixmap);
         let _ = render::free_picture(self.conn, self.dim_picture);
         let _ = self.conn.free_pixmap(self.dim_pixmap);
+        let _ = render::free_picture(self.conn, self.back_picture);
+        let _ = self.conn.free_pixmap(self.back_pixmap);
         let _ = render::free_picture(self.conn, self.window_picture);
         let _ = render::free_picture(self.conn, self.screen_picture);
         let _ = self.conn.unmap_window(self.window);
@@ -219,25 +223,25 @@ fn compute_selection(x0: i16, y0: i16, x1: i16, y1: i16, sw: u16, sh: u16) -> (i
     (lx, ly, w, h)
 }
 
-/// Draw the overlay: dim everything, then "cut out" the selected region by compositing
-/// the original screenshot there, and draw a white border around it.
+/// Draw the overlay using double buffering: render to back_picture, then
+/// copy the finished frame to window_picture in one operation.
 fn draw_overlay(
     conn: &RustConnection,
     window_picture: u32,
+    back_picture: u32,
     screen_picture: u32,
     dim_picture: u32,
-    _border_picture: u32,
     sw: u16,
     sh: u16,
     sel: Option<(i16, i16, u16, u16)>,
 ) -> Result<(), CaptureError> {
-    // 1) Composite full screenshot onto window (src → dst)
+    // 1) Composite full screenshot onto back buffer
     render::composite(
         conn,
         render::PictOp::SRC,
         screen_picture,
         0u32,
-        window_picture,
+        back_picture,
         0, 0,
         0, 0,
         0, 0,
@@ -245,13 +249,13 @@ fn draw_overlay(
     )
     .map_err(|e| CaptureError::X11(format!("composite screenshot: {e}")))?;
 
-    // 2) Dim the entire window (50% black over everything)
+    // 2) Dim the entire back buffer (50% black over everything)
     render::composite(
         conn,
         render::PictOp::OVER,
         dim_picture,
         0u32,
-        window_picture,
+        back_picture,
         0, 0,
         0, 0,
         0, 0,
@@ -261,13 +265,13 @@ fn draw_overlay(
 
     if let Some((sx, sy, sw_sel, sh_sel)) = sel {
         if sw_sel > 0 && sh_sel > 0 {
-            // 3) Cut out: composite original screenshot over the selected region (removes dim)
+            // 3) Cut out: composite original screenshot over the selected region
             render::composite(
                 conn,
                 render::PictOp::SRC,
                 screen_picture,
                 0u32,
-                window_picture,
+                back_picture,
                 sx, sy,
                 0, 0,
                 sx, sy,
@@ -310,7 +314,7 @@ fn draw_overlay(
             render::fill_rectangles(
                 conn,
                 render::PictOp::OVER,
-                window_picture,
+                back_picture,
                 render::Color {
                     red: 0xffff,
                     green: 0xffff,
@@ -322,6 +326,20 @@ fn draw_overlay(
             .map_err(|e| CaptureError::X11(format!("fill_rectangles border: {e}")))?;
         }
     }
+
+    // 5) Flip: copy finished back buffer to window in one shot
+    render::composite(
+        conn,
+        render::PictOp::SRC,
+        back_picture,
+        0u32,
+        window_picture,
+        0, 0,
+        0, 0,
+        0, 0,
+        sw, sh,
+    )
+    .map_err(|e| CaptureError::X11(format!("composite flip: {e}")))?;
 
     conn.flush()
         .map_err(|e| CaptureError::X11(format!("flush draw: {e}")))?;
@@ -435,6 +453,24 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
     )
     .map_err(|e| CaptureError::X11(format!("create_picture window: {e}")))?;
 
+    // ---- Back buffer for double-buffered rendering ----
+    let back_pixmap = conn
+        .generate_id()
+        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
+    conn.create_pixmap(screen.root_depth, back_pixmap, screen.root, sw, sh)
+        .map_err(|e| CaptureError::X11(format!("create_pixmap back: {e}")))?;
+    let back_picture = conn
+        .generate_id()
+        .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
+    render::create_picture(
+        &conn,
+        back_picture,
+        back_pixmap,
+        root_pictformat,
+        &render::CreatePictureAux::new(),
+    )
+    .map_err(|e| CaptureError::X11(format!("create_picture back: {e}")))?;
+
     // ---- Solid-fill sources (32-bit ARGB for alpha blending) ----
     // These need a drawable compatible with 32-bit depth, use screen.root as parent.
     let dim_pixmap = conn
@@ -536,6 +572,8 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
         window,
         screen_picture,
         window_picture,
+        back_pixmap,
+        back_picture,
         dim_picture,
         dim_pixmap,
         border_picture,
@@ -548,9 +586,9 @@ fn capture_region_interactive() -> Result<RgbaImage, CaptureError> {
     draw_overlay(
         &conn,
         window_picture,
+        back_picture,
         screen_picture,
         dim_picture,
-        border_picture,
         sw,
         sh,
         None,
