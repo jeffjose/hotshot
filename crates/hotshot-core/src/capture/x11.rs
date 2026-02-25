@@ -96,6 +96,7 @@ struct OverlayResources<'a> {
     border_pixmap: u32,
     cursor: u32,
     cursor_font: u32,
+    grabbed: bool,
 }
 
 impl<'a> Drop for OverlayResources<'a> {
@@ -112,6 +113,10 @@ impl<'a> Drop for OverlayResources<'a> {
         let _ = self.conn.destroy_window(self.window);
         let _ = self.conn.free_cursor(self.cursor);
         let _ = self.conn.close_font(self.cursor_font);
+        if self.grabbed {
+            let _ = self.conn.ungrab_pointer(Time::CURRENT_TIME);
+            let _ = self.conn.ungrab_keyboard(Time::CURRENT_TIME);
+        }
         let _ = self.conn.flush();
         // Note: screen_pixmap is NOT freed here — caller extracts from it after drop.
     }
@@ -586,36 +591,33 @@ fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImag
         .map_err(|e| CaptureError::X11(format!("set cursor on window: {e}")))?;
 
     // ---- Grab pointer and keyboard ----
-    // When targeting a single display, don't confine the pointer — let it
-    // roam freely to other monitors.  Pass cursor=NONE so X11 uses each
-    // window's own cursor (crosshair on the overlay, normal elsewhere).
-    let (confine_to, grab_cursor) = if display_bounds.is_some() {
-        (0u32, 0u32)   // NONE — no confinement, no cursor override
-    } else {
-        (window, cursor) // full-screen: confine + crosshair everywhere
-    };
-
-    conn.grab_pointer(
-        true,
-        window,
-        (EventMask::BUTTON_PRESS
-            | EventMask::BUTTON_RELEASE
-            | EventMask::POINTER_MOTION)
-            .into(),
-        GrabMode::ASYNC,
-        GrabMode::ASYNC,
-        confine_to,
-        grab_cursor,
-        Time::CURRENT_TIME,
-    )
-    .map_err(|e| CaptureError::X11(format!("grab_pointer: {e}")))?
-    .reply()
-    .map_err(|e| CaptureError::X11(format!("grab_pointer reply: {e}")))?;
-
-    conn.grab_keyboard(true, window, Time::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
-        .map_err(|e| CaptureError::X11(format!("grab_keyboard: {e}")))?
+    // When targeting a single display, skip grabs entirely so the user can
+    // interact normally on other monitors.  The overlay window's event mask
+    // delivers press/release/motion/key events when the pointer is over it.
+    let grabbed = display_bounds.is_none();
+    if grabbed {
+        conn.grab_pointer(
+            true,
+            window,
+            (EventMask::BUTTON_PRESS
+                | EventMask::BUTTON_RELEASE
+                | EventMask::POINTER_MOTION)
+                .into(),
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+            window,
+            cursor,
+            Time::CURRENT_TIME,
+        )
+        .map_err(|e| CaptureError::X11(format!("grab_pointer: {e}")))?
         .reply()
-        .map_err(|e| CaptureError::X11(format!("grab_keyboard reply: {e}")))?;
+        .map_err(|e| CaptureError::X11(format!("grab_pointer reply: {e}")))?;
+
+        conn.grab_keyboard(true, window, Time::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
+            .map_err(|e| CaptureError::X11(format!("grab_keyboard: {e}")))?
+            .reply()
+            .map_err(|e| CaptureError::X11(format!("grab_keyboard reply: {e}")))?;
+    }
 
     let resources = OverlayResources {
         conn: &conn,
@@ -630,6 +632,7 @@ fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImag
         border_pixmap,
         cursor,
         cursor_font,
+        grabbed,
     };
 
     // ---- Initial draw (fully dimmed) ----
@@ -709,10 +712,6 @@ fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImag
                                                 drop(resources);
                                                 conn.free_pixmap(screen_pixmap)
                                                     .map_err(|e| CaptureError::X11(format!("free pixmap: {e}")))?;
-                                                conn.ungrab_pointer(Time::CURRENT_TIME)
-                                                    .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
-                                                conn.ungrab_keyboard(Time::CURRENT_TIME)
-                                                    .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
                                                 conn.flush()
                                                     .map_err(|e| CaptureError::X11(format!("flush: {e}")))?;
                                                 return Ok(img);
@@ -723,8 +722,6 @@ fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImag
                                     x11rb::protocol::Event::KeyPress(ev) if ev.detail == ESCAPE_KEYCODE => {
                                         drop(resources);
                                         let _ = conn.free_pixmap(screen_pixmap);
-                                        let _ = conn.ungrab_pointer(Time::CURRENT_TIME);
-                                        let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
                                         let _ = conn.flush();
                                         return Err(CaptureError::SelectionCancelled);
                                     }
@@ -763,10 +760,6 @@ fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImag
                             drop(resources);
                             conn.free_pixmap(screen_pixmap)
                                 .map_err(|e| CaptureError::X11(format!("free pixmap: {e}")))?;
-                            conn.ungrab_pointer(Time::CURRENT_TIME)
-                                .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
-                            conn.ungrab_keyboard(Time::CURRENT_TIME)
-                                .map_err(|e| CaptureError::X11(format!("ungrab: {e}")))?;
                             conn.flush()
                                 .map_err(|e| CaptureError::X11(format!("flush: {e}")))?;
                             return Ok(img);
@@ -779,8 +772,6 @@ fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImag
                 if ev.detail == ESCAPE_KEYCODE {
                     drop(resources);
                     let _ = conn.free_pixmap(screen_pixmap);
-                    let _ = conn.ungrab_pointer(Time::CURRENT_TIME);
-                    let _ = conn.ungrab_keyboard(Time::CURRENT_TIME);
                     let _ = conn.flush();
                     return Err(CaptureError::SelectionCancelled);
                 }
