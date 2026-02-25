@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -11,9 +11,11 @@ pub enum MetadataError {
     Parse(#[from] serde_json::Error),
 }
 
+/// Single entry for one screenshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
     pub id: String,
+    pub path: PathBuf,
     pub timestamp: DateTime<Utc>,
     pub width: u32,
     pub height: u32,
@@ -27,9 +29,16 @@ pub struct Metadata {
     pub notes: String,
 }
 
+/// The database: all screenshot metadata in one file
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetadataDb {
+    pub screenshots: Vec<Metadata>,
+}
+
 impl Metadata {
     pub fn new(
         id: &str,
+        path: PathBuf,
         width: u32,
         height: u32,
         format: &str,
@@ -38,6 +47,7 @@ impl Metadata {
     ) -> Self {
         Self {
             id: id.to_string(),
+            path,
             timestamp: Utc::now(),
             width,
             height,
@@ -48,25 +58,6 @@ impl Metadata {
             tags: Vec::new(),
             notes: String::new(),
         }
-    }
-
-    /// Path to the sidecar JSON file for a given image path
-    pub fn sidecar_path(image_path: &Path) -> PathBuf {
-        image_path.with_extension("json")
-    }
-
-    pub fn save(&self, image_path: &Path) -> Result<(), MetadataError> {
-        let json_path = Self::sidecar_path(image_path);
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(json_path, json)?;
-        Ok(())
-    }
-
-    pub fn load(image_path: &Path) -> Result<Self, MetadataError> {
-        let json_path = Self::sidecar_path(image_path);
-        let contents = std::fs::read_to_string(json_path)?;
-        let metadata: Self = serde_json::from_str(&contents)?;
-        Ok(metadata)
     }
 
     pub fn add_tags(&mut self, tags: &[String]) {
@@ -85,18 +76,102 @@ impl Metadata {
 
     pub fn matches_query(&self, query: &str) -> bool {
         let q = query.to_lowercase();
-        // Search tags
         if self.tags.iter().any(|t| t.contains(&q)) {
             return true;
         }
-        // Search notes
         if self.notes.to_lowercase().contains(&q) {
             return true;
         }
-        // Search id
         if self.id.contains(&q) {
             return true;
         }
         false
+    }
+}
+
+impl MetadataDb {
+    /// Path to the database file: ~/.config/hotshot/metadata.json
+    pub fn db_path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from(".config"))
+            .join("hotshot")
+            .join("metadata.json")
+    }
+
+    pub fn load() -> Result<Self, MetadataError> {
+        let path = Self::db_path();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let contents = std::fs::read_to_string(&path)?;
+        let db: MetadataDb = serde_json::from_str(&contents)?;
+        Ok(db)
+    }
+
+    pub fn save(&self) -> Result<(), MetadataError> {
+        let path = Self::db_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, json)?;
+        Ok(())
+    }
+
+    pub fn add(&mut self, entry: Metadata) {
+        self.screenshots.push(entry);
+    }
+
+    /// Find by ID prefix. Returns index + reference.
+    pub fn find(&self, id_prefix: &str) -> Result<(usize, &Metadata), String> {
+        let matches: Vec<_> = self
+            .screenshots
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.id.starts_with(id_prefix))
+            .collect();
+
+        match matches.len() {
+            0 => Err(format!("screenshot not found: {id_prefix}")),
+            1 => Ok((matches[0].0, matches[0].1)),
+            n => Err(format!("ambiguous id '{id_prefix}': matches {n} screenshots")),
+        }
+    }
+
+    /// Find mutable by ID prefix
+    pub fn find_mut(&mut self, id_prefix: &str) -> Result<&mut Metadata, String> {
+        let indices: Vec<_> = self
+            .screenshots
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.id.starts_with(id_prefix))
+            .map(|(i, _)| i)
+            .collect();
+
+        match indices.len() {
+            0 => Err(format!("screenshot not found: {id_prefix}")),
+            1 => Ok(&mut self.screenshots[indices[0]]),
+            n => Err(format!("ambiguous id '{id_prefix}': matches {n} screenshots")),
+        }
+    }
+
+    /// Remove by ID prefix, returns the removed entry
+    pub fn remove(&mut self, id_prefix: &str) -> Result<Metadata, String> {
+        let (idx, _) = self.find(id_prefix)?;
+        Ok(self.screenshots.remove(idx))
+    }
+
+    /// List all, sorted newest first
+    pub fn list_sorted(&self) -> Vec<&Metadata> {
+        let mut entries: Vec<_> = self.screenshots.iter().collect();
+        entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        entries
+    }
+
+    pub fn search(&self, query: &str) -> Vec<&Metadata> {
+        self.screenshots
+            .iter()
+            .filter(|m| m.matches_query(query))
+            .collect()
     }
 }

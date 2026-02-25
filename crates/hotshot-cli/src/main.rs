@@ -181,8 +181,8 @@ fn cmd_capture(config: Config, cmd: CaptureCommand) -> Result<()> {
                 opts.format.as_ref(),
             )
             .context("failed to save screenshot")?;
-        eprintln!("saved: {}", entry.image_path.display());
-        eprintln!("id:    {}", entry.metadata.id);
+        eprintln!("saved: {}", entry.path.display());
+        eprintln!("id:    {}", entry.id);
     }
 
     // Copy to clipboard if requested
@@ -203,29 +203,16 @@ fn cmd_list(config: Config, limit: usize, tag: Option<String>) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<24} {:<20} {:>10} {}",
-        "ID", "Date", "Size", "Tags"
-    );
-    println!("{}", "-".repeat(80));
+    print_header();
 
-    for entry in &entries {
-        let m = &entry.metadata;
-
+    for m in &entries {
         if let Some(ref tag_filter) = tag {
             if !m.tags.iter().any(|t| t.contains(tag_filter)) {
                 continue;
             }
         }
 
-        let date = m.timestamp.format("%Y-%m-%d %H:%M:%S");
-        let size = format!("{}x{}", m.width, m.height);
-        let tags = if m.tags.is_empty() {
-            String::new()
-        } else {
-            format!("[{}]", m.tags.join(", "))
-        };
-        println!("{:<24} {:<20} {:>10} {}", m.id, date, size, tags);
+        print_entry(m);
     }
 
     Ok(())
@@ -236,11 +223,11 @@ fn cmd_open(config: Config, id: String) -> Result<()> {
     let entry = storage.find_by_id(&id)?;
 
     std::process::Command::new("xdg-open")
-        .arg(&entry.image_path)
+        .arg(&entry.path)
         .spawn()
         .context("failed to open screenshot (is xdg-open installed?)")?;
 
-    eprintln!("opening: {}", entry.image_path.display());
+    eprintln!("opening: {}", entry.path.display());
     Ok(())
 }
 
@@ -249,8 +236,8 @@ fn cmd_tag(config: Config, id: String, tags: Vec<String>) -> Result<()> {
     let entry = storage.tag(&id, &tags)?;
     eprintln!(
         "tagged {} with: [{}]",
-        entry.metadata.id,
-        entry.metadata.tags.join(", ")
+        entry.id,
+        entry.tags.join(", ")
     );
     Ok(())
 }
@@ -264,22 +251,9 @@ fn cmd_search(config: Config, query: String) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<24} {:<20} {:>10} {}",
-        "ID", "Date", "Size", "Tags"
-    );
-    println!("{}", "-".repeat(80));
-
-    for entry in &results {
-        let m = &entry.metadata;
-        let date = m.timestamp.format("%Y-%m-%d %H:%M:%S");
-        let size = format!("{}x{}", m.width, m.height);
-        let tags = if m.tags.is_empty() {
-            String::new()
-        } else {
-            format!("[{}]", m.tags.join(", "))
-        };
-        println!("{:<24} {:<20} {:>10} {}", m.id, date, size, tags);
+    print_header();
+    for m in &results {
+        print_entry(m);
     }
 
     eprintln!("{} result(s)", results.len());
@@ -289,8 +263,27 @@ fn cmd_search(config: Config, query: String) -> Result<()> {
 fn cmd_delete(config: Config, id: String) -> Result<()> {
     let storage = Storage::new(config);
     let entry = storage.delete(&id)?;
-    eprintln!("deleted: {} (moved to trash)", entry.metadata.id);
+    eprintln!("deleted: {} (moved to trash)", entry.id);
     Ok(())
+}
+
+fn print_header() {
+    println!(
+        "{:<24} {:<20} {:>10} {}",
+        "ID", "Date", "Size", "Tags"
+    );
+    println!("{}", "-".repeat(80));
+}
+
+fn print_entry(m: &hotshot_core::Metadata) {
+    let date = m.timestamp.format("%Y-%m-%d %H:%M:%S");
+    let size = format!("{}x{}", m.width, m.height);
+    let tags = if m.tags.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", m.tags.join(", "))
+    };
+    println!("{:<24} {:<20} {:>10} {}", m.id, date, size, tags);
 }
 
 fn cmd_config(mut config: Config, action: Option<ConfigAction>) -> Result<()> {
