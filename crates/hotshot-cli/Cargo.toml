@@ -1,0 +1,14 @@
+[package]
+name = "hotshot-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "hotshot"
+path = "src/main.rs"
+
+[dependencies]
+hotshot-core = { path = "../hotshot-core" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+chrono = "0.4"
