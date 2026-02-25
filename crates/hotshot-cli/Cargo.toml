@@ -8,6 +8,7 @@ name = "hotshot"
 path = "src/main.rs"
 
 [features]
+default = ["gui"]
 gui = ["dep:hotshot-ui"]
 
 [dependencies]
