@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/hotshot-core",
     "crates/hotshot-cli",
+    "crates/hotshot-ui/src-tauri",
 ]
 
 [workspace.package]
