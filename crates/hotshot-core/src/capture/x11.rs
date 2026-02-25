@@ -1,6 +1,6 @@
 use super::{CaptureError, CaptureMode, Region};
 use image::RgbaImage;
-use x11rb::connection::Connection;
+use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::render::{self, Pictformat};
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
@@ -137,6 +137,10 @@ fn find_pictformat_for_visual(
 }
 
 /// Capture the entire root window into a server-side Pixmap.
+///
+/// Uses `get_image` (reads through the compositor) + chunked `put_image`
+/// because `copy_area` from the root window on composited desktops returns
+/// blank/black content (the compositor owns the rendered pixels).
 fn capture_screen_to_pixmap(
     conn: &RustConnection,
     screen: &Screen,
@@ -146,20 +150,56 @@ fn capture_screen_to_pixmap(
     let h = screen.height_in_pixels;
     let depth = screen.root_depth;
 
+    // Read composited screen content via get_image.
+    let img = conn
+        .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, w, h, !0)
+        .map_err(|e| CaptureError::X11(format!("get_image root: {e}")))?
+        .reply()
+        .map_err(|e| CaptureError::X11(format!("get_image root reply: {e}")))?;
+
     let pixmap = conn
         .generate_id()
         .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
     conn.create_pixmap(depth, pixmap, root, w, h)
         .map_err(|e| CaptureError::X11(format!("create_pixmap: {e}")))?;
 
-    // Copy root window contents into the pixmap.
     let gc = conn
         .generate_id()
         .map_err(|e| CaptureError::X11(format!("generate_id: {e}")))?;
-    conn.create_gc(gc, root, &CreateGCAux::default())
+    conn.create_gc(gc, pixmap, &CreateGCAux::default())
         .map_err(|e| CaptureError::X11(format!("create_gc: {e}")))?;
-    conn.copy_area(root, pixmap, gc, 0, 0, 0, 0, w, h)
-        .map_err(|e| CaptureError::X11(format!("copy_area: {e}")))?;
+
+    // Upload pixel data in chunks (X11 has a max request size).
+    let bytes_per_pixel = 4u32; // Z_PIXMAP at 24/32-bit depth
+    let row_bytes = w as u32 * bytes_per_pixel;
+    let max_req = conn.maximum_request_bytes();
+    // Reserve some bytes for the PutImage header (~28 bytes).
+    let max_data = (max_req - 32) as u32;
+    let rows_per_chunk = (max_data / row_bytes).max(1).min(h as u32);
+
+    let data = &img.data;
+    let mut y_offset: u16 = 0;
+    while y_offset < h {
+        let remaining = h - y_offset;
+        let chunk_h = remaining.min(rows_per_chunk as u16);
+        let start = (y_offset as u32 * row_bytes) as usize;
+        let end = start + (chunk_h as u32 * row_bytes) as usize;
+        conn.put_image(
+            ImageFormat::Z_PIXMAP,
+            pixmap,
+            gc,
+            w,
+            chunk_h,
+            0,
+            y_offset as i16,
+            0,
+            depth,
+            &data[start..end],
+        )
+        .map_err(|e| CaptureError::X11(format!("put_image: {e}")))?;
+        y_offset += chunk_h;
+    }
+
     conn.free_gc(gc)
         .map_err(|e| CaptureError::X11(format!("free_gc: {e}")))?;
     conn.flush()
