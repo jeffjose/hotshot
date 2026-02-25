@@ -2,6 +2,7 @@ pub mod wayland;
 pub mod x11;
 
 use image::RgbaImage;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
@@ -21,7 +22,8 @@ pub enum CaptureError {
     Other(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CaptureMode {
     Fullscreen,
     Region(Region),
@@ -29,7 +31,7 @@ pub enum CaptureMode {
     ActiveWindow,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Region {
     pub x: i32,
     pub y: i32,
@@ -37,7 +39,7 @@ pub struct Region {
     pub height: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Monitor {
     pub name: String,
     pub x: i16,
@@ -67,7 +69,8 @@ impl Monitor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DisplayServer {
     X11,
     Wayland,
