@@ -7,8 +7,12 @@ edition.workspace = true
 name = "hotshot"
 path = "src/main.rs"
 
+[features]
+gui = ["dep:hotshot-ui"]
+
 [dependencies]
 hotshot-core = { path = "../hotshot-core" }
+hotshot-ui = { path = "../hotshot-ui/src-tauri", optional = true }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 chrono = "0.4"

@@ -5,6 +5,10 @@ members = [
     "crates/hotshot-cli",
     "crates/hotshot-ui/src-tauri",
 ]
+default-members = [
+    "crates/hotshot-core",
+    "crates/hotshot-cli",
+]
 
 [workspace.package]
 version = "0.1.0"

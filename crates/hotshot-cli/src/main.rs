@@ -63,6 +63,10 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
+
+    /// Launch the GUI
+    #[cfg(feature = "gui")]
+    Gui,
 }
 
 #[derive(Subcommand)]
@@ -167,6 +171,12 @@ fn main() -> Result<()> {
         Commands::Search { query } => cmd_search(config, query),
         Commands::Delete { id } => cmd_delete(config, id),
         Commands::Config { action } => cmd_config(config, action),
+        #[cfg(feature = "gui")]
+        Commands::Gui => {
+            drop(config);
+            hotshot_ui_lib::run();
+            Ok(())
+        }
     }
 }
 
