@@ -186,7 +186,7 @@ fn cmd_capture(config: Config, cmd: CaptureCommand) -> Result<()> {
     }
 
     // Copy to clipboard if requested
-    if opts.clipboard || config.copy_to_clipboard {
+    if opts.clipboard || config.behavior.copy_to_clipboard {
         hotshot_core::clipboard::copy_image(&image).context("failed to copy to clipboard")?;
         eprintln!("copied to clipboard");
     }

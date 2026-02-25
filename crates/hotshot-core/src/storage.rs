@@ -37,11 +37,12 @@ impl Storage {
     }
 
     fn target_dir(&self) -> PathBuf {
-        if self.config.organize_by_month {
-            let now = Utc::now();
-            self.config.storage_dir.join(now.format("%Y-%m").to_string())
-        } else {
-            self.config.storage_dir.clone()
+        match self.config.storage.organize_by {
+            crate::config::OrganizeBy::Month => {
+                let now = Utc::now();
+                self.config.storage_dir.join(now.format("%Y-%m").to_string())
+            }
+            crate::config::OrganizeBy::None => self.config.storage_dir.clone(),
         }
     }
 
@@ -54,7 +55,7 @@ impl Storage {
         format: Option<&ImageFormat>,
     ) -> Result<Metadata, StorageError> {
         let id = Self::generate_id();
-        let fmt = format.unwrap_or(&self.config.format);
+        let fmt = format.unwrap_or(&self.config.image.format);
         let dir = self.target_dir();
         std::fs::create_dir_all(&dir)?;
 
@@ -70,7 +71,7 @@ impl Storage {
                 let mut writer = std::io::BufWriter::new(std::fs::File::create(&path)?);
                 let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
                     &mut writer,
-                    self.config.quality,
+                    self.config.image.quality,
                 );
                 encoder.encode_image(&rgb)?;
             }
