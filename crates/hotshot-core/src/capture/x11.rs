@@ -305,9 +305,10 @@ fn extract_region_from_pixmap(
         .map_err(|e| CaptureError::X11(format!("get_image pixmap reply: {e}")))?;
 
     let mut data = reply.data;
-    // X11 returns BGRA — convert to RGBA
+    // X11 returns BGRX for 24-bit pixmaps — convert to RGBA with opaque alpha.
     for chunk in data.chunks_exact_mut(4) {
         chunk.swap(0, 2);
+        chunk[3] = 255;
     }
 
     RgbaImage::from_raw(width as u32, height as u32, data)
@@ -722,9 +723,11 @@ fn capture_window_region(
 
     let mut data = reply.data;
 
-    // X11 typically returns BGRA — convert to RGBA
+    // X11 returns BGRX for 24-bit windows (4th byte is padding, not alpha).
+    // Convert to RGBA and set alpha to fully opaque.
     for chunk in data.chunks_exact_mut(4) {
-        chunk.swap(0, 2);
+        chunk.swap(0, 2); // BGR_ → RGB_
+        chunk[3] = 255;   // set alpha to opaque
     }
 
     RgbaImage::from_raw(width as u32, height as u32, data)
