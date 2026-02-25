@@ -14,8 +14,6 @@ pub enum CaptureError {
     NoDisplay,
     #[error("region selection cancelled")]
     SelectionCancelled,
-    #[error("external tool not found: {0}")]
-    ToolNotFound(String),
     #[error("image error: {0}")]
     Image(#[from] image::ImageError),
     #[error("{0}")]
