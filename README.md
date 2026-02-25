@@ -21,6 +21,18 @@ Options:
 
 - `--format png|jpeg|webp` -- override image format
 - `--clipboard` -- copy to clipboard after capture
+- `--display <name|index>` -- target a specific monitor (see below)
+
+## Multi-monitor support
+
+```sh
+hotshot display list              # show connected monitors
+hotshot capture fullscreen -d 0   # capture only the first monitor
+hotshot capture fullscreen -d HDMI-1  # capture by name
+hotshot capture region -d 0       # interactive selection on one monitor
+```
+
+When `--display` is used with `capture region`, the overlay and crosshair only appear on the target monitor. Other monitors remain fully interactive.
 
 ## Managing screenshots
 
