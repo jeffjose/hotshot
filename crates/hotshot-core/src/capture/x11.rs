@@ -580,7 +580,21 @@ fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImag
     )
     .map_err(|e| CaptureError::X11(format!("create_glyph_cursor: {e}")))?;
 
+    // Set the crosshair cursor on the overlay window itself, so it only
+    // appears when the mouse is over this window.
+    conn.change_window_attributes(window, &ChangeWindowAttributesAux::new().cursor(cursor))
+        .map_err(|e| CaptureError::X11(format!("set cursor on window: {e}")))?;
+
     // ---- Grab pointer and keyboard ----
+    // When targeting a single display, don't confine the pointer — let it
+    // roam freely to other monitors.  Pass cursor=NONE so X11 uses each
+    // window's own cursor (crosshair on the overlay, normal elsewhere).
+    let (confine_to, grab_cursor) = if display_bounds.is_some() {
+        (0u32, 0u32)   // NONE — no confinement, no cursor override
+    } else {
+        (window, cursor) // full-screen: confine + crosshair everywhere
+    };
+
     conn.grab_pointer(
         true,
         window,
@@ -590,8 +604,8 @@ fn capture_region_interactive(display_bounds: Option<Region>) -> Result<RgbaImag
             .into(),
         GrabMode::ASYNC,
         GrabMode::ASYNC,
-        window,
-        cursor,
+        confine_to,
+        grab_cursor,
         Time::CURRENT_TIME,
     )
     .map_err(|e| CaptureError::X11(format!("grab_pointer: {e}")))?
