@@ -26,7 +26,7 @@
     <div class="px-3 py-2 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wider">
       Screenshots ({$screenshots.length})
     </div>
-    <div class="flex-1 overflow-y-auto">
+    <div class="flex-1 overflow-y-auto overscroll-contain" style="scrollbar-gutter: stable;">
       {#each $screenshots as meta (meta.id)}
         <button
           class="w-full text-left px-2 py-2 hover:bg-accent transition-colors border-b border-border/50

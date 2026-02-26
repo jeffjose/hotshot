@@ -7,7 +7,7 @@
 <div class="h-14 border-b border-border flex items-center px-3 gap-2 shrink-0 bg-card">
   <CaptureMenu />
 
-  <div class="flex-1" />
+  <div class="flex-1"></div>
 
   <button
     class="p-2 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
