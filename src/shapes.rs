@@ -23,6 +23,28 @@ pub enum Tool {
     Text,
     Counter,
     Blur,
+    /// A rectangle left as it is while everything round it is darkened.
+    Spotlight,
+}
+
+/// How much of its brightness what is outside every spotlight keeps,
+/// out of 256.
+const SPOTLIGHT_KEEPS: u32 = 96;
+
+/// Draws shapes on a picture, the first under the last, within an area
+/// of it. The spotlights come before all the rest, whatever their place
+/// among them: they darken the picture, and not what is drawn on it,
+/// which is as often as not an arrow to what the spotlight is on.
+pub fn paint(shapes: &[Shape], canvas: &mut Canvas, text: &mut Text, area: Rect) {
+    let lit: Vec<(Rect, i32)> = shapes.iter().filter(|shape| shape.tool == Tool::Spotlight).map(|shape| (shape.frame_rect(), shape.radius.round() as i32)).collect();
+    canvas.set_clip(area);
+    if !lit.is_empty() {
+        canvas.spotlight(area, &lit, SPOTLIGHT_KEEPS);
+    }
+    for shape in shapes {
+        shape.draw(canvas, text);
+    }
+    canvas.reset_clip();
 }
 
 pub type Point = (f32, f32);
@@ -48,6 +70,8 @@ pub struct Shape {
     pub points: Vec<Point>,
     pub text: String,
     pub font_px: u32,
+    /// Which of the faces its text is in, counted from 0.
+    pub face: usize,
     pub number: u32,
     mask: RefCell<Option<Rc<Mask>>>,
 }
@@ -55,7 +79,7 @@ pub struct Shape {
 impl Shape {
     pub fn new(tool: Tool, color: u32, stroke: f32, at: Point) -> Shape {
         let points = if matches!(tool, Tool::Pen | Tool::Marker | Tool::Text) { vec![at] } else { vec![at, at] };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, number: 0, mask: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, number: 0, mask: RefCell::new(None) }
     }
 
     /// To be called when anything about its outline has changed.
@@ -83,7 +107,7 @@ impl Shape {
     /// Too small to have been meant: a click where a drag was wanted.
     pub fn is_slight(&self) -> bool {
         match self.tool {
-            Tool::Arrow | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Blur => {
+            Tool::Arrow | Tool::Line | Tool::Rect | Tool::Ellipse | Tool::Blur | Tool::Spotlight => {
                 let (a, b) = (self.points[0], self.points[1]);
                 (a.0 - b.0).hypot(a.1 - b.1) < 3.0
             }
@@ -98,7 +122,7 @@ impl Shape {
         (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs())
     }
 
-    fn frame_rect(&self) -> Rect {
+    pub fn frame_rect(&self) -> Rect {
         let (x, y, w, h) = self.frame();
         Rect::new(x.round() as i32, y.round() as i32, w.round() as i32, h.round() as i32)
     }
@@ -109,10 +133,10 @@ impl Shape {
             Tool::Text => {
                 let line = Text::line_height(self.font_px);
                 let lines: Vec<&str> = self.text.split('\n').collect();
-                let width = lines.iter().map(|line| text.width(line, self.font_px)).max().unwrap_or(0);
+                let width = lines.iter().map(|line| text.width_in(self.face, line, self.font_px)).max().unwrap_or(0);
                 Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width.max(self.font_px as i32 / 4), line * lines.len() as i32)
             }
-            Tool::Blur => self.frame_rect(),
+            Tool::Blur | Tool::Spotlight => self.frame_rect(),
             _ => self.extent(),
         }
     }
@@ -243,12 +267,13 @@ impl Shape {
 
     pub fn draw(&self, canvas: &mut Canvas, text: &mut Text) {
         match self.tool {
-            Tool::Select => {}
+            // A spotlight is no mark of its own: `paint` sees to it.
+            Tool::Select | Tool::Spotlight => {}
             Tool::Blur => canvas.pixelate(self.frame_rect(), (self.stroke * 3.0 + 4.0).round() as i32),
             Tool::Text => {
                 let (x, y) = (self.points[0].0.round() as i32, self.points[0].1.round() as i32);
                 for (index, line) in self.text.split('\n').enumerate() {
-                    text.draw(canvas, x, y + index as i32 * Text::line_height(self.font_px), self.font_px, self.color, line);
+                    text.draw_in(self.face, canvas, x, y + index as i32 * Text::line_height(self.font_px), self.font_px, self.color, line);
                 }
             }
             Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY),
@@ -264,7 +289,7 @@ impl Shape {
     /// Whether a click at a point is on it.
     pub fn hit(&self, x: i32, y: i32, text: &mut Text) -> bool {
         match self.tool {
-            Tool::Text | Tool::Blur => self.bounds(text).inflate(REACH).contains(x, y),
+            Tool::Text | Tool::Blur | Tool::Spotlight => self.bounds(text).inflate(REACH).contains(x, y),
             _ => {
                 let mask = self.mask();
                 let near = Rect::new(x - REACH, y - REACH, 2 * REACH + 1, 2 * REACH + 1).intersect(mask.bounds);
@@ -282,7 +307,7 @@ impl Shape {
 pub fn constrained(tool: Tool, from: Point, to: Point) -> Point {
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     match tool {
-        Tool::Rect | Tool::Ellipse | Tool::Blur => {
+        Tool::Rect | Tool::Ellipse | Tool::Blur | Tool::Spotlight => {
             let side = dx.abs().max(dy.abs());
             (from.0 + side.copysign(dx), from.1 + side.copysign(dy))
         }

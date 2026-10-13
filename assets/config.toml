@@ -58,5 +58,18 @@
 # being placed, for placing it to the pixel.
 # magnifier = false
 
+# The face text is typed in to begin with: "geist" (or "sans"),
+# "instrument-serif" ("serif"), "architects-daughter" ("hand") or
+# "fira-code" ("mono"). G goes from each to the next.
+# font = "geist"
+
+# Rectangles and ovals filled to begin with.
+# filled = false
+
+# The colour, width of line, roundness of corners, fill and font in hand
+# when hotshot is closed are the ones in hand when it is next opened.
+# With false, it begins every time with what this file says.
+# remember = true
+
 # Seconds to wait before the screen is frozen: time to open a menu.
 # delay = 0

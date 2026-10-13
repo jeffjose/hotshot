@@ -10,7 +10,7 @@
 //! background, which the server paints as it shows the window, so that
 //! there is never a frame of anything else.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::AsRawFd;
@@ -98,6 +98,9 @@ pub struct Display {
     keys: (u8, usize, Vec<u32>),
     cursors: HashMap<Cursor, u32>,
     cursor: Option<Cursor>,
+    /// What the display said while something else was being waited for,
+    /// still to be heard.
+    waiting: VecDeque<Event>,
     /// The server's time at the latest event, which owning the clipboard
     /// is dated by.
     pub time: u32,
@@ -116,7 +119,7 @@ impl Display {
         }
         let (root, width, height, depth) = (root.root, i32::from(root.width_in_pixels), i32::from(root.height_in_pixels), root.root_depth);
         let shared = conn.extension_information(shm::X11_EXTENSION_NAME)?.is_some();
-        Ok(Display { conn, screen, root, width, height, depth, shared, window: NONE, gc: NONE, frozen: NONE, keys: (0, 0, Vec::new()), cursors: HashMap::new(), cursor: None, time: CURRENT_TIME })
+        Ok(Display { conn, screen, root, width, height, depth, shared, window: NONE, gc: NONE, frozen: NONE, keys: (0, 0, Vec::new()), cursors: HashMap::new(), cursor: None, waiting: VecDeque::new(), time: CURRENT_TIME })
     }
 
     /// A screenful of pixels, shared with the server if it can be: it
@@ -438,13 +441,42 @@ impl Display {
         self.places(&active).into_iter().next()
     }
 
+    /// The text on the clipboard, if there is any and whoever has it
+    /// hands it over within half a second. What else the display says
+    /// meanwhile is kept, to be heard afterwards. Text too long to come
+    /// in one piece is not waited for.
+    pub fn paste(&mut self) -> Option<String> {
+        let (clipboard, text, slot) = (self.atom("CLIPBOARD"), self.atom("UTF8_STRING"), self.atom("HOTSHOT_PASTE"));
+        self.conn.convert_selection(self.window, clipboard, text, slot, self.time).ok()?;
+        self.conn.flush().ok()?;
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            match self.conn.poll_for_event().ok()? {
+                Some(Event::SelectionNotify(notice)) if notice.property == NONE => return None,
+                Some(Event::SelectionNotify(_)) => break,
+                Some(other) => self.waiting.push_back(other),
+                None if std::time::Instant::now() > until => return None,
+                None => {
+                    let mut ready = libc::pollfd { fd: self.conn.stream().as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                    // SAFETY: one valid descriptor, for a bounded time.
+                    unsafe { libc::poll(&mut ready, 1, 20) };
+                }
+            }
+        }
+        let reply = self.conn.get_property(true, self.window, slot, AtomEnum::ANY, 0, u32::MAX / 4).ok()?.reply().ok()?;
+        (reply.type_ == text).then(|| String::from_utf8(reply.value).ok()).flatten()
+    }
+
     /// What has happened since last asked, having waited for something
     /// to: for as long as it takes, or for so many milliseconds. Of a
     /// run of the pointer's movements only the last is told, which is
     /// where it now is.
     pub fn inputs(&mut self, wait: Option<i32>) -> Result<Vec<Input>> {
         let mut inputs = Vec::new();
-        let mut event = self.conn.poll_for_event()?;
+        let mut event = match self.waiting.pop_front() {
+            Some(event) => Some(event),
+            None => self.conn.poll_for_event()?,
+        };
         if event.is_none() {
             self.conn.flush()?;
             event = match wait {
@@ -484,7 +516,10 @@ impl Display {
                 (_, Some(input)) => inputs.push(input),
                 _ => {}
             }
-            event = self.conn.poll_for_event()?;
+            event = match self.waiting.pop_front() {
+                Some(event) => Some(event),
+                None => self.conn.poll_for_event()?,
+            };
         }
         Ok(inputs)
     }
@@ -518,6 +553,8 @@ impl Display {
             0xFF52 | 0xFF97 => return Key::Up,
             0xFF53 | 0xFF98 => return Key::Right,
             0xFF54 | 0xFF99 => return Key::Down,
+            0xFF50 | 0xFF95 => return Key::Home,
+            0xFF57 | 0xFF9C => return Key::End,
             0xFFAA..=0xFFB9 => char::from_u32(symbol - 0xFF80),
             0x20..=0x7E | 0xA0..=0xFF => char::from_u32(symbol),
             0x0100_0000..=0x0110_FFFF => char::from_u32(symbol - 0x0100_0000),

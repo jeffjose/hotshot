@@ -241,11 +241,19 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
                 Outcome::Continue => {}
                 Outcome::Cancel => break 'events None,
                 Outcome::Finish(how) => break 'events Some(how),
+                Outcome::Paste => {
+                    if let Some(text) = display.paste() {
+                        editor.paste(&text);
+                    }
+                }
             }
         }
     };
     // Down at once: the packing and saving are not to be watched.
     display.hide();
     trace("window down");
+    if options.remember {
+        options::remember_tools(&editor.in_hand());
+    }
     Ok(how.and_then(|how| editor.result().map(|(area, pixels, rounded)| (area, pixels, rounded, how))))
 }

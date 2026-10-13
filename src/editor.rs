@@ -8,7 +8,7 @@ use std::ops::Deref;
 
 use crate::canvas::{self, Canvas, Rect};
 use crate::shapes::{self, Shape, Tool};
-use crate::text::{icons, Text};
+use crate::text::{icons, Text, FACES};
 
 // jog's colours, so that the two look like one family.
 const TEXT_COLOR: u32 = 0xEEEEEE;
@@ -87,6 +87,8 @@ pub enum Key {
     Right,
     Up,
     Down,
+    Home,
+    End,
     Other,
 }
 
@@ -108,6 +110,8 @@ pub enum Outcome {
     Continue,
     Cancel,
     Finish(Finish),
+    /// The text on the clipboard is wanted, to be handed to `paste`.
+    Paste,
 }
 
 /// The pointer's shape.
@@ -157,13 +161,17 @@ pub struct Settings {
     /// The radius of the corners of the picture itself, in the same
     /// pixels; 0 for the square corners a screen has.
     pub corners: f32,
+    /// Whether rectangles and ovals are drawn filled to begin with.
+    pub filled: bool,
+    /// Which of the faces text is typed in to begin with, counted from 0.
+    pub face: usize,
     /// What Enter, and a double click, do.
     pub enter: Finish,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, enter: Finish { copy: true, save: false } }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, enter: Finish { copy: true, save: false } }
     }
 }
 
@@ -179,6 +187,8 @@ enum Button {
     Color,
     Size(usize),
     Fill,
+    /// The face text is in: each press, the next of them.
+    Face,
     Undo,
     Redo,
     Cancel,
@@ -199,8 +209,9 @@ const GROUPS: [&[Button]; 4] = [
         Button::Tool(Tool::Text),
         Button::Tool(Tool::Counter),
         Button::Tool(Tool::Blur),
+        Button::Tool(Tool::Spotlight),
     ],
-    &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill],
+    &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill, Button::Face],
     &[Button::Undo, Button::Redo],
     &[Button::Cancel, Button::Save, Button::Copy],
 ];
@@ -219,12 +230,14 @@ impl Button {
             Button::Tool(Tool::Text) => ("Text", "T"),
             Button::Tool(Tool::Counter) => ("Counter", "N"),
             Button::Tool(Tool::Blur) => ("Blur", "B"),
+            Button::Tool(Tool::Spotlight) => ("Spotlight", "S"),
             Button::Color => ("Colour", "C"),
             Button::Size(0) => ("Thin", "1"),
             Button::Size(1) => ("Medium", "2"),
             Button::Size(2) => ("Thick", "3"),
             Button::Size(_) => ("Heavy", "4"),
             Button::Fill => ("Filled", "F"),
+            Button::Face => ("Font", "G"),
             Button::Undo => ("Undo", "Ctrl+Z"),
             Button::Redo => ("Redo", "Ctrl+Shift+Z"),
             Button::Cancel => ("Cancel", "Esc"),
@@ -245,13 +258,14 @@ impl Button {
             Button::Tool(Tool::Text) => icons::TEXT,
             Button::Tool(Tool::Counter) => icons::COUNTER,
             Button::Tool(Tool::Blur) => icons::BLUR,
+            Button::Tool(Tool::Spotlight) => icons::SPOTLIGHT,
             Button::Fill => icons::FILLED,
             Button::Undo => icons::UNDO,
             Button::Redo => icons::REDO,
             Button::Cancel => icons::CLOSE,
             Button::Save => icons::SAVE,
             Button::Copy => icons::COPY,
-            Button::Color | Button::Size(_) => "",
+            Button::Color | Button::Size(_) | Button::Face => "",
         }
     }
 }
@@ -275,6 +289,9 @@ enum Target {
     /// The dot inside a corner of the selection, by which the corners
     /// of the picture itself are.
     Curve(i32, i32),
+    /// An end of the line or arrow picked out, or the tip a counter
+    /// points with: which of the shape's points it is.
+    End(usize),
     Inside,
     Outside,
 }
@@ -300,6 +317,11 @@ enum Drag {
     Round { index: usize, corner: (i32, i32), slack: f32 },
     /// The same of the picture's own corners, by a dot in the selection's.
     Curve { corner: (i32, i32), slack: i32 },
+    /// Taking one end of a line somewhere else.
+    End { index: usize, point: usize },
+    /// Dragging out a box, with Shift or Ctrl held, to pick out the
+    /// shapes it touches.
+    Marquee { from: (i32, i32) },
     Button(Button),
 }
 
@@ -356,6 +378,10 @@ pub struct Editor {
     /// The text being typed, and whether it was begun just now rather
     /// than being one from before taken up again.
     editing: Option<(usize, bool)>,
+    /// Where in that text the next letter goes, in bytes from its start.
+    caret: usize,
+    /// Which of the faces text is typed in.
+    face: usize,
     popup: Option<Anchor>,
     /// Picking a colour off the screen.
     pipette: bool,
@@ -381,6 +407,13 @@ fn on(color: u32) -> u32 {
 /// Each as which way it pulls across and down.
 const GRIPS: [(i32, i32); 8] = [(-1, -1), (1, -1), (-1, 1), (1, 1), (0, -1), (0, 1), (-1, 0), (1, 0)];
 
+/// Whether a shape picked out has a box with handles to resize it by.
+/// Not a line or an arrow, which have their two ends; nor a counter,
+/// which is the size it is.
+fn boxed(tool: Tool) -> bool {
+    !matches!(tool, Tool::Arrow | Tool::Line | Tool::Counter)
+}
+
 /// Where on a box one of its handles is.
 fn grip_at(frame: Rect, across: i32, down: i32) -> (i32, i32) {
     (frame.x + frame.w * (across + 1) / 2, frame.y + frame.h * (down + 1) / 2)
@@ -405,6 +438,8 @@ impl Editor {
             windows,
             color: settings.color,
             corners: settings.corners,
+            filled: settings.filled,
+            face: settings.face.min(FACES.len() - 1),
             size: settings.size.min(STROKES.len() - 1),
             settings,
             text,
@@ -414,7 +449,6 @@ impl Editor {
             selection: None,
             drag: Drag::None,
             tool: Tool::Select,
-            filled: false,
             shapes: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -422,6 +456,7 @@ impl Editor {
             hovered: None,
             scaling: None,
             editing: None,
+            caret: 0,
             popup: None,
             pipette: false,
             hover: Target::Outside,
@@ -601,9 +636,15 @@ impl Editor {
             if let Some((across, down, _)) = self.rounders(index).into_iter().flatten().find(|&(_, _, at)| near(at)) {
                 return Target::Rounder(across, down);
             }
-            let frame = self.frame_of(index);
-            if let Some((across, down)) = GRIPS.into_iter().find(|&(across, down)| near(grip_at(frame, across, down))) {
-                return Target::Grip(across, down);
+            if let Some((point, _)) = self.ends(index).into_iter().find(|&(_, at)| near(at)) {
+                return Target::End(point);
+            }
+            // A line has its ends to be reshaped by, and no box.
+            if boxed(self.shapes[index].tool) {
+                let frame = self.frame_of(index);
+                if let Some((across, down)) = GRIPS.into_iter().find(|&(across, down)| near(grip_at(frame, across, down))) {
+                    return Target::Grip(across, down);
+                }
             }
         }
         if !self.pipette {
@@ -659,6 +700,19 @@ impl Editor {
         self.shapes[index].bounds(&mut self.text).inflate(room)
     }
 
+    /// The ends a shape is reshaped by, each with which of its points it
+    /// is: both of a line or an arrow, and of a counter the tip it
+    /// points with, when it points.
+    fn ends(&self, index: usize) -> Vec<(usize, (i32, i32))> {
+        let shape = &self.shapes[index];
+        let at = |point: usize| (point, (shape.points[point].0.round() as i32, shape.points[point].1.round() as i32));
+        match shape.tool {
+            Tool::Arrow | Tool::Line => vec![at(0), at(1)],
+            Tool::Counter if shape.points[0] != shape.points[1] => vec![at(1)],
+            _ => Vec::new(),
+        }
+    }
+
     /// Where the dots are by which the corners of the picture itself are
     /// made rounder: one inside each corner of the selection, with the
     /// move tool in hand, as a rectangle picked out has them. None on a
@@ -693,7 +747,7 @@ impl Editor {
         let shape = &self.shapes[index];
         let (left, top, width, height) = shape.frame();
         let least = ui_px(self.monitor().h) as f32;
-        if shape.tool != Tool::Rect || width.min(height) < least * 3.0 {
+        if !matches!(shape.tool, Tool::Rect | Tool::Spotlight) || width.min(height) < least * 3.0 {
             return None;
         }
         let inset = shape.radius.max(least).min(width / 2.0).min(height / 2.0);
@@ -712,7 +766,8 @@ impl Editor {
         let pull = match (self.drag, self.hover) {
             (Drag::Resize { pull, .. } | Drag::Scale { pull, .. }, _) => Some(pull),
             (Drag::None, Target::Handle(across, down) | Target::Grip(across, down)) => Some((across, down)),
-            (Drag::Round { .. } | Drag::Curve { .. }, _) | (Drag::None, Target::Rounder(..) | Target::Curve(..)) => return Cursor::Arrow,
+            (Drag::Round { .. } | Drag::Curve { .. } | Drag::End { .. }, _) | (Drag::None, Target::Rounder(..) | Target::Curve(..) | Target::End(_)) => return Cursor::Arrow,
+            (Drag::Marquee { .. }, _) => return Cursor::Crosshair,
             _ => None,
         };
         if let Some((across, down)) = pull {
@@ -793,6 +848,17 @@ impl Editor {
                 self.shapes[index] = shape;
                 self.dirty = true;
             }
+            Drag::End { index, point } => {
+                let (index, point) = (*index, *point);
+                let to = (at.0 as f32 + 0.5, at.1 as f32 + 0.5);
+                let shape = &mut self.shapes[index];
+                // With Shift, at one of eight angles from the other end.
+                let other = shape.points[1 - point.min(1)];
+                shape.points[point] = if mods.shift { shapes::constrained(Tool::Line, other, to) } else { to };
+                shape.touch();
+                self.dirty = true;
+            }
+            Drag::Marquee { .. } => self.dirty = true,
             Drag::Curve { corner, slack } => {
                 // Kept as it would be on a screen 1080 high, which is
                 // how it is set in the config file too.
@@ -889,7 +955,7 @@ impl Editor {
         let target = self.target_at(at);
         self.hover = target;
 
-        if self.pipette && matches!(target, Target::Inside | Target::Outside | Target::Handle(..) | Target::Grip(..) | Target::Rounder(..) | Target::Curve(..)) {
+        if self.pipette && matches!(target, Target::Inside | Target::Outside | Target::Handle(..) | Target::Grip(..) | Target::Rounder(..) | Target::Curve(..) | Target::End(_)) {
             self.pipette = false;
             self.set_color(self.shot.pixels[(at.1 * self.shot.width + at.0) as usize] & 0xFFFFFF);
             return Outcome::Continue;
@@ -905,6 +971,12 @@ impl Editor {
             // A click anywhere else puts the box of colours away, and
             // does nothing more.
             _ if self.popup.is_some() => self.popup = None,
+            Target::End(point) => {
+                if let Some(index) = self.picked() {
+                    self.checkpoint();
+                    self.drag = Drag::End { index, point };
+                }
+            }
             Target::Grip(across, down) => {
                 if let Some(index) = self.picked() {
                     self.checkpoint();
@@ -944,9 +1016,10 @@ impl Editor {
     }
 
     fn pressed_inside(&mut self, at: (i32, i32), double: bool) -> Outcome {
-        // A click on the text being typed leaves it be.
+        // A click on the text being typed puts the caret there.
         if let Some((index, _)) = self.editing {
             if self.shapes[index].hit(at.0, at.1, &mut self.text) {
+                self.caret = self.caret_at(index, at);
                 return Outcome::Continue;
             }
             self.commit_text();
@@ -977,7 +1050,9 @@ impl Editor {
                         false => self.drag = Drag::Shape { index, last: at, moved: false },
                     }
                 }
-                None if self.mods.shift || self.mods.ctrl => {}
+                // With Shift or Ctrl and no shape under the pointer, a
+                // box is dragged out, and what it touches is added.
+                None if self.mods.shift || self.mods.ctrl => self.drag = Drag::Marquee { from: at },
                 None if double => return self.finish(self.settings.enter),
                 None => {
                     self.selected.clear();
@@ -993,7 +1068,9 @@ impl Editor {
                     let font_px = self.font_px();
                     let mut shape = Shape::new(Tool::Text, self.color, self.stroke(), (at.0 as f32, (at.1 - Text::line_height(font_px) / 2) as f32));
                     shape.font_px = font_px;
+                    shape.face = self.face;
                     self.shapes.push(shape);
+                    self.caret = 0;
                     self.editing = Some((self.shapes.len() - 1, true));
                     self.selected.clear();
                 }
@@ -1044,6 +1121,14 @@ impl Editor {
                 }
             }
             Drag::Scale { .. } => self.scaling = None,
+            Drag::Marquee { from } => {
+                let reach = Rect::spanning(from, self.pointer);
+                for index in 0..self.shapes.len() {
+                    if !self.selected.contains(&index) && self.shapes[index].bounds(&mut self.text).intersects(reach) {
+                        self.selected.push(index);
+                    }
+                }
+            }
             Drag::Button(button) => {
                 if self.target_at(self.pointer) == Target::Button(button) {
                     outcome = self.activate(button);
@@ -1092,12 +1177,48 @@ impl Editor {
             self.commit_text();
             return Outcome::Continue;
         }
+        // And Ctrl+V is whatever text is on the clipboard, which has to
+        // be asked of the display.
+        if let (Some(_), Key::Char('v' | 'V'), true) = (self.editing, key, mods.ctrl) {
+            return Outcome::Paste;
+        }
         if let (Some((index, _)), false) = (self.editing, mods.ctrl) {
-            let shape = &mut self.shapes[index];
+            let text = &mut self.shapes[index].text;
+            let caret = self.caret.min(text.len());
+            // The line the caret is on, and how many letters along it.
+            let start = text[..caret].rfind('\n').map_or(0, |at| at + 1);
+            let end = text[caret..].find('\n').map_or(text.len(), |at| caret + at);
+            let along = text[start..caret].chars().count();
+            // Where that many letters along another line is, or its end.
+            let place = |line: &str, from: usize| from + line.char_indices().nth(along).map_or(line.len(), |(at, _)| at);
             match key {
-                Key::Char(letter) => shape.text.push(letter),
-                Key::Enter => shape.text.push('\n'),
-                Key::Backspace => drop(shape.text.pop()),
+                Key::Char(letter) => {
+                    text.insert(caret, letter);
+                    self.caret = caret + letter.len_utf8();
+                }
+                Key::Enter => {
+                    text.insert(caret, '\n');
+                    self.caret = caret + 1;
+                }
+                Key::Backspace => {
+                    if let Some((at, _)) = text[..caret].char_indices().next_back() {
+                        text.remove(at);
+                        self.caret = at;
+                    }
+                }
+                Key::Delete if caret < text.len() => drop(text.remove(caret)),
+                Key::Left => self.caret = text[..caret].char_indices().next_back().map_or(0, |(at, _)| at),
+                Key::Right => self.caret = text[caret..].chars().next().map_or(caret, |letter| caret + letter.len_utf8()),
+                Key::Home => self.caret = start,
+                Key::End => self.caret = end,
+                Key::Up if start > 0 => {
+                    let above = text[..start - 1].rfind('\n').map_or(0, |at| at + 1);
+                    self.caret = place(&text[above..start - 1], above);
+                }
+                Key::Down if end < text.len() => {
+                    let below = text[end + 1..].find('\n').map_or(text.len(), |at| end + 1 + at);
+                    self.caret = place(&text[end + 1..below], end + 1);
+                }
                 Key::Escape => self.commit_text(),
                 _ => {}
             }
@@ -1124,6 +1245,29 @@ impl Editor {
             (Key::Char('z'), true) => self.undo(),
             (Key::Char('y'), true) => self.redo(),
             (Key::Char('a'), true) => self.select(self.screen()),
+            // A copy of each shape picked out, a little down and to the
+            // right of it, and picked out in its place.
+            (Key::Char('d'), true) => {
+                let chosen = self.chosen();
+                if !chosen.is_empty() {
+                    self.checkpoint();
+                    let by = ui_px(self.monitor().h) as f32;
+                    let mut counters = self.shapes.iter().filter(|shape| shape.tool == Tool::Counter).count() as u32;
+                    self.selected.clear();
+                    for index in chosen {
+                        let mut copy = self.shapes[index].clone();
+                        copy.translate(by, by);
+                        // A counter copied counts on.
+                        if copy.tool == Tool::Counter {
+                            counters += 1;
+                            copy.number = counters;
+                        }
+                        self.shapes.push(copy);
+                        self.selected.push(self.shapes.len() - 1);
+                    }
+                    self.tool = Tool::Select;
+                }
+            }
             (Key::Delete | Key::Backspace, _) => {
                 let mut going = self.chosen();
                 if !going.is_empty() {
@@ -1149,8 +1293,10 @@ impl Editor {
                 't' => self.set_tool(Tool::Text),
                 'n' => self.set_tool(Tool::Counter),
                 'b' => self.set_tool(Tool::Blur),
+                's' => self.set_tool(Tool::Spotlight),
                 'c' => drop(self.activate(Button::Color)),
                 'f' => drop(self.activate(Button::Fill)),
+                'g' => drop(self.activate(Button::Face)),
                 // From each roundness of the picture's corners to the
                 // next, and round again to square; one that is none of
                 // them, set by hand, goes to square first.
@@ -1211,6 +1357,19 @@ impl Editor {
                         self.shapes[index].touch();
                     }
                 }
+            }
+            // The next face, for the text being typed or picked out, and
+            // for what is typed after.
+            Button::Face => {
+                self.face = (self.face + 1) % FACES.len();
+                let texts: Vec<usize> = match self.editing {
+                    Some((index, _)) => vec![index],
+                    None => self.chosen().into_iter().filter(|&index| self.shapes[index].tool == Tool::Text).collect(),
+                };
+                if self.editing.is_none() && !texts.is_empty() {
+                    self.checkpoint();
+                }
+                texts.iter().for_each(|&index| self.shapes[index].face = self.face);
             }
             Button::Undo => self.undo(),
             Button::Redo => self.redo(),
@@ -1296,7 +1455,43 @@ impl Editor {
         self.commit_text();
         self.checkpoint();
         self.editing = Some((index, false));
+        self.caret = self.shapes[index].text.len();
         self.selected.clear();
+    }
+
+    /// Puts text in where the caret is: what was on the clipboard.
+    pub fn paste(&mut self, pasted: &str) {
+        if let Some((index, _)) = self.editing {
+            let pasted: String = pasted.chars().filter(|&letter| letter == '\n' || !letter.is_control()).collect();
+            let text = &mut self.shapes[index].text;
+            let caret = self.caret.min(text.len());
+            text.insert_str(caret, &pasted);
+            self.caret = caret + pasted.len();
+            self.dirty = true;
+        }
+    }
+
+    /// Where in the text being typed a point of the screen is: before
+    /// the letter it is nearest the left edge of, on the line it is on.
+    fn caret_at(&mut self, index: usize, at: (i32, i32)) -> usize {
+        let shape = &self.shapes[index];
+        let (left, top) = (shape.points[0].0.round() as i32, shape.points[0].1.round() as i32);
+        let row = ((at.1 - top) / Text::line_height(shape.font_px).max(1)).max(0) as usize;
+        let mut start = 0;
+        let lines: Vec<&str> = shape.text.split('\n').collect();
+        let row = row.min(lines.len() - 1);
+        for line in &lines[..row] {
+            start += line.len() + 1;
+        }
+        let line = lines[row];
+        let mut nearest = (i32::MAX, 0);
+        for at_letter in line.char_indices().map(|(at, _)| at).chain([line.len()]) {
+            let off = (left + self.text.width_in(shape.face, &line[..at_letter], shape.font_px) - at.0).abs();
+            if off < nearest.0 {
+                nearest = (off, at_letter);
+            }
+        }
+        start + nearest.1
     }
 
     /// Done typing. Text with nothing in it is not kept; and if it was
@@ -1357,17 +1552,16 @@ impl Editor {
         let mut canvas = Canvas::new(out, width, height);
 
         if let Some(selection) = self.selection {
+            shapes::paint(&self.shapes, &mut canvas, &mut self.text, selection);
             canvas.set_clip(selection);
-            for shape in &self.shapes {
-                shape.draw(&mut canvas, &mut self.text);
-            }
-            // The caret, after the last letter typed.
+            // The caret, where the next letter typed will go.
             if let Some((index, _)) = self.editing {
                 let shape = &self.shapes[index];
                 let line = Text::line_height(shape.font_px);
-                let last = shape.text.rsplit('\n').next().unwrap_or("");
-                let rows = shape.text.split('\n').count() as i32;
-                let x = shape.points[0].0.round() as i32 + self.text.width(last, shape.font_px);
+                let before = &shape.text[..self.caret.min(shape.text.len())];
+                let last = before.rsplit('\n').next().unwrap_or("");
+                let rows = before.split('\n').count() as i32;
+                let x = shape.points[0].0.round() as i32 + self.text.width_in(shape.face, last, shape.font_px);
                 let y = shape.points[0].1.round() as i32 + (rows - 1) * line;
                 canvas.fill(x + 1, y + line / 8, (shape.font_px as i32 / 12).max(2), line - line / 4, shape.color);
             }
@@ -1405,19 +1599,31 @@ impl Editor {
                 let frame = self.frame_of(index);
                 canvas.round_outline(frame.x, frame.y, frame.w, frame.h, 0, thick, soft(accent));
             }
-            // Each of several picked out has its box, and no more.
+            // Each of several picked out has its box, and no more. A
+            // line picked out by itself has only its two ends.
+            let alone = self.picked().filter(|&index| !boxed(self.shapes[index].tool) && !self.ends(index).is_empty());
             if self.tool == Tool::Select {
-                for index in self.chosen() {
+                for index in self.chosen().into_iter().filter(|&index| alone != Some(index)) {
                     let frame = self.frame_of(index);
                     canvas.round_outline(frame.x, frame.y, frame.w, frame.h, 0, thick, accent);
                 }
             }
+            // The box being dragged out to pick shapes with.
+            if let Drag::Marquee { from } = self.drag {
+                let reach = Rect::spanning(from, self.pointer);
+                canvas.round_fill(reach.x, reach.y, reach.w, reach.h, 0, accent, 40);
+                canvas.round_outline(reach.x, reach.y, reach.w, reach.h, 0, thick, accent);
+            }
             if let Some(index) = self.picked() {
                 let frame = self.frame_of(index);
-                for (across, down) in GRIPS {
+                for (across, down) in GRIPS.into_iter().filter(|_| boxed(self.shapes[index].tool)) {
                     let (x, y) = grip_at(frame, across, down);
                     canvas.fill(x - grip - thick, y - grip - thick, 2 * (grip + thick), 2 * (grip + thick), accent);
                     canvas.fill(x - grip, y - grip, 2 * grip, 2 * grip, 0xFFFFFF);
+                }
+                for (_, (x, y)) in self.ends(index) {
+                    canvas.disc(x, y, grip + 1 + thick, accent, 256);
+                    canvas.disc(x, y, grip + 1, 0xFFFFFF, 256);
                 }
                 for (_, _, (x, y)) in self.rounders(index).into_iter().flatten() {
                     canvas.disc(x, y, grip + thick, accent, 256);
@@ -1508,6 +1714,11 @@ impl Editor {
                     canvas.disc(cx, cy, radius + (px as i32 / 10).max(1), if chosen { TEXT_COLOR } else { MENU_EDGE_COLOR }, 256);
                     canvas.disc(cx, cy, radius, self.color, 256);
                 }
+                // Two letters in the face text is typed in.
+                Button::Face => {
+                    let across = self.text.width_in(self.face, "Aa", px);
+                    self.text.draw_in(self.face, canvas, cx - across / 2, cy - Text::line_height(px) / 2, px, ink, "Aa");
+                }
                 // A dot as wide as the line it stands for, near enough.
                 Button::Size(size) => {
                     let radius = ((STROKES[size] * px as f32 / 13.0 * 0.62).round() as i32 + 1).min(side * 3 / 10);
@@ -1521,6 +1732,8 @@ impl Editor {
         if let (Target::Button(button), None, Drag::None) = (self.hover, layout.popup, self.drag) {
             let Some((rect, _)) = layout.buttons.iter().find(|(_, other)| *other == button) else { return };
             let (name, key) = button.says();
+            // The face says which it is, where the rest say what they are.
+            let name = if button == Button::Face { FACES[self.face] } else { name };
             let line = Text::line_height(px);
             let (name_width, key_width) = (self.text.width(name, px), self.text.width(key, px));
             let width = name_width + key_width + 3 * pad;
@@ -1637,6 +1850,13 @@ impl Editor {
     /// The picture that is taken: what is selected, with what was drawn
     /// on it, and nothing of the interface.
     ///
+    /// What is in hand now, as settings to begin with next time: the
+    /// colour, the width of line, how round a rectangle's corners and
+    /// the picture's are, whether shapes are filled, and the face.
+    pub fn in_hand(&self) -> Settings {
+        Settings { color: self.color, size: self.size, corners: self.corners, filled: self.filled, face: self.face, ..self.settings.clone() }
+    }
+
     /// The last of the three says whether its corners are rounded: then
     /// the top byte of each pixel is how opaque it is, which outside the
     /// curve of a corner is not at all.
@@ -1650,10 +1870,7 @@ impl Editor {
             // already in the right place, and then cut out of it.
             let mut whole = self.shot.pixels.to_vec();
             let mut canvas = Canvas::new(&mut whole, self.shot.width, self.shot.height);
-            canvas.set_clip(selection);
-            for shape in &self.shapes {
-                shape.draw(&mut canvas, &mut self.text);
-            }
+            shapes::paint(&self.shapes, &mut canvas, &mut self.text, selection);
             canvas::crop(&whole, self.shot.width, selection)
         };
         let round = self.corner_radius();
@@ -1970,6 +2187,91 @@ mod tests {
     }
 
     #[test]
+    fn lines_are_reshaped_by_their_ends_and_shapes_copied_and_picked_out_by_a_box() {
+        let ctrl = Mods { shift: false, ctrl: true };
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('a'), PLAIN);
+        drag(&mut editor, (200, 200), (400, 300));
+        // An arrow picked out has its two ends, and no box to be resized
+        // by: its head is taken elsewhere, and its tail stays.
+        assert_eq!(editor.ends(0), [(0, (201, 201)), (1, (401, 301))]);
+        assert_eq!(editor.target_at((400, 300)), Target::End(1));
+        drag(&mut editor, (400, 300), (500, 250));
+        assert_eq!(editor.shapes[0].points, [(200.5, 200.5), (500.5, 250.5)]);
+
+        // Ctrl+D is a copy of it, a little down and to the right, and
+        // the copy is what is picked out.
+        editor.key(Key::Char('d'), ctrl);
+        assert_eq!((editor.shapes.len(), editor.selected.clone()), (2, vec![1]));
+        assert_eq!(editor.shapes[1].points[0], (213.5, 213.5));
+
+        // A box dragged out with Shift held picks out what it touches.
+        editor.key(Key::Escape, PLAIN);
+        click(&mut editor, (800, 650), 9000);
+        assert!(editor.selected.is_empty());
+        editor.pointer_moved(150, 150, Mods { shift: true, ctrl: false });
+        editor.pressed(20_000);
+        editor.pointer_moved(600, 400, Mods { shift: true, ctrl: false });
+        editor.released();
+        assert_eq!((editor.selected.clone(), editor.selection()), (vec![0, 1], Some(Rect::new(100, 100, 800, 600))));
+    }
+
+    #[test]
+    fn a_spotlight_darkens_all_of_the_picture_but_what_it_is_on() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('s'), PLAIN);
+        drag(&mut editor, (150, 150), (350, 250));
+        // An arrow drawn after it is as bright as ever, outside it too.
+        editor.key(Key::Char('a'), PLAIN);
+        drag(&mut editor, (500, 600), (700, 600));
+        let (area, pixels, _) = editor.result().unwrap();
+        let at = |x: i32, y: i32| pixels[((y - area.y) * area.w + x - area.x) as usize] & 0xFFFFFF;
+        // In the white window: lit inside the spotlight, dark outside.
+        assert_eq!((at(250, 200), at(400, 400)), (0xF4F4F4, 0x5B5B5B));
+        assert_eq!(at(600, 600), RED);
+    }
+
+    #[test]
+    fn text_is_typed_into_anywhere_in_it_and_pasted_into() {
+        let ctrl = Mods { shift: false, ctrl: true };
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('t'), PLAIN);
+        click(&mut editor, (300, 300), 0);
+        for key in [Key::Char('a'), Key::Char('c'), Key::Left, Key::Char('b'), Key::End, Key::Enter, Key::Char('x'), Key::Char('y'), Key::Char('z')] {
+            editor.key(key, PLAIN);
+        }
+        assert_eq!(editor.shapes[0].text, "abc\nxyz");
+        // Up keeps as far along the line; Home and Delete, Backspace.
+        for key in [Key::Left, Key::Up, Key::Char('!'), Key::Home, Key::Delete, Key::Down, Key::Right, Key::Backspace] {
+            editor.key(key, PLAIN);
+        }
+        assert_eq!(editor.shapes[0].text, "b!c\nyz");
+        // Ctrl+V asks for what is on the clipboard, which goes in at the
+        // caret, less anything that is not text.
+        assert_eq!(editor.key(Key::Char('v'), ctrl), Outcome::Paste);
+        editor.paste("1\r\n2\t");
+        assert_eq!(editor.shapes[0].text, "b!c\n1\n2yz");
+        // A click in the text puts the caret there: at its very start.
+        let (x, y) = (editor.shapes[0].points[0].0 as i32, editor.shapes[0].points[0].1 as i32);
+        click(&mut editor, (x + 1, y + 5), 30_000);
+        editor.key(Key::Char('>'), PLAIN);
+        assert_eq!(editor.shapes[0].text, ">b!c\n1\n2yz");
+
+        // G goes through the faces, for this text and what is typed
+        // after; and what is in hand is what is kept for next time.
+        editor.key(Key::Enter, ctrl);
+        editor.key(Key::Char('g'), PLAIN);
+        editor.key(Key::Char('g'), PLAIN);
+        assert_eq!((editor.shapes[0].face, FACES[editor.in_hand().face]), (2, "Architects Daughter"));
+        let narrow = editor.shapes[0].bounds(&mut editor.text).w;
+        editor.key(Key::Char('g'), PLAIN);
+        assert_ne!(editor.shapes[0].bounds(&mut editor.text).w, narrow);
+    }
+
+    #[test]
     fn the_buttons_of_the_bar_do_what_their_keys_do() {
         let mut editor = editor(1600, 900);
         assert_eq!(editor.key(Key::Enter, PLAIN), Outcome::Continue);
@@ -2084,5 +2386,36 @@ mod tests {
         write(&mut editor, "9-rounded");
         let (area, pixels, rounded) = editor.result().unwrap();
         std::fs::write(dir.join("10-result.png"), crate::output::encode(area.w as u32, area.h as u32, &pixels, rounded).unwrap()).unwrap();
+
+        // A spotlight, an arrow picked out, and a line in each face.
+        let mut editor = self::editor(width, height);
+        editor.pointer_moved(8 * unit, 6 * unit, PLAIN);
+        editor.pressed(0);
+        editor.pointer_moved(130 * unit, 90 * unit, PLAIN);
+        editor.released();
+        editor.key(Key::Char('s'), PLAIN);
+        editor.pointer_moved(14 * unit, 12 * unit, PLAIN);
+        editor.pressed(1000);
+        editor.pointer_moved(66 * unit, 44 * unit, PLAIN);
+        editor.released();
+        for face in 0..FACES.len() as i32 {
+            editor.key(Key::Char('t'), PLAIN);
+            editor.pointer_moved(76 * unit, (56 + face * 7) * unit, PLAIN);
+            editor.pressed(5000 + face as u32 * 1000);
+            editor.released();
+            for letter in format!("{} 0123 fi -> ok", FACES[face as usize]).chars() {
+                editor.key(Key::Char(letter), PLAIN);
+            }
+            editor.key(Key::Enter, Mods { shift: false, ctrl: true });
+            editor.key(Key::Char('g'), PLAIN);
+        }
+        editor.key(Key::Char('a'), PLAIN);
+        editor.pointer_moved(100 * unit, 40 * unit, PLAIN);
+        editor.pressed(20_000);
+        editor.pointer_moved(70 * unit, 30 * unit, PLAIN);
+        editor.released();
+        let face = button(&mut editor, Button::Face);
+        editor.pointer_moved(face.0, face.1, PLAIN);
+        write(&mut editor, "11-spotlight-faces");
     }
 }

@@ -35,6 +35,7 @@ PICKS = {
     "PIPETTE": "pipette", "UNDO": "undo-left", "REDO": "undo-right", "COPY": "copy",
     "SAVE": "diskette", "CLOSE": "close", "CHECK": "check", "TRASH": "trash-bin-minimalistic",
     "PIN": "pin", "MARKER": "paint-roller", "MONITOR": "monitor", "FOLDER": "folder",
+    "SPOTLIGHT": "flashlight-on",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'

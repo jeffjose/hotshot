@@ -73,14 +73,21 @@ pub fn save(dir: &Path, template: &str, png: &[u8]) -> Result<PathBuf, String> {
 /// Where the area last taken is kept: `$HOTSHOT_STATE`, or `hotshot`
 /// under `$XDG_STATE_HOME` or `~/.local/state`.
 fn last_file() -> Option<PathBuf> {
+    state_file("last")
+}
+
+/// A file of what hotshot keeps from one run to the next, by its name:
+/// in `$HOTSHOT_STATE`, or `hotshot` under `$XDG_STATE_HOME` or
+/// `~/.local/state`.
+pub fn state_file(name: &str) -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("HOTSHOT_STATE") {
-        return Some(PathBuf::from(dir).join("last"));
+        return Some(PathBuf::from(dir).join(name));
     }
     let base = std::env::var_os("XDG_STATE_HOME")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
         .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local/state")))?;
-    Some(base.join("hotshot/last"))
+    Some(base.join("hotshot").join(name))
 }
 
 /// The area the last picture was of, for `--again`.

@@ -28,6 +28,7 @@ pub mod icons {
     pub const SAVE: &str = "\u{e00e}";
     pub const CLOSE: &str = "\u{e00f}";
     pub const FILLED: &str = "\u{e015}";
+    pub const SPOTLIGHT: &str = "\u{e016}";
 }
 
 const FONT_PATHS: &[&str] = &[
@@ -44,18 +45,32 @@ const FONT_PATHS: &[&str] = &[
 /// Which font the icons are, where the others are counted from 0.
 const ICONS: usize = usize::MAX;
 
+/// The faces text can be typed in, by what each is called. The first is
+/// the one the interface itself is in.
+pub const FACES: [&str; 4] = ["Geist", "Instrument Serif", "Architects Daughter", "Fira Code"];
+
+/// The files of the faces after the first.
+const FACE_FILES: [&[u8]; 3] = [
+    include_bytes!("../assets/InstrumentSerif-Regular.ttf"),
+    include_bytes!("../assets/ArchitectsDaughter-Regular.ttf"),
+    include_bytes!("../assets/FiraCode-Regular.ttf"),
+];
+
 /// Text rendering with the font hotshot carries. Loading it takes a few
 /// milliseconds, so it is done on a thread of its own while the screen
 /// is being read.
 pub struct Text {
     font: Option<fontdue::Font>,
     icons: Option<fontdue::Font>,
+    /// The faces after the first, each read the first time something is
+    /// to be drawn in it: most pictures have no text on them at all.
+    faces: [Option<fontdue::Font>; 3],
     /// Fonts for the letters the main one lacks, Korean say, each found
     /// through fontconfig the first time such a letter is typed.
     others: Vec<fontdue::Font>,
     /// Letters a font has been looked for, so each is only asked about once.
     sought: HashSet<char>,
-    glyphs: HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>,
+    glyphs: HashMap<(usize, char, u32), (fontdue::Metrics, Vec<u8>)>,
 }
 
 impl Text {
@@ -72,21 +87,33 @@ impl Text {
             eprintln!("hotshot: no usable font found, text will not be drawn (set HOTSHOT_FONT to a .ttf file)");
         }
         let icons = load(include_bytes!("../assets/icons.ttf").to_vec());
-        Text { font, icons, others: Vec::new(), sought: HashSet::new(), glyphs: HashMap::new() }
+        Text { font, icons, faces: [None, None, None], others: Vec::new(), sought: HashSet::new(), glyphs: HashMap::new() }
     }
 
     pub fn line_height(px: u32) -> i32 {
         (px * 4 / 3) as i32
     }
 
-    /// Which font has letter `c`: 0 for the main one, otherwise one of the
-    /// others, counted from 1. Looks for a font that has it if none does.
-    fn font_with(&mut self, c: char) -> usize {
+    /// Which font has letter `c`, for text in a face: 0 for the main
+    /// one, otherwise one of the others, counted from 1, or the face
+    /// itself, counted back from the icons. Looks for a font that has
+    /// the letter if none does.
+    fn font_with(&mut self, c: char, face: usize) -> usize {
         // The icons have a font, and a part of Unicode, to themselves.
         if ('\u{e000}'..='\u{f8ff}').contains(&c) {
             return ICONS;
         }
         let has = |font: &fontdue::Font| font.lookup_glyph_index(c) != 0;
+        // A face has the letters it has; the rest are the main font's.
+        if (1..=FACE_FILES.len()).contains(&face) {
+            let slot = &mut self.faces[face - 1];
+            if slot.is_none() {
+                *slot = fontdue::Font::from_bytes(FACE_FILES[face - 1], fontdue::FontSettings::default()).ok();
+            }
+            if slot.as_ref().is_some_and(has) {
+                return ICONS - face;
+            }
+        }
         if self.font.as_ref().is_none_or(has) || c.is_control() {
             return 0;
         }
@@ -106,6 +133,7 @@ impl Text {
         match which {
             0 => self.font.as_ref(),
             ICONS => self.icons.as_ref(),
+            face if face >= ICONS - FACE_FILES.len() => self.faces[ICONS - face - 1].as_ref(),
             other => self.others.get(other - 1),
         }
     }
@@ -117,9 +145,14 @@ impl Text {
     }
 
     pub fn width(&mut self, text: &str, px: u32) -> i32 {
+        self.width_in(0, text, px)
+    }
+
+    /// How wide text is in one of the faces.
+    pub fn width_in(&mut self, face: usize, text: &str, px: u32) -> i32 {
         let mut width = 0.0;
         for c in text.chars() {
-            let which = self.font_with(c);
+            let which = self.font_with(c, face);
             width += self.font(which).map_or(0.0, |font| font.metrics(c, Self::size(which, px)).advance_width);
         }
         width.ceil() as i32
@@ -127,7 +160,15 @@ impl Text {
 
     /// Draws one line of text whose line box has its top-left at `(x, y)`.
     pub fn draw(&mut self, canvas: &mut Canvas, x: i32, y: i32, px: u32, color: u32, text: &str) {
-        let Some(font) = &self.font else { return };
+        self.draw_in(0, canvas, x, y, px, color, text);
+    }
+
+    /// Draws one line of text in one of the faces.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_in(&mut self, face: usize, canvas: &mut Canvas, x: i32, y: i32, px: u32, color: u32, text: &str) {
+        // The line stands where the face it is in would have it stand.
+        let standing = self.font_with('x', face);
+        let Some(font) = self.font(standing).or(self.font.as_ref()) else { return };
         let (ascent, descent) = font
             .horizontal_line_metrics(px as f32)
             .map_or((px as f32 * 0.8, px as f32 * -0.2), |m| (m.ascent, m.descent));
@@ -135,13 +176,13 @@ impl Text {
 
         let mut pen = x as f32;
         for c in text.chars() {
-            if !self.glyphs.contains_key(&(c, px)) {
-                let which = self.font_with(c);
+            if !self.glyphs.contains_key(&(face, c, px)) {
+                let which = self.font_with(c, face);
                 let Some(font) = self.font(which) else { continue };
                 let glyph = font.rasterize(c, Self::size(which, px));
-                self.glyphs.insert((c, px), glyph);
+                self.glyphs.insert((face, c, px), glyph);
             }
-            let (metrics, coverage) = &self.glyphs[&(c, px)];
+            let (metrics, coverage) = &self.glyphs[&(face, c, px)];
             let left = pen.round() as i32 + metrics.xmin;
             // An icon sits in the middle of the line, whatever its font
             // takes for a baseline; letters stand on the text's.

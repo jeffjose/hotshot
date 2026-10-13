@@ -66,9 +66,11 @@ With an area selected, a bar of tools appears beside it:
 | `A` `L` | arrow, line |
 | `R` `O` | rectangle (rounded), oval; `F` fills them |
 | `P` `H` | pen, marker |
-| `T` | text: click and type; Enter is a new line, Ctrl+Enter or Esc ends it |
+| `T` | text: click and type; Enter is a new line, Ctrl+Enter or Esc ends it; arrows, Home, End and a click move the caret, Ctrl+V pastes |
+| `G` | the next font: Geist, Instrument Serif, Architects Daughter, Fira Code |
 | `N` | counter: numbered discs, dragged to point at something |
 | `B` | blur: a mosaic over what should not be read |
+| `S` | spotlight: everything but a rectangle of the picture darkened |
 | `C` `I` | the colours, 24 of Radix's; pick a colour off the screen |
 | `K` | round the corners of the picture itself: 8, 16, 28 pixels, none; or drag the dot inside a corner of the selection |
 | `1`-`4`, wheel | width of line, and size of text |
@@ -78,9 +80,16 @@ in Figma: drag it to move it, drag a handle of its box to resize it, and
 on a rectangle drag the dot inside a corner to round its corners. The
 pointer over any other shape shows that one's box, and a click picks it
 out; Shift or Ctrl with a click picks out several, to be moved,
-recoloured or deleted together. Only the pen, the marker and the counter
-stay in hand: the first two for the next stroke, the counter for
-putting down 1, 2, 3 one after another.
+recoloured or deleted together, and with a drag from empty space picks
+out all that a box touches. A line or an arrow picked out has a dot at
+each end, and is reshaped by either. **Ctrl+D** is a copy of what is
+picked out. Only the pen, the marker and the counter stay in hand: the
+first two for the next stroke, the counter for putting down 1, 2, 3 one
+after another.
+
+The colour, width of line, roundness, fill and font in hand when hotshot
+is closed are the ones in hand when it is next opened; `--no-remember`,
+or `remember = false`, begins with what the config file says every time.
 
 **Enter** or a double click copies the picture to the clipboard,
 **Ctrl+C** copies, **Ctrl+S** saves to `~/Pictures/Screenshots` and
@@ -152,9 +161,13 @@ behind to keep it. It goes when something else is copied.
 - A tray icon, and anything else that stays running.
 - Formats other than PNG.
 
-## Icons and font
+## Icons and fonts
 
 The icons are [Solar](https://www.figma.com/community/file/1166831539721848736)'s
 (CC BY 4.0), drawn at a heavier line and gathered into a font by
 `tools/icon_font.py`, with a few plain shapes added in the same manner.
-The font is [Geist](https://vercel.com/font) (SIL Open Font License).
+The interface is in [Geist](https://vercel.com/font). Text can also be
+typed in [Instrument Serif](https://github.com/Instrument/instrument-serif),
+[Architects Daughter](https://fonts.google.com/specimen/Architects+Daughter)
+and [Fira Code](https://github.com/tonsky/FiraCode). All four are under
+the SIL Open Font License, a copy of which is beside each in `assets`.

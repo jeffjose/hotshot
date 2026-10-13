@@ -164,6 +164,51 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Darkens an area, keeping `keep`/256 of its brightness, but for
+    /// some rectangles of it, each with corners of a radius, which are
+    /// left as they are: spotlights on what is to be looked at.
+    pub fn spotlight(&mut self, area: Rect, lit: &[(Rect, i32)], keep: u32) {
+        let part = area.intersect(self.clip);
+        if part.is_empty() {
+            return;
+        }
+        let width = self.width as usize;
+        let row = |(row, out): (usize, &mut [u32])| {
+            let y = part.y + row as i32;
+            // Dark up to each rectangle that this row crosses and after
+            // the last, taking them from the left.
+            let mut crossed: Vec<(Rect, i32)> = lit.iter().copied().filter(|(rect, _)| y >= rect.y && y < rect.bottom() && rect.w > 0).collect();
+            crossed.sort_by_key(|(rect, _)| rect.x);
+            let mut from = part.x;
+            for (rect, _) in &crossed {
+                let upto = rect.x.clamp(from, part.right());
+                out[from as usize..upto as usize].iter_mut().for_each(|pixel| *pixel = mix(0, *pixel, keep));
+                from = rect.right().clamp(from, part.right());
+            }
+            out[from as usize..part.right() as usize].iter_mut().for_each(|pixel| *pixel = mix(0, *pixel, keep));
+            // And where the row cuts a rectangle's rounded corner, dark
+            // outside the curve of it.
+            for (rect, radius) in &crossed {
+                let radius = (*radius).clamp(0, rect.w.min(rect.h) / 2);
+                if y >= rect.y + radius && y < rect.bottom() - radius {
+                    continue;
+                }
+                for x in (rect.x..rect.x + radius).chain(rect.right() - radius..rect.right()) {
+                    if x >= part.x && x < part.right() {
+                        let inside = rounded_cover(x, y, rect.x, rect.y, rect.w, rect.h, radius, 0.0);
+                        let pixel = &mut out[x as usize];
+                        *pixel = mix(mix(0, *pixel, keep), *pixel, (inside * 256.0) as u32);
+                    }
+                }
+            }
+        };
+        let rows = &mut self.pixels[part.y as usize * width..part.bottom() as usize * width];
+        match part.w as usize * part.h as usize >= SHARE {
+            true => rows.par_chunks_exact_mut(width).enumerate().for_each(row),
+            false => rows.chunks_exact_mut(width).enumerate().for_each(row),
+        }
+    }
+
     /// A filled circle about a point.
     pub fn disc(&mut self, cx: i32, cy: i32, radius: i32, color: u32, amount: u32) {
         self.round_fill(cx - radius, cy - radius, 2 * radius, 2 * radius, radius, color, amount);

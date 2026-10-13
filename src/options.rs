@@ -59,6 +59,13 @@ Look:
                              the screen all dark; bright: undarkened, which
                              is most of the screen where a window fills it;
                              off: not at all, and a click takes no window
+      --font NAME            the face text is typed in to begin with: geist
+                             (sans, the default), instrument-serif (serif),
+                             architects-daughter (hand) or fira-code (mono)
+      --filled               rectangles and ovals filled to begin with
+      --no-remember          begin with the colour, width, roundness, fill
+                             and font the config file says, not the ones
+                             in hand when hotshot was last used
 
 Other:
       --monitors             list the monitors and quit
@@ -74,14 +81,18 @@ Keys, once an area is selected:
   Enter           copy (or what -c, -s and -o say)     Esc     cancel
   Ctrl+C  copy    Ctrl+S  save    Ctrl+Z  undo    Ctrl+Shift+Z  redo
   V move   A arrow   L line   R rectangle   O oval   P pen   H marker
-  T text   N counter   B blur   C colours   I pick a colour off the screen
-  In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends it
+  T text   N counter   B blur   S spotlight   G the next font
+  C colours   I pick a colour off the screen
+  In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends
+  it; the arrows, Home, End and a click move the caret; Ctrl+V pastes
   F filled   1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
   The dot inside each corner of the selection rounds the corners of the
   picture as it is dragged in; K does it by steps, and then not at all
   What is drawn is picked out, with the move tool in hand: drag it, or a
   handle of its box to resize it, or the dot in a rectangle's corner to
-  round it. Shift or Ctrl with a click picks out several.
+  round it; a line or an arrow, by either of its ends. Shift or Ctrl with
+  a click picks out several, and with a drag from empty space all that a
+  box touches. Ctrl+D is a copy of what is picked out.
   Arrows nudge the selection, or the shape picked out; Shift by ten;
   Ctrl+arrows resize. Delete removes the shape picked out. Ctrl+A is the
   whole screen. A right click is the colours.
@@ -120,6 +131,9 @@ pub struct Options {
     pub list_monitors: bool,
     pub benchmark: bool,
     pub debug: bool,
+    /// Whether what is in hand at the end is what is in hand to begin
+    /// with next time.
+    pub remember: bool,
 }
 
 pub enum Parsed {
@@ -156,6 +170,7 @@ fn defaults() -> Options {
         list_monitors: false,
         benchmark: false,
         debug: std::env::var_os("HOTSHOT_DEBUG").is_some_and(|value| !value.is_empty() && value != "0"),
+        remember: true,
     }
 }
 
@@ -180,7 +195,7 @@ fn short_flag(flag: char) -> Option<&'static str> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows"].contains(&name)
+    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -218,6 +233,15 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "dim" => options.settings.dim = (number(value()?, "dim")? as u32).min(100),
         "magnifier" => options.settings.magnifier = true,
         "no-magnifier" => options.settings.magnifier = false,
+        "remember" => options.remember = true,
+        "no-remember" => options.remember = false,
+        "filled" => options.settings.filled = true,
+        "no-filled" => options.settings.filled = false,
+        "font" => {
+            let text = value()?;
+            let wanted = text.to_lowercase().replace(' ', "-");
+            options.settings.face = FACE_NAMES.iter().position(|names| names.contains(&wanted.as_str())).ok_or(format!("invalid font '{text}', expected geist, instrument-serif, architects-daughter or fira-code (or sans, serif, hand, mono)"))?;
+        }
         "windows" => {
             let text = value()?;
             options.settings.windows = match text.as_str() {
@@ -242,6 +266,29 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         _ => return Err(format!("unknown option {name}")),
     }
     Ok(())
+}
+
+/// The names the faces go by in the config file and on the command
+/// line, each with a shorter one for the kind of face it is.
+const FACE_NAMES: [[&str; 2]; 4] = [["geist", "sans"], ["instrument-serif", "serif"], ["architects-daughter", "hand"], ["fira-code", "mono"]];
+
+/// Keeps what is in hand, to begin with next time: written the way the
+/// config file is, so that it is read the same way.
+pub fn remember_tools(settings: &Settings) {
+    let Some(file) = crate::output::state_file("tools") else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let text = format!(
+        "color = \"{:06X}\"\nsize = {}\ncorner-radius = {}\nrounded = {}\nfilled = {}\nfont = \"{}\"\n",
+        settings.color,
+        settings.size + 1,
+        settings.radius,
+        settings.corners,
+        settings.filled,
+        FACE_NAMES[settings.face.min(FACE_NAMES.len() - 1)][0]
+    );
+    let _ = std::fs::write(file, text);
 }
 
 /// Where the config file is: under `$XDG_CONFIG_HOME`, or `~/.config`.
@@ -270,7 +317,7 @@ fn read_config(options: &mut Options, text: &str) -> Result<(), String> {
         let name = match (takes_value(name), value) {
             (true, _) => name.to_owned(),
             (false, "true") => name.to_owned(),
-            (false, "false") if name == "magnifier" => "no-magnifier".to_owned(),
+            (false, "false") if ["magnifier", "remember", "filled"].contains(&name) => format!("no-{name}"),
             (false, "false") => continue,
             (false, _) => return Err(wrong(format!("{name} is either true or false"))),
         };
@@ -284,6 +331,19 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     let file = config_file();
     if let Ok(text) = std::fs::read_to_string(&file) {
         read_config(&mut options, &text).map_err(|error| format!("{}: {error}", file.display()))?;
+    }
+    // What was in hand last time comes after the config file, which
+    // says how things are to begin with, and before the command line,
+    // which says how they are to be now. A file that cannot be read,
+    // or made sense of, is as good as none.
+    if options.remember {
+        if let Some(text) = crate::output::state_file("tools").and_then(|file| std::fs::read_to_string(file).ok()) {
+            let mut kept = defaults();
+            if read_config(&mut kept, &text).is_ok() {
+                let (now, kept) = (&mut options.settings, kept.settings);
+                (now.color, now.size, now.radius, now.corners, now.filled, now.face) = (kept.color, kept.size, kept.radius, kept.corners, kept.filled, kept.face);
+            }
+        }
     }
 
     let mut args = args.into_iter();
