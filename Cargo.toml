@@ -6,7 +6,7 @@ description = "An extremely fast screenshot and annotation tool"
 license = "MIT"
 
 [dependencies]
-x11rb = { version = "0.13", features = ["shm", "randr", "cursor"] }
+x11rb = { version = "0.14", features = ["shm", "randr", "cursor"] }
 fontdue = "0.9"
 png = "0.18"
 libc = "0.2"
