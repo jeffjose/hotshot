@@ -99,7 +99,8 @@ Keys, once an area is selected:
   Ctrl+C  copy    Ctrl+S  save    Ctrl+Z  undo    Ctrl+Shift+Z  redo
   V move   A arrow   L line   R rectangle   O oval   P pen   H marker
   T text   N counter   B blur   S spotlight   Z zoom   G the next font
-  J badges and stickers   W backdrop, room and shadow   D dashes
+  J badges   M emoji (type to search)   W backdrop, room and shadow
+  D dashes
   C colors   I pick a color off the screen
   In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends
   it; the arrows, Home, End and a click move the caret; Ctrl+V pastes;

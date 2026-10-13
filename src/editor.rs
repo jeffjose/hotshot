@@ -210,6 +210,8 @@ enum Button {
     Frame,
     /// Which folder Save saves to.
     Places,
+    /// Every emoji there is, to be searched and put on the picture.
+    Emoji,
 }
 
 /// What can be put on the picture ready-made: a word on a pill of a
@@ -235,7 +237,15 @@ const BADGE_HUES: [(u32, u32); 8] = [
 ];
 
 /// The emoji there are to put on it, as stickers.
-const STICKERS: [&str; 16] = ["✅", "❌", "⚠\u{fe0f}", "❓", "👍", "👎", "🔥", "⭐", "🐛", "💡", "👀", "🎉", "❤\u{fe0f}", "🚀", "👉", "👆"];
+fn emoji() -> &'static [(&'static str, &'static str)] {
+    static LIST: std::sync::OnceLock<Vec<(&'static str, &'static str)>> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| include_str!("../assets/emoji.txt").lines().filter(|line| !line.starts_with('#')).filter_map(|line| line.split_once('\t')).collect())
+}
+
+/// How many emoji there are across the box they are chosen from, and
+/// how many rows of them show at once.
+const EMOJI_ACROSS: i32 = 10;
+const EMOJI_DOWN: i32 = 7;
 
 /// A thing to be chosen in a box that hangs from the bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -244,7 +254,8 @@ enum Cell {
     Word(usize),
     /// A badge in one of its looks and hues: eight hues to a look.
     Badge(usize),
-    Sticker(usize),
+    /// An emoji: which of those the search has found.
+    Emoji(usize),
     /// What the picture is set on: nothing, or one of the gradients
     /// counted from 1.
     Backdrop(usize),
@@ -275,6 +286,7 @@ const GROUPS: [&[Button]; 5] = [
         Button::Tool(Tool::Spotlight),
         Button::Tool(Tool::Zoom),
         Button::Badges,
+        Button::Emoji,
     ],
     &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill, Button::Face],
     &[Button::Undo, Button::Redo],
@@ -298,7 +310,8 @@ impl Button {
             Button::Tool(Tool::Blur) => ("Blur", "B"),
             Button::Tool(Tool::Spotlight) => ("Spotlight", "S"),
             Button::Tool(Tool::Zoom) => ("Zoom", "Z"),
-            Button::Tool(Tool::Badge) | Button::Badges => ("Badges and stickers", "J"),
+            Button::Tool(Tool::Badge) | Button::Badges => ("Badges", "J"),
+            Button::Emoji => ("Emoji", "M"),
             Button::Color => ("Color", "C"),
             Button::Size(0) => ("Thin", "1"),
             Button::Size(1) => ("Medium", "2"),
@@ -331,6 +344,7 @@ impl Button {
             Button::Tool(Tool::Spotlight) => icons::SPOTLIGHT,
             Button::Tool(Tool::Zoom) => icons::ZOOM,
             Button::Tool(Tool::Badge) | Button::Badges => icons::BADGE,
+            Button::Emoji => icons::STICKER,
             Button::Fill => icons::FILLED,
             Button::Undo => icons::UNDO,
             Button::Redo => icons::REDO,
@@ -430,6 +444,9 @@ struct Layout {
     cells: Vec<(Rect, Cell)>,
     /// Where in that box the picture is shown as it will be, framed.
     look: Option<Rect>,
+    /// The line to type a search in, and the line a name is said on.
+    field: Option<Rect>,
+    caption: Option<Rect>,
 }
 
 pub struct Editor {
@@ -493,6 +510,10 @@ pub struct Editor {
     surround: Option<(String, i32, Vec<u32>)>,
     /// Which of the words the next badge says.
     word: usize,
+    /// What has been typed to look for emoji by, and how many rows
+    /// down them the box is.
+    query: String,
+    scroll: i32,
     /// Where the edges of the windows and the monitors are, across and
     /// down: what an edge of the selection goes to when it is near.
     edges: (Vec<i32>, Vec<i32>),
@@ -583,6 +604,8 @@ impl Editor {
             look: None,
             surround: None,
             word: 0,
+            query: String::new(),
+            scroll: 0,
             size: settings.size.min(STROKES.len() - 1),
             settings,
             text,
@@ -793,6 +816,25 @@ impl Editor {
                     }
                     (across, look + pad + 2 * side)
                 }
+                // Every emoji there is, or those whose names have in
+                // them what has been typed: a line to type in, as many
+                // rows of them as show at once, and under those the
+                // name of the one the pointer is on.
+                Button::Emoji => {
+                    let across = EMOJI_ACROSS * side;
+                    layout.field = Some(Rect::new(0, 0, across, side));
+                    let found = self.emoji_found();
+                    let top = side + pad / 2;
+                    for at in 0..EMOJI_ACROSS * EMOJI_DOWN {
+                        let index = (self.scroll * EMOJI_ACROSS + at) as usize;
+                        if index < found.len() {
+                            cells.push((Rect::new(at % EMOJI_ACROSS * side, top + at / EMOJI_ACROSS * side, side, side), Cell::Emoji(index)));
+                        }
+                    }
+                    let line = Text::line_height(px);
+                    layout.caption = Some(Rect::new(0, top + EMOJI_DOWN * side + pad / 4, across, line));
+                    (across, top + EMOJI_DOWN * side + pad / 4 + line)
+                }
                 // Where Save saves to: the folders the config file
                 // names, one to a row.
                 Button::Places => {
@@ -826,12 +868,7 @@ impl Editor {
                     for index in 0..(shapes::BADGE_STYLES as i32 * hues) {
                         cells.push((Rect::new(index % hues * each, y + index / hues * side, each, side), Cell::Badge(index as usize)));
                     }
-                    y += shapes::BADGE_STYLES as i32 * side + pad / 2;
-                    let row = across / side;
-                    for index in 0..STICKERS.len() as i32 {
-                        cells.push((Rect::new(index % row * side, y + index / row * side, side, side), Cell::Sticker(index as usize)));
-                    }
-                    (across, y + (STICKERS.len() as i32 + row - 1) / row * side)
+                    (across, y + shapes::BADGE_STYLES as i32 * side)
                 }
             };
             let (width, height) = (across + 2 * margin, down + 2 * margin);
@@ -841,6 +878,8 @@ impl Editor {
             let flyout = Rect::new(button.x + button.w / 2 - width / 2, top, width, height).kept_within(monitor.inflate(-pad));
             layout.cells = cells.into_iter().map(|(rect, cell)| (rect.moved(flyout.x + margin, flyout.y + margin), cell)).collect();
             layout.look = layout.look.map(|look| look.moved(flyout.x + margin, flyout.y + margin));
+            layout.field = layout.field.map(|field| field.moved(flyout.x + margin, flyout.y + margin));
+            layout.caption = layout.caption.map(|caption| caption.moved(flyout.x + margin, flyout.y + margin));
             layout.flyout = Some(flyout);
         }
         layout
@@ -1480,6 +1519,13 @@ impl Editor {
 
     /// The wheel: a thicker line, or a thinner.
     pub fn scrolled(&mut self, up: bool) {
+        // With the emoji open, it is the emoji that go up and down.
+        if self.flyout == Some(Button::Emoji) {
+            let rows = (self.emoji_found().len() as i32 + EMOJI_ACROSS - 1) / EMOJI_ACROSS;
+            self.scroll = (self.scroll + if up { -2 } else { 2 }).clamp(0, (rows - EMOJI_DOWN).max(0));
+            self.dirty = true;
+            return;
+        }
         if self.selection.is_some() {
             let size = if up { (self.size + 1).min(STROKES.len() - 1) } else { self.size.saturating_sub(1) };
             self.set_size(size);
@@ -1491,6 +1537,21 @@ impl Editor {
     pub fn key(&mut self, key: Key, mods: Mods) -> Outcome {
         self.dirty = true;
         self.mods = mods;
+        // With the emoji open, what is typed is what is looked for
+        // among their names; Enter takes the first found, and the
+        // arrows go up and down them.
+        if self.flyout == Some(Button::Emoji) && !mods.ctrl {
+            match key {
+                Key::Char(letter) => (self.query, self.scroll) = (format!("{}{letter}", self.query), 0),
+                Key::Backspace => (self.scroll, _) = (0, self.query.pop()),
+                Key::Up => self.scrolled(true),
+                Key::Down => self.scrolled(false),
+                Key::Enter => self.choose(Cell::Emoji(0)),
+                Key::Escape => self.flyout = None,
+                _ => {}
+            }
+            return Outcome::Continue;
+        }
         // While text is being typed, Enter is a new line of it; Ctrl+Enter,
         // or Esc, is the end of it, and takes no picture.
         if let (Some(_), Key::Enter, true) = (self.editing, key, mods.ctrl) {
@@ -1629,7 +1690,8 @@ impl Editor {
                 'r' => self.set_tool(Tool::Rect),
                 'o' | 'e' => self.set_tool(Tool::Ellipse),
                 'p' => self.set_tool(Tool::Pen),
-                'h' | 'm' => self.set_tool(Tool::Marker),
+                'h' => self.set_tool(Tool::Marker),
+                'm' => drop(self.activate(Button::Emoji)),
                 't' => self.set_tool(Tool::Text),
                 'n' => self.set_tool(Tool::Counter),
                 'b' => self.set_tool(Tool::Blur),
@@ -1738,7 +1800,8 @@ impl Editor {
                 }
                 texts.iter().for_each(|&index| self.shapes[index].face = self.face);
             }
-            Button::Badges | Button::Frame | Button::Places => {
+            Button::Badges | Button::Frame | Button::Places | Button::Emoji => {
+                (self.query, self.scroll) = (String::new(), 0);
                 self.commit_text();
                 self.popup = None;
                 self.flyout = if self.flyout == Some(button) { None } else { Some(button) };
@@ -1852,9 +1915,9 @@ impl Editor {
             }
             Cell::Place(place) => (self.place, self.flyout) = (place, None),
             Cell::Word(word) => self.word = word,
-            Cell::Badge(_) | Cell::Sticker(_) => {}
+            Cell::Badge(_) | Cell::Emoji(_) => {}
         }
-        if !matches!(cell, Cell::Badge(_) | Cell::Sticker(_)) {
+        if !matches!(cell, Cell::Badge(_) | Cell::Emoji(_)) {
             return;
         }
         self.checkpoint();
@@ -1868,9 +1931,10 @@ impl Editor {
                 shape.number = (index / BADGE_HUES.len()) as u32;
                 shape
             }
-            Cell::Sticker(index) => {
+            Cell::Emoji(index) => {
+                let Some(&which) = self.emoji_found().get(index) else { return };
                 let mut shape = Shape::new(Tool::Text, self.color, stroke, (0.0, 0.0));
-                (shape.text, shape.font_px) = (STICKERS[index].to_owned(), font_px * 2);
+                (shape.text, shape.font_px) = (emoji()[which].0.to_owned(), font_px * 2);
                 shape
             }
             _ => return,
@@ -1899,6 +1963,14 @@ impl Editor {
             self.look = None;
         }
         self.dirty = true;
+    }
+
+    /// The emoji whose names have in them every word typed, by their
+    /// places in the list of them all; all of them, with nothing typed.
+    fn emoji_found(&self) -> Vec<usize> {
+        let typed = self.query.to_lowercase();
+        let words: Vec<&str> = typed.split_whitespace().collect();
+        emoji().iter().enumerate().filter(|(_, (_, name))| words.iter().all(|word| name.contains(word))).map(|(index, _)| index).collect()
     }
 
     /// How far outside the selection a point is: by whichever of its
@@ -2222,7 +2294,11 @@ impl Editor {
                         let pill = Rect::new(inner.x, cy - high / 2, inner.w, high);
                         shapes::draw_badge(&mut canvas, &mut self.text, pill, index / BADGE_HUES.len(), solid, soft, 0, px, "Ab");
                     }
-                    Cell::Sticker(index) => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, STICKERS[index]),
+                    Cell::Emoji(index) => {
+                        if let Some(&which) = self.emoji_found().get(index) {
+                            self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, emoji()[which].0);
+                        }
+                    }
                     // No backdrop: an empty square with a line through it.
                     Cell::Backdrop(0) => {
                         canvas.round_outline(inner.x, inner.y, inner.w, inner.h, pad / 2, 1, DIM_TEXT_COLOR);
@@ -2278,6 +2354,33 @@ impl Editor {
             if let Some(room) = layout.look {
                 canvas.round_fill(room.x, room.y, room.w, room.h, pad / 2, 0x101010, 256);
                 self.draw_look(&mut canvas, room);
+            }
+            // The line a search is typed in: what has been typed and a
+            // caret after it, or what there is to do.
+            if let Some(field) = layout.field {
+                let inner = field.inflate(-(px as i32 / 6).max(2));
+                canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0x111111, 256);
+                let line = inner.y + (inner.h - Text::line_height(px)) / 2;
+                match self.query.is_empty() {
+                    true => self.text.draw(&mut canvas, inner.x + pad, line, px, DIM_TEXT_COLOR, "Type to search"),
+                    false => {
+                        let typed = self.query.clone();
+                        self.text.draw(&mut canvas, inner.x + pad, line, px, TEXT_COLOR, &typed);
+                    }
+                }
+                let after = if self.query.is_empty() { 0 } else { self.text.width(&self.query, px) };
+                canvas.fill(inner.x + pad + after + 1, line + 2, 2, Text::line_height(px) - 4, accent);
+            }
+            // The name of the emoji the pointer is on, or how many
+            // there are to choose from.
+            if let Some(caption) = layout.caption {
+                let found = self.emoji_found();
+                let says = match self.hover {
+                    Target::Cell(Cell::Emoji(index)) => found.get(index).map_or(String::new(), |&which| emoji()[which].1.to_owned()),
+                    _ if found.is_empty() => "None by that name".to_owned(),
+                    _ => format!("{} emoji; the wheel goes through them", found.len()),
+                };
+                self.text.draw(&mut canvas, caption.x + pad / 2, caption.y, px, DIM_TEXT_COLOR, &says);
             }
         }
         if self.selection.is_none() && !matches!(self.drag, Drag::Select { begun: true, .. }) {
@@ -2987,6 +3090,35 @@ mod tests {
     }
 
     #[test]
+    fn emoji_are_searched_by_name_scrolled_and_put_on_the_picture() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (300, 200), (900, 600));
+        editor.key(Key::Char('m'), PLAIN);
+        assert_eq!((editor.flyout, editor.emoji_found().len()), (Some(Button::Emoji), emoji().len()));
+        assert!(emoji().len() > 1300);
+        // The wheel goes down them, and no further up than the top.
+        editor.scrolled(false);
+        assert_eq!(editor.scroll, 2);
+        editor.scrolled(true);
+        editor.scrolled(true);
+        assert_eq!(editor.scroll, 0);
+        // What is typed is looked for in their names, not taken for
+        // the keys of tools; every word of it has to be there.
+        for letter in "red heart".chars() {
+            editor.key(Key::Char(letter), PLAIN);
+        }
+        let found = editor.emoji_found();
+        assert_eq!((editor.tool, found.len(), emoji()[found[0]].1), (Tool::Select, 1, "red heart"));
+        editor.key(Key::Backspace, PLAIN);
+        assert!(editor.emoji_found().len() >= 1);
+        editor.key(Key::Char('t'), PLAIN);
+        // Enter puts the first found on the picture, picked out, as
+        // text twice the size, and puts the box away.
+        editor.key(Key::Enter, PLAIN);
+        assert_eq!((editor.flyout, editor.shapes.len(), editor.shapes[0].text.as_str(), editor.selected.clone()), (None, 1, "❤\u{fe0f}", vec![0]));
+    }
+
+    #[test]
     fn the_frame_shows_round_the_selection_and_is_dragged_wider() {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (400, 300), (799, 599));
@@ -3170,7 +3302,7 @@ mod tests {
         editor.pressed(0);
         editor.pointer_moved(130 * unit, 80 * unit, PLAIN);
         editor.released();
-        for (cell, to) in [(Cell::Badge(0), (20, 14)), (Cell::Badge(11), (40, 14)), (Cell::Badge(20), (20, 22)), (Cell::Badge(29), (40, 22)), (Cell::Badge(37), (20, 30)), (Cell::Badge(46), (40, 30)), (Cell::Sticker(6), (60, 12)), (Cell::Sticker(4), (70, 12))] {
+        for (cell, to) in [(Cell::Badge(0), (20, 14)), (Cell::Badge(11), (40, 14)), (Cell::Badge(20), (20, 22)), (Cell::Badge(29), (40, 22)), (Cell::Badge(37), (20, 30)), (Cell::Badge(46), (40, 30)), (Cell::Emoji(6), (60, 12)), (Cell::Emoji(40), (70, 12))] {
             editor.word = (editor.word + 1) % BADGE_WORDS.len();
             editor.choose(cell);
             let index = editor.shapes.len() - 1;
@@ -3191,6 +3323,14 @@ mod tests {
         editor.key(Key::Escape, PLAIN);
         editor.key(Key::Char('j'), PLAIN);
         write(&mut editor, "12-badges");
+        editor.key(Key::Char('m'), PLAIN);
+        write(&mut editor, "12b-emoji");
+        for letter in "heart".chars() {
+            editor.key(Key::Char(letter), PLAIN);
+        }
+        write(&mut editor, "12c-emoji-search");
+        editor.key(Key::Escape, PLAIN);
+        editor.key(Key::Char('j'), PLAIN);
 
         // The picture set on a backdrop, with room and a shadow, as the
         // box it is chosen in shows it and as it comes out.
