@@ -216,19 +216,22 @@ enum Button {
 /// pale color, with a dot and the word in the strong one of the same
 /// hue. The hues are Radix's, its step for a tinted surface and its
 /// step for text; the look is the one envelope's badges have.
-const BADGES: [(&str, u32, u32); 12] = [
-    ("Bug", 0xFEEBE7, 0xD13415),
-    ("Fixed", 0xE6F6EB, 0x218358),
-    ("New", 0xE6F4FE, 0x0D74CE),
-    ("To do", 0xFFF7C2, 0xAB6400),
-    ("Important", 0xFFEFD6, 0xCC4E00),
-    ("Note", 0xDEF7F9, 0x107D98),
-    ("Before", 0xF0F0F0, 0x646464),
-    ("After", 0xF4F0FE, 0x6550B9),
-    ("Approved", 0xE6F6EB, 0x218358),
-    ("Rejected", 0xFEEBE7, 0xD13415),
-    ("WIP", 0xFBEBFB, 0x953EA3),
-    ("Question", 0xEDF2FE, 0x3A5BC7),
+///
+/// A badge is three things chosen apart: its word, its look, and its
+/// hue. The words are these, any of which can be typed over once it is
+/// on the picture.
+const BADGE_WORDS: [&str; 14] = ["Bug", "Fixed", "New", "To do", "Important", "Note", "Before", "After", "Approved", "Rejected", "WIP", "Question", "Beta", "Tip"];
+
+/// The hues a badge can be in: the pale of each, and its full strength.
+const BADGE_HUES: [(u32, u32); 8] = [
+    (0xFEEBE7, 0xE54D2E),
+    (0xFFEFD6, 0xF76B15),
+    (0xFFF7C2, 0xFFC53D),
+    (0xE6F6EB, 0x30A46C),
+    (0xE6F4FE, 0x0090FF),
+    (0xF4F0FE, 0x6E56CF),
+    (0xFEE9F5, 0xD6409F),
+    (0xF0F0F0, 0x8D8D8D),
 ];
 
 /// The emoji there are to put on it, as stickers.
@@ -237,6 +240,9 @@ const STICKERS: [&str; 16] = ["✅", "❌", "⚠\u{fe0f}", "❓", "👍", "👎"
 /// A thing to be chosen in a box that hangs from the bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Cell {
+    /// One of the words a badge can say.
+    Word(usize),
+    /// A badge in one of its looks and hues: eight hues to a look.
     Badge(usize),
     Sticker(usize),
     /// What the picture is set on: nothing, or one of the gradients
@@ -477,6 +483,8 @@ pub struct Editor {
     look: Option<(String, i32, i32, Vec<u32>)>,
     /// Which of the folders Save saves to.
     place: usize,
+    /// Which of the words the next badge says.
+    word: usize,
     /// Whether all of the text being typed is picked out, so that what
     /// is typed next takes its place.
     all: bool,
@@ -542,6 +550,7 @@ impl Editor {
             photo: None,
             wish: None,
             look: None,
+            word: 0,
             size: settings.size.min(STROKES.len() - 1),
             settings,
             text,
@@ -763,21 +772,31 @@ impl Editor {
                 // as far as a row goes, and the stickers in rows of
                 // eight.
                 _ => {
-                    let across = 8 * side;
+                    // The words first, to choose what it says; then every
+                    // look of it in every hue, a look to a row; then
+                    // the stickers.
+                    let hues = BADGE_HUES.len() as i32;
+                    let each = side * 3 / 2;
+                    let across = hues * each;
                     let (mut x, mut y) = (0, 0);
-                    for (index, (label, _, _)) in BADGES.iter().enumerate() {
-                        let wide = self.text.width(label, px) + px as i32 * 2 + pad;
+                    for (index, word) in BADGE_WORDS.iter().enumerate() {
+                        let wide = self.text.width(word, px) + 2 * pad;
                         if x > 0 && x + wide > across {
                             (x, y) = (0, y + side);
                         }
-                        cells.push((Rect::new(x, y, wide, side), Cell::Badge(index)));
+                        cells.push((Rect::new(x, y, wide, side), Cell::Word(index)));
                         x += wide;
                     }
                     y += side + pad / 2;
-                    for index in 0..STICKERS.len() as i32 {
-                        cells.push((Rect::new(index % 8 * side, y + index / 8 * side, side, side), Cell::Sticker(index as usize)));
+                    for index in 0..(shapes::BADGE_STYLES as i32 * hues) {
+                        cells.push((Rect::new(index % hues * each, y + index / hues * side, each, side), Cell::Badge(index as usize)));
                     }
-                    (across, y + (STICKERS.len() as i32 + 7) / 8 * side)
+                    y += shapes::BADGE_STYLES as i32 * side + pad / 2;
+                    let row = across / side;
+                    for index in 0..STICKERS.len() as i32 {
+                        cells.push((Rect::new(index % row * side, y + index / row * side, side, side), Cell::Sticker(index as usize)));
+                    }
+                    (across, y + (STICKERS.len() as i32 + row - 1) / row * side)
                 }
             };
             let (width, height) = (across + 2 * margin, down + 2 * margin);
@@ -1753,6 +1772,7 @@ impl Editor {
                 self.photo_arrived(read);
             }
             Cell::Place(place) => (self.place, self.flyout) = (place, None),
+            Cell::Word(word) => self.word = word,
             Cell::Badge(_) | Cell::Sticker(_) => {}
         }
         if !matches!(cell, Cell::Badge(_) | Cell::Sticker(_)) {
@@ -1761,10 +1781,12 @@ impl Editor {
         self.checkpoint();
         let (stroke, font_px) = (self.stroke(), self.font_px());
         let mut shape = match cell {
+            // The word in hand, in the look and the hue clicked on.
             Cell::Badge(index) => {
-                let (label, fill, ink) = BADGES[index];
-                let mut shape = Shape::new(Tool::Badge, ink, stroke, (0.0, 0.0));
-                (shape.fill, shape.text, shape.font_px) = (fill, label.to_owned(), font_px);
+                let (soft, solid) = BADGE_HUES[index % BADGE_HUES.len()];
+                let mut shape = Shape::new(Tool::Badge, solid, stroke, (0.0, 0.0));
+                (shape.fill, shape.text, shape.font_px, shape.face) = (soft, BADGE_WORDS[self.word].to_owned(), font_px, self.face);
+                shape.number = (index / BADGE_HUES.len()) as u32;
                 shape
             }
             Cell::Sticker(index) => {
@@ -2052,13 +2074,22 @@ impl Editor {
                 let (cx, cy) = rect.center();
                 match cell {
                     // As it will look on the picture, but small.
+                    // A word it can say; the one in hand is on the accent.
+                    Cell::Word(index) => {
+                        let ink = if index == self.word {
+                            canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, accent, 256);
+                            on(accent)
+                        } else {
+                            TEXT_COLOR
+                        };
+                        self.text.draw_centered(&mut canvas, cx, cy, px, ink, BADGE_WORDS[index]);
+                    }
+                    // A look of it in a hue, with two letters for words.
                     Cell::Badge(index) => {
-                        let (label, fill, ink) = BADGES[index];
+                        let (soft, solid) = BADGE_HUES[index % BADGE_HUES.len()];
                         let high = Text::line_height(px) + px as i32 / 4;
                         let pill = Rect::new(inner.x, cy - high / 2, inner.w, high);
-                        canvas.round_fill(pill.x, pill.y, pill.w, pill.h, pill.h / 3, fill, 256);
-                        canvas.disc(pill.x + px as i32 * 5 / 8, cy, (px as i32 / 5).max(2), ink, 256);
-                        self.text.draw(&mut canvas, pill.x + px as i32 * 5 / 4, cy - Text::line_height(px) / 2, px, ink, label);
+                        shapes::draw_badge(&mut canvas, &mut self.text, pill, index / BADGE_HUES.len(), solid, soft, 0, px, "Ab");
                     }
                     Cell::Sticker(index) => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, STICKERS[index]),
                     // No backdrop: an empty square with a line through it.
@@ -2927,7 +2958,8 @@ mod tests {
         editor.pressed(0);
         editor.pointer_moved(130 * unit, 80 * unit, PLAIN);
         editor.released();
-        for (cell, to) in [(Cell::Badge(0), (20, 14)), (Cell::Badge(1), (40, 14)), (Cell::Badge(7), (20, 22)), (Cell::Sticker(6), (60, 12)), (Cell::Sticker(4), (70, 12))] {
+        for (cell, to) in [(Cell::Badge(0), (20, 14)), (Cell::Badge(11), (40, 14)), (Cell::Badge(20), (20, 22)), (Cell::Badge(29), (40, 22)), (Cell::Badge(37), (20, 30)), (Cell::Badge(46), (40, 30)), (Cell::Sticker(6), (60, 12)), (Cell::Sticker(4), (70, 12))] {
+            editor.word = (editor.word + 1) % BADGE_WORDS.len();
             editor.choose(cell);
             let index = editor.shapes.len() - 1;
             let at = editor.shapes[index].points[0];

@@ -211,7 +211,10 @@ impl<'a> Canvas<'a> {
 
     /// Draws what is in one rectangle again in another, larger or
     /// smaller, each pixel a blend of the four it falls among.
-    pub fn magnify(&mut self, from: Rect, into: Rect) {
+    ///
+    /// With `round`, only as much of the second as an oval set in it
+    /// covers: a lens, not a window.
+    pub fn magnify(&mut self, from: Rect, into: Rect, round: bool) {
         let source = from.intersect(Rect::new(0, 0, self.width, self.height));
         let part = into.intersect(self.clip);
         if source.is_empty() || part.is_empty() || into.is_empty() {
@@ -224,6 +227,12 @@ impl<'a> Canvas<'a> {
         for y in part.y..part.bottom() {
             let down = ((y - into.y) as i64 * 256 * from.h as i64 / into.h as i64) as i32 + (from.y - source.y) * 256;
             for x in part.x..part.right() {
+                if round {
+                    let (dx, dy) = ((x - into.x) as f32 + 0.5 - into.w as f32 / 2.0, (y - into.y) as f32 + 0.5 - into.h as f32 / 2.0);
+                    if (dx / (into.w as f32 / 2.0)).powi(2) + (dy / (into.h as f32 / 2.0)).powi(2) > 1.0 {
+                        continue;
+                    }
+                }
                 let across = ((x - into.x) as i64 * 256 * from.w as i64 / into.w as i64) as i32 + (from.x - source.x) * 256;
                 let (sx, sy, fx, fy) = (across >> 8, down >> 8, (across & 255) as u32, (down & 255) as u32);
                 let (upper, lower) = (mix(at(sx, sy), at(sx + 1, sy), fx), mix(at(sx, sy + 1), at(sx + 1, sy + 1), fx));

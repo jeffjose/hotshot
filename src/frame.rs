@@ -211,7 +211,8 @@ mod tests {
 
     #[test]
     fn a_shadow_makes_its_own_room_and_is_darkest_under_the_picture() {
-        let picture = vec![0xFFFF_FFFFu32; 200 * 100];
+        let mut picture = vec![0x00FF_FFFFu32; 200 * 100];
+        crate::canvas::round_alpha(&mut picture, 200, 8);
         let frame = Frame { backdrop: Backdrop::None, pad: 0, shadow: true };
         let (wide, high, framed) = set(frame, &picture, 200, 100, 8, 1.0, None);
         assert_eq!((wide, high), (200 + 112, 100 + 112));

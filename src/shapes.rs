@@ -204,7 +204,7 @@ impl Shape {
         let (x, y) = (self.points[0].0.round() as i32, self.points[0].1.round() as i32);
         match self.tool {
             // After the dot at the front of a badge.
-            Tool::Badge => (x + self.font_px as i32 * 5 / 4, y + Text::line_height(self.font_px) / 6),
+            Tool::Badge => (x + badge_lead(self.number as usize, self.font_px as i32), y + Text::line_height(self.font_px) / 6),
             _ => (x, y),
         }
     }
@@ -272,7 +272,7 @@ impl Shape {
             // and room at either end.
             Tool::Badge => {
                 let line = Text::line_height(self.font_px);
-                let width = text.width_in(self.face, &self.text, self.font_px) + self.font_px as i32 * 2;
+                let width = text.width_in(self.face, &self.text, self.font_px) + badge_lead(self.number as usize, self.font_px as i32) + self.font_px as i32 * 3 / 4;
                 Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width, line + line / 3)
             }
             Tool::Zoom => {
@@ -456,30 +456,48 @@ impl Shape {
             // in the strong one, and an edge between the two.
             Tool::Badge => {
                 let place = self.bounds(text);
-                let edge = crate::canvas::mix(self.fill, self.color, 70);
-                canvas.round_fill(place.x, place.y, place.w, place.h, place.h / 3, edge, 256);
-                canvas.round_fill(place.x + 1, place.y + 1, place.w - 2, place.h - 2, place.h / 3 - 1, self.fill, 256);
-                let px = self.font_px as i32;
-                canvas.disc(place.x + px * 5 / 8, place.y + place.h / 2, (px / 5).max(2), self.color, 256);
-                let (x, y) = self.text_origin();
-                text.draw_in(self.face, canvas, x, y, self.font_px, self.color, &self.text);
+                draw_badge(canvas, text, place, self.number as usize, self.color, self.fill, self.face, self.font_px, &self.text);
             }
-            // What it is of, framed; lines from that to the larger
-            // picture of it; and the larger picture, framed, over them.
+            // What it is of, ringed; lines from that to the larger
+            // picture of it; and the larger picture, ringed, over them.
+            // Round, as a lens is, unless it is wanted square.
             Tool::Zoom => {
                 let (of, shown) = self.zoomed();
                 let thick = (self.stroke.round() as i32).max(1);
-                for (from, to) in [(of.x, of.y), (of.right(), of.y), (of.x, of.bottom()), (of.right(), of.bottom())].into_iter().zip([(shown.x, shown.y), (shown.right(), shown.y), (shown.x, shown.bottom()), (shown.right(), shown.bottom())]) {
-                    let (from, to) = ((from.0 as f32, from.1 as f32), (to.0 as f32, to.1 as f32));
+                let corners = |rect: Rect| [(rect.x, rect.y), (rect.right(), rect.y), (rect.x, rect.bottom()), (rect.right(), rect.bottom())].map(|(x, y)| (x as f32, y as f32));
+                // Square, from each corner to the same corner; round,
+                // the two lines that touch both rings on either side.
+                let lines: Vec<(Point, Point)> = match self.filled {
+                    true => corners(of).into_iter().zip(corners(shown)).collect(),
+                    false => {
+                        let (from, to) = (of.center(), shown.center());
+                        let (dx, dy) = ((to.0 - from.0) as f32, (to.1 - from.1) as f32);
+                        let far = dx.hypot(dy).max(1.0);
+                        let (nx, ny) = (-dy / far, dx / far);
+                        let edge = |rect: Rect, side: f32| ((rect.center().0 as f32) + nx * side * rect.w as f32 / 2.0, (rect.center().1 as f32) + ny * side * rect.h as f32 / 2.0);
+                        vec![(edge(of, 1.0), edge(shown, 1.0)), (edge(of, -1.0), edge(shown, -1.0))]
+                    }
+                };
+                for (from, to) in lines {
                     let reach = Rect::spanning((from.0 as i32, from.1 as i32), (to.0 as i32, to.1 as i32)).inflate(thick + 2);
                     let mut line = Mask { bounds: reach, alpha: vec![0; reach.w as usize * reach.h as usize] };
                     stamp(&mut line, from, to, self.stroke / 4.0 + 0.5);
                     canvas.mask(&line, self.color, 256);
                 }
-                canvas.magnify(of, shown);
-                let (around, about) = (of.inflate(thick), shown.inflate(thick));
-                canvas.round_outline(around.x, around.y, around.w, around.h, thick + 2, thick, self.color);
-                canvas.round_outline(about.x, about.y, about.w, about.h, thick + 4, thick, self.color);
+                canvas.magnify(of, shown, !self.filled);
+                for rect in [of, shown] {
+                    match self.filled {
+                        true => {
+                            let around = rect.inflate(thick);
+                            canvas.round_outline(around.x, around.y, around.w, around.h, thick + 3, thick, self.color);
+                        }
+                        false => {
+                            let mut ring = Shape::new(Tool::Ellipse, self.color, thick as f32, (rect.x as f32, rect.y as f32));
+                            ring.points[1] = (rect.right() as f32, rect.bottom() as f32);
+                            canvas.mask(&ring.mask(), self.color, 256);
+                        }
+                    }
+                }
             }
             Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY),
             Tool::Counter => {
@@ -509,6 +527,68 @@ impl Shape {
             }
         }
     }
+}
+
+/// How many ways a badge can look.
+pub const BADGE_STYLES: usize = 6;
+
+/// How far in from its left a badge's words begin, in one of its looks
+/// and at a size of letter: after a dot, or a bar, or nothing.
+fn badge_lead(style: usize, px: i32) -> i32 {
+    match style {
+        0 | 4 => px * 5 / 4,
+        5 => px,
+        _ => px * 3 / 4,
+    }
+}
+
+/// Draws a badge in a place: words on a patch of color, in one of six
+/// looks. `solid` is its hue at full strength and `soft` the pale of
+/// it; which of the two is under the words, and what the words are in,
+/// is the look.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_badge(canvas: &mut Canvas, text: &mut Text, place: Rect, style: usize, solid: u32, soft: u32, face: usize, px: u32, words: &str) {
+    let (high, size) = (place.h, px as i32);
+    let ink = crate::canvas::mix(solid, 0x000000, 70);
+    let dot = |canvas: &mut Canvas| canvas.disc(place.x + size * 5 / 8, place.y + high / 2, (size / 5).max(2), solid, 256);
+    let color = match style {
+        // Soft: the pale under the dark, with a dot and a faint edge.
+        0 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 3, crate::canvas::mix(soft, solid, 70), 256);
+            canvas.round_fill(place.x + 1, place.y + 1, place.w - 2, high - 2, high / 3 - 1, soft, 256);
+            dot(canvas);
+            ink
+        }
+        // Solid: the hue itself, and whichever of white and black reads on it.
+        1 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 3, solid, 256);
+            ink_on(solid)
+        }
+        // Outlined: nothing under the words but what was there.
+        2 => {
+            canvas.round_outline(place.x, place.y, place.w, high, high / 3, (size / 8).max(2), solid);
+            solid
+        }
+        // A pill: solid, with ends as round as it is tall.
+        3 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 2, solid, 256);
+            ink_on(solid)
+        }
+        // Dark: near black, with a dot of the hue.
+        4 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 3, 0x161616, 256);
+            dot(canvas);
+            0xEEEEEE
+        }
+        // A label: white, with a bar of the hue down its left side.
+        _ => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 5, solid, 256);
+            canvas.fill(place.x + size * 2 / 5, place.y, place.w - size * 2 / 5 - high / 5, high, 0xFFFFFF);
+            canvas.round_fill(place.x + place.w / 2, place.y, place.w - place.w / 2, high, high / 5, 0xFFFFFF, 256);
+            0x161616
+        }
+    };
+    text.draw_in(face, canvas, place.x + badge_lead(style, size), place.y + (high - Text::line_height(px)) / 2, px, color, words);
 }
 
 /// Where a drag from `from` should be taken to end, with Shift held:
