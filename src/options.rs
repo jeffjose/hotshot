@@ -323,20 +323,18 @@ pub fn remember_tools(settings: &Settings, save_to: Option<&std::path::Path>) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let backdrop = match settings.frame.backdrop {
-        Backdrop::Gradient(which) => GRADIENTS[which.min(GRADIENTS.len() - 1)].0.to_lowercase(),
-        _ => "none".to_owned(),
-    };
+    // Only what is drawn with is kept. What changes the picture itself,
+    // its rounded corners and the frame it is set in, is not: a plain
+    // picture is what is taken unless it is asked otherwise, this time,
+    // and one that came out framed because the last one was is a
+    // surprise nobody wants.
     let mut text = format!(
-        "color = \"{:06X}\"\nsize = {}\ncorner-radius = {}\nrounded = {}\nfilled = {}\nfont = \"{}\"\nbackdrop = \"{backdrop}\"\npadding = {}\nshadow = {}\n",
+        "color = \"{:06X}\"\nsize = {}\ncorner-radius = {}\nfilled = {}\nfont = \"{}\"\n",
         settings.color,
         settings.size + 1,
         settings.radius,
-        settings.corners,
         settings.filled,
-        FACE_NAMES[settings.face.min(FACE_NAMES.len() - 1)][0],
-        settings.frame.pad,
-        settings.frame.shadow
+        FACE_NAMES[settings.face.min(FACE_NAMES.len() - 1)][0]
     );
     if let Some(folder) = save_to {
         text += &format!("save-to = \"{}\"\n", folder.display());
@@ -395,8 +393,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
             if read_config(&mut kept, &text).is_ok() {
                 options.save_to = kept.save_to.take().or(options.save_to.take());
                 let (now, kept) = (&mut options.settings, kept.settings);
-                (now.color, now.size, now.radius, now.corners, now.filled, now.face) = (kept.color, kept.size, kept.radius, kept.corners, kept.filled, kept.face);
-                now.frame = kept.frame;
+                (now.color, now.size, now.radius, now.filled, now.face) = (kept.color, kept.size, kept.radius, kept.filled, kept.face);
             }
         }
     }
