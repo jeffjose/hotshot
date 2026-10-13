@@ -15,7 +15,12 @@ cp target/release/hotshot ~/.local/bin/
 ```
 
 Then bind `hotshot` to a key (Print, say) in your desktop's keyboard
-settings.
+settings. For it to be in the list of programs, with its icon:
+
+```sh
+cp assets/hotshot.desktop ~/.local/share/applications/
+cp assets/hotshot.svg ~/.local/share/icons/hicolor/scalable/apps/
+```
 
 ## Use
 
@@ -96,6 +101,16 @@ does running `hotshot --record` again, so one key both starts and stops.
 Recording is done by `ffmpeg`, which has to be installed; a GIF is made
 by `gifski` where that is too.
 
+## Tray
+
+`hotshot --tray` keeps an icon in the panel: a click is hotshot, and its
+menu has the other ways of starting it. It speaks the tray every
+desktop has now (StatusNotifierItem, over D-Bus): XFCE's panel, KDE's,
+waybar and the like, and GNOME with the AppIndicator extension; where
+there is none it falls back to the tray X11 has always had. Add it to
+your session's autostart to have it from login. `hotshot --menu` is the
+same menu where the pointer is, with no icon, for a key.
+
 ## Speed
 
 On a 4K display the frozen screen is showing 3 ms after launch, and
@@ -115,7 +130,9 @@ hotshot --default-config > ~/.config/hotshot/config.toml
 
 ## Not yet
 
-Wayland, and zooming in on part of a recording.
+Taking pictures under Wayland: hotshot reads the screen through X11,
+so in a Wayland session its tray icon shows and what it starts cannot
+take a picture yet. And zooming in on part of a recording.
 
 ## License
 

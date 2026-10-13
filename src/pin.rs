@@ -58,7 +58,7 @@ pub fn again(told: &[&std::ffi::OsStr]) -> Result<()> {
 }
 
 /// A PNG as pixels, each with how opaque it is in its top byte.
-fn read(bytes: &[u8]) -> Option<(i32, i32, Vec<u32>)> {
+pub fn read(bytes: &[u8]) -> Option<(i32, i32, Vec<u32>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8() | png::Transformations::ALPHA);
     let mut reader = decoder.read_info().ok()?;

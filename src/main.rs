@@ -1,6 +1,7 @@
 mod bench;
 mod canvas;
 mod clipboard;
+mod dbus;
 mod editor;
 mod frame;
 mod options;

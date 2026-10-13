@@ -18,8 +18,9 @@ use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
 
 use crate::canvas::{mix, Canvas, Rect};
+use crate::dbus::{self, Bus, Message, Value};
 use crate::options::Options;
-use crate::text::{icons, Text};
+use crate::text::Text;
 use crate::x11::{self, Display, Result};
 use crate::{pin, record};
 
@@ -141,44 +142,290 @@ pub fn menu_once(_options: &Options) -> Result<()> {
     Ok(())
 }
 
+/// hotshot's own icon, as it is carried: Solar's camera in a color and
+/// white, which reads on a dark panel and a light one alike. Made by
+/// `tools/app_icon.py`.
+const ICON: &[u8] = include_bytes!("../assets/hotshot.png");
+
 /// The icon as pixels, so wide and tall, each with how opaque it is in
-/// its top byte: the picture of a camera, in white, on nothing.
-fn icon(text: &mut Text, wide: i32, high: i32, ink: u32) -> Vec<u32> {
-    // Drawn in white on black, which leaves how bright each pixel is
-    // as how much of the icon is in it.
-    let mut pixels = vec![0u32; (wide * high) as usize];
-    let px = (wide.min(high) as f32 * 0.72).round().max(8.0) as u32;
-    text.draw_centered(&mut Canvas::new(&mut pixels, wide, high), wide / 2, high / 2, px, 0xFFFFFF, icons::CAMERA);
-    pixels.iter().map(|pixel| (pixel & 0xFF) << 24 | ink).collect()
+/// its top byte: as large as fits, in the middle, with nothing round it.
+fn icon(wide: i32, high: i32) -> Vec<u32> {
+    let Some((width, height, pixels)) = pin::read(ICON) else { return vec![0; (wide * high) as usize] };
+    let side = wide.min(high).max(1);
+    let small = pin::sized(&pixels, width, height, side, side);
+    let mut out = vec![0u32; (wide * high) as usize];
+    let (left, top) = ((wide - side) / 2, (high - side) / 2);
+    for row in 0..side {
+        out[((top + row) * wide + left) as usize..][..side as usize].copy_from_slice(&small[(row * side) as usize..][..side as usize]);
+    }
+    out
 }
 
-/// What the icon is drawn in: light on a dark panel, dark on a light
-/// one. The panel is looked at just past each corner of the icon,
-/// where it is least likely to have anything of its own.
-fn ink_for(display: &Display, window: Window, side: (i32, i32)) -> u32 {
-    let conn = &display.conn;
-    let Ok(Ok(at)) = conn.translate_coordinates(window, display.root, 0, 0).map(|cookie| cookie.reply()) else { return INK };
-    let (x, y) = (i32::from(at.dst_x), i32::from(at.dst_y));
-    let mut bright = Vec::new();
-    for (px, py) in [(x - 1, y), (x + side.0, y), (x - 1, y + side.1 - 1), (x + side.0, y + side.1 - 1)] {
-        if px < 0 || py < 0 || px >= display.width || py >= display.height {
+/// What hotshot is started again with, for something chosen.
+fn start(told: &[&str]) -> Result<()> {
+    let told: Vec<&std::ffi::OsStr> = told.iter().map(|word| word.as_ref()).collect();
+    pin::again(&told)
+}
+
+/// The name the tray's keeper goes by on the bus, where desktops have
+/// agreed on one; and where on this program the icon and its list are.
+const WATCHER: &str = "org.kde.StatusNotifierWatcher";
+const ITEM: &str = "org.kde.StatusNotifierItem";
+const MENU: &str = "com.canonical.dbusmenu";
+const ITEM_PATH: &str = "/StatusNotifierItem";
+const MENU_PATH: &str = "/MenuBar";
+/// The number the line between the choices and the last of them goes
+/// by, in the list; the choices are numbered from 1.
+const LINE: i32 = 100;
+
+/// What the icon says of itself, to whoever shows it.
+fn item_says() -> Vec<(&'static str, Value)> {
+    let pictures: Vec<Value> = [22, 24, 32, 48, 64]
+        .into_iter()
+        .map(|side| Value::Struct(vec![Value::I32(side), Value::I32(side), Value::Bytes(icon(side, side).into_iter().flat_map(u32::to_be_bytes).collect())]))
+        .collect();
+    let none = || Value::Array("(iiay)".into(), Vec::new());
+    vec![
+        ("Category", Value::text("ApplicationStatus")),
+        ("Id", Value::text("hotshot")),
+        ("Title", Value::text("hotshot")),
+        ("Status", Value::text("Active")),
+        ("WindowId", Value::I32(0)),
+        ("IconName", Value::text("")),
+        ("IconThemePath", Value::text("")),
+        ("IconPixmap", Value::Array("(iiay)".into(), pictures)),
+        ("OverlayIconName", Value::text("")),
+        ("OverlayIconPixmap", none()),
+        ("AttentionIconName", Value::text("")),
+        ("AttentionIconPixmap", none()),
+        ("AttentionMovieName", Value::text("")),
+        ("ToolTip", Value::Struct(vec![Value::text(""), none(), Value::text("hotshot"), Value::text("Take a picture of the screen, or record it")])),
+        ("ItemIsMenu", Value::Bool(false)),
+        ("Menu", Value::Path(MENU_PATH.into())),
+    ]
+}
+
+fn menu_says() -> Vec<(&'static str, Value)> {
+    vec![("Version", Value::U32(3)), ("Status", Value::text("normal")), ("TextDirection", Value::text("ltr")), ("IconThemePath", Value::Array("s".into(), Vec::new()))]
+}
+
+/// What one line of the list is, by its number: what it says, or that
+/// it is the line between.
+fn line_says(id: i32) -> Option<Value> {
+    if id == LINE {
+        return Some(Value::named(vec![("type", Value::text("separator"))]));
+    }
+    let (name, told) = CHOICES.get(usize::try_from(id - 1).ok()?)?;
+    let name = if *told == ["--record"] && record::running().is_some() { "Stop recording" } else { name };
+    Some(Value::named(vec![("label", Value::text(name)), ("enabled", Value::Bool(true)), ("visible", Value::Bool(true))]))
+}
+
+/// The numbers of the list's lines, in order: the line between comes
+/// before the last, which is the tray's own end.
+fn lines() -> Vec<i32> {
+    let mut ids: Vec<i32> = (1..=CHOICES.len() as i32).collect();
+    ids.insert(ids.len() - 1, LINE);
+    ids
+}
+
+/// Asks the tray's keeper to show the icon.
+fn register(bus: &mut Bus) -> dbus::Result<()> {
+    bus.ask(Message::call(WATCHER, "/StatusNotifierWatcher", WATCHER, "RegisterStatusNotifierItem", vec![Value::text(&bus.name.clone())])).map(|_| ())
+}
+
+/// Keeps the icon in a tray that is kept over the bus, as trays are on
+/// every desktop that has one now: whoever keeps it draws the icon and
+/// its list itself, and says here what was pressed. Until it is told
+/// to quit; an error, if the bus goes.
+fn kept(mut bus: Bus, options: &Options) -> dbus::Result<()> {
+    // Told when the tray's keeper comes back, after its panel has been
+    // started again: it has to be asked afresh.
+    let rule = format!("type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='{WATCHER}'");
+    bus.ask(Message::call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::text(&rule)]))?;
+    if options.debug {
+        eprintln!("hotshot: the icon is in the tray kept over the bus, as {}", bus.name);
+    }
+    let (mut revision, mut recording) = (1u32, record::running().is_some());
+    loop {
+        let Some(asked) = bus.next(Some(Duration::from_secs(1)))? else {
+            // What the list says changes when a recording starts or
+            // stops: whoever shows it is told to ask again.
+            let now = record::running().is_some();
+            if now != recording {
+                (recording, revision) = (now, revision + 1);
+                bus.send(&Message::signal(MENU_PATH, MENU, "LayoutUpdated", vec![Value::U32(revision), Value::I32(0)]))?;
+            }
+            continue;
+        };
+        if asked.kind == dbus::SIGNAL {
+            let came = asked.member == "NameOwnerChanged" && asked.body.get(2).and_then(Value::as_str).is_some_and(|owner| !owner.is_empty());
+            if came {
+                let _ = register(&mut bus);
+            }
             continue;
         }
-        if let Ok(Ok(found)) = conn.get_image(ImageFormat::Z_PIXMAP, display.root, px as i16, py as i16, 1, 1, !0).map(|cookie| cookie.reply()) {
-            if let [blue, green, red, ..] = found.data[..] {
-                bright.push((u32::from(red) * 299 + u32::from(green) * 587 + u32::from(blue) * 114) / 1000);
+        if asked.kind != dbus::CALL {
+            continue;
+        }
+        let says = if asked.path == MENU_PATH { menu_says() } else { item_says() };
+        let text = |at: usize| asked.body.get(at).and_then(Value::as_str).unwrap_or("");
+        let number = |at: usize| asked.body.get(at).and_then(Value::as_i32).unwrap_or(0);
+        match (asked.interface.as_str(), asked.member.as_str()) {
+            ("org.freedesktop.DBus.Properties", "Get") => match says.into_iter().find(|(name, _)| *name == text(1)) {
+                Some((_, value)) => bus.answer(&asked, vec![Value::any(value)])?,
+                None => bus.refuse(&asked, "there is no such property")?,
+            },
+            ("org.freedesktop.DBus.Properties", "GetAll") => bus.answer(&asked, vec![Value::named(says)])?,
+            ("org.freedesktop.DBus.Peer", "Ping") => bus.answer(&asked, Vec::new())?,
+            ("org.freedesktop.DBus.Introspectable", "Introspect") => bus.answer(&asked, vec![Value::text(described(&asked.path))])?,
+            // The icon pressed: hotshot, as a key would start it; with
+            // the middle button, the whole screen to be drawn on.
+            (ITEM, "Activate") => {
+                bus.answer(&asked, Vec::new())?;
+                let _ = start(&[]);
             }
+            (ITEM, "SecondaryActivate") => {
+                bus.answer(&asked, Vec::new())?;
+                let _ = start(&["--full", "--edit"]);
+            }
+            // Asked for its list by a tray that draws none itself:
+            // hotshot's own, where it says, or where the pointer is.
+            (ITEM, "ContextMenu") => {
+                bus.answer(&asked, Vec::new())?;
+                let at = (number(0), number(1));
+                let chosen = Display::open().ok().and_then(|mut display| {
+                    display.prepare().ok()?;
+                    let at = if at == (0, 0) { display.pointer() } else { at };
+                    menu(&display, &mut Text::load(), at, true).ok().flatten()
+                });
+                match chosen {
+                    Some(["--quit"]) => return Ok(()),
+                    Some(told) => drop(start(told)),
+                    None => {}
+                }
+            }
+            (ITEM, "Scroll") => bus.answer(&asked, Vec::new())?,
+            // The list, for a tray that draws it: all of it at once,
+            // each line a number, what it says, and nothing under it.
+            (MENU, "GetLayout") => {
+                let under: Vec<Value> = lines().into_iter().filter_map(|id| Some(Value::any(Value::Struct(vec![Value::I32(id), line_says(id)?, Value::Array("v".into(), Vec::new())])))).collect();
+                let all = Value::Struct(vec![Value::I32(0), Value::named(vec![("children-display", Value::text("submenu"))]), Value::Array("v".into(), under)]);
+                bus.answer(&asked, vec![Value::U32(revision), all])?;
+            }
+            (MENU, "GetGroupProperties") => {
+                let wanted: Vec<i32> = match asked.body.first() {
+                    Some(Value::Array(_, ids)) if !ids.is_empty() => ids.iter().filter_map(Value::as_i32).collect(),
+                    _ => lines(),
+                };
+                let each: Vec<Value> = wanted.into_iter().filter_map(|id| Some(Value::Struct(vec![Value::I32(id), line_says(id)?]))).collect();
+                bus.answer(&asked, vec![Value::Array("(ia{sv})".into(), each)])?;
+            }
+            (MENU, "GetProperty") => {
+                let found = line_says(number(0)).and_then(|says| match says {
+                    Value::Array(_, entries) => entries.into_iter().find_map(|entry| match entry {
+                        Value::Entry(name, value) if name.as_str() == Some(text(1)) => Some(*value),
+                        _ => None,
+                    }),
+                    _ => None,
+                });
+                match found {
+                    Some(value) => bus.answer(&asked, vec![value])?,
+                    None => bus.refuse(&asked, "there is no such property")?,
+                }
+            }
+            (MENU, "AboutToShow") => bus.answer(&asked, vec![Value::Bool(false)])?,
+            (MENU, "AboutToShowGroup") => bus.answer(&asked, vec![Value::Array("i".into(), Vec::new()), Value::Array("i".into(), Vec::new())])?,
+            // A line of the list pressed, or several said at once.
+            (MENU, "Event" | "EventGroup") => {
+                let events: Vec<(i32, String)> = match (asked.member.as_str(), asked.body.first()) {
+                    ("Event", _) => vec![(number(0), text(1).to_owned())],
+                    (_, Some(Value::Array(_, events))) => events
+                        .iter()
+                        .filter_map(|event| match event {
+                            Value::Struct(parts) => Some((parts.first()?.as_i32()?, parts.get(1)?.as_str()?.to_owned())),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                bus.answer(&asked, if asked.member == "Event" { Vec::new() } else { vec![Value::Array("i".into(), Vec::new())] })?;
+                for (id, event) in events {
+                    let Some((_, told)) = usize::try_from(id - 1).ok().and_then(|at| CHOICES.get(at)).filter(|_| event == "clicked") else { continue };
+                    if *told == ["--quit"] {
+                        return Ok(());
+                    }
+                    let _ = start(told);
+                }
+            }
+            _ => bus.refuse(&asked, "hotshot's icon does nothing by that name")?,
         }
     }
-    match bright.is_empty() || bright.iter().sum::<u32>() / (bright.len() as u32) < 140 {
-        true => INK,
-        false => 0x2E3436,
+}
+
+/// What there is at a place on this program, said the way the bus has
+/// such things said, for whoever asks before it asks anything else.
+fn described(path: &str) -> &'static str {
+    match path {
+        ITEM_PATH => concat!(
+            "<node><interface name=\"org.kde.StatusNotifierItem\">",
+            "<property name=\"Category\" type=\"s\" access=\"read\"/><property name=\"Id\" type=\"s\" access=\"read\"/>",
+            "<property name=\"Title\" type=\"s\" access=\"read\"/><property name=\"Status\" type=\"s\" access=\"read\"/>",
+            "<property name=\"WindowId\" type=\"i\" access=\"read\"/><property name=\"IconName\" type=\"s\" access=\"read\"/>",
+            "<property name=\"IconThemePath\" type=\"s\" access=\"read\"/><property name=\"IconPixmap\" type=\"a(iiay)\" access=\"read\"/>",
+            "<property name=\"OverlayIconName\" type=\"s\" access=\"read\"/><property name=\"OverlayIconPixmap\" type=\"a(iiay)\" access=\"read\"/>",
+            "<property name=\"AttentionIconName\" type=\"s\" access=\"read\"/><property name=\"AttentionIconPixmap\" type=\"a(iiay)\" access=\"read\"/>",
+            "<property name=\"AttentionMovieName\" type=\"s\" access=\"read\"/><property name=\"ToolTip\" type=\"(sa(iiay)ss)\" access=\"read\"/>",
+            "<property name=\"ItemIsMenu\" type=\"b\" access=\"read\"/><property name=\"Menu\" type=\"o\" access=\"read\"/>",
+            "<method name=\"Activate\"><arg type=\"i\" direction=\"in\"/><arg type=\"i\" direction=\"in\"/></method>",
+            "<method name=\"SecondaryActivate\"><arg type=\"i\" direction=\"in\"/><arg type=\"i\" direction=\"in\"/></method>",
+            "<method name=\"ContextMenu\"><arg type=\"i\" direction=\"in\"/><arg type=\"i\" direction=\"in\"/></method>",
+            "<method name=\"Scroll\"><arg type=\"i\" direction=\"in\"/><arg type=\"s\" direction=\"in\"/></method>",
+            "<signal name=\"NewIcon\"/><signal name=\"NewStatus\"><arg type=\"s\"/></signal>",
+            "</interface></node>"
+        ),
+        MENU_PATH => concat!(
+            "<node><interface name=\"com.canonical.dbusmenu\">",
+            "<property name=\"Version\" type=\"u\" access=\"read\"/><property name=\"Status\" type=\"s\" access=\"read\"/>",
+            "<property name=\"TextDirection\" type=\"s\" access=\"read\"/><property name=\"IconThemePath\" type=\"as\" access=\"read\"/>",
+            "<method name=\"GetLayout\"><arg type=\"i\" direction=\"in\"/><arg type=\"i\" direction=\"in\"/><arg type=\"as\" direction=\"in\"/><arg type=\"u\" direction=\"out\"/><arg type=\"(ia{sv}av)\" direction=\"out\"/></method>",
+            "<method name=\"GetGroupProperties\"><arg type=\"ai\" direction=\"in\"/><arg type=\"as\" direction=\"in\"/><arg type=\"a(ia{sv})\" direction=\"out\"/></method>",
+            "<method name=\"GetProperty\"><arg type=\"i\" direction=\"in\"/><arg type=\"s\" direction=\"in\"/><arg type=\"v\" direction=\"out\"/></method>",
+            "<method name=\"Event\"><arg type=\"i\" direction=\"in\"/><arg type=\"s\" direction=\"in\"/><arg type=\"v\" direction=\"in\"/><arg type=\"u\" direction=\"in\"/></method>",
+            "<method name=\"EventGroup\"><arg type=\"a(isvu)\" direction=\"in\"/><arg type=\"ai\" direction=\"out\"/></method>",
+            "<method name=\"AboutToShow\"><arg type=\"i\" direction=\"in\"/><arg type=\"b\" direction=\"out\"/></method>",
+            "<method name=\"AboutToShowGroup\"><arg type=\"ai\" direction=\"in\"/><arg type=\"ai\" direction=\"out\"/><arg type=\"ai\" direction=\"out\"/></method>",
+            "<signal name=\"LayoutUpdated\"><arg type=\"u\"/><arg type=\"i\"/></signal>",
+            "<signal name=\"ItemsPropertiesUpdated\"><arg type=\"a(ia{sv})\"/><arg type=\"a(ias)\"/></signal>",
+            "</interface></node>"
+        ),
+        _ => "<node><node name=\"StatusNotifierItem\"/><node name=\"MenuBar\"/></node>",
     }
 }
 
 /// Puts the icon in the tray and keeps it there, doing what is asked
-/// of it, until it is told to quit or the display goes.
+/// of it, until it is told to quit. In the tray kept over the bus,
+/// where there is one: that is every desktop's, on Wayland and off it.
+/// Failing that, in the tray X11 has always had.
 pub fn run(options: &Options) -> Result<()> {
+    // What it starts is not waited for, and is not to be left as the
+    // husk of a process when it ends.
+    // SAFETY: only how a signal is taken is changed.
+    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+    match Bus::session().and_then(|mut bus| register(&mut bus).map(|()| bus)) {
+        Ok(bus) => kept(bus, options),
+        Err(error) => {
+            if options.debug {
+                eprintln!("hotshot: no tray kept over the bus ({error}); trying the one X11 has");
+            }
+            docked(options)
+        }
+    }
+}
+
+/// Puts the icon in the tray X11 has, by asking whoever keeps it to
+/// take a window in, and keeps it there until it is told to quit or
+/// the display goes.
+fn docked(options: &Options) -> Result<()> {
     let mut display = Display::open()?;
     display.prepare()?;
     let mut text = Text::load();
@@ -187,10 +434,6 @@ pub fn run(options: &Options) -> Result<()> {
     let (tray, opcode, info, manager, visual_of) = (atom(&format!("_NET_SYSTEM_TRAY_S{}", display.screen))?, atom("_NET_SYSTEM_TRAY_OPCODE")?, atom("_XEMBED_INFO")?, atom("MANAGER")?, atom("_NET_SYSTEM_TRAY_VISUAL")?);
     // Told when a tray comes, where there is none yet.
     conn.change_window_attributes(display.root, &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY))?;
-    // What it starts is not waited for, and is not to be left as the
-    // husk of a process when it ends.
-    // SAFETY: only how a signal is taken is changed.
-    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
 
     loop {
         // Whoever keeps the tray: waited for, where nobody does yet.
@@ -240,8 +483,8 @@ pub fn run(options: &Options) -> Result<()> {
             eprintln!("hotshot: asked the tray ({keeper:#x}) to take the icon in, {}", if deep.is_some() { "see-through" } else { "on the panel's own background" });
         }
 
-        let draw = |text: &mut Text, side: (i32, i32)| -> Result<()> {
-            let mut pixels = icon(text, side.0, side.1, ink_for(&display, window, side));
+        let draw = |side: (i32, i32)| -> Result<()> {
+            let mut pixels = icon(side.0, side.1);
             if deep.is_none() {
                 // What the panel has under it is put there by the
                 // display; it is read back, and the icon laid on it.
@@ -258,12 +501,12 @@ pub fn run(options: &Options) -> Result<()> {
         // waited for.
         loop {
             match conn.wait_for_event()? {
-                Event::Expose(expose) if expose.window == window && expose.count == 0 => draw(&mut text, side)?,
+                Event::Expose(expose) if expose.window == window && expose.count == 0 => draw(side)?,
                 Event::ConfigureNotify(sized) if sized.window == window => {
                     let now = (i32::from(sized.width).max(1), i32::from(sized.height).max(1));
                     if now != side {
                         side = now;
-                        draw(&mut text, side)?;
+                        draw(side)?;
                     }
                 }
                 Event::ReparentNotify(taken) if taken.window == window && options.debug => eprintln!("hotshot: the icon is in the tray (in {:#x})", taken.parent),

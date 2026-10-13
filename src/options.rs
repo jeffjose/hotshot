@@ -82,7 +82,9 @@ Recording, which needs ffmpeg:
 
 Staying about:
       --tray                 an icon in the panel's tray: a click is
-                             hotshot, a right click a list of its ways
+                             hotshot, and its menu the other ways of
+                             starting it. In the tray every desktop has
+                             now, kept over D-Bus; or X11's own, failing
       --menu                 that list by itself, where the pointer is
 
 Look:

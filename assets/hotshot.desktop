@@ -1,0 +1,27 @@
+[Desktop Entry]
+Type=Application
+Name=hotshot
+GenericName=Screenshot
+Comment=Take a picture of the screen, or record it
+Exec=hotshot
+Icon=hotshot
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=screenshot;capture;record;annotate;
+Actions=full;record;again;tray;
+
+[Desktop Action full]
+Name=The whole screen
+Exec=hotshot --full --edit
+
+[Desktop Action record]
+Name=Record an area
+Exec=hotshot --record
+
+[Desktop Action again]
+Name=The same area again
+Exec=hotshot --again --edit
+
+[Desktop Action tray]
+Name=Icon in the tray
+Exec=hotshot --tray
