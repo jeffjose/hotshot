@@ -47,6 +47,39 @@ extern "C" fn told_to_stop(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
 }
 
+/// Says that it is recording and how to stop, and has Enter or Ctrl+D
+/// stop it where hotshot was started from a terminal: there is someone
+/// at it to press them. Started by a key, it has nothing to read from,
+/// and what would look like Ctrl+D at once is not taken for one.
+/// `button` says whether there is a button on the screen to say too.
+fn told_how_to_stop(button: bool) {
+    // SAFETY: asks whether a descriptor is a terminal, and no more.
+    let (typed, seen) = unsafe { (libc::isatty(0) == 1, libc::isatty(2) == 1) };
+    if typed {
+        std::thread::spawn(|| {
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            STOP.store(true, Ordering::SeqCst);
+        });
+    }
+    let also = if button { "the button beside it, or " } else { "" };
+    match (typed, seen || !button) {
+        (true, _) => eprintln!("hotshot: recording. Press Enter here to stop (Ctrl+D does too); so does {also}`hotshot --record` again."),
+        (false, true) => eprintln!("hotshot: recording. To stop: {also}`hotshot --record` again."),
+        _ => {}
+    }
+}
+
+/// Said once it has been stopped, where what was recorded has still to
+/// be made the file that was asked for: that takes a moment, and the
+/// terminal would otherwise say nothing while it does.
+fn told_it_stopped(making: bool) {
+    // SAFETY: asks whether a descriptor is a terminal, and no more.
+    if unsafe { libc::isatty(2) } == 1 {
+        eprintln!("hotshot: stopped{}", if making { "; making the file..." } else { "." });
+    }
+}
+
 /// Where it is written down which hotshot is recording.
 fn marker() -> Option<PathBuf> {
     output::state_file("recording")
@@ -378,7 +411,7 @@ pub fn run_cast(area: Rect, screen: Rect, options: &Options) -> Result<PathBuf> 
     told.extend(packer().split_whitespace());
     told.extend(["!", "matroskamux", "!", "filesink", &to]);
     let mut recorder = Command::new("gst-launch-1.0").args(&told).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|error| format!("cannot run gst-launch-1.0: {error}"))?;
-    eprintln!("hotshot: recording; start it again with --record to stop");
+    told_how_to_stop(false);
 
     let began = Instant::now();
     loop {
@@ -400,6 +433,7 @@ pub fn run_cast(area: Rect, screen: Rect, options: &Options) -> Result<PathBuf> 
     }
     // Told to end, GStreamer writes the end of its file; it is given a
     // while to, and ended anyway after that.
+    told_it_stopped(true);
     // SAFETY: the process is one this started, and is told to stop.
     unsafe { libc::kill(recorder.id() as i32, libc::SIGINT) };
     let asked = Instant::now();
@@ -483,9 +517,7 @@ pub fn run(area: Rect, options: &Options, mut text: Text) -> Result<PathBuf> {
         .into_iter()
         .map(|(x, y)| Rect::new(x, y, sample.0, sample.1))
         .find(|place| place.intersect(screen) == *place);
-    if button_at.is_none() {
-        eprintln!("hotshot: recording; start it again with --record to stop");
-    }
+    told_how_to_stop(button_at.is_some());
 
     // The keys pressed anywhere, asked of the display as it hears them
     // itself: no window of hotshot's has the keyboard.
@@ -618,6 +650,7 @@ pub fn run(area: Rect, options: &Options, mut text: Text) -> Result<PathBuf> {
         side.hide(conn)?;
     }
     conn.flush()?;
+    told_it_stopped(kind != Video::Mp4);
     if stopped {
         if let Some(mut pipe) = recorder.stdin.take() {
             let _ = pipe.write_all(b"q");
