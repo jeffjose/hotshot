@@ -206,7 +206,7 @@ impl Shape {
     /// The rectangle a zoom is of, and the one it shows it in: from its
     /// third point, as many times larger as its fourth is across from
     /// that, and the same shape as what it is of.
-    fn zoomed(&self) -> (Rect, Rect) {
+    pub fn zoomed(&self) -> (Rect, Rect) {
         let (a, b) = (self.points[0], self.points[1]);
         let of = Rect::new(a.0.min(b.0).round() as i32, a.1.min(b.1).round() as i32, (a.0 - b.0).abs().round() as i32, (a.1 - b.1).abs().round() as i32);
         let times = ((self.points[3].0 - self.points[2].0) / of.w.max(1) as f32).clamp(1.25, 12.0);
@@ -222,16 +222,44 @@ impl Shape {
         self.points[3] = (self.points[2].0 + (of.w * ZOOM) as f32, self.points[2].1 + (of.h * ZOOM) as f32);
     }
 
-    /// After one of a zoom's two handles has been taken somewhere: the
-    /// corner the larger picture is put down by, `by` which it went and
-    /// the far corner goes with it; or the far corner, which says how
-    /// many times larger and is put back on the corner that makes.
-    pub fn settle_zoom(&mut self, point: usize, by: Point) {
-        if point == 2 {
-            self.points[3] = (self.points[3].0 + by.0, self.points[3].1 + by.1);
-        }
+    /// Where a zoom's two handles are: in the middle of its larger
+    /// picture, which moves it, and on its rim, down and to the right,
+    /// which says how many times larger: on the ring of a round one, at
+    /// the corner of a square one.
+    pub fn zoom_handles(&self) -> [(i32, i32); 2] {
         let (_, shown) = self.zoomed();
-        self.points[3] = (shown.right() as f32, shown.bottom() as f32);
+        let middle = shown.center();
+        let out = if self.filled { 0.5 } else { std::f32::consts::FRAC_1_SQRT_2 / 2.0 };
+        [middle, (middle.0 + (shown.w as f32 * out).round() as i32, middle.1 + (shown.h as f32 * out).round() as i32)]
+    }
+
+    /// How many times larger a zoom shows what it is of.
+    pub fn zoom_times(&self) -> f32 {
+        let (of, shown) = self.zoomed();
+        shown.w as f32 / of.w.max(1) as f32
+    }
+
+    /// One of a zoom's two handles taken to a point: the one in its
+    /// middle takes the larger picture there, as large as it was; the
+    /// one on its rim makes it as many times larger as puts the rim
+    /// under the point, its middle staying where it is.
+    pub fn zoom_to(&mut self, handle: usize, to: Point) {
+        let (of, shown) = self.zoomed();
+        // Its middle from its points, not from the pixels it was rounded
+        // to, or it would creep as it was made larger.
+        let (from, far) = (self.points[2], self.points[3]);
+        let (mut middle, mut size) = (((from.0 + far.0) / 2.0, (from.1 + far.1) / 2.0), (shown.w as f32, shown.h as f32));
+        if handle == 2 {
+            middle = to;
+        } else {
+            let out = if self.filled { 0.5 } else { std::f32::consts::FRAC_1_SQRT_2 / 2.0 };
+            let across = (to.0 - middle.0).abs() / out / of.w.max(1) as f32;
+            let down = (to.1 - middle.1).abs() / out / of.h.max(1) as f32;
+            let times = across.max(down).clamp(1.25, 12.0);
+            size = (of.w as f32 * times, of.h as f32 * times);
+        }
+        self.points[2] = (middle.0 - size.0 / 2.0, middle.1 - size.1 / 2.0);
+        self.points[3] = (middle.0 + size.0 / 2.0, middle.1 + size.1 / 2.0);
     }
 
     /// Where the first letter of a shape with words on it goes.

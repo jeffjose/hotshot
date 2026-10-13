@@ -1059,7 +1059,10 @@ impl Editor {
                 }
             }
         }
-        if selection.contains(x, y) {
+        // A zoom may reach past the selection, and is got hold of there
+        // as it is anywhere on it.
+        let lens = self.tool == Tool::Select && self.shapes.iter().any(|shape| shape.tool == Tool::Zoom && shape.zoomed().1.contains(x, y));
+        if selection.contains(x, y) || lens {
             Target::Inside
         } else if let Some((across, down)) = self.frame_grips().into_iter().find(|&(across, down)| {
             let grip = grip_at(self.frame_rect(), across, down);
@@ -1111,7 +1114,10 @@ impl Editor {
             Tool::Counter if shape.points[0] != shape.points[1] => vec![at(1)],
             // The corner the larger picture of a zoom is put down by.
             // And its far corner, which says how many times larger.
-            Tool::Zoom => vec![at(2), at(3)],
+            Tool::Zoom => {
+                let [middle, rim] = shape.zoom_handles();
+                vec![(2, middle), (3, rim)]
+            }
             _ => Vec::new(),
         }
     }
@@ -1264,10 +1270,11 @@ impl Editor {
                 let shape = &mut self.shapes[index];
                 // With Shift, at one of eight angles from the other end.
                 let other = shape.points[1 - point.min(1)];
-                let was = shape.points[point];
-                shape.points[point] = if mods.shift && shape.tool != Tool::Zoom { shapes::constrained(Tool::Line, other, to) } else { to };
-                if shape.tool == Tool::Zoom {
-                    shape.settle_zoom(point, (to.0 - was.0, to.1 - was.1));
+                // A zoom's handles are not its points: one moves its
+                // larger picture, the other says how many times larger.
+                match shape.tool {
+                    Tool::Zoom => shape.zoom_to(point, to),
+                    _ => shape.points[point] = if mods.shift { shapes::constrained(Tool::Line, other, to) } else { to },
                 }
                 shape.touch();
                 self.dirty = true;
@@ -2254,14 +2261,57 @@ impl Editor {
     /// is see-through, which is said in the top byte of each.
     pub fn framed(&mut self) -> Option<(Rect, i32, i32, Vec<u32>, bool)> {
         let (area, mut pixels, rounded) = self.result()?;
-        if self.frame.is_plain() {
-            return Some((area, area.w, area.h, pixels, rounded));
+        let (mut wide, mut high, mut clear) = (area.w, area.h, rounded);
+        if !self.frame.is_plain() {
+            if !rounded {
+                pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
+            }
+            (wide, high, pixels) = frame::set(self.frame, &pixels, area.w, area.h, self.corner_radius(), self.scale(), self.photo.as_ref());
+            clear = self.frame.is_clear() || (self.frame.backdrop == Backdrop::Photo && self.photo.is_none());
         }
-        if !rounded {
-            pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
+        // A zoom may reach past the selection, and past the frame: the
+        // picture is then as large as takes it all in, with nothing
+        // where there is neither picture nor zoom.
+        let within = self.frame_rect();
+        let mut all = within;
+        for shape in self.shapes.iter().filter(|shape| shape.tool == Tool::Zoom) {
+            let reach = shape.bounds(&mut self.text).inflate(shape.stroke.ceil() as i32 + 2).intersect(self.screen());
+            let (x, y) = (all.x.min(reach.x), all.y.min(reach.y));
+            all = Rect::new(x, y, all.right().max(reach.right()) - x, all.bottom().max(reach.bottom()) - y);
         }
-        let (wide, high, set) = frame::set(self.frame, &pixels, area.w, area.h, self.corner_radius(), self.scale(), self.photo.as_ref());
-        Some((area, wide, high, set, self.frame.is_clear() || (self.frame.backdrop == Backdrop::Photo && self.photo.is_none())))
+        if all == within {
+            return Some((area, wide, high, pixels, clear));
+        }
+        // Two pictures of that size: its colors, and how opaque each
+        // pixel is, as a gray. What there was goes into both; and the
+        // zooms are drawn on both, in their colors on the one and in
+        // white on the other, which leaves the second saying how much
+        // of each pixel there now is anything in.
+        let (across, down) = (all.w, all.h);
+        let mut colors = vec![0u32; (across * down) as usize];
+        let mut grays = vec![0u32; (across * down) as usize];
+        let (left, top) = (within.x - all.x, within.y - all.y);
+        for row in 0..high {
+            for column in 0..wide {
+                let pixel = pixels[(row * wide + column) as usize];
+                let opaque = if clear { pixel >> 24 } else { 255 };
+                let at = ((top + row) * across + left + column) as usize;
+                (colors[at], grays[at]) = (pixel & 0xFF_FFFF, opaque * 0x010101);
+            }
+        }
+        for (buffer, white) in [(&mut colors, false), (&mut grays, true)] {
+            let mut canvas = Canvas::new(buffer, across, down);
+            for shape in self.shapes.iter().filter(|shape| shape.tool == Tool::Zoom) {
+                let mut moved = shape.clone();
+                moved.translate(-all.x as f32, -all.y as f32);
+                if white {
+                    moved.color = 0xFFFFFF;
+                }
+                moved.draw(&mut canvas, &mut self.text);
+            }
+        }
+        let whole = colors.iter().zip(&grays).map(|(color, gray)| (gray & 0xFF) << 24 | color & 0xFF_FFFF).collect();
+        Some((area, across, down, whole, true))
     }
 
     /// Takes up a text that is already there, to be typed into again.
@@ -2411,6 +2461,13 @@ impl Editor {
 
         if let Some(selection) = self.selection {
             shapes::paint(&self.shapes, &mut canvas, &mut self.text, selection);
+            // A zoom is not kept to the selection: where it reaches
+            // past, it shows, and comes out in the picture too.
+            for shape in self.shapes.iter().filter(|shape| shape.tool == Tool::Zoom) {
+                if shape.bounds(&mut self.text).intersect(selection) != shape.bounds(&mut self.text) {
+                    shape.draw(&mut canvas, &mut self.text);
+                }
+            }
             canvas.set_clip(selection);
             // The caret, where the next letter typed will go.
             if let Some((index, _)) = self.editing {
@@ -2490,13 +2547,14 @@ impl Editor {
             // How round, in pixels, while a corner is being rounded:
             // of a rectangle, or of the picture.
             let rounding = match self.drag {
-                Drag::Round { index, .. } => self.shapes.get(index).map(|shape| shape.radius.round() as i32),
-                Drag::Curve { .. } => Some(self.corner_radius()),
-                Drag::FrameCorner { .. } => Some((self.frame.radius as f32 * self.scale()).round() as i32),
+                Drag::Round { index, .. } => self.shapes.get(index).map(|shape| format!("{} px", shape.radius.round() as i32)),
+                Drag::Curve { .. } => Some(format!("{} px", self.corner_radius())),
+                Drag::FrameCorner { .. } => Some(format!("{} px", (self.frame.radius as f32 * self.scale()).round() as i32)),
+                // And how many times larger, while a zoom is made so.
+                Drag::End { index, point: 3, .. } => self.shapes.get(index).filter(|shape| shape.tool == Tool::Zoom).map(|shape| format!("{:.1}\u{d7}", shape.zoom_times())),
                 _ => None,
             };
-            if let Some(radius) = rounding {
-                let says = format!("{radius} px");
+            if let Some(says) = rounding {
                 let wide = self.text.width(&says, px) + 2 * pad;
                 let high = Text::line_height(px) + pad / 2;
                 let (x, y) = (self.pointer.0 + px as i32, self.pointer.1 + px as i32);
@@ -3406,6 +3464,47 @@ mod tests {
     }
 
     #[test]
+    fn a_zoom_is_made_larger_by_its_rim_and_goes_past_the_selection() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('z'), PLAIN);
+        drag(&mut editor, (700, 300), (760, 340));
+        // Twice the size as drawn, and picked out, with its two handles.
+        assert_eq!(editor.selected, vec![0]);
+        assert!((editor.shapes[0].zoom_times() - 2.0).abs() < 0.1);
+        let [middle, rim] = editor.shapes[0].zoom_handles();
+        // The one on its rim, taken twice as far from its middle, makes
+        // it four times the size, its middle where it was.
+        drag(&mut editor, rim, (2 * rim.0 - middle.0, 2 * rim.1 - middle.1));
+        assert!((editor.shapes[0].zoom_times() - 4.0).abs() < 0.2, "{}", editor.shapes[0].zoom_times());
+        let [after, _] = editor.shapes[0].zoom_handles();
+        assert!((after.0 - middle.0).abs() <= 1 && (after.1 - middle.1).abs() <= 1);
+        // The one in its middle takes it elsewhere: right out of the
+        // selection, as large as it was.
+        drag(&mut editor, after, (1100, 320));
+        let near = |at: (i32, i32), to: (i32, i32)| (at.0 - to.0).abs() <= 1 && (at.1 - to.1).abs() <= 1;
+        assert!(near(editor.shapes[0].zoom_handles()[0], (1100, 320)));
+        assert!((editor.shapes[0].zoom_times() - 4.0).abs() < 0.2);
+        let (_, shown) = editor.shapes[0].zoomed();
+        assert!(shown.x > 900);
+        // Out there it is still got hold of, by anywhere on it.
+        click(&mut editor, (300, 500), 30_000);
+        assert!(editor.selected.is_empty());
+        drag(&mut editor, (1100, 320), (1050, 320));
+        assert!(editor.selected == vec![0] && near(editor.shapes[0].zoom_handles()[0], (1050, 320)));
+        assert_eq!(editor.selection(), Some(Rect::new(100, 100, 800, 600)));
+        // The picture is as wide as takes the zoom in, with nothing
+        // between the two but the lines from the one to the other.
+        let (area, wide, high, pixels, clear) = editor.framed().unwrap();
+        assert_eq!((area, high, clear), (Rect::new(100, 100, 800, 600), 600, true));
+        assert!(wide > 1050 + shown.w / 2 - 100, "{wide}");
+        let at = |x: i32, y: i32| pixels[((y - 100) * wide + x - 100) as usize];
+        assert_eq!((at(1050, 320) >> 24, at(300, 500) >> 24, at(905, 110) >> 24, at(wide + 98, 690) >> 24), (255, 255, 0, 0));
+        // What the zoom shows is what it is of: the top of a window.
+        assert_eq!(at(1050, 320) & 0xFFFFFF, 0x3A3F55);
+    }
+
+    #[test]
     fn text_is_typed_into_anywhere_in_it_and_pasted_into() {
         let ctrl = Mods { shift: false, ctrl: true };
         let mut editor = editor(1600, 900);
@@ -3883,5 +3982,34 @@ mod tests {
         editor.choose(Cell::Backdrop(0));
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
         std::fs::write(dir.join("15-shadow-only.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
+
+        // A zoom made larger by its rim, and one taken out past the
+        // selection; and the picture that comes of them.
+        let mut lens = self::editor(width, height);
+        lens.pointer_moved(30 * unit, 20 * unit, PLAIN);
+        lens.pressed(0);
+        lens.pointer_moved(110 * unit, 80 * unit, PLAIN);
+        lens.released();
+        for (square, from) in [(false, (50, 30)), (true, (60, 60))] {
+            lens.square = square;
+            lens.key(Key::Char('z'), PLAIN);
+            lens.pointer_moved(from.0 * unit, from.1 * unit, PLAIN);
+            lens.pressed(40_000);
+            lens.pointer_moved((from.0 + 12) * unit, (from.1 + 8) * unit, PLAIN);
+            lens.released();
+            let [middle, _] = lens.shapes.last().unwrap().zoom_handles();
+            lens.pointer_moved(middle.0, middle.1, PLAIN);
+            lens.pressed(50_000);
+            lens.pointer_moved(125 * unit, (from.1 + 5) * unit, PLAIN);
+            lens.released();
+        }
+        let [_, rim] = lens.shapes.last().unwrap().zoom_handles();
+        lens.pointer_moved(rim.0, rim.1, PLAIN);
+        lens.pressed(60_000);
+        lens.pointer_moved(rim.0 + 6 * unit, rim.1 + 4 * unit, PLAIN);
+        write(&mut lens, "18-zoom-past");
+        lens.released();
+        let (_, wide, high, pixels, alpha) = lens.framed().unwrap();
+        std::fs::write(dir.join("19-zoom-picture.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
     }
 }

@@ -117,9 +117,10 @@ Keys, once an area is selected:
   end gives it an arrow's head or takes it away. Shift or Ctrl with
   a click picks out several, and with a drag from empty space all that a
   box touches. Ctrl+D is a copy of what is picked out.
-  A zoom is round, and F makes one square; the dots at its two corners
-  move its larger picture and say how many times larger. A badge is
-  typed over with a double click.
+  A zoom is round, and F makes one square; the dot in its middle moves
+  its larger picture, and the one on its rim says how many times larger.
+  It may go past the selection, and the picture is then as large as takes
+  it in. A badge is typed over with a double click.
   The frame shows round the selection: drag beside the picture to make
   it wider, above or below it to make it taller, and the dot inside its
   corner to round its corners; click it for the backdrops, a photograph

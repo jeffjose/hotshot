@@ -80,7 +80,7 @@ With an area selected, a bar of tools appears beside it:
 | `N` | counter: numbered discs, dragged to point at something |
 | `B` | blur: a mosaic over what should not be read |
 | `S` | spotlight: everything but a rectangle of the picture darkened |
-| `Z` | zoom: a part of the picture shown again beside itself, larger, in a round lens; `F` makes it square, and the dots at its corners move it and say how many times larger |
+| `Z` | zoom: a part of the picture shown again beside itself, larger, in a round lens; `F` makes it square. The dot in its middle moves it, and the one on its rim, dragged out or in, says how many times larger (the figure shows beside the pointer). It may be put past the edge of the selection: the picture is then as large as takes it in, see-through where there is neither |
 | `J` | badges: a word (Bug, Fixed, New...) in one of six looks and eight hues, typed over with a double click |
 | `M` | emoji: all of them, in a box that scrolls; type to search them by name, Enter takes the first found |
 | `W` | the frame: a backdrop of two colors, or a photograph (the die is one nobody chose), room round the picture, and a shadow. It shows round the selection; drag it wider, click it for the choices |
