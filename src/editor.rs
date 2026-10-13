@@ -395,6 +395,9 @@ enum Target {
     Backdrop,
     /// The dot inside a corner of the frame, which rounds its corners.
     FrameCorner,
+    /// A handle on the edge of the frame, by which it is made larger:
+    /// which way it pulls across and down.
+    FrameGrip(i32, i32),
     /// An end of the line or arrow picked out, or the tip a counter
     /// points with: which of the shape's points it is.
     End(usize),
@@ -429,7 +432,10 @@ enum Drag {
     /// hold of `slack` further out than the room there was.
     /// Wider when it was taken hold of beside the picture, taller when
     /// above or below it, and both at a corner.
-    Room { from: (i32, i32), slack: (i32, i32), sides: (bool, bool), moved: bool },
+    /// `opens` when it was the frame itself that was pressed and not a
+    /// handle on its edge: a click there, with no drag, opens the box
+    /// of what there is to choose about it.
+    Room { from: (i32, i32), slack: (i32, i32), sides: (bool, bool), moved: bool, opens: bool },
     /// Making the corners of the frame rounder, by the dot in one.
     FrameCorner { slack: i32 },
     /// Dragging out a box, with Shift or Ctrl held, to pick out the
@@ -1055,6 +1061,11 @@ impl Editor {
         }
         if selection.contains(x, y) {
             Target::Inside
+        } else if let Some((across, down)) = self.frame_grips().into_iter().find(|&(across, down)| {
+            let grip = grip_at(self.frame_rect(), across, down);
+            (x - grip.0).abs() <= 8 && (y - grip.1).abs() <= 8
+        }) {
+            Target::FrameGrip(across, down)
         } else if self.frame_dot().is_some_and(|dot| (x - dot.0).abs() <= 7 && (y - dot.1).abs() <= 7) {
             Target::FrameCorner
         } else if self.frame_rect().contains(x, y) {
@@ -1157,7 +1168,7 @@ impl Editor {
         }
         let pull = match (self.drag, self.hover) {
             (Drag::Resize { pull, .. } | Drag::Scale { pull, .. }, _) => Some(pull),
-            (Drag::None, Target::Handle(across, down) | Target::Grip(across, down)) => Some((across, down)),
+            (Drag::None, Target::Handle(across, down) | Target::Grip(across, down) | Target::FrameGrip(across, down)) => Some((across, down)),
             (Drag::Round { .. } | Drag::Curve { .. } | Drag::End { .. } | Drag::FrameCorner { .. }, _) | (Drag::None, Target::Rounder(..) | Target::Curve(..) | Target::End(_) | Target::FrameCorner) => return Cursor::Arrow,
             (Drag::Marquee { .. }, _) => return Cursor::Crosshair,
             _ => None,
@@ -1262,7 +1273,7 @@ impl Editor {
                 self.dirty = true;
             }
             Drag::Marquee { .. } => self.dirty = true,
-            Drag::Room { from, slack, sides, moved } => {
+            Drag::Room { from, slack, sides, moved, .. } => {
                 *moved |= (at.0 - from.0).abs().max((at.1 - from.1).abs()) >= DRAG_AFTER;
                 let (slack, sides, moved) = (*slack, *sides, *moved);
                 if moved {
@@ -1495,7 +1506,14 @@ impl Editor {
             Target::Backdrop => {
                 self.commit_text();
                 let (out, room) = (self.outward(at), self.frame_room());
-                self.drag = Drag::Room { from: at, slack: (out.0 - room.0, out.1 - room.1), sides: (out.0 > 0, out.1 > 0), moved: false };
+                self.drag = Drag::Room { from: at, slack: (out.0 - room.0, out.1 - room.1), sides: (out.0 > 0, out.1 > 0), moved: false, opens: true };
+            }
+            // A handle on the edge of the frame: the frame is made
+            // larger or smaller that way, across, down, or both.
+            Target::FrameGrip(across, down) => {
+                self.commit_text();
+                let (out, room) = (self.outward(at), self.frame_room());
+                self.drag = Drag::Room { from: at, slack: (out.0 - room.0, out.1 - room.1), sides: (across != 0, down != 0), moved: false, opens: false };
             }
             Target::FrameCorner => {
                 let rect = self.frame_rect();
@@ -1622,7 +1640,7 @@ impl Editor {
             Drag::Shape { .. } => (self.moving, self.guides) = (Vec::new(), Vec::new()),
             // A click on the frame, not a drag of it, opens what there
             // is to choose about it.
-            Drag::Room { moved: false, .. } => outcome = self.activate(Button::Frame),
+            Drag::Room { moved: false, opens: true, .. } => outcome = self.activate(Button::Frame),
             // A click on an end of a line or an arrow, not a drag of it,
             // gives that end an arrow's head, or takes it away; and the
             // arrows drawn after have theirs where this one now does.
@@ -2205,6 +2223,15 @@ impl Editor {
         Rect::new(area.x - room.0, area.y - room.1, area.w + 2 * room.0, area.h + 2 * room.1)
     }
 
+    /// The handles the frame has on its edges, to be made larger by:
+    /// all eight, with the move tool in hand and a frame to have them.
+    fn frame_grips(&self) -> Vec<(i32, i32)> {
+        match self.selection.is_some() && !self.frame.is_plain() && self.tool == Tool::Select {
+            true => GRIPS.to_vec(),
+            false => Vec::new(),
+        }
+    }
+
     /// Where the dot is by which the corners of the frame are made
     /// rounder: inside its top-left corner, as far in as they are
     /// round. None with no backdrop, which has no corners to see.
@@ -2504,10 +2531,21 @@ impl Editor {
                 canvas.disc(x, y, grip + thick, accent, 256);
                 canvas.disc(x, y, grip, 0xFFFFFF, 256);
             }
-            // And the frame, one for its own.
+            // And the frame, one for its own; with a handle at each
+            // corner and the middle of each side of it, square where
+            // the selection's are round, to make it larger by: a side
+            // one way, a corner both.
             if let Some((x, y)) = self.frame_dot().filter(|_| !reshaping) {
                 canvas.disc(x, y, grip + thick, accent, 256);
                 canvas.disc(x, y, grip, 0xFFFFFF, 256);
+            }
+            if !reshaping {
+                let whole = self.frame_rect();
+                for (across, down) in self.frame_grips() {
+                    let (x, y) = grip_at(whole, across, down);
+                    canvas.fill(x - grip - thick, y - grip - thick, 2 * (grip + thick), 2 * (grip + thick), accent);
+                    canvas.fill(x - grip, y - grip, 2 * grip, 2 * grip, 0xFFFFFF);
+                }
             }
             let _ = selection;
             // Handles at the corners and the middles of the sides, on a
@@ -3500,6 +3538,22 @@ mod tests {
         // of it see-through.
         let (_, wide, high, _, alpha) = editor.framed().unwrap();
         assert_eq!((wide, high, alpha), (400 + 2 * (PADS[2] + 40), 300 + 2 * (PADS[2] + 10), false));
+
+        // The frame has handles on its edges, to be seen and taken hold
+        // of: the one at its bottom-right corner makes it wider and
+        // taller both, and a click on one opens nothing.
+        let whole = editor.frame_rect();
+        let corner = (whole.right(), whole.bottom());
+        assert_eq!(editor.target_at(corner), Target::FrameGrip(1, 1));
+        let before = editor.frame.pad;
+        drag(&mut editor, corner, (corner.0 + 25, corner.1 + 15));
+        assert_eq!(editor.frame.pad, (before.0 + 25, before.1 + 15));
+        let side = grip_at(editor.frame_rect(), 1, 0);
+        click(&mut editor, side, 20_000);
+        assert_eq!(editor.flyout, None);
+        drag(&mut editor, side, (side.0 - 25, side.1 + 50));
+        assert_eq!(editor.frame.pad, (before.0, before.1 + 15));
+        editor.frame.pad = before;
 
         // The dot inside the frame's corner rounds its corners, by as
         // much as it is taken in; and then the corners of what comes

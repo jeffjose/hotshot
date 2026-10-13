@@ -122,9 +122,11 @@ after a dot. The box of colors has a row for how opaque what is drawn
 is. A shape being moved goes to the edges and the middles of the others
 and of the selection, and a line shows which.
 
-The frame's width, its height and the roundness of its own corners are
-each dragged where they are: beside the picture, above or below it, and
-by the dot inside the frame's corner. While a corner is being rounded,
+The frame has square handles at its corners and the middles of its
+sides, where the selection's are round: a side makes it wider or taller,
+a corner both. A drag anywhere on the frame beside the picture, or above
+or below it, does the same, and the dot inside the frame's corner
+rounds its own corners. While a corner is being rounded,
 of the frame, the picture or a rectangle, how round it is in pixels is
 said beside the pointer. A frame too large to show round the selection
 is shown whole, small, in a corner of the screen.
