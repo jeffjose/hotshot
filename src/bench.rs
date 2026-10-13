@@ -134,7 +134,7 @@ pub fn run(mut display: Display, options: Options, font: JoinHandle<Text>, start
 
     // Something of each kind drawn across it.
     let Some(area) = editor.selection() else { return Err("the benchmark lost its selection".into()) };
-    for (key, name) in [('a', "drawing an arrow"), ('r', "drawing a rectangle"), ('e', "drawing an ellipse"), ('p', "drawing with the pen"), ('b', "blurring")] {
+    for (key, name) in [('a', "drawing an arrow"), ('r', "drawing a rectangle"), ('o', "drawing an oval"), ('p', "drawing with the pen"), ('b', "blurring")] {
         let mut times = Vec::new();
         editor.key(Key::Char(key), plain);
         let (from, to) = ((area.x + area.w / 8, area.y + area.h / 8), (area.x + area.w * 7 / 8, area.y + area.h * 7 / 8));

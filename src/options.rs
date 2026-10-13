@@ -17,6 +17,8 @@ What to take:
                              'pointer' for the one the pointer is on
   -w, --window               the window that has the keyboard
   -g, --region X,Y,W,H       this rectangle of the screen (also WxH+X+Y)
+  -a, --again                the same area as the last picture was of,
+                             however that one was taken
   -e, --edit                 with any of those: open with that area selected,
                              to be drawn on, rather than taking it at once
   -D, --delay SEC            wait before freezing the screen
@@ -63,10 +65,13 @@ Other:
 Keys, once an area is selected:
   Enter           copy (or what -c, -s and -o say)     Esc     cancel
   Ctrl+C  copy    Ctrl+S  save    Ctrl+Z  undo    Ctrl+Shift+Z  redo
-  V move   A arrow   L line   R rectangle   E ellipse   P pen   H marker
+  V move   A arrow   L line   R rectangle   O oval   P pen   H marker
   T text   N counter   B blur   C colours   I pick a colour off the screen
   F filled   1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
   K rounds the corners of the picture, more each time and then not at all
+  What is drawn is picked out, with the move tool in hand: drag it, or a
+  handle of its box to resize it, or the dot in a rectangle's corner to
+  round it. Shift or Ctrl with a click picks out several.
   Arrows nudge the selection, or the shape picked out; Shift by ten;
   Ctrl+arrows resize. Delete removes the shape picked out. Ctrl+A is the
   whole screen. A right click is the colours.
@@ -88,6 +93,8 @@ pub enum Take {
     Monitor(Option<usize>),
     Window,
     Region(Rect),
+    /// The area the last picture was of.
+    Again,
 }
 
 pub struct Options {
@@ -149,6 +156,7 @@ fn short_flag(flag: char) -> Option<&'static str> {
         'm' => "monitor",
         'w' => "window",
         'g' => "region",
+        'a' => "again",
         'e' => "edit",
         'D' => "delay",
         'c' => "copy",
@@ -180,6 +188,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
             });
         }
         "region" => options.take = Take::Region(parse_region(&value()?)?),
+        "again" => options.take = Take::Again,
         "edit" => options.edit = true,
         "delay" => options.delay = number(value()?, "delay")?,
         "copy" => options.copy = true,

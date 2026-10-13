@@ -10,6 +10,7 @@ hotshot                # freeze the screen and pick an area
 hotshot -f             # the whole screen, saved at once
 hotshot -w -c          # the active window, to the clipboard
 hotshot -g 0,0,800,600 -o shot.png
+hotshot --again        # the same area as last time, at once
 ```
 
 It is made the way jog is, and looks like it: the same font
@@ -59,7 +60,7 @@ With an area selected, a bar of tools appears beside it:
 |---|---|
 | `V` | move: the selection, or a shape, which a click picks out |
 | `A` `L` | arrow, line |
-| `R` `E` | rectangle (rounded), ellipse; `F` fills them |
+| `R` `O` | rectangle (rounded), oval; `F` fills them |
 | `P` `H` | pen, marker |
 | `T` | text: click, type, Enter (Shift+Enter for a new line) |
 | `N` | counter: numbered discs, dragged to point at something |
@@ -67,6 +68,14 @@ With an area selected, a bar of tools appears beside it:
 | `C` `I` | the colours, 24 of Radix's; pick a colour off the screen |
 | `K` | round the corners of the picture itself: 8, 16, 28 pixels, none |
 | `1`-`4`, wheel | width of line, and size of text |
+
+What has just been drawn is picked out, with the move tool in hand, as
+in Figma: drag it to move it, drag a handle of its box to resize it, and
+on a rectangle drag the dot inside a corner to round its corners. The
+pointer over any other shape shows that one's box, and a click picks it
+out; Shift or Ctrl with a click picks out several, to be moved,
+recoloured or deleted together. Only the pen and the marker stay in
+hand after a stroke.
 
 **Enter** or a double click copies the picture to the clipboard,
 **Ctrl+C** copies, **Ctrl+S** saves to `~/Pictures/Screenshots` and

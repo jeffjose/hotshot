@@ -93,7 +93,7 @@ impl Shape {
     }
 
     /// The rectangle between its two points.
-    fn frame(&self) -> (f32, f32, f32, f32) {
+    pub fn frame(&self) -> (f32, f32, f32, f32) {
         let (a, b) = (self.points[0], self.points[self.points.len() - 1]);
         (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs())
     }

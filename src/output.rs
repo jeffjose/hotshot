@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
+use crate::canvas::Rect;
+
 /// A picture as a PNG. Packed quickly rather than small: it is a
 /// screenshot, wanted now, and the difference is a few per cent.
 ///
@@ -68,6 +70,38 @@ pub fn save(dir: &Path, template: &str, png: &[u8]) -> Result<PathBuf, String> {
     unreachable!()
 }
 
+/// Where the area last taken is kept: `$HOTSHOT_STATE`, or `hotshot`
+/// under `$XDG_STATE_HOME` or `~/.local/state`.
+fn last_file() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("HOTSHOT_STATE") {
+        return Some(PathBuf::from(dir).join("last"));
+    }
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local/state")))?;
+    Some(base.join("hotshot/last"))
+}
+
+/// The area the last picture was of, for `--again`.
+pub fn last_area() -> Option<Rect> {
+    let text = std::fs::read_to_string(last_file()?).ok()?;
+    let numbers: Vec<i32> = text.split_whitespace().map(|number| number.parse().ok()).collect::<Option<_>>()?;
+    match numbers[..] {
+        [x, y, w, h] if w > 0 && h > 0 => Some(Rect::new(x, y, w, h)),
+        _ => None,
+    }
+}
+
+/// Keeps the area a picture was of, to be taken again.
+pub fn remember_area(area: Rect) {
+    let Some(file) = last_file() else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, format!("{} {} {} {}\n", area.x, area.y, area.w, area.h));
+}
+
 /// Writes a PNG to a file by name, or to standard output for `-`.
 pub fn save_as(path: &Path, png: &[u8]) -> Result<(), String> {
     if path == Path::new("-") {
@@ -92,6 +126,16 @@ mod tests {
         let info = reader.next_frame(&mut bytes).unwrap();
         assert_eq!((info.width, info.height), (2, 2));
         assert_eq!(&bytes[..12], &[255, 0, 0, 0, 255, 0, 0, 0, 255, 0x12, 0x34, 0x56]);
+    }
+
+    #[test]
+    fn the_area_last_taken_is_kept_for_next_time() {
+        let dir = std::env::temp_dir().join(format!("hotshot-state-{}", std::process::id()));
+        std::env::set_var("HOTSHOT_STATE", &dir);
+        assert_eq!(last_area(), None);
+        remember_area(Rect::new(10, -20, 300, 400));
+        assert_eq!(last_area(), Some(Rect::new(10, -20, 300, 400)));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

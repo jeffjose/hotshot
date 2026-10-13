@@ -84,6 +84,10 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         Take::Pick => None,
         Take::Full => Some(screen),
         Take::Region(area) => Some(Some(area.intersect(screen)).filter(|area| !area.is_empty()).ok_or("that region is not on the screen")?),
+        Take::Again => {
+            let last = output::last_area().ok_or("there is no picture from before to take the area of again")?;
+            Some(Some(last.intersect(screen)).filter(|area| !area.is_empty()).ok_or("the area of the last picture is no longer on the screen")?)
+        }
         Take::Window => Some(display.active_window().map(|window| window.intersect(screen)).filter(|window| !window.is_empty()).ok_or("no window has the keyboard")?),
         Take::Monitor(number) => {
             let monitors = display.monitors();
@@ -120,6 +124,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         },
     };
     trace("picture taken");
+    output::remember_area(area);
 
     let png = output::encode(area.w as u32, area.h as u32, &pixels, rounded)?;
     trace("packed as PNG");
