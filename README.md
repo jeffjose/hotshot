@@ -24,18 +24,23 @@ being launched:
 
 | | |
 |---|---|
-| the frozen screen is showing | 2 ms |
-| ready to be dragged on | 290 ms |
-| a frame while dragging out, resizing or drawing | 3 to 5 ms |
-| a frame while moving a large selection | 14 ms |
+| the frozen screen is showing | 3 ms |
+| answering the pointer and the keys | 10 to 45 ms |
+| the whole screen read | 90 to 360 ms |
+| a frame while dragging out, resizing, moving or drawing | 3 to 5 ms |
 
 The screen is frozen by the X server itself, which copies and darkens
 it without a pixel leaving the graphics card; that is why it is up in
-two milliseconds. Reading those pixels out of the card is what the rest
-of the 290 ms is: 276 ms of it, on this card and driver, for 33 MB. It
-happens behind the frozen screen, and whatever the mouse does meanwhile
-is kept and acted on. On a display that hands its pixels over quickly
-(a 1080p software one, here) hotshot is ready in 16 ms.
+three milliseconds. Reading those pixels out of the card is the slow
+part, on this card and driver: some 250 ms for the 33 MB of a 4K
+screen, give or take a good deal from one run to the next. So it is
+read in 32 strips, those nearest the pointer first, with the pointer
+and the keys seen to between one strip and the next: hotshot answers
+from the first strip, and is never deaf for longer than 14 ms. Where a
+strip has not yet come, what shows is the server's darkened copy, and
+anything to be drawn there is drawn the moment it does. On a display
+that hands its pixels over quickly (a 1080p software one, here) the
+whole of it is read 24 ms after launch.
 
 To measure on your own machine:
 
@@ -138,6 +143,7 @@ be looked at after a change to how it draws.
 |---|---|
 | `main.rs` | the order of things: freeze, read, edit, pack, save, copy |
 | `x11.rs` | the display: the freeze, shared memory, the window, keys |
+| `strips.rs` | reading the frozen screen a strip at a time |
 | `editor.rs` | the selection, the tools, the bar; nothing of X in it |
 | `shapes.rs` | what is drawn, each worked out once as a coverage mask |
 | `canvas.rs` | pixels: rectangles, blending, what changed between frames |

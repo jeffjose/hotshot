@@ -40,6 +40,16 @@ pub enum Buffer {
     Own(Vec<u32>),
 }
 
+impl Buffer {
+    /// What the server knows it by, when it is shared with the server.
+    pub fn segment(&self) -> Option<shm::Seg> {
+        match self {
+            Buffer::Shared { segment, .. } => Some(*segment),
+            Buffer::Own(_) => None,
+        }
+    }
+}
+
 impl Deref for Buffer {
     type Target = [u32];
 
@@ -179,6 +189,15 @@ impl Display {
             }
         }
         Ok(buffer)
+    }
+
+    /// Reads some rows of the frozen screen into their place in shared
+    /// memory: a strip of it, where the whole is a long time coming.
+    pub fn read_rows(&self, into: shm::Seg, rows: std::ops::Range<i32>) -> Result<()> {
+        let from = if self.frozen == NONE { self.root } else { self.frozen };
+        let offset = rows.start as u32 * self.width as u32 * 4;
+        self.conn.shm_get_image(from, 0, rows.start as i16, self.width as u16, (rows.end - rows.start) as u16, !0, Z_PIXMAP, into, offset)?.reply()?;
+        Ok(())
     }
 
     /// Freezes the screen: a copy of it is taken and, darkened by `dim`

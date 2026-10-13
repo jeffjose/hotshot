@@ -519,6 +519,19 @@ impl Editor {
         }
     }
 
+    /// Some rows of the screen have been read, where it is read a strip
+    /// at a time: they are darkened, as the rest were or will be.
+    pub fn arrived(&mut self, rows: std::ops::Range<i32>) {
+        let pixels = (rows.start * self.shot.width) as usize..(rows.end * self.shot.width) as usize;
+        let keep = 256 - self.settings.dim.min(100) * 256 / 100;
+        canvas::darken_into(&mut self.dim[pixels.clone()], &self.shot.pixels[pixels], keep);
+    }
+
+    /// The screen darkened, as far as it has been read.
+    pub fn dimmed(&self) -> &[u32] {
+        &self.dim
+    }
+
     /// Whether anything has changed since the last frame was drawn.
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)

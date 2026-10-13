@@ -11,6 +11,7 @@ use crate::canvas;
 use crate::editor::{Editor, Key, Mods, Shot};
 use crate::options::Options;
 use crate::output;
+use crate::strips::Strips;
 use crate::text::Text;
 use crate::x11::{Display, Result};
 
@@ -42,38 +43,58 @@ pub fn run(mut display: Display, options: Options, font: JoinHandle<Text>, start
         }
     };
     trace("frozen, cursors and keys read");
-    let before = Instant::now();
-    let shot = display.capture()?;
-    let read = before.elapsed();
-    trace("screen read");
-    let mut dimmed = vec![0u32; shot.len()];
-    canvas::darken_into(&mut dimmed, &shot, 256 - dim * 256 / 100);
-    trace("darkened");
-    let mut frame = display.buffer();
-    canvas::copy_into(&mut frame, &dimmed);
-    trace("frame buffer made");
-    if !by_server {
-        display.show(&frame)?;
-        frozen = started.elapsed();
-        display.prepare()?;
-    }
-
     let (width, height) = (display.width, display.height);
-    let dim = dimmed;
-    let (monitors, windows) = (display.monitors(), display.windows());
-    trace("monitors and windows asked after");
+    let (monitors, windows, pointer) = (display.monitors(), display.windows(), display.pointer());
+    let mut shot = display.buffer();
+    let mut frame = display.buffer();
+    let mut dimmed = vec![0u32; shot.len()];
+    let before = Instant::now();
+    let mut strips = match (by_server, shot.segment()) {
+        (true, Some(segment)) => Strips::new(segment, width, height, pointer.1),
+        _ => {
+            shot = display.capture()?;
+            canvas::darken_into(&mut dimmed, &shot, 256 - dim * 256 / 100);
+            canvas::copy_into(&mut frame, &dimmed);
+            if !by_server {
+                display.show(&frame)?;
+                frozen = started.elapsed();
+                display.prepare()?;
+            }
+            let mut all = Strips::new(0, width, height, 0);
+            all.have_all();
+            all
+        }
+    };
     let text = font.join().map_err(|_| "the font could not be read")?;
     let shot = Shot { width, height, pixels: Box::new(shot) };
-    let mut editor = Editor::new(shot, dim, monitors, windows, options.settings.clone(), text);
+    let mut editor = Editor::new(shot, dimmed, monitors, windows, options.settings.clone(), text);
+    editor.pointer_moved(pointer.0, pointer.1, Mods::default());
     let mut back = vec![0u32; frame.len()];
     trace("editor made");
-    // The first frame: over the server's darkened screen go only the
-    // parts of it that are not that.
-    editor.draw(&mut back);
-    trace("first frame drawn");
-    let parts = canvas::changed(&back, &mut frame, width as usize);
-    display.present(&frame, &parts)?;
-    trace("first frame up");
+    // As in earnest: a strip, then whatever the pointer has done, a
+    // frame for every few strips; the first frame as soon as there is
+    // a strip to draw it in.
+    let (mut answering, mut longest, mut unseen) = (None, Duration::ZERO, 0);
+    loop {
+        let began = Instant::now();
+        if !strips.done() {
+            strips.read(&display, &mut editor, &mut frame)?;
+            unseen += 1;
+        }
+        if answering.is_none() || unseen >= 4 || strips.done() {
+            unseen = 0;
+            editor.draw(&mut back);
+            let parts = strips.changed(&back, &mut frame);
+            display.present(&frame, &parts)?;
+            answering.get_or_insert(started.elapsed());
+        }
+        longest = longest.max(began.elapsed());
+        if strips.done() {
+            break;
+        }
+    }
+    let read = before.elapsed();
+    trace("screen read");
     let ready = started.elapsed();
     let mut frames = |editor: &mut Editor, display: &Display, times: &mut Vec<Duration>| -> Result<()> {
         let began = Instant::now();
@@ -88,7 +109,8 @@ pub fn run(mut display: Display, options: Options, font: JoinHandle<Text>, start
     println!("Starting, from the process being launched:");
     println!("  {:<34} {:>7.1?}", "display opened", opened);
     println!("  {:<34} {:>7.1?}", "frozen screen showing", frozen);
-    println!("  {:<34} {:>7.1?}   (the screen read out of the server: {read:.1?})", "ready to be dragged on", ready);
+    println!("  {:<34} {:>7.1?}", "answering the pointer and keys", answering.unwrap_or(ready));
+    println!("  {:<34} {:>7.1?}   (reading it took {read:.1?}; never deaf for longer than {longest:.1?})", "the whole screen read", ready);
 
     // The pointer wandering before anything is selected, the magnifier
     // and the window under it following.

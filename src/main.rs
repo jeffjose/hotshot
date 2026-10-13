@@ -5,6 +5,7 @@ mod editor;
 mod options;
 mod output;
 mod shapes;
+mod strips;
 mod text;
 mod x11;
 
@@ -14,6 +15,7 @@ use std::time::{Duration, Instant};
 use canvas::Rect;
 use editor::{Editor, Finish, Outcome, Shot};
 use options::{Options, Parsed, Take};
+use strips::Strips;
 use text::Text;
 use x11::{Display, Input};
 
@@ -161,25 +163,38 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
         grabbed = display.grab();
     }
     // Now the pixels, which on some graphics cards are a while coming.
-    let shot = display.capture()?;
-    trace("screen read");
-    let mut dimmed = vec![0u32; shot.len()];
-    canvas::darken_into(&mut dimmed, &shot, 256 - dim * 256 / 100);
-    let mut frame = display.buffer();
-    canvas::copy_into(&mut frame, &dimmed);
-    if !frozen {
-        display.show(&frame)?;
-        trace("frozen screen up");
-        display.prepare()?;
-        grabbed = display.grab();
-    }
-
-    let shot = Shot { width: display.width, height: display.height, pixels: Box::new(shot) };
+    // Where the screen is frozen in the server and its memory shared,
+    // they are read a strip at a time, the editor up and answering the
+    // pointer from the first of them. Otherwise all at once, and then
+    // the window.
     let (monitors, windows, pointer) = (display.monitors(), display.windows(), display.pointer());
+    let (width, height) = (display.width, display.height);
+    let mut shot = display.buffer();
+    let mut frame = display.buffer();
+    let mut dimmed = vec![0u32; shot.len()];
+    let mut strips = match (frozen, shot.segment()) {
+        (true, Some(segment)) => Strips::new(segment, width, height, pointer.1),
+        _ => {
+            shot = display.capture()?;
+            trace("screen read");
+            canvas::darken_into(&mut dimmed, &shot, 256 - dim * 256 / 100);
+            canvas::copy_into(&mut frame, &dimmed);
+            if !frozen {
+                display.show(&frame)?;
+                trace("frozen screen up");
+                display.prepare()?;
+                grabbed = display.grab();
+            }
+            // Every strip had already: nothing more to read.
+            let mut all = Strips::new(0, width, height, 0);
+            all.have_all();
+            all
+        }
+    };
+
+    let shot = Shot { width, height, pixels: Box::new(shot) };
     let text = font.join().map_err(|_| "the font could not be read")?;
-    let width = shot.width as usize;
-    let dim = dimmed;
-    let mut editor = Editor::new(shot, dim, monitors, windows, options.settings.clone(), text);
+    let mut editor = Editor::new(shot, dimmed, monitors, windows, options.settings.clone(), text);
     editor.pointer_moved(pointer.0, pointer.1, editor::Mods::default());
     if let Some(area) = named {
         editor.select(area);
@@ -188,22 +203,35 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
     trace("editor ready");
 
     let mut first = true;
+    // How many strips have come since a frame was last drawn: drawing
+    // one is not nothing, and is not done for every strip.
+    let mut unseen = 0;
     let how = 'events: loop {
-        if editor.take_dirty() {
+        if !strips.done() {
+            strips.read(display, &mut editor, &mut frame)?;
+            unseen += 1;
+            if strips.done() {
+                trace("screen read");
+            }
+        }
+        if editor.take_dirty() || unseen >= 4 || (unseen > 0 && strips.done()) {
+            unseen = 0;
             editor.draw(&mut back);
-            let parts = canvas::changed(&back, &mut frame, width);
             // Only what has changed goes up, the first time too: under
             // it is the screen as the server darkened it, which is the
             // screen as it was darkened here to within a shade, and a
             // whole 4K frame is a long time going up.
+            let parts = strips.changed(&back, &mut frame);
             display.present(&frame, &parts)?;
             if std::mem::take(&mut first) {
                 trace("first frame of the editor up");
             }
         }
         display.set_cursor(editor.cursor());
-        // Until the keyboard is had, it is asked for again every so often.
-        let inputs = display.inputs(if grabbed { None } else { Some(20) })?;
+        // With strips still to come, only what is already waiting is
+        // heard, and then the next strip is read. Until the keyboard is
+        // had, it is asked for again every so often.
+        let inputs = display.inputs(if !strips.done() { Some(0) } else if grabbed { None } else { Some(20) })?;
         if !grabbed {
             grabbed = display.grab();
         }
@@ -230,9 +258,10 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
                     editor.released()
                 }
                 Input::Key(key, mods) => editor.key(key, mods),
-                // Whatever was over the window has gone: all of it again.
+                // Whatever was over the window has gone: all of it
+                // again, as far as it has been read.
                 Input::Expose => {
-                    display.present(&frame, &[Rect::new(0, 0, display.width, display.height)])?;
+                    display.present(&frame, &strips.had())?;
                     Outcome::Continue
                 }
                 _ => Outcome::Continue,
@@ -252,6 +281,11 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
     // Down at once: the packing and saving are not to be watched.
     display.hide();
     trace("window down");
+    // A picture asked for before all of the screen had been read waits
+    // for the rest of it.
+    while how.is_some() && !strips.done() {
+        strips.read(display, &mut editor, &mut frame)?;
+    }
     if options.remember {
         options::remember_tools(&editor.in_hand());
     }
