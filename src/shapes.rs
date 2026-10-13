@@ -72,6 +72,9 @@ pub struct Shape {
     pub font_px: u32,
     /// Which of the faces its text is in, counted from 0.
     pub face: usize,
+    /// Whether a line has an arrow's head at its first end and at its
+    /// last: an arrow is a line with one at its last.
+    pub heads: [bool; 2],
     pub number: u32,
     mask: RefCell<Option<Rc<Mask>>>,
 }
@@ -79,7 +82,7 @@ pub struct Shape {
 impl Shape {
     pub fn new(tool: Tool, color: u32, stroke: f32, at: Point) -> Shape {
         let points = if matches!(tool, Tool::Pen | Tool::Marker | Tool::Text) { vec![at] } else { vec![at, at] };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, number: 0, mask: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], number: 0, mask: RefCell::new(None) }
     }
 
     /// To be called when anything about its outline has changed.
@@ -144,7 +147,7 @@ impl Shape {
     /// The rectangle its outline is worked out over.
     fn extent(&self) -> Rect {
         let margin = match self.tool {
-            Tool::Arrow => self.head().0 + self.stroke,
+            Tool::Arrow | Tool::Line if self.heads != [false, false] => self.head().0 + self.stroke,
             Tool::Counter => self.disc(),
             Tool::Pen | Tool::Marker => self.line_width() / 2.0,
             _ => self.stroke / 2.0,
@@ -160,14 +163,17 @@ impl Shape {
     /// The length of an arrow's head and half its width.
     fn head(&self) -> (f32, f32) {
         let (a, b) = (self.points[0], self.points[1]);
-        let length = (self.stroke * 3.2 + 9.0).min((a.0 - b.0).hypot(a.1 - b.1) * 0.7).max(1.0);
+        // No longer than most of the line; or with a head at each end,
+        // than a little under half of it, so that they do not meet.
+        let most = if self.heads == [true, true] { 0.45 } else { 0.7 };
+        let length = (self.stroke * 3.2 + 9.0).min((a.0 - b.0).hypot(a.1 - b.1) * most).max(1.0);
         (length, length * 0.46)
     }
 
     /// What its outline is worked out from.
     fn outline(&self) -> Outline {
         let (a, b) = (self.points[0], self.points[self.points.len() - 1]);
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head: self.head(), disc: self.disc() }
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head: self.head(), heads: self.heads, disc: self.disc() }
     }
 }
 
@@ -182,6 +188,7 @@ struct Outline {
     filled: bool,
     radius: f32,
     head: (f32, f32),
+    heads: [bool; 2],
     disc: f32,
 }
 
@@ -193,20 +200,28 @@ impl Outline {
         let (a, b) = (self.a, self.b);
         let half = self.stroke / 2.0;
         match self.tool {
-            Tool::Line => segment((x, y), a, b) - half,
-            Tool::Arrow => {
+            Tool::Line | Tool::Arrow => {
                 let length = (b.0 - a.0).hypot(b.1 - a.1);
-                if length < 0.5 {
+                if length < 0.5 || self.heads == [false, false] {
                     return segment((x, y), a, b) - half;
                 }
                 let (dx, dy) = ((b.0 - a.0) / length, (b.1 - a.1) / length);
                 let (head, wide) = self.head;
-                let base = (b.0 - dx * head, b.1 - dy * head);
-                // The shaft stops inside the head, whose point would
-                // otherwise be blunted by the shaft's round end.
-                let shaft = segment((x, y), a, (b.0 - dx * head * 0.8, b.1 - dy * head * 0.8)) - half;
-                let barbs = triangle((x, y), b, (base.0 - dy * wide, base.1 + dx * wide), (base.0 + dy * wide, base.1 - dx * wide)) - 0.6;
-                shaft.min(barbs)
+                // A head at an end: its point there, its barbs back
+                // along the line. The shaft stops inside it, where its
+                // round end would otherwise blunt the point.
+                let (mut from, mut to, mut nearest) = (a, b, f32::MAX);
+                if self.heads[1] {
+                    let base = (b.0 - dx * head, b.1 - dy * head);
+                    nearest = nearest.min(triangle((x, y), b, (base.0 - dy * wide, base.1 + dx * wide), (base.0 + dy * wide, base.1 - dx * wide)) - 0.6);
+                    to = (b.0 - dx * head * 0.8, b.1 - dy * head * 0.8);
+                }
+                if self.heads[0] {
+                    let base = (a.0 + dx * head, a.1 + dy * head);
+                    nearest = nearest.min(triangle((x, y), a, (base.0 - dy * wide, base.1 + dx * wide), (base.0 + dy * wide, base.1 - dx * wide)) - 0.6);
+                    from = (a.0 + dx * head * 0.8, a.1 + dy * head * 0.8);
+                }
+                nearest.min(segment((x, y), from, to) - half)
             }
             Tool::Rect => {
                 let (left, top, w, h) = (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs());

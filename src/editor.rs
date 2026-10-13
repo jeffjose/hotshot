@@ -318,7 +318,7 @@ enum Drag {
     /// The same of the picture's own corners, by a dot in the selection's.
     Curve { corner: (i32, i32), slack: i32 },
     /// Taking one end of a line somewhere else.
-    End { index: usize, point: usize },
+    End { index: usize, point: usize, from: (i32, i32), moved: bool },
     /// Dragging out a box, with Shift or Ctrl held, to pick out the
     /// shapes it touches.
     Marquee { from: (i32, i32) },
@@ -382,6 +382,8 @@ pub struct Editor {
     caret: usize,
     /// Which of the faces text is typed in.
     face: usize,
+    /// Which ends of an arrow have heads: its first, and its last.
+    heads: [bool; 2],
     popup: Option<Anchor>,
     /// Picking a color off the screen.
     pipette: bool,
@@ -457,6 +459,7 @@ impl Editor {
             scaling: None,
             editing: None,
             caret: 0,
+            heads: [false, true],
             popup: None,
             pipette: false,
             hover: Target::Outside,
@@ -861,7 +864,13 @@ impl Editor {
                 self.shapes[index] = shape;
                 self.dirty = true;
             }
-            Drag::End { index, point } => {
+            Drag::End { index, point, from, moved } => {
+                // Until it has gone far enough to be meant, it is a
+                // click on the end, which is something else.
+                *moved |= (at.0 - from.0).abs().max((at.1 - from.1).abs()) >= DRAG_AFTER;
+                if !*moved {
+                    return;
+                }
                 let (index, point) = (*index, *point);
                 let to = (at.0 as f32 + 0.5, at.1 as f32 + 0.5);
                 let shape = &mut self.shapes[index];
@@ -987,7 +996,7 @@ impl Editor {
             Target::End(point) => {
                 if let Some(index) = self.picked() {
                     self.checkpoint();
-                    self.drag = Drag::End { index, point };
+                    self.drag = Drag::End { index, point, from: at, moved: false };
                 }
             }
             Target::Grip(across, down) => {
@@ -1094,6 +1103,9 @@ impl Editor {
                 shape.filled = self.filled;
                 shape.radius = self.settings.radius * self.scale();
                 shape.font_px = self.font_px();
+                if tool == Tool::Arrow {
+                    shape.heads = self.heads;
+                }
                 shape.number = self.shapes.iter().filter(|shape| shape.tool == Tool::Counter).count() as u32 + 1;
                 self.shapes.push(shape);
                 self.selected.clear();
@@ -1134,6 +1146,21 @@ impl Editor {
                 }
             }
             Drag::Scale { .. } => self.scaling = None,
+            // A click on an end of a line or an arrow, not a drag of it,
+            // gives that end an arrow's head, or takes it away; and the
+            // arrows drawn after have theirs where this one now does.
+            Drag::End { index, point, moved: false, .. } => {
+                let shape = &mut self.shapes[index];
+                if matches!(shape.tool, Tool::Arrow | Tool::Line) {
+                    shape.heads[point] = !shape.heads[point];
+                    shape.touch();
+                    if shape.tool == Tool::Arrow && shape.heads != [false, false] {
+                        self.heads = shape.heads;
+                    }
+                } else {
+                    self.undo.pop();
+                }
+            }
             Drag::Marquee { from } => {
                 let reach = Rect::spanning(from, self.pointer);
                 for index in 0..self.shapes.len() {
@@ -2212,6 +2239,27 @@ mod tests {
         assert_eq!(editor.target_at((400, 300)), Target::End(1));
         drag(&mut editor, (400, 300), (500, 250));
         assert_eq!(editor.shapes[0].points, [(200.5, 200.5), (500.5, 250.5)]);
+
+        // A click on an end, where a drag takes it elsewhere, gives it
+        // a head or takes its head away: one at each end, here, and the
+        // next arrow drawn has the same. Each click is a step to undo.
+        assert_eq!(editor.shapes[0].heads, [false, true]);
+        click(&mut editor, (200, 200), 40_000);
+        assert_eq!((editor.shapes[0].heads, editor.shapes[0].points[0], editor.undo.len()), ([true, true], (200.5, 200.5), 3));
+        let mut pixels = vec![0u32; 1600 * 900];
+        editor.shapes[0].draw(&mut Canvas::new(&mut pixels, 1600, 900), &mut editor.text);
+        // The head at the first end is as wide as the one at the last,
+        // which a line's end alone is not.
+        let across = |x: usize| (150..260).filter(|&y| pixels[y * 1600 + x] != 0).count();
+        assert!(across(208) > 6 && across(350) <= 5, "{} {}", across(208), across(350));
+        editor.key(Key::Char('a'), PLAIN);
+        drag(&mut editor, (300, 500), (500, 600));
+        assert_eq!(editor.shapes[1].heads, [true, true]);
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        // Back to one head, at its last end, as arrows have to begin with.
+        click(&mut editor, (200, 200), 45_000);
+        click(&mut editor, (200, 200), 50_000);
+        assert_eq!(editor.shapes[0].heads, [false, true]);
 
         // Ctrl+D is a copy of it, a little down and to the right, and
         // the copy is what is picked out.

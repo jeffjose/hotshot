@@ -87,7 +87,10 @@ pointer over any other shape shows that one's box, and a click picks it
 out; Shift or Ctrl with a click picks out several, to be moved,
 recolored or deleted together, and with a drag from empty space picks
 out all that a box touches. A line or an arrow picked out has a dot at
-each end, and is reshaped by either. **Ctrl+D** is a copy of what is
+each end: dragged, it takes that end elsewhere; clicked, it gives that
+end an arrow's head or takes it away, so that an arrow can point both
+ways, or the other way, and the arrows drawn after it do the same.
+**Ctrl+D** is a copy of what is
 picked out. Only the pen, the marker and the counter stay in hand: the
 first two for the next stroke, the counter for putting down 1, 2, 3 one
 after another.

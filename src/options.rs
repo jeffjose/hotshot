@@ -90,7 +90,8 @@ Keys, once an area is selected:
   picture as it is dragged in; K does it by steps, and then not at all
   What is drawn is picked out, with the move tool in hand: drag it, or a
   handle of its box to resize it, or the dot in a rectangle's corner to
-  round it; a line or an arrow, by either of its ends. Shift or Ctrl with
+  round it; a line or an arrow, by either of its ends, and a click on an
+  end gives it an arrow's head or takes it away. Shift or Ctrl with
   a click picks out several, and with a drag from empty space all that a
   box touches. Ctrl+D is a copy of what is picked out.
   Arrows nudge the selection, or the shape picked out; Shift by ten;
