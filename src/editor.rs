@@ -966,11 +966,12 @@ impl Editor {
                 if self.shapes.last().is_some_and(Shape::is_slight) {
                     self.shapes.pop();
                     self.undo.pop();
-                } else if !matches!(self.tool, Tool::Pen | Tool::Marker) {
+                } else if !matches!(self.tool, Tool::Pen | Tool::Marker | Tool::Counter) {
                     // What has just been drawn is picked out, with the
                     // move tool in hand, to be put right at once. Not so
                     // a stroke of the pen, of which there are usually
-                    // more to come.
+                    // more to come, nor a counter, which is for putting
+                    // down 1, 2, 3 one after another.
                     self.made(self.shapes.len() - 1);
                 }
             }
@@ -1807,6 +1808,16 @@ mod tests {
         editor.key(Key::Char('p'), PLAIN);
         drag(&mut editor, (700, 600), (760, 640));
         assert_eq!((editor.tool, editor.selected.len()), (Tool::Pen, 0));
+        // So does a counter, and each one put down counts one more.
+        editor.key(Key::Char('n'), PLAIN);
+        for (at, time) in [((150, 150), 20_000), ((150, 250), 30_000), ((150, 350), 40_000)] {
+            click(&mut editor, at, time);
+        }
+        let numbers: Vec<u32> = editor.shapes.iter().filter(|shape| shape.tool == Tool::Counter).map(|shape| shape.number).collect();
+        assert_eq!((editor.tool, numbers), (Tool::Counter, vec![1, 2, 3]));
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
         editor.key(Key::Char('v'), PLAIN);
         editor.pointer_moved(730, 620, PLAIN);
         assert_eq!(editor.hovered, Some(1));

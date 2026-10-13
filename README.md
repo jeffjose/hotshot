@@ -75,8 +75,9 @@ in Figma: drag it to move it, drag a handle of its box to resize it, and
 on a rectangle drag the dot inside a corner to round its corners. The
 pointer over any other shape shows that one's box, and a click picks it
 out; Shift or Ctrl with a click picks out several, to be moved,
-recoloured or deleted together. Only the pen and the marker stay in
-hand after a stroke.
+recoloured or deleted together. Only the pen, the marker and the counter
+stay in hand: the first two for the next stroke, the counter for
+putting down 1, 2, 3 one after another.
 
 **Enter** or a double click copies the picture to the clipboard,
 **Ctrl+C** copies, **Ctrl+S** saves to `~/Pictures/Screenshots` and
