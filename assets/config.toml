@@ -59,9 +59,28 @@
 # magnifier = false
 
 # The face text is typed in to begin with: "geist" (or "sans"),
-# "instrument-serif" ("serif"), "architects-daughter" ("hand") or
-# "fira-code" ("mono"). G goes from each to the next.
+# "instrument-serif" ("serif"), "architects-daughter" ("hand"),
+# "fira-code" ("mono") or "anton" ("impact"). G goes from each to the
+# next.
 # font = "geist"
+
+# Other folders Save can save to, as well as dir: as many of these
+# lines as there are folders. The arrow beside Save lists them, and the
+# one chosen is the one Save saves to from then on.
+# place = "~/Pictures/work"
+# place = "~/Documents/bugs"
+
+# The picture set in a frame every time: on a backdrop (dusk, ocean,
+# sunset, mint, peach, violet, slate, paper), with room round it (0 to
+# 3, or a number of pixels), and a shadow. Without these it is plain,
+# and a frame is something chosen for one picture with W.
+# backdrop = "none"
+# padding = 0
+# shadow = false
+
+# A picture of your own to set pictures on, a PNG or a JPEG: the box of
+# backdrops has a button for it when this is set.
+# photo = "~/Pictures/backdrop.jpg"
 
 # Rectangles and ovals filled to begin with.
 # filled = false

@@ -12,6 +12,9 @@ hotshot -w -c          # the active window, to the clipboard
 hotshot -g 0,0,800,600 -o shot.png
 hotshot --again        # the same area as last time, at once
                        # (--last and --repeat say the same)
+hotshot --reopen       # the last picture, with its shapes still to be moved
+hotshot -i             # list the windows, and take the one whose number is typed
+hotshot -t calculator  # the window with that in its title
 ```
 
 It is made the way jog is, and looks like it: the same font
@@ -72,10 +75,14 @@ With an area selected, a bar of tools appears beside it:
 | `R` `O` | rectangle (rounded), oval; `F` fills them |
 | `P` `H` | pen, marker |
 | `T` | text: click and type; Enter is a new line, Ctrl+Enter or Esc ends it; arrows, Home, End and a click move the caret, Ctrl+V pastes |
-| `G` | the next font: Geist, Instrument Serif, Architects Daughter, Fira Code |
+| `G` | the next font: Geist, Instrument Serif, Architects Daughter, Fira Code, Anton (for captions) |
 | `N` | counter: numbered discs, dragged to point at something |
 | `B` | blur: a mosaic over what should not be read |
 | `S` | spotlight: everything but a rectangle of the picture darkened |
+| `Z` | zoom: a part of the picture shown again beside itself, larger, in a round lens; `F` makes it square, and the dots at its corners move it and say how many times larger |
+| `J` | badges and stickers: a word (Bug, Fixed, New...) in one of six looks and eight hues, typed over with a double click; and emoji |
+| `W` | the frame: a backdrop of two colors, or a photograph (the die is one nobody chose), room round the picture, and a shadow. It shows round the selection; drag it wider, click it for the choices |
+| `D` | lines and arrows in dashes |
 | `C` `I` | the colors, 24 of Radix's; pick a color off the screen |
 | `K` | round the corners of the picture itself: 8, 16, 28 pixels, none; or drag the dot inside a corner of the selection |
 | `1`-`4`, wheel | width of line, and size of text |
@@ -95,9 +102,20 @@ picked out. Only the pen, the marker and the counter stay in hand: the
 first two for the next stroke, the counter for putting down 1, 2, 3 one
 after another.
 
-The color, width of line, roundness, fill and font in hand when hotshot
-is closed are the ones in hand when it is next opened; `--no-remember`,
-or `remember = false`, begins with what the config file says every time.
+The color, width of line, roundness of a drawn rectangle, fill and font
+in hand when hotshot is closed are the ones in hand when it is next
+opened; `--no-remember`, or `remember = false`, begins with what the
+config file says every time. The frame and the picture's rounded corners
+are not kept: a plain picture is what is taken unless it is asked
+otherwise that time.
+
+An edge of the selection goes to the edge of a window when it comes
+near one; Ctrl held leaves it where it is put. Emoji typed or pasted
+into text are drawn in color, from the system's Noto Color Emoji.
+
+Save has an arrow beside it that lists the folders it can save to: the
+usual one, and each `place = "folder"` the config file names. The one
+chosen is where Save saves from then on.
 
 **Enter** or a double click copies the picture to the clipboard,
 **Ctrl+C** copies, **Ctrl+S** saves to `~/Pictures/Screenshots` and

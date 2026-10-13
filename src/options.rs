@@ -70,7 +70,15 @@ Look:
                              off: not at all, and a click takes no window
       --font NAME            the face text is typed in to begin with: geist
                              (sans, the default), instrument-serif (serif),
-                             architects-daughter (hand) or fira-code (mono)
+                             architects-daughter (hand), fira-code (mono)
+                             or anton (impact), which is for captions
+      --backdrop NAME        set the picture on a backdrop: dusk, ocean,
+                             sunset, mint, peach, violet, slate or paper
+      --padding N            with this much room round it: 0 to 3, or past
+                             that so many pixels
+      --shadow               and a shadow under it
+      --photo FILE           a PNG or JPEG of your own to set it on, which
+                             the box of backdrops then offers
       --filled               rectangles and ovals filled to begin with
       --no-remember          begin with the color, width, roundness, fill
                              and font the config file says, not the ones
@@ -90,10 +98,12 @@ Keys, once an area is selected:
   Enter           copy (or what -c, -s and -o say)     Esc     cancel
   Ctrl+C  copy    Ctrl+S  save    Ctrl+Z  undo    Ctrl+Shift+Z  redo
   V move   A arrow   L line   R rectangle   O oval   P pen   H marker
-  T text   N counter   B blur   S spotlight   G the next font
+  T text   N counter   B blur   S spotlight   Z zoom   G the next font
+  J badges and stickers   W backdrop, room and shadow   D dashes
   C colors   I pick a color off the screen
   In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends
-  it; the arrows, Home, End and a click move the caret; Ctrl+V pastes
+  it; the arrows, Home, End and a click move the caret; Ctrl+V pastes;
+  Ctrl+A picks all of it out, to be typed over
   F filled   1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
   The dot inside each corner of the selection rounds the corners of the
   picture as it is dragged in; K does it by steps, and then not at all
@@ -103,6 +113,13 @@ Keys, once an area is selected:
   end gives it an arrow's head or takes it away. Shift or Ctrl with
   a click picks out several, and with a drag from empty space all that a
   box touches. Ctrl+D is a copy of what is picked out.
+  A zoom is round, and F makes one square; the dots at its two corners
+  move its larger picture and say how many times larger. A badge is
+  typed over with a double click.
+  The frame shows round the selection: drag it wider or narrower, and
+  click it for the backdrops, a photograph nobody chose, and the shadow.
+  An edge of the selection goes to the edge of a window near it; Ctrl
+  held leaves it where it is put.
   Arrows nudge the selection, or the shape picked out; Shift by ten;
   Ctrl+arrows resize. Delete removes the shape picked out. Ctrl+A is the
   whole screen. A right click is the colors.
