@@ -733,6 +733,21 @@ mod tests {
     }
 
     #[test]
+    fn a_shape_written_down_is_read_back_the_same() {
+        let mut arrow = Shape::new(Tool::Arrow, 0x0090FF, 3.5, (10.5, 20.0));
+        (arrow.points[1], arrow.heads, arrow.dashed) = ((-4.0, 99.25), [true, true], true);
+        let mut badge = Shape::new(Tool::Badge, 0xE54D2E, 2.0, (5.0, 6.0));
+        (badge.text, badge.fill, badge.number, badge.face, badge.font_px) = ("two\nlines \\ and a slash".to_owned(), 0xFEEBE7, 4, 2, 26);
+        for shape in [arrow, badge] {
+            let back = Shape::read(&shape.write()).expect("read back");
+            assert_eq!((back.tool, back.color, back.points.clone(), back.text.as_str()), (shape.tool, shape.color, shape.points.clone(), shape.text.as_str()));
+            assert_eq!((back.heads, back.dashed, back.fill, back.number, back.face, back.font_px, back.stroke), (shape.heads, shape.dashed, shape.fill, shape.number, shape.face, shape.font_px, shape.stroke));
+        }
+        assert!(Shape::read("nonsense").is_none());
+        assert!(Shape::read("arrow\tzz\t1\t0\t0\t16\t0\t01\t0\tFFFFFF\t0\t1,2 3,4\t").is_none());
+    }
+
+    #[test]
     fn shift_makes_squares_and_straight_lines() {
         assert_eq!(constrained(Tool::Rect, (0.0, 0.0), (30.0, -10.0)), (30.0, -30.0));
         let (x, y) = constrained(Tool::Line, (0.0, 0.0), (100.0, 8.0));

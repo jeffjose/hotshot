@@ -106,10 +106,17 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         chosen = Some((found.0, found.2.intersect(screen)));
     }
     // What was asked for by name is known already.
+    let mut reopened = None;
     let named = match options.take {
         Take::Pick => None,
         Take::Full => Some(screen),
         Take::Region(area) => Some(Some(area.intersect(screen)).filter(|area| !area.is_empty()).ok_or("that region is not on the screen")?),
+        Take::Reopen => {
+            let kept = output::kept_for_reopening().ok_or("there is no picture from before to open again")?;
+            let area = kept.0.kept_within(screen).intersect(screen);
+            reopened = Some(kept);
+            Some(area)
+        }
         Take::Again => {
             let last = output::last_area().ok_or("there is no picture from before to take the area of again")?;
             Some(Some(last.intersect(screen)).filter(|area| !area.is_empty()).ok_or("the area of the last picture is no longer on the screen")?)
@@ -160,9 +167,9 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                 (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, None);
                 alpha = !matches!(frame.backdrop, frame::Backdrop::Gradient(_));
             }
-            Taken { area, width, height, pixels, alpha, how, place: options.settings.place }
+            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None }
         }
-        (named, _) => match pick(&mut display, named, &options, font, &trace)? {
+        (named, _) => match pick(&mut display, named, reopened, &options, font, &trace)? {
             Some(taken) => taken,
             None => return Ok(ExitCode::from(1)),
         },
@@ -181,6 +188,11 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             None => println!("{}", output::save(dir, &options.filename, &png)?.display()),
         }
         trace("saved");
+    }
+    // What it takes to open this one again, for `--reopen`.
+    if let Some((area, pixels, shapes)) = &taken.keep {
+        output::keep_for_reopening(*area, pixels, shapes);
+        trace("kept to be opened again");
     }
     if how.copy {
         clipboard::offer(display, png)?;
@@ -201,12 +213,16 @@ struct Taken {
     alpha: bool,
     how: Finish,
     place: usize,
+    /// What it takes to come back to it: the area, what was there
+    /// before anything was drawn, and the shapes. For one that was
+    /// drawn on at all.
+    keep: Option<(Rect, Vec<u32>, String)>,
 }
 
 /// Freezes the screen and lets an area be dragged out and drawn on.
 /// Gives the area, the picture of it, and what is to be done with it;
 /// or nothing, if it was called off.
-fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<Taken>> {
+fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, frame::Photo, Vec<shapes::Shape>)>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<Taken>> {
     // The first frame is the screen darkened and nothing else: it is
     // what says hotshot has started, and the server makes it of its own
     // copy of the screen, without a pixel having come here. The keyboard
@@ -232,12 +248,23 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
     let mut frame = display.buffer();
     let mut dimmed = vec![0u32; shot.len()];
     let mut strips = match (frozen, shot.segment()) {
-        (true, Some(segment)) => Strips::new(segment, width, height, pointer.1),
+        (true, Some(segment)) if reopened.is_none() => Strips::new(segment, width, height, pointer.1),
         _ => {
             shot = display.capture()?;
             trace("screen read");
+            // A picture come back to is put where it was, over the
+            // screen as it is now: all that is left of how it was then.
+            if let (Some(area), Some((_, photo, _))) = (named, &reopened) {
+                for row in 0..area.h.min(photo.height) {
+                    let across = area.w.min(photo.width) as usize;
+                    shot[((area.y + row) * width + area.x) as usize..][..across].copy_from_slice(&photo.pixels[(row * photo.width) as usize..][..across]);
+                }
+            }
             canvas::darken_into(&mut dimmed, &shot, 256 - dim * 256 / 100);
             canvas::copy_into(&mut frame, &dimmed);
+            if let (true, Some(area), true) = (frozen, named, reopened.is_some()) {
+                display.present(&frame, &[area])?;
+            }
             if !frozen {
                 display.show(&frame)?;
                 trace("frozen screen up");
@@ -257,6 +284,9 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
     editor.pointer_moved(pointer.0, pointer.1, editor::Mods::default());
     if let Some(area) = named {
         editor.select(area);
+    }
+    if let Some((_, _, shapes)) = reopened {
+        editor.restore(shapes);
     }
     let mut back = vec![0u32; frame.len()];
     trace("editor ready");
@@ -360,6 +390,6 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
     if options.remember {
         options::remember_tools(&editor.in_hand(), options.places.get(editor.place()).map(|place| place.as_path()));
     }
-    let place = editor.place();
-    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place })))
+    let (place, keep) = (editor.place(), editor.keepsake());
+    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, keep })))
 }

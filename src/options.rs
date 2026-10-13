@@ -27,6 +27,8 @@ What to take:
   -a, --again                the same area as the last picture was of,
                              however that one was taken; --last and
                              --repeat say the same
+  -r, --reopen               the last picture again, where it was, with what
+                             was drawn on it still to be moved and changed
   -e, --edit                 with any of those: open with that area selected,
                              to be drawn on, rather than taking it at once
   -D, --delay SEC            wait before freezing the screen
@@ -128,6 +130,8 @@ pub enum Take {
     Region(Rect),
     /// The area the last picture was of.
     Again,
+    /// The last picture itself, with what was drawn on it, to go on with.
+    Reopen,
 }
 
 pub struct Options {
@@ -200,6 +204,7 @@ fn short_flag(flag: char) -> Option<&'static str> {
         'm' => "monitor",
         'w' => "window",
         'i' => "choose",
+        'r' => "reopen",
         't' => "title",
         'g' => "region",
         'a' => "again",
@@ -237,6 +242,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         }
         "region" => options.take = Take::Region(parse_region(&value()?)?),
         "again" | "last" | "repeat" => options.take = Take::Again,
+        "reopen" => (options.take, options.edit) = (Take::Reopen, true),
         "edit" => options.edit = true,
         "delay" => options.delay = number(value()?, "delay")?,
         "copy" => options.copy = true,

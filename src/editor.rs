@@ -493,6 +493,11 @@ pub struct Editor {
     surround: Option<(String, i32, Vec<u32>)>,
     /// Which of the words the next badge says.
     word: usize,
+    /// Where the edges of the windows and the monitors are, across and
+    /// down: what an edge of the selection goes to when it is near.
+    edges: (Vec<i32>, Vec<i32>),
+    /// How near that is.
+    reach: i32,
     /// Whether all of the text being typed is picked out, so that what
     /// is typed next takes its place.
     all: bool,
@@ -520,6 +525,12 @@ fn on(color: u32) -> u32 {
 /// Each as which way it pulls across and down.
 const GRIPS: [(i32, i32); 8] = [(-1, -1), (1, -1), (-1, 1), (1, 1), (0, -1), (0, 1), (-1, 0), (1, 0)];
 
+/// A place along the screen, moved to the nearest of some edges if one
+/// is within reach of it, and otherwise left where it is.
+fn snapped(edges: &[i32], value: i32, reach: i32) -> i32 {
+    edges.iter().copied().filter(|edge| (edge - value).abs() <= reach).min_by_key(|edge| (edge - value).abs()).unwrap_or(value)
+}
+
 /// Whether a shape picked out has a box with handles to resize it by.
 /// Not a line or an arrow, which have their two ends; nor a counter,
 /// which is the size it is.
@@ -544,8 +555,20 @@ impl Editor {
         let screen = Rect::new(0, 0, shot.width, shot.height);
         let monitors: Vec<Rect> = monitors.into_iter().map(|monitor| monitor.intersect(screen)).filter(|monitor| !monitor.is_empty()).collect();
         let wanted = settings.windows != Windows::Off;
-        let windows = windows.into_iter().map(|window| window.intersect(screen)).filter(|window| wanted && window.w > 8 && window.h > 8).collect();
+        // Every window's edges are something for the selection's to go
+        // to, whether or not the windows themselves are shown; and
+        // every monitor's, less the edges of the screen itself, which
+        // the selection stops at anyway.
+        let mut edges: (Vec<i32>, Vec<i32>) = (Vec::new(), Vec::new());
+        for rect in windows.iter().map(|window| window.intersect(screen)).filter(|window| window.w > 8 && window.h > 8).chain(monitors.iter().copied()) {
+            edges.0.extend([rect.x, rect.right()].into_iter().filter(|&x| x > 0 && x < screen.w));
+            edges.1.extend([rect.y, rect.bottom()].into_iter().filter(|&y| y > 0 && y < screen.h));
+        }
+        let reach = (screen.h / 180).clamp(6, 14);
+        let windows: Vec<Rect> = windows.into_iter().map(|window| window.intersect(screen)).filter(|window| wanted && window.w > 8 && window.h > 8).collect();
         Editor {
+            edges,
+            reach,
             dim,
             monitors: if monitors.is_empty() { vec![screen] } else { monitors },
             windows,
@@ -1140,7 +1163,10 @@ impl Editor {
             Drag::Select { from, begun, .. } => {
                 *begun |= (at.0 - from.0).abs().max((at.1 - from.1).abs()) >= DRAG_AFTER;
                 if *begun {
-                    // The pixel under the pointer is taken too.
+                    // The pixel under the pointer is taken too. The
+                    // edge being placed goes to the edge of a window,
+                    // when it comes near one, unless Ctrl says not.
+                    let at = if mods.ctrl { at } else { (snapped(&self.edges.0, at.0, self.reach), snapped(&self.edges.1, at.1, self.reach)) };
                     let area = Rect::spanning(*from, at);
                     self.selection = Some(Rect::new(area.x, area.y, area.w + 1, area.h + 1));
                     (self.window, self.popup) = (None, None);
@@ -1154,10 +1180,13 @@ impl Editor {
             }
             Drag::Resize { pull, from, origin } => {
                 let (dx, dy) = (at.0 - from.0, at.1 - from.1);
-                let left = origin.x + if pull.0 < 0 { dx } else { 0 };
-                let right = origin.right() + if pull.0 > 0 { dx } else { 0 };
-                let top = origin.y + if pull.1 < 0 { dy } else { 0 };
-                let bottom = origin.bottom() + if pull.1 > 0 { dy } else { 0 };
+                // An edge being pulled goes to the edge of a window, when
+                // it comes near one, unless Ctrl says not.
+                let near = |edges: &[i32], value: i32, pulled: bool| if pulled && !mods.ctrl { snapped(edges, value, self.reach) } else { value };
+                let left = near(&self.edges.0, origin.x + if pull.0 < 0 { dx } else { 0 }, pull.0 < 0);
+                let right = near(&self.edges.0, origin.right() + if pull.0 > 0 { dx } else { 0 }, pull.0 > 0);
+                let top = near(&self.edges.1, origin.y + if pull.1 < 0 { dy } else { 0 }, pull.1 < 0);
+                let bottom = near(&self.edges.1, origin.bottom() + if pull.1 > 0 { dy } else { 0 }, pull.1 > 0);
                 // Pulled past the far side, it turns inside out.
                 let area = Rect::new(left.min(right), top.min(bottom), (right - left).abs().max(1), (bottom - top).abs().max(1));
                 self.selection = Some(area.intersect(screen));
@@ -2461,6 +2490,21 @@ impl Editor {
     /// The picture that is taken: what is selected, with what was drawn
     /// on it, and nothing of the interface.
     ///
+    /// What it takes to come back to this picture and go on with it:
+    /// the area, what was there before anything was drawn on it, and
+    /// the shapes, a line of text each.
+    pub fn keepsake(&self) -> Option<(Rect, Vec<u32>, String)> {
+        let area = self.selection?;
+        let shapes: Vec<String> = self.shapes.iter().map(Shape::write).collect();
+        Some((area, canvas::crop(&self.shot.pixels, self.shot.width, area), shapes.join("\n")))
+    }
+
+    /// Puts back the shapes of a picture come back to.
+    pub fn restore(&mut self, shapes: Vec<Shape>) {
+        self.shapes = shapes;
+        self.dirty = true;
+    }
+
     /// What is in hand now, as settings to begin with next time: the
     /// color, the width of line, how round a rectangle's corners and
     /// the picture's are, whether shapes are filled, and the face.
@@ -2590,6 +2634,9 @@ mod tests {
     #[test]
     fn the_selection_is_moved_resized_and_nudged() {
         let mut editor = editor(1600, 900);
+        // With no edges of windows to go to: this is about where the
+        // selection is put, to the pixel.
+        editor.edges = (Vec::new(), Vec::new());
         drag(&mut editor, (200, 150), (499, 349));
         drag(&mut editor, (300, 200), (350, 260));
         assert_eq!(editor.selection(), Some(Rect::new(250, 210, 300, 200)));
@@ -2904,6 +2951,39 @@ mod tests {
         let narrow = editor.shapes[0].bounds(&mut editor.text).w;
         editor.key(Key::Char('g'), PLAIN);
         assert_ne!(editor.shapes[0].bounds(&mut editor.text).w, narrow);
+    }
+
+    #[test]
+    fn an_edge_of_the_selection_goes_to_the_edge_of_a_window_near_it() {
+        // The windows are at 100..700 across and 80..480 down, and at
+        // 500..1200 and 300..800.
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (300, 200), (696, 477));
+        assert_eq!(editor.selection(), Some(Rect::new(300, 200, 401, 281)));
+        // Too far from any edge, it stays where it is put; and with
+        // Ctrl held it does too, however near.
+        let mut editor = self::editor(1600, 900);
+        drag(&mut editor, (300, 200), (650, 420));
+        assert_eq!(editor.selection(), Some(Rect::new(300, 200, 351, 221)));
+        let mut editor = self::editor(1600, 900);
+        editor.pointer_moved(300, 200, PLAIN);
+        editor.pressed(0);
+        editor.pointer_moved(696, 477, Mods { shift: false, ctrl: true });
+        editor.released();
+        assert_eq!(editor.selection(), Some(Rect::new(300, 200, 397, 278)));
+
+        // A picture come back to has its shapes again, to go on with.
+        let mut first = self::editor(1600, 900);
+        drag(&mut first, (200, 150), (900, 600));
+        first.key(Key::Char('r'), PLAIN);
+        drag(&mut first, (300, 250), (500, 400));
+        let (area, pixels, lines) = first.keepsake().unwrap();
+        assert_eq!((area, pixels.len(), lines.lines().count()), (first.selection().unwrap(), (area.w * area.h) as usize, 1));
+        let mut second = self::editor(1600, 900);
+        second.select(area);
+        second.restore(lines.lines().filter_map(Shape::read).collect());
+        assert_eq!((second.shapes.len(), second.shapes[0].frame()), (1, first.shapes[0].frame()));
+        assert_eq!(second.result().unwrap().1, first.result().unwrap().1);
     }
 
     #[test]

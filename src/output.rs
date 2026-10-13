@@ -109,6 +109,34 @@ pub fn remember_area(area: Rect) {
     let _ = std::fs::write(file, format!("{} {} {} {}\n", area.x, area.y, area.w, area.h));
 }
 
+/// Keeps what it takes to come back to a picture and go on with it:
+/// what was there before anything was drawn, as a PNG, and beside it
+/// where it was on the screen and each shape drawn on it.
+pub fn keep_for_reopening(area: Rect, pixels: &[u32], shapes: &str) {
+    let (Some(picture), Some(notes)) = (state_file("reopen.png"), state_file("reopen")) else { return };
+    if let Some(dir) = notes.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(png) = encode(area.w as u32, area.h as u32, pixels, false) {
+        let _ = std::fs::write(picture, png);
+        let _ = std::fs::write(notes, format!("{} {} {} {}\n{shapes}\n", area.x, area.y, area.w, area.h));
+    }
+}
+
+/// What was kept of the last picture: where it was, what was there,
+/// and the shapes that were on it.
+pub fn kept_for_reopening() -> Option<(Rect, crate::frame::Photo, Vec<crate::shapes::Shape>)> {
+    let notes = std::fs::read_to_string(state_file("reopen")?).ok()?;
+    let photo = crate::frame::open(&std::fs::read(state_file("reopen.png")?).ok()?)?;
+    let mut lines = notes.lines();
+    let numbers: Vec<i32> = lines.next()?.split_whitespace().map(|number| number.parse().ok()).collect::<Option<_>>()?;
+    let [x, y, w, h] = numbers[..] else { return None };
+    if (w, h) != (photo.width, photo.height) {
+        return None;
+    }
+    Some((Rect::new(x, y, w, h), photo, lines.filter_map(crate::shapes::Shape::read).collect()))
+}
+
 /// Writes a PNG to a file by name, or to standard output for `-`.
 pub fn save_as(path: &Path, png: &[u8]) -> Result<(), String> {
     if path == Path::new("-") {
