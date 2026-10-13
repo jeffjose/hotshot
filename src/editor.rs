@@ -365,6 +365,8 @@ enum Target {
     /// The dot inside a corner of the selection, by which the corners
     /// of the picture itself are.
     Curve(i32, i32),
+    /// The frame the picture is set in: what is round the selection.
+    Backdrop,
     /// An end of the line or arrow picked out, or the tip a counter
     /// points with: which of the shape's points it is.
     End(usize),
@@ -395,6 +397,9 @@ enum Drag {
     Curve { corner: (i32, i32), slack: i32 },
     /// Taking one end of a line somewhere else.
     End { index: usize, point: usize, from: (i32, i32), moved: bool },
+    /// Dragging the frame wider or narrower, by anywhere on it: taken
+    /// hold of `slack` further out than the room there was.
+    Room { from: (i32, i32), slack: i32, moved: bool },
     /// Dragging out a box, with Shift or Ctrl held, to pick out the
     /// shapes it touches.
     Marquee { from: (i32, i32) },
@@ -483,6 +488,9 @@ pub struct Editor {
     look: Option<(String, i32, i32, Vec<u32>)>,
     /// Which of the folders Save saves to.
     place: usize,
+    /// The frame as it shows round the selection: what it was made
+    /// from, how wide it is, and its pixels, each with how opaque.
+    surround: Option<(String, i32, Vec<u32>)>,
     /// Which of the words the next badge says.
     word: usize,
     /// Whether all of the text being typed is picked out, so that what
@@ -550,6 +558,7 @@ impl Editor {
             photo: None,
             wish: None,
             look: None,
+            surround: None,
             word: 0,
             size: settings.size.min(STROKES.len() - 1),
             settings,
@@ -669,9 +678,11 @@ impl Editor {
         let count: i32 = GROUPS.iter().map(|group| group.len() as i32).sum();
         let width = 2 * margin + count * side + (GROUPS.len() as i32 - 1) * gap;
         let height = side + 2 * margin;
+        // Clear of the frame the picture is set in, when it is in one.
+        let room = self.frame_room();
         let left = selection.x + (selection.w - width) / 2;
-        let below = selection.bottom() + pad;
-        let above = selection.y - pad - height;
+        let below = selection.bottom() + room + pad;
+        let above = selection.y - room - pad - height;
         let top = if below + height + pad <= monitor.bottom() {
             below
         } else if above >= monitor.y + pad {
@@ -744,8 +755,9 @@ impl Editor {
                 // own if there is one, how much room, and the shadow.
                 Button::Frame => {
                     let across = (GRADIENTS.len() as i32 + 1) * side;
-                    let look = across * 9 / 16;
-                    layout.look = Some(Rect::new(0, 0, across, look));
+                    // The picture itself shows what is chosen, where it
+                    // is, so there is nothing here but the choosing.
+                    let look = -pad;
                     for index in 0..=GRADIENTS.len() {
                         cells.push((Rect::new(index as i32 * side, look + pad, side, side), Cell::Backdrop(index)));
                     }
@@ -885,7 +897,13 @@ impl Editor {
                 }
             }
         }
-        if selection.contains(x, y) { Target::Inside } else { Target::Outside }
+        if selection.contains(x, y) {
+            Target::Inside
+        } else if selection.inflate(self.frame_room()).contains(x, y) {
+            Target::Backdrop
+        } else {
+            Target::Outside
+        }
     }
 
     /// The topmost shape at a point.
@@ -997,7 +1015,8 @@ impl Editor {
         match (self.drag, self.hover) {
             (Drag::Move { .. } | Drag::Shape { .. }, _) => Cursor::Move,
             (Drag::Select { .. } | Drag::Draw { .. }, _) => Cursor::Crosshair,
-            (_, Target::Button(_) | Target::Swatch(_) | Target::Pipette | Target::Panel | Target::Cell(_)) => Cursor::Arrow,
+            (Drag::Room { .. }, _) => Cursor::Move,
+            (_, Target::Button(_) | Target::Swatch(_) | Target::Pipette | Target::Panel | Target::Cell(_) | Target::Backdrop) => Cursor::Arrow,
             (_, Target::Inside) => match self.tool {
                 Tool::Select => Cursor::Move,
                 Tool::Text => Cursor::Text,
@@ -1085,6 +1104,17 @@ impl Editor {
                 self.dirty = true;
             }
             Drag::Marquee { .. } => self.dirty = true,
+            Drag::Room { from, slack, moved } => {
+                *moved |= (at.0 - from.0).abs().max((at.1 - from.1).abs()) >= DRAG_AFTER;
+                let (slack, moved) = (*slack, *moved);
+                if moved {
+                    // As much room as the pointer is out from the
+                    // selection, less where on the frame it took hold.
+                    let room = (self.outward(at) - slack).max(0) as f32 / self.scale();
+                    self.frame.pad = (room.round() as i32).clamp(0, 600);
+                    self.dirty = true;
+                }
+            }
             Drag::Curve { corner, slack } => {
                 // Kept as it would be on a screen 1080 high, which is
                 // how it is set in the config file too.
@@ -1243,6 +1273,12 @@ impl Editor {
                 self.commit_text();
                 self.drag = Drag::Select { from: at, begun: false, before: self.selection };
             }
+            // On the frame: a drag makes it wider or narrower, and a
+            // click opens what there is to choose about it.
+            Target::Backdrop => {
+                self.commit_text();
+                self.drag = Drag::Room { from: at, slack: self.outward(at) - self.frame_room(), moved: false };
+            }
             Target::Inside => return self.pressed_inside(at, double),
         }
         Outcome::Continue
@@ -1358,6 +1394,9 @@ impl Editor {
                 }
             }
             Drag::Scale { .. } => self.scaling = None,
+            // A click on the frame, not a drag of it, opens what there
+            // is to choose about it.
+            Drag::Room { moved: false, .. } => outcome = self.activate(Button::Frame),
             // A click on an end of a line or an arrow, not a drag of it,
             // gives that end an arrow's head, or takes it away; and the
             // arrows drawn after have theirs where this one now does.
@@ -1768,9 +1807,9 @@ impl Editor {
             Cell::Backdrop(which) => {
                 self.frame.backdrop = Backdrop::Gradient(which - 1);
                 // A backdrop with no room round the picture is not seen.
-                self.frame.pad = self.frame.pad.max(2);
+                self.frame.pad = self.frame.pad.max(PADS[2]);
             }
-            Cell::Pad(pad) => self.frame.pad = pad,
+            Cell::Pad(pad) => self.frame.pad = PADS[pad],
             Cell::Shadow => self.frame.shadow = !self.frame.shadow,
             // Asked for here, fetched by whoever has the network, and
             // set behind the picture when it comes.
@@ -1827,10 +1866,23 @@ impl Editor {
         if let Some(photo) = photo {
             self.photo = Some(photo);
             self.frame.backdrop = Backdrop::Photo;
-            self.frame.pad = self.frame.pad.max(2);
+            self.frame.pad = self.frame.pad.max(PADS[2]);
             self.look = None;
         }
         self.dirty = true;
+    }
+
+    /// How far outside the selection a point is: by whichever of its
+    /// sides it is furthest out from.
+    fn outward(&self, at: (i32, i32)) -> i32 {
+        let area = self.selection.unwrap_or_default();
+        (area.x - at.0).max(at.0 - area.right()).max(area.y - at.1).max(at.1 - area.bottom())
+    }
+
+    /// How much room the frame takes round the picture, on this screen;
+    /// none, with no frame.
+    fn frame_room(&self) -> i32 {
+        if self.frame.is_plain() { 0 } else { self.frame.room(self.scale()) }
     }
 
     /// Which of the folders Save saves to.
@@ -1946,6 +1998,44 @@ impl Editor {
         let accent = self.settings.accent;
 
         canvas::copy_into(out, &self.dim);
+        // The frame the picture is set in, where it will be: round the
+        // selection, over whatever of the screen that takes. Not while
+        // the selection is being reshaped, which changes it every frame.
+        let reshaping = matches!(self.drag, Drag::Select { begun: true, .. } | Drag::Resize { .. });
+        let framed = self.selection.filter(|_| !self.frame.is_plain() && !reshaping);
+        if let Some(area) = framed {
+            let (room, radius, scale) = (self.frame_room(), self.corner_radius(), self.scale());
+            let made_from = format!("{:?} {} {} {radius} {}", self.frame, area.w, area.h, self.photo.as_ref().map_or(0, |photo| photo.pixels.len()));
+            if self.surround.as_ref().is_none_or(|kept| kept.0 != made_from) {
+                // Made as the picture's frame is, round a picture with
+                // nothing in it.
+                let nothing = vec![0u32; (area.w * area.h) as usize];
+                let (wide, _, pixels) = frame::set(self.frame, &nothing, area.w, area.h, radius, scale, self.photo.as_ref());
+                self.surround = Some((made_from, wide, pixels));
+            }
+            if let Some((_, wide, pixels)) = &self.surround {
+                let (left, top) = (area.x - room, area.y - room);
+                let part = Rect::new(left, top, *wide, pixels.len() as i32 / wide.max(&1)).intersect(Rect::new(0, 0, width, height));
+                for y in part.y..part.bottom() {
+                    let from = &pixels[((y - top) * wide + part.x - left) as usize..][..part.w as usize];
+                    for (pixel, over) in out[(y * width + part.x) as usize..][..part.w as usize].iter_mut().zip(from) {
+                        let cover = over >> 24;
+                        *pixel = canvas::mix(*pixel, over & 0xFF_FFFF, cover + (cover >> 7));
+                    }
+                }
+            }
+        }
+        // What the corners of the picture show, outside their curve:
+        // the frame, where there is one, and the darkened screen.
+        let behind: Vec<(i32, i32, u32)> = match (self.selection, self.corner_radius()) {
+            (Some(area), radius) if radius > 0 => [(area.x, area.y), (area.right() - radius, area.y), (area.x, area.bottom() - radius), (area.right() - radius, area.bottom() - radius)]
+                .into_iter()
+                .flat_map(|(x, y)| (0..radius * radius).map(move |at| (x + at % radius, y + at / radius)))
+                .filter(|&(x, y)| x >= 0 && y >= 0 && x < width && y < height)
+                .map(|(x, y)| (x, y, out[(y * width + x) as usize]))
+                .collect(),
+            _ => Vec::new(),
+        };
         // What is selected shows as it is. Before there is a selection,
         // everything is dark, as the screen was the moment it froze;
         // the window a click would take is told by a line round it, or
@@ -1982,7 +2072,8 @@ impl Editor {
             canvas.reset_clip();
             // With rounded corners, what is outside the curve is no
             // part of the picture, and shows darkened like the rest.
-            canvas.round_off(selection, round, &self.dim);
+            let kept: std::collections::HashMap<(i32, i32), u32> = behind.iter().map(|&(x, y, pixel)| ((x, y), pixel)).collect();
+            canvas.round_off_with(selection, round, |x, y| kept.get(&(x, y)).copied().unwrap_or(0));
         }
 
         // The edge of what is lit: a line just outside it.
@@ -2145,7 +2236,7 @@ impl Editor {
                     Cell::Backdrop(0) => self.frame.backdrop == Backdrop::None,
                     Cell::Backdrop(which) => self.frame.backdrop == Backdrop::Gradient(which - 1),
                     Cell::Dice | Cell::Own => false,
-                    Cell::Pad(room) => self.frame.pad == room,
+                    Cell::Pad(room) => self.frame.pad == PADS[room],
                     Cell::Shadow => self.frame.shadow,
                     _ => false,
                 };
@@ -2813,6 +2904,36 @@ mod tests {
         let narrow = editor.shapes[0].bounds(&mut editor.text).w;
         editor.key(Key::Char('g'), PLAIN);
         assert_ne!(editor.shapes[0].bounds(&mut editor.text).w, narrow);
+    }
+
+    #[test]
+    fn the_frame_shows_round_the_selection_and_is_dragged_wider() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (400, 300), (799, 599));
+        assert!(editor.in_hand().frame.is_plain());
+        editor.choose(Cell::Backdrop(7));
+        // Slate, with room: the backdrop shows outside the selection,
+        // where the darkened screen was, and the bar is clear of it.
+        let room = editor.frame_room();
+        assert_eq!((editor.frame.backdrop, room), (Backdrop::Gradient(6), PADS[2]));
+        let mut out = vec![0u32; 1600 * 900];
+        editor.draw(&mut out);
+        let near = |pixel: u32, color: u32| (0..3).all(|channel| ((pixel >> (channel * 8) & 0xFF) as i32 - (color >> (channel * 8) & 0xFF) as i32).abs() < 40);
+        assert!(near(out[(290 * 1600 + 390) as usize], GRADIENTS[6].1), "{:06x}", out[(290 * 1600 + 390) as usize]);
+        assert!(editor.layout().bar.unwrap().y >= 600 + room);
+        assert_eq!(editor.target_at((380, 400)), Target::Backdrop);
+
+        // Dragged outward by forty pixels, it is forty pixels wider;
+        // and a click on it opens what there is to choose about it.
+        drag(&mut editor, (380, 400), (340, 400));
+        assert_eq!(editor.frame.pad, PADS[2] + 40);
+        assert_eq!(editor.flyout, None);
+        click(&mut editor, (350, 400), 9000);
+        assert_eq!(editor.flyout, Some(Button::Frame));
+
+        // The picture comes out with that much round it.
+        let (_, wide, high, _, alpha) = editor.framed().unwrap();
+        assert_eq!((wide, high, alpha), (400 + 2 * (PADS[2] + 40), 300 + 2 * (PADS[2] + 40), false));
     }
 
     #[test]

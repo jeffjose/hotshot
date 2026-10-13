@@ -151,14 +151,14 @@ impl<'a> Canvas<'a> {
     }
 
     /// Rounds the corners of a rectangle off, by putting back outside
-    /// the curve what another picture of the same size has there.
-    pub fn round_off(&mut self, rect: Rect, radius: i32, under: &[u32]) {
+    /// the curve what is said to belong at each pixel there.
+    pub fn round_off_with(&mut self, rect: Rect, radius: i32, under: impl Fn(i32, i32) -> u32) {
         let radius = radius.clamp(0, rect.w.min(rect.h) / 2);
         for (corner_x, corner_y) in [(rect.x, rect.y), (rect.right() - radius, rect.y), (rect.x, rect.bottom() - radius), (rect.right() - radius, rect.bottom() - radius)] {
             for py in corner_y.max(0)..(corner_y + radius).min(self.height) {
                 for px in corner_x.max(0)..(corner_x + radius).min(self.width) {
                     let inside = rounded_cover(px, py, rect.x, rect.y, rect.w, rect.h, radius, 0.0);
-                    self.cover(px, py, under[(py * self.width + px) as usize], ((1.0 - inside) * 256.0) as u32);
+                    self.cover(px, py, under(px, py), ((1.0 - inside) * 256.0) as u32);
                 }
             }
         }

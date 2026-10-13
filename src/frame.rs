@@ -57,8 +57,9 @@ pub enum Backdrop {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Frame {
     pub backdrop: Backdrop,
-    /// Which of `PADS`.
-    pub pad: usize,
+    /// How much room there is round the picture, in pixels of a screen
+    /// 1080 high: any amount, of which `PADS` are the usual ones.
+    pub pad: i32,
     pub shadow: bool,
 }
 
@@ -71,7 +72,7 @@ impl Frame {
     /// The room round the picture, in pixels at a scale. A shadow has
     /// to have somewhere to fall, whatever the room asked for.
     pub fn room(&self, scale: f32) -> i32 {
-        let asked = (PADS[self.pad.min(PADS.len() - 1)] as f32 * scale).round() as i32;
+        let asked = (self.pad.max(0) as f32 * scale).round() as i32;
         if self.shadow { asked.max((56.0 * scale).round() as i32) } else { asked }
     }
 }
@@ -198,7 +199,7 @@ mod tests {
         assert_eq!((wide, high, plain[0]), (4, 2, 0xFF11_2233));
         assert!(Frame::default().is_plain());
 
-        let frame = Frame { backdrop: Backdrop::Gradient(6), pad: 1, shadow: false };
+        let frame = Frame { backdrop: Backdrop::Gradient(6), pad: PADS[1], shadow: false };
         let (wide, high, framed) = set(frame, &picture, 4, 2, 0, 1.0, None);
         assert_eq!((wide, high), (4 + 64, 2 + 64));
         // Opaque everywhere; the picture in the middle of it, and at

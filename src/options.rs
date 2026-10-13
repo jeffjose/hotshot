@@ -259,7 +259,9 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         }
         "padding" => {
             let text = value()?;
-            options.settings.frame.pad = text.parse::<usize>().ok().filter(|pad| *pad < PADS.len()).ok_or(format!("invalid padding '{text}', expected 0 to 3"))?;
+            // A step of it, 0 to 3, or past that so many pixels.
+            let asked = text.parse::<i32>().ok().filter(|pad| (0..=600).contains(pad)).ok_or(format!("invalid padding '{text}', expected 0 to 3, or a number of pixels"))?;
+            options.settings.frame.pad = PADS.get(asked as usize).copied().unwrap_or(asked);
         }
         "shadow" => options.settings.frame.shadow = true,
         "no-shadow" => options.settings.frame.shadow = false,
