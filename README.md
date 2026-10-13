@@ -11,6 +11,7 @@ hotshot -f             # the whole screen, saved at once
 hotshot -w -c          # the active window, to the clipboard
 hotshot -g 0,0,800,600 -o shot.png
 hotshot --again        # the same area as last time, at once
+                       # (--last and --repeat say the same)
 ```
 
 It is made the way jog is, and looks like it: the same font

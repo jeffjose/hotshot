@@ -18,7 +18,8 @@ What to take:
   -w, --window               the window that has the keyboard
   -g, --region X,Y,W,H       this rectangle of the screen (also WxH+X+Y)
   -a, --again                the same area as the last picture was of,
-                             however that one was taken
+                             however that one was taken; --last and
+                             --repeat say the same
   -e, --edit                 with any of those: open with that area selected,
                              to be drawn on, rather than taking it at once
   -D, --delay SEC            wait before freezing the screen
@@ -188,7 +189,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
             });
         }
         "region" => options.take = Take::Region(parse_region(&value()?)?),
-        "again" => options.take = Take::Again,
+        "again" | "last" | "repeat" => options.take = Take::Again,
         "edit" => options.edit = true,
         "delay" => options.delay = number(value()?, "delay")?,
         "copy" => options.copy = true,
@@ -395,6 +396,9 @@ mod tests {
         assert_eq!(run(&["-g", "10,20,300,400"]).unwrap().take, Take::Region(Rect::new(10, 20, 300, 400)));
         assert_eq!(run(&["--region", "300x400+10+20"]).unwrap().take, Take::Region(Rect::new(10, 20, 300, 400)));
         assert!(run(&["-g", "10,20,0,400"]).is_err());
+        for again in ["-a", "--again", "--last", "--repeat"] {
+            assert_eq!(run(&[again]).unwrap().take, Take::Again);
+        }
         assert_eq!(run(&["-m", "pointer"]).unwrap().take, Take::Monitor(None));
         assert_eq!(run(&["-m1"]).unwrap().take, Take::Monitor(Some(1)));
     }
