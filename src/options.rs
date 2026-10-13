@@ -17,6 +17,12 @@ What to take:
   -m, --monitor N            one monitor, as --monitors numbers them, or
                              'pointer' for the one the pointer is on
   -w, --window               the window that has the keyboard
+  -i, --choose               one of the windows there are: they are listed
+                             with numbers, and the number typed is taken
+  -t, --title TEXT           the window with TEXT in its title, whatever
+                             the capitals; the topmost, if several have.
+                             Either of these takes the window's own
+                             picture, whatever is in front of it
   -g, --region X,Y,W,H       this rectangle of the screen (also WxH+X+Y)
   -a, --again                the same area as the last picture was of,
                              however that one was taken; --last and
@@ -107,7 +113,7 @@ Config file:
 ";
 
 /// What the picture is of.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum Take {
     /// An area dragged out by hand.
     Pick,
@@ -115,6 +121,10 @@ pub enum Take {
     /// A monitor by its number, or the one the pointer is on.
     Monitor(Option<usize>),
     Window,
+    /// A window chosen from a list of them, by its number.
+    Choose,
+    /// The window whose title has this in it.
+    Titled(String),
     Region(Rect),
     /// The area the last picture was of.
     Again,
@@ -189,6 +199,8 @@ fn short_flag(flag: char) -> Option<&'static str> {
         'f' => "full",
         'm' => "monitor",
         'w' => "window",
+        'i' => "choose",
+        't' => "title",
         'g' => "region",
         'a' => "again",
         'e' => "edit",
@@ -204,7 +216,7 @@ fn short_flag(flag: char) -> Option<&'static str> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
+    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -214,6 +226,8 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
     match name {
         "full" => options.take = Take::Full,
         "window" => options.take = Take::Window,
+        "choose" => options.take = Take::Choose,
+        "title" => options.take = Take::Titled(value()?),
         "monitor" => {
             let text = value()?;
             options.take = Take::Monitor(match text.as_str() {

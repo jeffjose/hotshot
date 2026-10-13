@@ -82,6 +82,29 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     }
 
     let screen = Rect::new(0, 0, display.width, display.height);
+    // A window by its number in a list, or by its title: found here,
+    // and taken as its own picture where the display will give one.
+    let mut chosen = None;
+    if matches!(options.take, Take::Choose | Take::Titled(_)) {
+        let windows = display.titled();
+        let found = match &options.take {
+            Take::Titled(wanted) => windows.iter().find(|(_, title, _)| title.to_lowercase().contains(&wanted.to_lowercase())).ok_or_else(|| format!("no window has '{wanted}' in its title"))?,
+            _ => {
+                if windows.is_empty() {
+                    return Err("there are no windows to choose from".into());
+                }
+                for (number, (_, title, place)) in windows.iter().enumerate() {
+                    eprintln!("{:>3}  {:<56.56}  {} x {}", number + 1, title, place.w, place.h);
+                }
+                eprint!("\n> ");
+                let mut typed = String::new();
+                std::io::stdin().read_line(&mut typed)?;
+                let number: usize = typed.trim().parse().map_err(|_| "that is not one of the numbers")?;
+                windows.get(number.wrapping_sub(1)).ok_or("that is not one of the numbers")?
+            }
+        };
+        chosen = Some((found.0, found.2.intersect(screen)));
+    }
     // What was asked for by name is known already.
     let named = match options.take {
         Take::Pick => None,
@@ -91,6 +114,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             let last = output::last_area().ok_or("there is no picture from before to take the area of again")?;
             Some(Some(last.intersect(screen)).filter(|area| !area.is_empty()).ok_or("the area of the last picture is no longer on the screen")?)
         }
+        Take::Choose | Take::Titled(_) => chosen.map(|(_, place)| place).filter(|place| !place.is_empty()),
         Take::Window => Some(display.active_window().map(|window| window.intersect(screen)).filter(|window| !window.is_empty()).ok_or("no window has the keyboard")?),
         Take::Monitor(number) => {
             let monitors = display.monitors();
@@ -111,9 +135,18 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     let taken = match (named, options.edit) {
         (Some(area), false) => {
             let how = if said.copy || said.save { said } else { Finish { copy: false, save: true } };
-            let shot = display.capture()?;
+            // A window chosen is its own picture, if there is one to be
+            // had; anything else, and a window with none, is that much
+            // of the screen.
+            let own = chosen.and_then(|(window, _)| display.window_picture(window));
+            let (area, mut pixels) = match own {
+                Some((wide, high, pixels)) => (Rect::new(area.x, area.y, wide, high), pixels),
+                None => {
+                    let shot = display.capture()?;
+                    (area, canvas::crop(&shot, display.width, area))
+                }
+            };
             trace("screen read");
-            let mut pixels = canvas::crop(&shot, display.width, area);
             // Corners as round as the editor would have made them, and
             // the frame it would have set the picture in.
             let scale = editor::scale_for(display.height);

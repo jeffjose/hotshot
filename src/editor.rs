@@ -1311,7 +1311,7 @@ impl Editor {
             tool => {
                 self.checkpoint();
                 let mut shape = Shape::new(tool, self.color, self.stroke(), point);
-                shape.filled = self.filled;
+                shape.filled = self.filled && tool != Tool::Zoom;
                 shape.radius = self.settings.radius * self.scale();
                 shape.font_px = self.font_px();
                 if tool == Tool::Arrow {
@@ -1636,6 +1636,17 @@ impl Editor {
             }
             Button::Size(size) => self.set_size(size),
             Button::Fill => {
+                // A zoom picked out is made square, or round again: that
+                // is what there is to fill or not about a zoom, and it
+                // is nothing to do with how the next rectangle is drawn.
+                let zooms: Vec<usize> = self.chosen().into_iter().filter(|&index| self.shapes[index].tool == Tool::Zoom).collect();
+                if !zooms.is_empty() {
+                    self.checkpoint();
+                    for index in zooms {
+                        self.shapes[index].filled = !self.shapes[index].filled;
+                    }
+                    return Outcome::Continue;
+                }
                 self.filled = !self.filled;
                 let chosen: Vec<usize> = self.chosen().into_iter().filter(|&index| matches!(self.shapes[index].tool, Tool::Rect | Tool::Ellipse)).collect();
                 if !chosen.is_empty() {

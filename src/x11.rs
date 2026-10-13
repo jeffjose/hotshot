@@ -454,6 +454,36 @@ impl Display {
         places
     }
 
+    /// The windows on the screen that are showing, the topmost first,
+    /// each with what it is called and where it is.
+    pub fn titled(&self) -> Vec<(Window, String, Rect)> {
+        let (name, utf8) = (self.atom("_NET_WM_NAME"), self.atom("UTF8_STRING"));
+        let mut found = Vec::new();
+        for window in self.listed("_NET_CLIENT_LIST_STACKING").into_iter().rev() {
+            let Some(place) = self.places(&[window]).into_iter().next() else { continue };
+            let said = |property: Atom, kind: Atom| {
+                let reply = self.conn.get_property(false, window, property, kind, 0, 1024).ok()?.reply().ok()?;
+                Some(String::from_utf8_lossy(&reply.value).into_owned()).filter(|title| !title.is_empty())
+            };
+            let title = said(name, utf8).or_else(|| said(AtomEnum::WM_NAME.into(), AtomEnum::STRING.into())).unwrap_or_else(|| "(no title)".to_owned());
+            found.push((window, title, place));
+        }
+        found
+    }
+
+    /// A window's own picture, whatever is in front of it: what the
+    /// compositor keeps of it, where there is a compositor, which is
+    /// the inside of the window without the title bar round it.
+    pub fn window_picture(&self, window: Window) -> Option<(i32, i32, Vec<u32>)> {
+        let size = self.conn.get_geometry(window).ok()?.reply().ok()?;
+        let image = self.conn.get_image(ImageFormat::Z_PIXMAP, window, 0, 0, size.width, size.height, !0).ok()?.reply().ok()?;
+        if image.depth != 24 && image.depth != 32 {
+            return None;
+        }
+        let pixels: Vec<u32> = image.data.chunks_exact(4).map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0])).collect();
+        (pixels.len() == usize::from(size.width) * usize::from(size.height)).then_some((i32::from(size.width), i32::from(size.height), pixels))
+    }
+
     /// The window that has the keyboard.
     pub fn active_window(&self) -> Option<Rect> {
         let active: Vec<Window> = self.listed("_NET_ACTIVE_WINDOW").into_iter().filter(|&window| window != NONE).collect();
