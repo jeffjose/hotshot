@@ -123,11 +123,12 @@ pub fn fitted(pixels: &[u32], width: i32, height: i32, whole: (i32, i32), monito
     }
 }
 
-/// The screen as hotshot is to show it: the monitor the display is
-/// kept to, out of the picture the desktop handed over.
+/// The screen as hotshot is to show it: the picture the desktop handed
+/// over, of every monitor, made the size the display counts it.
 pub fn screen(display: &Display) -> Result<Vec<u32>> {
     let (width, height, pixels) = whole()?;
-    Ok(fitted(&pixels, width, height, display.whole, Rect::new(display.origin.0, display.origin.1, display.width, display.height)))
+    let all = (display.width, display.height);
+    Ok(fitted(&pixels, width, height, all, Rect::new(0, 0, all.0, all.1)))
 }
 
 /// Puts something on the Wayland clipboard, by `wl-copy`, which keeps

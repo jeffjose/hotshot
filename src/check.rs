@@ -87,12 +87,13 @@ pub fn run(options: &Options) -> ExitCode {
     // The display, and the screen read off it.
     let mut display = match Display::open() {
         Ok(mut display) => {
-            let monitors = display.monitors().len();
             if wayland {
-                display.confine();
+                display.manage();
             }
-            let kept = if wayland && monitors > 1 { format!(", one monitor of {monitors}") } else if monitors > 1 { format!(", {monitors} monitors") } else { String::new() };
-            results.push(("display", Worked(format!("{} x {}{kept}", display.width, display.height))));
+            // Each monitor and where it is, which is what goes wrong
+            // first where there is more than one.
+            let monitors: Vec<String> = display.monitors().iter().map(|monitor| format!("{}x{}+{}+{}", monitor.w, monitor.h, monitor.x, monitor.y)).collect();
+            results.push(("display", Worked(format!("{} x {} in all; {}: {}", display.width, display.height, if monitors.len() == 1 { "one monitor".to_owned() } else { format!("{} monitors", monitors.len()) }, monitors.join(", ")))));
             Some(display)
         }
         Err(error) => {
@@ -102,6 +103,20 @@ pub fn run(options: &Options) -> ExitCode {
     };
     let mut shot: Option<(i32, i32, Vec<u32>)> = None;
     if let Some(display) = display.as_mut() {
+        // Under Wayland, how large the picture the desktop hands over
+        // is beside how large the display counts the screen: where the
+        // two differ, the desktop has made the screen larger, or laid
+        // its monitors out another way.
+        if wayland {
+            results.push((
+                "picture size",
+                match wayland::whole() {
+                    Ok((wide, high, _)) if (wide, high) == (display.width, display.height) => Worked(format!("{wide} x {high}, as the display counts it")),
+                    Ok((wide, high, _)) => Worked(format!("{wide} x {high}, where the display counts {} x {}: it is made that size, {:.2} times across and {:.2} down", display.width, display.height, display.width as f64 / wide as f64, display.height as f64 / high as f64)),
+                    Err(error) => Failed(error.to_string()),
+                },
+            ));
+        }
         let began = Instant::now();
         results.push((
             "screen read",

@@ -140,9 +140,10 @@ What is different there:
 
 - it starts in the time the desktop takes to hand a picture over, not
   in three milliseconds, and the desktop may ask first;
-- it keeps to one monitor;
+- it puts a window on each monitor, where on X11 one covers them all;
 - on a screen the desktop has made larger, the picture is as many
-  pixels as the desktop counts, not as many as the screen has;
+  pixels as the desktop counts, not as many as the screen has, and
+  monitors made larger by different amounts may not line up;
 - the clipboard is `wl-copy`'s where that is installed
   (`wl-clipboard`), which is the sure way;
 - no recording yet, no mouse pointer in the picture, no snapping to

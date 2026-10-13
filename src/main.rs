@@ -110,14 +110,14 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // Under Wayland there is still an X server to talk to, and to show
     // a window by, but the screen it would hand over is not the one
     // being looked at: that is asked of the desktop. And the window is
-    // one the desktop manages, on one monitor, or it is given no keys.
+    // one the desktop manages, one to each monitor, or it is given no keys.
     let wayland = wayland::session();
     if wayland && (options.record || options.benchmark) {
         return Err("under Wayland hotshot takes pictures, and does not yet record or time itself".into());
     }
     let mut display = Display::open().map_err(|error| if wayland { format!("{error}; under Wayland hotshot shows its window through XWayland, which this session is not running").into() } else { error })?;
     if wayland {
-        display.confine();
+        display.manage();
     }
     trace("display opened");
     // The pointer as it is now, before it is made hotshot's own: to go

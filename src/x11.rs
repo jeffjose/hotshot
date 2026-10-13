@@ -114,12 +114,12 @@ pub struct Display {
     /// The server's time at the latest event, which owning the clipboard
     /// is dated by.
     pub time: u32,
-    /// Under Wayland the window is one the compositor manages, on one
-    /// monitor, which is then all the screen there is to this: where
-    /// that monitor's corner is on the whole, and how large the whole is.
+    /// Under Wayland the windows are ones the compositor manages, one
+    /// to each monitor.
     pub managed: bool,
-    pub origin: (i32, i32),
-    pub whole: (i32, i32),
+    /// The windows that are up, each with the part of the screen it is
+    /// over: one over all of it, but for those.
+    panes: Vec<(Window, Rect)>,
 }
 
 impl Display {
@@ -135,16 +135,14 @@ impl Display {
         }
         let (root, width, height, depth) = (root.root, i32::from(root.width_in_pixels), i32::from(root.height_in_pixels), root.root_depth);
         let shared = conn.extension_information(shm::X11_EXTENSION_NAME)?.is_some();
-        Ok(Display { conn, screen, root, width, height, depth, shared, window: NONE, gc: NONE, frozen: NONE, keys: (0, 0, Vec::new()), cursors: HashMap::new(), cursor: None, waiting: VecDeque::new(), time: CURRENT_TIME, managed: false, origin: (0, 0), whole: (width, height) })
+        Ok(Display { conn, screen, root, width, height, depth, shared, window: NONE, gc: NONE, frozen: NONE, keys: (0, 0, Vec::new()), cursors: HashMap::new(), cursor: None, waiting: VecDeque::new(), time: CURRENT_TIME, managed: false, panes: Vec::new() })
     }
 
-    /// Keeps to one monitor, in a window the compositor manages: for a
-    /// Wayland session, where a window of the old kind is given no
-    /// keys. The monitor the pointer was last seen on, or the first.
-    pub fn confine(&mut self) {
-        let (monitors, pointer) = (self.monitors(), self.pointer());
-        let monitor = monitors.iter().copied().find(|monitor| monitor.contains(pointer.0, pointer.1)).unwrap_or(monitors[0]);
-        (self.origin, self.width, self.height, self.managed) = ((monitor.x, monitor.y), monitor.w, monitor.h, true);
+    /// Has its windows be ones the compositor manages, one to each
+    /// monitor: for a Wayland session, where a window of the old kind
+    /// is given no keys, and a managed one is on one monitor.
+    pub fn manage(&mut self) {
+        self.managed = true;
     }
 
     /// A screenful of pixels, shared with the server if it can be: it
@@ -262,48 +260,77 @@ impl Display {
     /// Makes the window, as large as the screen and over everything,
     /// with a picture the server holds for its background.
     fn raise(&mut self, background: Pixmap) -> Result<()> {
-        let (width, height) = (self.width as u16, self.height as u16);
-        self.gc = self.conn.generate_id()?;
-        self.window = self.conn.generate_id()?;
         let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::KEY_PRESS;
-        let look = match self.managed {
-            false => CreateWindowAux::new().override_redirect(1).background_pixmap(background).event_mask(events),
-            true => CreateWindowAux::new().background_pixel(0).event_mask(events),
+        // One window over all of the screen, that nobody manages; or,
+        // where it has to be managed to be given the keys, one to each
+        // monitor, each all of its monitor: a managed window is on one.
+        let places = match self.managed {
+            false => vec![Rect::new(0, 0, self.width, self.height)],
+            true => self.monitors(),
         };
-        self.conn.create_window(self.depth, self.window, self.root, self.origin.0 as i16, self.origin.1 as i16, width, height, 0, WindowClass::INPUT_OUTPUT, x11rb::COPY_FROM_PARENT, &look)?;
-        self.conn.create_gc(self.gc, self.window, &CreateGCAux::new().graphics_exposures(0))?;
-        self.conn.change_property8(PropMode::REPLACE, self.window, AtomEnum::WM_NAME, AtomEnum::STRING, b"hotshot")?;
-        self.conn.change_property8(PropMode::REPLACE, self.window, AtomEnum::WM_CLASS, AtomEnum::STRING, b"hotshot\0hotshot\0")?;
-        if self.managed {
-            // Told to whoever manages windows: all of this monitor,
-            // nothing round it, over the rest, in no list of windows,
-            // where it was put, and given the keys.
-            let hints = self.atom("_MOTIF_WM_HINTS");
-            self.conn.change_property32(PropMode::REPLACE, self.window, hints, hints, &[2, 0, 0, 0, 0])?;
-            let states = [self.atom("_NET_WM_STATE_FULLSCREEN"), self.atom("_NET_WM_STATE_ABOVE"), self.atom("_NET_WM_STATE_SKIP_TASKBAR"), self.atom("_NET_WM_STATE_SKIP_PAGER")];
-            self.conn.change_property32(PropMode::REPLACE, self.window, self.atom("_NET_WM_STATE"), AtomEnum::ATOM, &states)?;
-            let sizes = [1 | 2, self.origin.0 as u32, self.origin.1 as u32, u32::from(width), u32::from(height), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            self.conn.change_property32(PropMode::REPLACE, self.window, AtomEnum::WM_NORMAL_HINTS, AtomEnum::WM_SIZE_HINTS, &sizes)?;
-            self.conn.change_property32(PropMode::REPLACE, self.window, AtomEnum::WM_HINTS, AtomEnum::WM_HINTS, &[1, 1, 0, 0, 0, 0, 0, 0, 0])?;
+        self.panes.clear();
+        for place in places {
+            let window = self.conn.generate_id()?;
+            let look = match self.managed {
+                false => CreateWindowAux::new().override_redirect(1).background_pixmap(background).event_mask(events),
+                true => CreateWindowAux::new().background_pixel(0).event_mask(events | EventMask::STRUCTURE_NOTIFY),
+            };
+            self.conn.create_window(self.depth, window, self.root, place.x as i16, place.y as i16, place.w as u16, place.h as u16, 0, WindowClass::INPUT_OUTPUT, x11rb::COPY_FROM_PARENT, &look)?;
+            self.conn.change_property8(PropMode::REPLACE, window, AtomEnum::WM_NAME, AtomEnum::STRING, b"hotshot")?;
+            self.conn.change_property8(PropMode::REPLACE, window, AtomEnum::WM_CLASS, AtomEnum::STRING, b"hotshot\0hotshot\0")?;
+            if self.managed {
+                // Told to whoever manages windows: all of this monitor,
+                // nothing round it, over the rest, in no list of
+                // windows, where it was put, and given the keys.
+                let hints = self.atom("_MOTIF_WM_HINTS");
+                self.conn.change_property32(PropMode::REPLACE, window, hints, hints, &[2, 0, 0, 0, 0])?;
+                let states = [self.atom("_NET_WM_STATE_FULLSCREEN"), self.atom("_NET_WM_STATE_ABOVE"), self.atom("_NET_WM_STATE_SKIP_TASKBAR"), self.atom("_NET_WM_STATE_SKIP_PAGER")];
+                self.conn.change_property32(PropMode::REPLACE, window, self.atom("_NET_WM_STATE"), AtomEnum::ATOM, &states)?;
+                let sizes = [1 | 2, place.x as u32, place.y as u32, place.w as u32, place.h as u32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                self.conn.change_property32(PropMode::REPLACE, window, AtomEnum::WM_NORMAL_HINTS, AtomEnum::WM_SIZE_HINTS, &sizes)?;
+                self.conn.change_property32(PropMode::REPLACE, window, AtomEnum::WM_HINTS, AtomEnum::WM_HINTS, &[1, 1, 0, 0, 0, 0, 0, 0, 0])?;
+            }
+            self.conn.map_window(window)?;
+            self.panes.push((window, place));
         }
-        self.conn.map_window(self.window)?;
+        self.window = self.panes[0].0;
+        self.gc = self.conn.generate_id()?;
+        self.conn.create_gc(self.gc, self.window, &CreateGCAux::new().graphics_exposures(0))?;
         self.conn.flush()?;
         if self.managed {
-            // It is up when it is told to draw itself, which a window
-            // that is managed is not at once: waited for, a while.
+            // Each is up when it is told to draw itself, which a
+            // window that is managed is not at once: waited for, a
+            // while. The keys go to the one the pointer is over.
             let asked = std::time::Instant::now();
-            let mut up = false;
-            while !up && asked.elapsed() < std::time::Duration::from_millis(1500) {
+            let mut up = 0;
+            while up < self.panes.len() && asked.elapsed() < std::time::Duration::from_millis(1500) {
                 match self.conn.poll_for_event()? {
-                    Some(Event::Expose(_)) => up = true,
+                    Some(Event::Expose(expose)) if expose.count == 0 => up += 1,
                     Some(other) => self.waiting.push_back(other),
                     None => std::thread::sleep(std::time::Duration::from_millis(5)),
                 }
             }
-            let _ = self.conn.set_input_focus(InputFocus::PARENT, self.window, CURRENT_TIME);
+            self.settle();
+            let pointer = self.pointer();
+            let under = self.panes.iter().find(|(_, place)| place.contains(pointer.0, pointer.1)).map_or(self.window, |(window, _)| *window);
+            let _ = self.conn.set_input_focus(InputFocus::PARENT, under, CURRENT_TIME);
             self.conn.flush()?;
         }
         Ok(())
+    }
+
+    /// Where each managed window in fact is, and how large: whoever
+    /// manages them has the last word on that, and it may not be the
+    /// monitor it was made for. What is drawn in each is what of the
+    /// screen it is over, wherever that turns out to be.
+    fn settle(&mut self) {
+        for (window, place) in &mut self.panes {
+            let size = self.conn.get_geometry(*window).ok().and_then(|cookie| cookie.reply().ok());
+            let at = self.conn.translate_coordinates(*window, self.root, 0, 0).ok().and_then(|cookie| cookie.reply().ok());
+            if let (Some(size), Some(at)) = (size, at) {
+                *place = Rect::new(i32::from(at.dst_x), i32::from(at.dst_y), i32::from(size.width), i32::from(size.height));
+            }
+        }
     }
 
     /// Puts the window up with a frame made here in it: the way round
@@ -313,27 +340,33 @@ impl Display {
         self.present(frame, &[Rect::new(0, 0, self.width, self.height)])
     }
 
-    fn put(&self, drawable: Drawable, frame: &Buffer, parts: &[Rect]) -> Result<()> {
-        for part in parts {
-            let (x, y, w, h) = (part.x as u16, part.y as u16, part.w as u16, part.h as u16);
-            match frame {
-                Buffer::Shared { segment, .. } => {
-                    self.conn.shm_put_image(drawable, self.gc, self.width as u16, self.height as u16, x, y, w, h, x as i16, y as i16, self.depth, Z_PIXMAP, false, *segment, 0)?;
-                }
-                // Through the socket, as many rows at a time as a request holds.
-                Buffer::Own(pixels) => {
-                    let rows = ((self.conn.maximum_request_bytes() - 64) / (part.w as usize * 4)).max(1);
-                    let mut top = part.y;
-                    while top < part.bottom() {
-                        let count = (part.bottom() - top).min(rows as i32);
-                        let mut bytes = Vec::with_capacity((count * part.w * 4) as usize);
-                        for row in top..top + count {
-                            for pixel in &pixels[(row * self.width + part.x) as usize..][..part.w as usize] {
-                                bytes.extend_from_slice(&pixel.to_le_bytes());
+    /// Sends parts of a frame of the whole screen to the windows they
+    /// are in: as much of each part as is in each window, to where in
+    /// that window it goes.
+    fn put(&self, frame: &Buffer, parts: &[Rect]) -> Result<()> {
+        for &(drawable, place) in &self.panes {
+            for part in parts.iter().map(|part| part.intersect(place)).filter(|part| !part.is_empty()) {
+                let (x, y, w, h) = (part.x as u16, part.y as u16, part.w as u16, part.h as u16);
+                let (to_x, to_y) = ((part.x - place.x) as i16, (part.y - place.y) as i16);
+                match frame {
+                    Buffer::Shared { segment, .. } => {
+                        self.conn.shm_put_image(drawable, self.gc, self.width as u16, self.height as u16, x, y, w, h, to_x, to_y, self.depth, Z_PIXMAP, false, *segment, 0)?;
+                    }
+                    // Through the socket, as many rows at a time as a request holds.
+                    Buffer::Own(pixels) => {
+                        let rows = ((self.conn.maximum_request_bytes() - 64) / (part.w as usize * 4)).max(1);
+                        let mut top = part.y;
+                        while top < part.bottom() {
+                            let count = (part.bottom() - top).min(rows as i32);
+                            let mut bytes = Vec::with_capacity((count * part.w * 4) as usize);
+                            for row in top..top + count {
+                                for pixel in &pixels[(row * self.width + part.x) as usize..][..part.w as usize] {
+                                    bytes.extend_from_slice(&pixel.to_le_bytes());
+                                }
                             }
+                            self.conn.put_image(ImageFormat::Z_PIXMAP, drawable, self.gc, w, count as u16, to_x, (top - place.y) as i16, 0, self.depth, &bytes)?;
+                            top += count;
                         }
-                        self.conn.put_image(ImageFormat::Z_PIXMAP, drawable, self.gc, w, count as u16, x as i16, top as i16, 0, self.depth, &bytes)?;
-                        top += count;
                     }
                 }
             }
@@ -346,7 +379,7 @@ impl Display {
     /// would only queue up behind the pointer.
     pub fn present(&self, frame: &Buffer, parts: &[Rect]) -> Result<()> {
         if !parts.is_empty() {
-            self.put(self.window, frame, parts)?;
+            self.put(frame, parts)?;
             self.conn.get_input_focus()?.reply()?;
         }
         Ok(())
@@ -378,7 +411,9 @@ impl Display {
         if self.window != NONE {
             let _ = self.conn.ungrab_pointer(CURRENT_TIME);
             let _ = self.conn.ungrab_keyboard(CURRENT_TIME);
-            let _ = self.conn.destroy_window(self.window);
+            for (window, _) in self.panes.drain(..) {
+                let _ = self.conn.destroy_window(window);
+            }
             let _ = self.conn.get_input_focus().map(|cookie| cookie.reply());
             self.window = NONE;
         }
@@ -414,7 +449,9 @@ impl Display {
     pub fn set_cursor(&mut self, cursor: Cursor) {
         if self.cursor != Some(cursor) {
             if let Some(&id) = self.cursors.get(&cursor) {
-                let _ = self.conn.change_window_attributes(self.window, &ChangeWindowAttributesAux::new().cursor(id));
+                for (window, _) in &self.panes {
+                    let _ = self.conn.change_window_attributes(*window, &ChangeWindowAttributesAux::new().cursor(id));
+                }
                 let _ = self.conn.flush();
             }
             self.cursor = Some(cursor);
@@ -424,7 +461,7 @@ impl Display {
     /// Where the pointer is.
     pub fn pointer(&self) -> (i32, i32) {
         let asked = self.conn.query_pointer(self.root).ok().and_then(|cookie| cookie.reply().ok());
-        asked.map_or((self.width / 2, self.height / 2), |reply| (i32::from(reply.root_x) - self.origin.0, i32::from(reply.root_y) - self.origin.1))
+        asked.map_or((self.width / 2, self.height / 2), |reply| (i32::from(reply.root_x), i32::from(reply.root_y)))
     }
 
     /// The pointer as it is drawn just now, to be put in a picture: the
@@ -440,8 +477,19 @@ impl Display {
 
     /// The monitors that make up the screen.
     pub fn monitors(&self) -> Vec<Rect> {
-        if self.managed {
-            return vec![Rect::new(0, 0, self.width, self.height)];
+        // `HOTSHOT_MONITORS` says what they are instead, as
+        // `800x600+0+0,800x600+800+0`: for trying more than one where
+        // there is one.
+        let said = std::env::var("HOTSHOT_MONITORS").ok().map(|said| {
+            let number = |text: &str| text.parse::<i32>().ok();
+            said.split(',').filter_map(|one| {
+                let (size, place) = one.split_once('+')?;
+                let ((wide, high), (x, y)) = (size.split_once('x')?, place.split_once('+')?);
+                Some(Rect::new(number(x)?, number(y)?, number(wide)?, number(high)?))
+            }).collect::<Vec<Rect>>()
+        });
+        if let Some(said) = said.filter(|said| !said.is_empty()) {
+            return said;
         }
         let asked = self.conn.randr_get_monitors(self.root, true).ok().and_then(|cookie| cookie.reply().ok());
         let found = asked.map(|reply| reply.monitors.iter().map(|m| Rect::new(i32::from(m.x), i32::from(m.y), i32::from(m.width), i32::from(m.height))).collect());
@@ -631,15 +679,15 @@ impl Display {
             let input = match next {
                 Event::MotionNotify(motion) => {
                     self.time = motion.time;
-                    Some(Input::Motion(i32::from(motion.root_x) - self.origin.0, i32::from(motion.root_y) - self.origin.1, mods(motion.state.into())))
+                    Some(Input::Motion(i32::from(motion.root_x), i32::from(motion.root_y), mods(motion.state.into())))
                 }
                 Event::ButtonPress(press) => {
                     self.time = press.time;
-                    Some(Input::Press(press.detail, i32::from(press.root_x) - self.origin.0, i32::from(press.root_y) - self.origin.1, mods(press.state.into()), press.time))
+                    Some(Input::Press(press.detail, i32::from(press.root_x), i32::from(press.root_y), mods(press.state.into()), press.time))
                 }
                 Event::ButtonRelease(release) => {
                     self.time = release.time;
-                    Some(Input::Release(release.detail, i32::from(release.root_x) - self.origin.0, i32::from(release.root_y) - self.origin.1, mods(release.state.into())))
+                    Some(Input::Release(release.detail, i32::from(release.root_x), i32::from(release.root_y), mods(release.state.into())))
                 }
                 Event::KeyPress(press) => {
                     self.time = press.time;
@@ -647,6 +695,12 @@ impl Display {
                     Some(Input::Key(self.key(press.detail, state), mods(state)))
                 }
                 Event::Expose(expose) if expose.count == 0 => Some(Input::Expose),
+                // A managed window moved or made another size by
+                // whoever manages it: found again, and drawn afresh.
+                Event::ConfigureNotify(_) if self.managed => {
+                    self.settle();
+                    Some(Input::Expose)
+                }
                 _ => None,
             };
             match (inputs.last_mut(), input) {
