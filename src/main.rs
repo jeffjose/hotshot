@@ -101,12 +101,18 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         options.settings.enter = said;
     }
 
-    let (area, pixels, how) = match (named, options.edit) {
+    let (area, pixels, rounded, how) = match (named, options.edit) {
         (Some(area), false) => {
             let how = if said.copy || said.save { said } else { Finish { copy: false, save: true } };
             let shot = display.capture()?;
             trace("screen read");
-            (area, canvas::crop(&shot, display.width, area), how)
+            let mut pixels = canvas::crop(&shot, display.width, area);
+            // Corners as round as the editor would have made them.
+            let round = (options.settings.corners * editor::scale_for(display.height)).round() as i32;
+            if round > 0 {
+                canvas::round_alpha(&mut pixels, area.w, round);
+            }
+            (area, pixels, round > 0, how)
         }
         (named, _) => match pick(&mut display, named, &options, font, &trace)? {
             Some(taken) => taken,
@@ -115,7 +121,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     };
     trace("picture taken");
 
-    let png = output::encode(area.w as u32, area.h as u32, &pixels)?;
+    let png = output::encode(area.w as u32, area.h as u32, &pixels, rounded)?;
     trace("packed as PNG");
     if how.save {
         match &options.output {
@@ -134,7 +140,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
 /// Freezes the screen and lets an area be dragged out and drawn on.
 /// Gives the area, the picture of it, and what is to be done with it;
 /// or nothing, if it was called off.
-fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<(Rect, Vec<u32>, Finish)>> {
+fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<(Rect, Vec<u32>, bool, Finish)>> {
     // The first frame is the screen darkened and nothing else: it is
     // what says hotshot has started, and the server makes it of its own
     // copy of the screen, without a pixel having come here. The keyboard
@@ -236,5 +242,5 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
     // Down at once: the packing and saving are not to be watched.
     display.hide();
     trace("window down");
-    Ok(how.and_then(|how| editor.result().map(|(area, pixels)| (area, pixels, how))))
+    Ok(how.and_then(|how| editor.result().map(|(area, pixels, rounded)| (area, pixels, rounded, how))))
 }

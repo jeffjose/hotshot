@@ -153,10 +153,10 @@ pub fn run(mut display: Display, options: Options, font: JoinHandle<Text>, start
 
     // And the picture of it, as it would be saved or copied.
     let began = Instant::now();
-    let (area, pixels) = editor.result().ok_or("the benchmark lost its selection")?;
+    let (area, pixels, rounded) = editor.result().ok_or("the benchmark lost its selection")?;
     let drawn = began.elapsed();
     let began = Instant::now();
-    let png = output::encode(area.w as u32, area.h as u32, &pixels)?;
+    let png = output::encode(area.w as u32, area.h as u32, &pixels, rounded)?;
     println!("The picture, {} x {} with five shapes on it:", area.w, area.h);
     println!("  {:<34} {:>7.1?}", "drawn", drawn);
     println!("  {:<34} {:>7.1?}   {:.1} MB", "packed as PNG", began.elapsed(), png.len() as f64 / 1e6);

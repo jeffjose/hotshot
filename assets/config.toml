@@ -25,7 +25,9 @@
 
 # The colour drawn in to begin with.
 # color = "red"
-#   red orange amber green blue indigo purple pink white black
+#   any of the colour box's, which are Radix's:
+#   tomato red ruby crimson pink plum purple violet iris indigo blue cyan
+#   teal jade green grass lime yellow amber orange brown gray white black
 #   or any colour as "RRGGBB"
 
 # The width of line drawn with to begin with, and the size of text that
@@ -39,9 +41,14 @@
 # How much darker what is not selected is made, as a percentage.
 # dim = 50
 
-# The magnifier that follows the pointer while an edge of the selection
-# is being placed.
-# magnifier = true
+# Round the corners of the picture itself by this many pixels (of a
+# screen 1080 high), leaving what is outside them see-through. K, or its
+# button in the bar, changes it for the picture being taken.
+# rounded = 0
+
+# A magnifier that follows the pointer while an edge of the selection is
+# being placed, for placing it to the pixel.
+# magnifier = false
 
 # Seconds to wait before the screen is frozen: time to open a menu.
 # delay = 0

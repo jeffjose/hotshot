@@ -38,12 +38,17 @@ Look:
                              RRGGBB, or one of the Radix colours such as
                              indigo (the default), blue, crimson or teal
       --color COLOR          colour to draw in to begin with: red (the
-                             default), orange, amber, green, blue, indigo,
-                             purple, pink, white, black or RRGGBB
+                             default) or any other of the Radix colours
+                             the colour box has, white, black or RRGGBB
       --size N               width of line to begin with, 1 to 4
-      --corner-radius N      how round a rectangle's corners are; 0 is square
+      --corner-radius N      how round a drawn rectangle's corners are; 0 is
+                             square
+      --rounded N            round the corners of the picture itself by N
+                             pixels, leaving what is outside them see-through
+                             (K, or its button, goes through 8, 16 and 28)
       --dim PERCENT          how much darker what is not selected is made
-      --no-magnifier         no magnifier beside the pointer
+      --magnifier            a magnifier beside the pointer while an edge is
+                             being placed (config: magnifier = true)
 
 Other:
       --monitors             list the monitors and quit
@@ -61,6 +66,7 @@ Keys, once an area is selected:
   V move   A arrow   L line   R rectangle   E ellipse   P pen   H marker
   T text   N counter   B blur   C colours   I pick a colour off the screen
   F filled   1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
+  K rounds the corners of the picture, more each time and then not at all
   Arrows nudge the selection, or the shape picked out; Shift by ten;
   Ctrl+arrows resize. Delete removes the shape picked out. Ctrl+A is the
   whole screen. A right click is the colours.
@@ -69,7 +75,7 @@ Config file:
   ~/.config/hotshot/config.toml sets defaults, using the long option names:
       dir = \"~/Pictures/shots\"
       enter = \"both\"
-      magnifier = false
+      magnifier = true
 ";
 
 /// What the picture is of.
@@ -156,7 +162,7 @@ fn short_flag(flag: char) -> Option<&'static str> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "dim", "enter"].contains(&name)
+    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -189,6 +195,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
             options.settings.size = size - 1;
         }
         "corner-radius" => options.settings.radius = number(value()?, "corner radius")? as f32,
+        "rounded" => options.settings.corners = number(value()?, "rounding")? as f32,
         "dim" => options.settings.dim = (number(value()?, "dim")? as u32).min(100),
         "magnifier" => options.settings.magnifier = true,
         "no-magnifier" => options.settings.magnifier = false,
@@ -386,12 +393,17 @@ mod tests {
     #[test]
     fn a_config_file_sets_what_the_flags_do() {
         let mut options = defaults();
-        let text = "# a remark\ndir = \"/tmp/shots\"   # and another\nenter = \"both\"\nmagnifier = false\nsize = 3\naccent = \"teal\"\ncolor = \"00ff00\"\n";
+        assert!(!options.settings.magnifier);
+        let text = "# a remark\ndir = \"/tmp/shots\"   # and another\nenter = \"both\"\nmagnifier = true\nsize = 3\naccent = \"teal\"\ncolor = \"00ff00\"\nrounded = 16\n";
         read_config(&mut options, text).unwrap();
+        assert!(options.settings.magnifier && options.settings.corners == 16.0);
+        read_config(&mut options, "magnifier = false").unwrap();
         assert_eq!(options.dir, PathBuf::from("/tmp/shots"));
         assert_eq!(options.settings.enter, Finish { copy: true, save: true });
         assert!(!options.settings.magnifier);
         assert_eq!((options.settings.size, options.settings.accent, options.settings.color), (2, 0x12A594, 0x00FF00));
+        read_config(&mut options, "color = \"jade\"").unwrap();
+        assert_eq!(options.settings.color, 0x29A383);
         assert!(read_config(&mut options, "size = 9").unwrap_err().starts_with("line 1"));
         assert!(read_config(&mut options, "nothing").is_err());
     }

@@ -8,18 +8,23 @@ use rayon::prelude::*;
 
 /// A picture as a PNG. Packed quickly rather than small: it is a
 /// screenshot, wanted now, and the difference is a few per cent.
-pub fn encode(width: u32, height: u32, pixels: &[u32]) -> Result<Vec<u8>, String> {
+///
+/// With `alpha`, the top byte of each pixel says how opaque it is, and
+/// goes into the PNG: that is how a picture has rounded corners.
+pub fn encode(width: u32, height: u32, pixels: &[u32], alpha: bool) -> Result<Vec<u8>, String> {
     // PNG has the colours of a pixel the other way round, and no fourth
-    // byte; turning 8 million of them over is worth every core.
-    let mut bytes = vec![0u8; pixels.len() * 3];
-    bytes.par_chunks_mut(3 << 12).zip(pixels.par_chunks(1 << 12)).for_each(|(bytes, pixels)| {
-        for (out, pixel) in bytes.chunks_exact_mut(3).zip(pixels) {
-            out.copy_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]);
+    // byte unless it means something; turning 8 million of them over is
+    // worth every core.
+    let each = if alpha { 4 } else { 3 };
+    let mut bytes = vec![0u8; pixels.len() * each];
+    bytes.par_chunks_mut(each << 12).zip(pixels.par_chunks(1 << 12)).for_each(|(bytes, pixels)| {
+        for (out, pixel) in bytes.chunks_exact_mut(each).zip(pixels) {
+            out.copy_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8, (pixel >> 24) as u8][..each]);
         }
     });
     let mut png = Vec::with_capacity(bytes.len() / 4);
     let mut encoder = png::Encoder::new(&mut png, width, height);
-    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_color(if alpha { png::ColorType::Rgba } else { png::ColorType::Rgb });
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(png::Compression::Fast);
     let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
@@ -81,7 +86,7 @@ mod tests {
     #[test]
     fn a_png_has_the_pixels_it_was_made_from() {
         let pixels = [0xFF0000, 0x00FF00, 0x0000FF, 0x123456];
-        let png = encode(2, 2, &pixels).unwrap();
+        let png = encode(2, 2, &pixels, false).unwrap();
         let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
         let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut bytes).unwrap();

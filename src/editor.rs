@@ -18,20 +18,43 @@ const MENU_EDGE_COLOR: u32 = 0x555555;
 
 /// The colours to draw in: Radix's, at the step meant for solid
 /// backgrounds, as jog's accents are.
-pub const PALETTE: [(u32, &str); 10] = [
+pub const PALETTE: [(u32, &str); 24] = [
+    // The reds round to the violets,
+    (0xE54D2E, "tomato"),
     (0xE5484D, "red"),
-    (0xF76B15, "orange"),
-    (0xFFC53D, "amber"),
-    (0x30A46C, "green"),
-    (0x0090FF, "blue"),
-    (0x3E63DD, "indigo"),
-    (0x8E4EC6, "purple"),
+    (0xE54666, "ruby"),
+    (0xE93D82, "crimson"),
     (0xD6409F, "pink"),
+    (0xAB4ABA, "plum"),
+    (0x8E4EC6, "purple"),
+    (0x6E56CF, "violet"),
+    // the blues to the greens,
+    (0x5B5BD6, "iris"),
+    (0x3E63DD, "indigo"),
+    (0x0090FF, "blue"),
+    (0x00A2C7, "cyan"),
+    (0x12A594, "teal"),
+    (0x29A383, "jade"),
+    (0x30A46C, "green"),
+    (0x46A758, "grass"),
+    // the bright ones, and the ones that are no colour.
+    (0xBDEE63, "lime"),
+    (0xFFE629, "yellow"),
+    (0xFFC53D, "amber"),
+    (0xF76B15, "orange"),
+    (0xAD7F58, "brown"),
+    (0x8D8D8D, "gray"),
     (0xFFFFFF, "white"),
     (0x161616, "black"),
 ];
+/// The one drawn in unless another is asked for.
+const RED: u32 = 0xE5484D;
 /// How many of them stand in a row of the box they are picked from.
-const PALETTE_COLUMNS: i32 = 5;
+const PALETTE_COLUMNS: i32 = 8;
+
+/// How round the corners of the picture itself can be made, in pixels
+/// of a screen 1080 high: the button for it goes from each to the next.
+const CORNERS: [f32; 4] = [0.0, 8.0, 16.0, 28.0];
 
 /// The widths of line there are to choose from, and the sizes of text
 /// that go with them, in pixels of a screen 1080 high.
@@ -114,14 +137,23 @@ pub struct Settings {
     pub dim: u32,
     /// The radius of a rectangle's corners, in pixels of a screen 1080 high.
     pub radius: f32,
+    /// The radius of the corners of the picture itself, in the same
+    /// pixels; 0 for the square corners a screen has.
+    pub corners: f32,
     /// What Enter, and a double click, do.
     pub enter: Finish,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: PALETTE[0].0, size: 1, magnifier: true, dim: 50, radius: 6.0, enter: Finish { copy: true, save: false } }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, dim: 50, radius: 6.0, corners: 0.0, enter: Finish { copy: true, save: false } }
     }
+}
+
+/// How large things are drawn on a screen of some height, against one
+/// 1080 high.
+pub fn scale_for(height: i32) -> f32 {
+    ui_px(height) as f32 / 13.0
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -132,13 +164,14 @@ enum Button {
     Fill,
     Undo,
     Redo,
+    Corners,
     Cancel,
     Save,
     Copy,
 }
 
 /// The bar of tools, in the groups it is divided into.
-const GROUPS: [&[Button]; 4] = [
+const GROUPS: [&[Button]; 5] = [
     &[
         Button::Tool(Tool::Select),
         Button::Tool(Tool::Arrow),
@@ -153,6 +186,7 @@ const GROUPS: [&[Button]; 4] = [
     ],
     &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill],
     &[Button::Undo, Button::Redo],
+    &[Button::Corners],
     &[Button::Cancel, Button::Save, Button::Copy],
 ];
 
@@ -178,6 +212,7 @@ impl Button {
             Button::Fill => ("Filled", "F"),
             Button::Undo => ("Undo", "Ctrl+Z"),
             Button::Redo => ("Redo", "Ctrl+Shift+Z"),
+            Button::Corners => ("Rounded corners", "K"),
             Button::Cancel => ("Cancel", "Esc"),
             Button::Save => ("Save", "Ctrl+S"),
             Button::Copy => ("Copy", "Ctrl+C"),
@@ -202,7 +237,7 @@ impl Button {
             Button::Cancel => icons::CLOSE,
             Button::Save => icons::SAVE,
             Button::Copy => icons::COPY,
-            Button::Color | Button::Size(_) => "",
+            Button::Color | Button::Size(_) | Button::Corners => "",
         }
     }
 }
@@ -277,6 +312,8 @@ pub struct Editor {
     color: u32,
     size: usize,
     filled: bool,
+    /// The radius of the picture's corners, in pixels of a screen 1080 high.
+    corners: f32,
     shapes: Vec<Shape>,
     undo: Vec<Vec<Shape>>,
     redo: Vec<Vec<Shape>>,
@@ -322,6 +359,7 @@ impl Editor {
             monitors: if monitors.is_empty() { vec![screen] } else { monitors },
             windows,
             color: settings.color,
+            corners: settings.corners,
             size: settings.size.min(STROKES.len() - 1),
             settings,
             text,
@@ -372,6 +410,13 @@ impl Editor {
 
     fn stroke(&self) -> f32 {
         STROKES[self.size] * self.scale()
+    }
+
+    /// The radius of the picture's corners on this screen: never more
+    /// than half the selection's shorter side, which makes its ends round.
+    fn corner_radius(&self) -> i32 {
+        let most = self.selection.map_or(0, |area| area.w.min(area.h) / 2);
+        ((self.corners * self.scale()).round() as i32).clamp(0, most)
     }
 
     fn font_px(&self) -> u32 {
@@ -846,6 +891,7 @@ impl Editor {
                 'b' => self.set_tool(Tool::Blur),
                 'c' => drop(self.activate(Button::Color)),
                 'f' => drop(self.activate(Button::Fill)),
+                'k' => drop(self.activate(Button::Corners)),
                 'i' => (self.pipette, self.popup) = (!self.pipette, None),
                 '1'..='4' => self.set_size(letter as usize - '1' as usize),
                 '[' => self.scrolled(false),
@@ -898,6 +944,13 @@ impl Editor {
             }
             Button::Undo => self.undo(),
             Button::Redo => self.redo(),
+            // From each roundness to the next, and round again to square;
+            // one set in the config file that is none of them goes to
+            // square first.
+            Button::Corners => {
+                let at = CORNERS.iter().position(|&radius| radius == self.corners);
+                self.corners = at.map_or(0.0, |at| CORNERS[(at + 1) % CORNERS.len()]);
+            }
             Button::Cancel => return Outcome::Cancel,
             Button::Save => return self.finish(Finish { copy: false, save: true }),
             Button::Copy => return self.finish(Finish { copy: true, save: false }),
@@ -1018,6 +1071,7 @@ impl Editor {
         // What is selected shows as it is; so, before there is a
         // selection, does the window a click would take.
         let lit = self.selection.or(if self.drag == Drag::None { self.window } else { None });
+        let round = self.corner_radius();
         if let Some(area) = lit {
             canvas::copy_rect(out, &self.shot.pixels, width, area);
         }
@@ -1039,16 +1093,23 @@ impl Editor {
                 canvas.fill(x + 1, y + line / 8, (shape.font_px as i32 / 12).max(2), line - line / 4, shape.color);
             }
             canvas.reset_clip();
+            // With rounded corners, what is outside the curve is no
+            // part of the picture, and shows darkened like the rest.
+            canvas.round_off(selection, round, &self.dim);
         }
 
         // The edge of what is lit: a line just outside it.
         let thick = (px as i32 / 12).max(1);
         if let Some(area) = lit {
             let around = area.inflate(thick);
-            canvas.fill(around.x, around.y, around.w, thick, accent);
-            canvas.fill(around.x, around.bottom() - thick, around.w, thick, accent);
-            canvas.fill(around.x, area.y, thick, area.h, accent);
-            canvas.fill(around.right() - thick, area.y, thick, area.h, accent);
+            if round > 0 {
+                canvas.round_outline(around.x, around.y, around.w, around.h, round + thick, thick, accent);
+            } else {
+                canvas.fill(around.x, around.y, around.w, thick, accent);
+                canvas.fill(around.x, around.bottom() - thick, around.w, thick, accent);
+                canvas.fill(around.x, area.y, thick, area.h, accent);
+                canvas.fill(around.right() - thick, area.y, thick, area.h, accent);
+            }
         }
         if let Some(selection) = self.selection {
             // The shape picked out, in a frame of its own.
@@ -1106,6 +1167,7 @@ impl Editor {
                 Button::Tool(tool) => tool == self.tool && !self.pipette,
                 Button::Size(size) => size == self.size,
                 Button::Fill => self.filled,
+                Button::Corners => self.corners > 0.0,
                 Button::Color => self.popup.is_some() || self.pipette,
                 _ => false,
             };
@@ -1139,6 +1201,12 @@ impl Editor {
                 Button::Size(size) => {
                     let radius = ((STROKES[size] * px as f32 / 13.0 * 0.62).round() as i32 + 1).min(side * 3 / 10);
                     canvas.disc(cx, cy, radius, ink, 256);
+                }
+                // A frame with corners as round as the picture's are.
+                Button::Corners => {
+                    let across = side / 2;
+                    let radius = (self.corners / CORNERS[CORNERS.len() - 1] * across as f32 / 2.0).round() as i32;
+                    canvas.round_outline(cx - across / 2, cy - across / 2, across, across, radius, (px as i32 / 8).max(1), ink);
                 }
                 _ => self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, button.icon()),
             }
@@ -1263,21 +1331,31 @@ impl Editor {
 
     /// The picture that is taken: what is selected, with what was drawn
     /// on it, and nothing of the interface.
-    pub fn result(&mut self) -> Option<(Rect, Vec<u32>)> {
+    ///
+    /// The last of the three says whether its corners are rounded: then
+    /// the top byte of each pixel is how opaque it is, which outside the
+    /// curve of a corner is not at all.
+    pub fn result(&mut self) -> Option<(Rect, Vec<u32>, bool)> {
         self.commit_text();
         let selection = self.selection?;
-        if self.shapes.is_empty() {
-            return Some((selection, canvas::crop(&self.shot.pixels, self.shot.width, selection)));
+        let mut pixels = if self.shapes.is_empty() {
+            canvas::crop(&self.shot.pixels, self.shot.width, selection)
+        } else {
+            // Drawn on a copy of the whole screen, where the shapes are
+            // already in the right place, and then cut out of it.
+            let mut whole = self.shot.pixels.to_vec();
+            let mut canvas = Canvas::new(&mut whole, self.shot.width, self.shot.height);
+            canvas.set_clip(selection);
+            for shape in &self.shapes {
+                shape.draw(&mut canvas, &mut self.text);
+            }
+            canvas::crop(&whole, self.shot.width, selection)
+        };
+        let round = self.corner_radius();
+        if round > 0 {
+            canvas::round_alpha(&mut pixels, selection.w, round);
         }
-        // Drawn on a copy of the whole screen, where the shapes are
-        // already in the right place, and then cut out of it.
-        let mut whole = self.shot.pixels.to_vec();
-        let mut canvas = Canvas::new(&mut whole, self.shot.width, self.shot.height);
-        canvas.set_clip(selection);
-        for shape in &self.shapes {
-            shape.draw(&mut canvas, &mut self.text);
-        }
-        Some((selection, canvas::crop(&whole, self.shot.width, selection)))
+        Some((selection, pixels, round > 0))
     }
 }
 
@@ -1396,14 +1474,26 @@ mod tests {
         click(&mut editor, (600, 300), 5000);
         assert_eq!((editor.shapes.len(), editor.undo.len()), (2, 2));
 
-        let (area, pixels) = editor.result().unwrap();
-        assert_eq!(area, Rect::new(100, 100, 800, 600));
+        let (area, pixels, rounded) = editor.result().unwrap();
+        assert_eq!((area, rounded), (Rect::new(100, 100, 800, 600), false));
         let at = |x: i32, y: i32| pixels[((y - area.y) * area.w + x - area.x) as usize];
         // The rectangle's edge and the arrow's shaft are in red; the
         // middle of the rectangle is as it was.
-        assert_eq!(at(300, 200), PALETTE[0].0);
-        assert_eq!(at(600, 550), PALETTE[0].0);
+        assert_eq!(at(300, 200), RED);
+        assert_eq!(at(600, 550), RED);
         assert_eq!(at(300, 250), 0xF4F4F4);
+
+        // With its corners rounded, the picture is see-through outside
+        // the curve of each and nowhere else; K goes round to square.
+        editor.key(Key::Char('k'), PLAIN);
+        let (area, pixels, rounded) = editor.result().unwrap();
+        assert!(rounded);
+        let alpha = |x: i32, y: i32| pixels[(y * area.w + x) as usize] >> 24;
+        assert_eq!((alpha(0, 0), alpha(area.w - 1, area.h - 1), alpha(4, 4), alpha(400, 0), alpha(400, 300)), (0, 0, 255, 255, 255));
+        for _ in 0..3 {
+            editor.key(Key::Char('k'), PLAIN);
+        }
+        assert!(!editor.result().unwrap().2);
 
         editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
         editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
@@ -1486,7 +1576,7 @@ mod tests {
         let mut out = vec![0u32; (width * height) as usize];
         let mut write = |editor: &mut Editor, name: &str| {
             editor.draw(&mut out);
-            let png = crate::output::encode(width as u32, height as u32, &out).unwrap();
+            let png = crate::output::encode(width as u32, height as u32, &out, false).unwrap();
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(format!("{name}.png")), png).unwrap();
         };
@@ -1557,7 +1647,10 @@ mod tests {
         editor.pressed(200_000);
         editor.released();
         write(&mut editor, "8-shape-picked");
-        let (area, pixels) = editor.result().unwrap();
-        std::fs::write(dir.join("9-result.png"), crate::output::encode(area.w as u32, area.h as u32, &pixels).unwrap()).unwrap();
+        editor.key(Key::Char('k'), PLAIN);
+        editor.key(Key::Char('k'), PLAIN);
+        write(&mut editor, "9-rounded");
+        let (area, pixels, rounded) = editor.result().unwrap();
+        std::fs::write(dir.join("10-result.png"), crate::output::encode(area.w as u32, area.h as u32, &pixels, rounded).unwrap()).unwrap();
     }
 }

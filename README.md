@@ -50,7 +50,8 @@ long each step of starting up took.
 
 With nothing selected: **drag** to select an area, **click** a window to
 take it, **Enter** for the screen the pointer is on, **Esc** to cancel.
-A magnifier follows the pointer for placing an edge to the pixel.
+With `--magnifier`, or `magnifier = true` in the config file, a
+magnifier follows the pointer for placing an edge to the pixel.
 
 With an area selected, a bar of tools appears beside it:
 
@@ -63,7 +64,8 @@ With an area selected, a bar of tools appears beside it:
 | `T` | text: click, type, Enter (Shift+Enter for a new line) |
 | `N` | counter: numbered discs, dragged to point at something |
 | `B` | blur: a mosaic over what should not be read |
-| `C` `I` | the colours; pick a colour off the screen |
+| `C` `I` | the colours, 24 of Radix's; pick a colour off the screen |
+| `K` | round the corners of the picture itself: 8, 16, 28 pixels, none |
 | `1`-`4`, wheel | width of line, and size of text |
 
 **Enter** or a double click copies the picture to the clipboard,

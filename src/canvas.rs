@@ -150,6 +150,20 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Rounds the corners of a rectangle off, by putting back outside
+    /// the curve what another picture of the same size has there.
+    pub fn round_off(&mut self, rect: Rect, radius: i32, under: &[u32]) {
+        let radius = radius.clamp(0, rect.w.min(rect.h) / 2);
+        for (corner_x, corner_y) in [(rect.x, rect.y), (rect.right() - radius, rect.y), (rect.x, rect.bottom() - radius), (rect.right() - radius, rect.bottom() - radius)] {
+            for py in corner_y.max(0)..(corner_y + radius).min(self.height) {
+                for px in corner_x.max(0)..(corner_x + radius).min(self.width) {
+                    let inside = rounded_cover(px, py, rect.x, rect.y, rect.w, rect.h, radius, 0.0);
+                    self.cover(px, py, under[(py * self.width + px) as usize], ((1.0 - inside) * 256.0) as u32);
+                }
+            }
+        }
+    }
+
     /// A filled circle about a point.
     pub fn disc(&mut self, cx: i32, cy: i32, radius: i32, color: u32, amount: u32) {
         self.round_fill(cx - radius, cy - radius, 2 * radius, 2 * radius, radius, color, amount);
@@ -263,6 +277,24 @@ fn rounded_cover(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32, radius: i32, 
     let down = (f64::from(py) + 0.5 - f64::from(y) - f64::from(h) / 2.0).abs() - (half_h - radius);
     let outside = across.max(0.0).hypot(down.max(0.0)) + across.max(down).min(0.0) - radius;
     (0.5 - outside).clamp(0.0, 1.0)
+}
+
+/// Says in the top byte of each pixel of a picture how opaque it is:
+/// wholly, but for corners rounded to `radius`, which fade to nothing
+/// outside the curve.
+pub fn round_alpha(pixels: &mut [u32], width: i32, radius: i32) {
+    let height = pixels.len() as i32 / width.max(1);
+    let radius = radius.clamp(0, width.min(height) / 2);
+    pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
+    for (corner_x, corner_y) in [(0, 0), (width - radius, 0), (0, height - radius), (width - radius, height - radius)] {
+        for py in corner_y..corner_y + radius {
+            for px in corner_x..corner_x + radius {
+                let inside = (rounded_cover(px, py, 0, 0, width, height, radius, 0.0) * 255.0).round() as u32;
+                let pixel = &mut pixels[(py * width + px) as usize];
+                *pixel = (*pixel & 0xFF_FFFF) | (inside << 24);
+            }
+        }
+    }
 }
 
 /// Blends `amount`/256 of `b` into `a`, two channels at a time.
