@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::canvas::Rect;
 use crate::editor::{Finish, Settings, Windows, PALETTE};
 use crate::frame::{Backdrop, GRADIENTS, PADS};
+use crate::output::Format;
 
 pub const USAGE: &str = "\
 Usage: hotshot [OPTIONS]
@@ -45,6 +46,13 @@ What to do with it:
       --filename NAME        what a saved picture is called, less the .png,
                              with the time as strftime sets it out
                              (screenshot-%Y-%m-%d-%H%M%S)
+      --format KIND          png (the default), jpg or webp; a name given
+                             with -o that ends in one of them says so itself
+      --quality N            how good a JPEG is, 1 to 100 (90)
+      --pointer              with the mouse pointer in the picture
+      --aspect W:H           keep the area dragged out to a shape, as 16:9
+      --fixed WxH            or to a size in pixels, as 1280x720: a press
+                             puts it down and a drag moves it
   When dragging an area out, these say what Enter does; the usual is to
   copy. Taken at once, a picture is saved unless told otherwise.
 
@@ -182,6 +190,12 @@ pub struct Options {
     /// hand in the editor.
     pub plain_corners: f32,
     pub filename: String,
+    /// What kind of file a picture is saved as, where the name given
+    /// with `-o` does not say; and how good a JPEG is, of 100.
+    pub format: Format,
+    pub quality: u8,
+    /// Whether the mouse pointer is in the picture.
+    pub pointer: bool,
     pub settings: Settings,
     pub list_monitors: bool,
     pub benchmark: bool,
@@ -224,6 +238,9 @@ fn defaults() -> Options {
         save_to: None,
         plain_corners: 0.0,
         filename: "screenshot-%Y-%m-%d-%H%M%S".into(),
+        format: Format::Png,
+        quality: 90,
+        pointer: false,
         settings: Settings::default(),
         list_monitors: false,
         benchmark: false,
@@ -255,8 +272,15 @@ fn short_flag(flag: char) -> Option<&'static str> {
     })
 }
 
+/// Two whole numbers, neither of them nothing, with a mark between.
+fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
+    let (first, second) = text.split_once(mark)?;
+    let number = |text: &str| text.trim().parse::<i32>().ok().filter(|number| (1..=100_000).contains(number));
+    Some((number(first)?, number(second)?))
+}
+
 fn takes_value(name: &str) -> bool {
-    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
+    ["format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -284,6 +308,32 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "save" => options.save = true,
         "output" => options.output = Some(path(&value()?)),
         "dir" => options.dir = path(&value()?),
+        "format" => {
+            let text = value()?;
+            options.format = Format::named(&text).ok_or(format!("invalid format '{text}', expected png, jpg or webp"))?;
+        }
+        "quality" => {
+            let text = value()?;
+            options.quality = text.parse::<u8>().ok().filter(|quality| (1..=100).contains(quality)).ok_or(format!("invalid quality '{text}', expected 1 to 100"))?;
+        }
+        "pointer" => options.pointer = true,
+        "no-pointer" => options.pointer = false,
+        // The shape an area is kept to as it is dragged out: so wide to
+        // so tall, as 16:9; or so many pixels each way, as 1280x720.
+        "aspect" => {
+            let text = value()?;
+            options.settings.aspect = match text.as_str() {
+                "free" | "none" => None,
+                _ => Some(pair(&text, ':').ok_or(format!("invalid aspect '{text}', expected something like 16:9, or free"))?),
+            };
+        }
+        "fixed" => {
+            let text = value()?;
+            options.settings.fixed = match text.as_str() {
+                "free" | "none" => None,
+                _ => Some(pair(&text, 'x').ok_or(format!("invalid size '{text}', expected something like 1280x720, or free"))?),
+            };
+        }
         // Another folder Save can save to: as many as are named.
         "place" => options.places.push(path(&value()?)),
         // The one of them it saves to, by its path: looked for once

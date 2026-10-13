@@ -426,6 +426,38 @@ pub fn crop(from: &[u32], width: i32, rect: Rect) -> Vec<u32> {
     out
 }
 
+/// The mouse pointer as the server draws it: where on the screen its
+/// top-left corner is, how wide and tall it is, and its pixels, each
+/// with how opaque it is in its top byte and its colors already made
+/// that much fainter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pointer {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub pixels: Vec<u32>,
+}
+
+impl Pointer {
+    /// Draws it into a picture so many pixels wide whose top-left corner
+    /// is at `origin` on the screen. What the picture has in the top
+    /// byte of each pixel is left as it is.
+    pub fn stamp(&self, into: &mut [u32], width: i32, origin: (i32, i32)) {
+        let height = into.len() as i32 / width.max(1);
+        let part = Rect::new(self.x - origin.0, self.y - origin.1, self.w, self.h).intersect(Rect::new(0, 0, width, height));
+        for y in part.y..part.bottom() {
+            for x in part.x..part.right() {
+                let over = self.pixels[((y + origin.1 - self.y) * self.w + x + origin.0 - self.x) as usize];
+                let under = &mut into[(y * width + x) as usize];
+                let through = 255 - (over >> 24);
+                let part = |shift: u32| (((over >> shift) & 0xFF) + ((*under >> shift) & 0xFF) * through / 255).min(255) << shift;
+                *under = *under & 0xFF00_0000 | part(16) | part(8) | part(0);
+            }
+        }
+    }
+}
+
 /// How many rows are looked at together when telling what has changed.
 const BAND: usize = 32;
 /// More rectangles than this are sent as the one that holds them all.
@@ -493,6 +525,16 @@ pub fn changed(now: &[u32], was: &mut [u32], width: usize) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pointer_is_drawn_where_it_was_and_no_further_than_the_picture() {
+        // Two pixels: one all white, one half black; half off the top.
+        let pointer = Pointer { x: 5, y: -1, w: 1, h: 2, pixels: vec![0xFFFF_FFFF, 0x8000_0000] };
+        let mut picture = vec![0xAB20_4060u32; 4 * 2];
+        pointer.stamp(&mut picture, 4, (3, 0));
+        assert_eq!(picture[2], 0xAB0F_1F2F);
+        assert_eq!(picture.iter().filter(|&&pixel| pixel == 0xAB20_4060).count(), 7);
+    }
 
     #[test]
     fn only_what_differs_is_reported_and_then_nothing() {

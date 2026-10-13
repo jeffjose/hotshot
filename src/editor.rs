@@ -4,7 +4,7 @@
 //! the keys, and paints the screen into a buffer it is handed. That is
 //! what lets it be tried, and timed, without a display at all.
 
-use std::ops::Deref;
+use std::ops::DerefMut;
 
 use crate::canvas::{self, Canvas, Rect};
 use crate::shapes::{self, Shape, Tool};
@@ -82,7 +82,7 @@ const LOUPE_CELLS: i32 = 13;
 pub struct Shot {
     pub width: i32,
     pub height: i32,
-    pub pixels: Box<dyn Deref<Target = [u32]>>,
+    pub pixels: Box<dyn DerefMut<Target = [u32]>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -185,11 +185,15 @@ pub struct Settings {
     pub place: usize,
     /// What Enter, and a double click, do.
     pub enter: Finish,
+    /// The shape the selection is kept to, so wide to so tall; or the
+    /// size it is, in pixels. Neither, and it is as it is dragged.
+    pub aspect: Option<(i32, i32)>,
+    pub fixed: Option<(i32, i32)>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, save: false } }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, save: false }, aspect: None, fixed: None }
     }
 }
 
@@ -754,6 +758,18 @@ impl Editor {
         let pixels = (rows.start * self.shot.width) as usize..(rows.end * self.shot.width) as usize;
         let keep = 256 - self.settings.dim.min(100) * 256 / 100;
         canvas::darken_into(&mut self.dim[pixels.clone()], &self.shot.pixels[pixels], keep);
+    }
+
+    /// The mouse pointer, put into the screen where it was when the
+    /// screen was frozen: once the rows it is on have been read.
+    pub fn put_pointer(&mut self, pointer: &canvas::Pointer) {
+        let (width, height) = (self.shot.width, self.shot.height);
+        pointer.stamp(&mut self.shot.pixels, width, (0, 0));
+        let rows = pointer.y.clamp(0, height)..(pointer.y + pointer.h).clamp(0, height);
+        if !rows.is_empty() {
+            self.arrived(rows);
+        }
+        self.dirty = true;
     }
 
     /// The screen darkened, as far as it has been read.
@@ -1861,6 +1877,12 @@ impl Editor {
                     self.tool = Tool::Select;
                 }
             }
+            // What is picked out, over the shape above it or under the
+            // one below; with Shift, over or under them all.
+            (Key::Char(']'), true) => self.restack(true, mods.shift),
+            (Key::Char('['), true) => self.restack(false, mods.shift),
+            (Key::Char('}'), true) => self.restack(true, true),
+            (Key::Char('{'), true) => self.restack(false, true),
             (Key::Delete | Key::Backspace, _) => {
                 let mut going = self.chosen();
                 if !going.is_empty() {
@@ -1928,6 +1950,40 @@ impl Editor {
         }
         self.hover = self.target_at(self.pointer);
         Outcome::Continue
+    }
+
+    /// Puts the shapes picked out over the one above them, or under the
+    /// one below: or, with `all`, over or under every other. Those that
+    /// are picked out keep their order among themselves.
+    fn restack(&mut self, forward: bool, all: bool) {
+        let mut chosen = self.chosen();
+        chosen.sort_unstable();
+        if chosen.is_empty() || chosen.len() == self.shapes.len() {
+            return;
+        }
+        self.checkpoint();
+        let count = self.shapes.len();
+        // Where each shape is to go, by where it is now.
+        let mut order: Vec<usize> = (0..count).collect();
+        let picked = |index: usize| chosen.binary_search(&index).is_ok();
+        if all {
+            order.sort_by_key(|&index| picked(index) == forward);
+        } else if forward {
+            for at in (0..count - 1).rev() {
+                if picked(order[at]) && !picked(order[at + 1]) {
+                    order.swap(at, at + 1);
+                }
+            }
+        } else {
+            for at in 1..count {
+                if picked(order[at]) && !picked(order[at - 1]) {
+                    order.swap(at, at - 1);
+                }
+            }
+        }
+        let mut shapes: Vec<Option<Shape>> = std::mem::take(&mut self.shapes).into_iter().map(Some).collect();
+        self.shapes = order.iter().map(|&index| shapes[index].take().expect("each shape goes to one place")).collect();
+        self.selected = order.iter().enumerate().filter(|(_, &index)| picked(index)).map(|(at, _)| at).collect();
     }
 
     /// The arrow keys: the shape picked out goes a pixel that way, or ten
@@ -3461,6 +3517,33 @@ mod tests {
         // In the white window: lit inside the spotlight, dark outside.
         assert_eq!((at(250, 200), at(400, 400)), (0xF4F4F4, 0x5B5B5B));
         assert_eq!(at(600, 600), RED);
+    }
+
+    #[test]
+    fn what_is_picked_out_goes_over_and_under_the_other_shapes() {
+        let ctrl = Mods { shift: false, ctrl: true };
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        for (at, color) in [(200, 0x111111), (300, 0x222222), (400, 0x333333)] {
+            editor.key(Key::Char('v'), PLAIN);
+            click(&mut editor, (800, 650), at as u32 * 1000);
+            editor.set_color(color);
+            editor.key(Key::Char('r'), PLAIN);
+            drag(&mut editor, (at, 200), (at + 150, 400));
+        }
+        let colors = |editor: &Editor| editor.shapes.iter().map(|shape| shape.color).collect::<Vec<_>>();
+        // The last drawn is picked out: under the one below it, then
+        // under them all, where there is no further to go.
+        editor.key(Key::Char('['), ctrl);
+        assert_eq!((colors(&editor), editor.selected.clone()), (vec![0x111111, 0x333333, 0x222222], vec![1]));
+        editor.key(Key::Char('['), ctrl);
+        editor.key(Key::Char('['), ctrl);
+        assert_eq!((colors(&editor), editor.selected.clone()), (vec![0x333333, 0x111111, 0x222222], vec![0]));
+        // And over them all at once, with Shift; which is undone.
+        editor.key(Key::Char('}'), ctrl);
+        assert_eq!((colors(&editor), editor.selected.clone()), (vec![0x111111, 0x222222, 0x333333], vec![2]));
+        editor.key(Key::Char('z'), ctrl);
+        assert_eq!(colors(&editor), vec![0x333333, 0x111111, 0x222222]);
     }
 
     #[test]

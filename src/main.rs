@@ -71,6 +71,8 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     }
     let mut display = Display::open()?;
     trace("display opened");
+    // The pointer as it is now, before it is made hotshot's own.
+    let arrow = if options.pointer { display.pointer_picture() } else { None };
     if options.list_monitors {
         for (number, monitor) in display.monitors().iter().enumerate() {
             println!("{number}: {}x{}+{}+{}", monitor.w, monitor.h, monitor.x, monitor.y);
@@ -165,6 +167,9 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                 }
             };
             trace("screen read");
+            if let Some(arrow) = &arrow {
+                arrow.stamp(&mut pixels, area.w, (area.x, area.y));
+            }
             // Corners as round as the editor would have made them, and
             // the frame it would have set the picture in.
             let scale = editor::scale_for(display.height);
@@ -180,7 +185,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             }
             Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None }
         }
-        (named, _) => match pick(&mut display, named, reopened, &options, font, &trace)? {
+        (named, _) => match pick(&mut display, named, reopened, arrow, &options, font, &trace)? {
             Some(taken) => taken,
             None => return Ok(ExitCode::from(1)),
         },
@@ -189,14 +194,21 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     output::remember_area(taken.area);
     let how = taken.how;
 
-    let png = output::encode(taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha)?;
-    trace("packed as PNG");
+    // A file is of the kind its name says, or the kind asked for; what
+    // goes to the clipboard is a PNG whatever the file is.
+    let named = options.output.as_ref().and_then(|file| file.extension()).and_then(|ending| output::Format::named(&ending.to_string_lossy()));
+    let format = named.unwrap_or(options.format);
+    let pack = |format| output::pack(format, options.quality, taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha);
+    let png = if how.copy || format == output::Format::Png { pack(output::Format::Png)? } else { Vec::new() };
+    trace("packed");
     if how.save {
+        let other = if format == output::Format::Png { None } else { Some(pack(format)?) };
+        let file = other.as_ref().unwrap_or(&png);
         // Into the folder Save was last pointed at, of those there are.
         let dir = options.places.get(taken.place).unwrap_or(&options.dir);
         match &options.output {
-            Some(file) => output::save_as(file, &png)?,
-            None => println!("{}", output::save(dir, &options.filename, &png)?.display()),
+            Some(path) => output::save_as(path, file)?,
+            None => println!("{}", output::save(dir, &options.filename, format.ending(), file)?.display()),
         }
         trace("saved");
     }
@@ -233,7 +245,7 @@ struct Taken {
 /// Freezes the screen and lets an area be dragged out and drawn on.
 /// Gives the area, the picture of it, and what is to be done with it;
 /// or nothing, if it was called off.
-fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, frame::Photo, Vec<shapes::Shape>)>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<Taken>> {
+fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, frame::Photo, Vec<shapes::Shape>)>, mut arrow: Option<canvas::Pointer>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<Taken>> {
     // The first frame is the screen darkened and nothing else: it is
     // what says hotshot has started, and the server makes it of its own
     // copy of the screen, without a pixel having come here. The keyboard
@@ -263,6 +275,11 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
         _ => {
             shot = display.capture()?;
             trace("screen read");
+            // The pointer goes into a screen just read; one come back
+            // to has, or has not, the pointer it had.
+            if let Some(arrow) = arrow.take().filter(|_| reopened.is_none()) {
+                arrow.stamp(&mut shot, width, (0, 0));
+            }
             // A picture come back to is put where it was, over the
             // screen as it is now: all that is left of how it was then.
             if let (Some(area), Some((_, photo, _))) = (named, &reopened) {
@@ -313,6 +330,13 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
             unseen += 1;
             if strips.done() {
                 trace("screen read");
+            }
+        }
+        // The pointer goes in once all of the screen is there for it
+        // to go into.
+        if strips.done() {
+            if let Some(arrow) = arrow.take() {
+                editor.put_pointer(&arrow);
             }
         }
         if editor.take_dirty() || unseen >= 4 || (unseen > 0 && strips.done()) {
@@ -397,6 +421,9 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     // for the rest of it.
     while how.is_some() && !strips.done() {
         strips.read(display, &mut editor, &mut frame)?;
+    }
+    if let Some(arrow) = arrow.take() {
+        editor.put_pointer(&arrow);
     }
     if options.remember {
         options::remember_tools(&editor.in_hand(), options.places.get(editor.place()).map(|place| place.as_path()));

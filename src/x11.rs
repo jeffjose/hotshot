@@ -377,6 +377,17 @@ impl Display {
         asked.map_or((self.width / 2, self.height / 2), |reply| (i32::from(reply.root_x), i32::from(reply.root_y)))
     }
 
+    /// The pointer as it is drawn just now, to be put in a picture: the
+    /// server keeps it out of what it hands over of the screen. None
+    /// where the server will not say.
+    pub fn pointer_picture(&self) -> Option<crate::canvas::Pointer> {
+        use x11rb::protocol::xfixes::ConnectionExt as _;
+        self.conn.xfixes_query_version(4, 0).ok()?.reply().ok()?;
+        let image = self.conn.xfixes_get_cursor_image().ok()?.reply().ok()?;
+        let (w, h) = (i32::from(image.width), i32::from(image.height));
+        (image.cursor_image.len() == (w * h) as usize && w > 0).then(|| crate::canvas::Pointer { x: i32::from(image.x) - i32::from(image.xhot), y: i32::from(image.y) - i32::from(image.yhot), w, h, pixels: image.cursor_image })
+    }
+
     /// The monitors that make up the screen.
     pub fn monitors(&self) -> Vec<Rect> {
         let asked = self.conn.randr_get_monitors(self.root, true).ok().and_then(|cookie| cookie.reply().ok());
