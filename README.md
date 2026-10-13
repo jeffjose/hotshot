@@ -2,226 +2,100 @@
 
 A fast screenshot tool for Linux (X11). Run it and the screen freezes;
 drag out an area, draw on it if you like, and copy or save it. It is one
-small native program: no web view, no toolkit, no process left running
-in between.
+small native program: no web view, no toolkit, nothing left running in
+between.
 
-```
-hotshot                # freeze the screen and pick an area
-hotshot -f             # the whole screen, saved at once
-hotshot -w -c          # the active window, to the clipboard
-hotshot -g 0,0,800,600 -o shot.png
-hotshot --again        # the same area as last time, at once
-                       # (--last and --repeat say the same)
-hotshot --reopen       # the last picture, with its shapes still to be moved
-hotshot -i             # list the screen, the displays and the windows, and
-                       # open the one whose number is typed, to be drawn on
-hotshot -t calculator  # the window with that in its title
-```
+![The editor: an area selected and drawn on, with the bar of tools under it](docs/editor.png)
 
-It is made the way jog is, and looks like it: the same font
-(Geist), the same icons (Solar), the same colors.
+## Install
 
-## Speed
-
-On a 4K display (i7-12700K, RTX 3090, X11 with XFCE), from the process
-being launched:
-
-| | |
-|---|---|
-| the frozen screen is showing | 3 ms |
-| answering the pointer and the keys | 10 to 45 ms |
-| the whole screen read | 90 to 360 ms |
-| a frame while dragging out, resizing, moving or drawing | 3 to 5 ms |
-
-The screen is frozen by the X server itself, which copies and darkens
-it without a pixel leaving the graphics card; that is why it is up in
-three milliseconds. Reading those pixels out of the card is the slow
-part, on this card and driver: some 250 ms for the 33 MB of a 4K
-screen, give or take a good deal from one run to the next. So it is
-read in 32 strips, those nearest the pointer first, with the pointer
-and the keys seen to between one strip and the next: hotshot answers
-from the first strip, and is never deaf for longer than 14 ms. Where a
-strip has not yet come, what shows is the server's darkened copy, and
-anything to be drawn there is drawn the moment it does. On a display
-that hands its pixels over quickly (a 1080p software one, here) the
-whole of it is read 24 ms after launch.
-
-To measure on your own machine:
-
-```
-hotshot --benchmark
-```
-
-It freezes the screen, drags an area out, resizes it, moves it, draws
-one of each shape on it and packs the picture, timing each, then prints
-the figures and quits. Nothing is saved or copied. `--debug` prints how
-long each step of starting up took.
-
-## Using it
-
-With nothing selected: **drag** to select an area, **click** a window to
-take it, **Enter** for the screen the pointer is on, **Esc** to cancel.
-The whole screen is dark until an area is selected, and the window a
-click would take has a line round it; `windows = "bright"` shows that
-window undarkened instead, and `"off"` leaves windows out of it.
-With `--magnifier`, or `magnifier = true` in the config file, a
-magnifier follows the pointer for placing an edge to the pixel.
-
-With an area selected, a bar of tools appears beside it:
-
-| Key | Tool |
-|---|---|
-| `V` | move: the selection, or a shape, which a click picks out |
-| `A` `L` | arrow, line |
-| `R` `O` | rectangle (rounded), oval; `F` fills them |
-| `P` `H` | pen, marker |
-| `T` | text: click and type; Enter is a new line, Ctrl+Enter or Esc ends it; arrows, Home, End and a click move the caret, Ctrl+V pastes |
-| `G` | the next font: Geist, Instrument Serif, Architects Daughter, Fira Code, Anton (for captions) |
-| `N` | counter: numbered discs, dragged to point at something |
-| `B` | blur: a mosaic over what should not be read |
-| `S` | spotlight: everything but a rectangle of the picture darkened |
-| `Z` | zoom: a part of the picture shown again beside itself, larger, in a round lens; `F` makes it square. The dot in its middle moves it, and the one on its rim, dragged out or in, says how many times larger (the figure shows beside the pointer). It may be put past the edge of the selection: the picture is then as large as takes it in, see-through where there is neither |
-| `J` | badges: a word (Bug, Fixed, New...) in one of six looks and eight hues, typed over with a double click |
-| `E` | emoji: all of them, in a box that scrolls; type to search them by name, Enter takes the first found |
-| `W` | the frame: a backdrop of two colors, or a photograph (the die is one nobody chose), room round the picture, and a shadow. It shows round the selection; drag it wider, click it for the choices |
-| `D` | lines and arrows in dashes |
-| `C` `I` | the colors, 24 of Radix's; pick a color off the screen |
-| `K` | round the corners of the picture itself: 8, 16, 28 pixels, none; or drag the dot inside a corner of the selection |
-| `1`-`4`, wheel | width of line, and size of text |
-
-What has just been drawn is picked out, with the move tool in hand, as
-in Figma: drag it to move it, drag a handle of its box to resize it, and
-on a rectangle drag the dot inside a corner to round its corners. The
-pointer over any other shape shows that one's box, and a click picks it
-out; Shift or Ctrl with a click picks out several, to be moved,
-recolored or deleted together, and with a drag from empty space picks
-out all that a box touches. A line or an arrow picked out has a dot at
-each end: dragged, it takes that end elsewhere; clicked, it gives that
-end an arrow's head or takes it away, so that an arrow can point both
-ways, or the other way, and the arrows drawn after it do the same.
-**Ctrl+D** is a copy of what is
-picked out. Only the pen, the marker and the counter stay in hand: the
-first two for the next stroke, the counter for putting down 1, 2, 3 one
-after another.
-
-The color, width of line, roundness of a drawn rectangle, fill and font
-in hand when hotshot is closed are the ones in hand when it is next
-opened; `--no-remember`, or `remember = false`, begins with what the
-config file says every time. The frame and the picture's rounded corners
-are not kept: a plain picture is what is taken unless it is asked
-otherwise that time.
-
-A tool with a small mark in the corner of its button has more ways than
-one of drawing: the arrow with a head at each end or in dashes, the
-rectangle and the oval filled, the zoom square. Press the mark, or the
-tool again when it is in hand, for the list.
-
-Text being typed, or picked out, has a small bar over it that sets it
-heavy (Ctrl+B), slanted (Ctrl+I), gone over with a marker, or each line
-after a dot. The box of colors has a row for how opaque what is drawn
-is. A shape being moved goes to the edges and the middles of the others
-and of the selection, and a line shows which.
-
-The frame has square handles at its corners and the middles of its
-sides, where the selection's are round: a side makes it wider or taller,
-a corner both. A drag anywhere on the frame beside the picture, or above
-or below it, does the same, and the dot inside the frame's corner
-rounds its own corners. While a corner is being rounded,
-of the frame, the picture or a rectangle, how round it is in pixels is
-said beside the pointer. A frame too large to show round the selection
-is shown whole, small, in a corner of the screen.
-
-An edge of the selection goes to the edge of a window when it comes
-near one; Ctrl held leaves it where it is put. Emoji typed or pasted
-into text are drawn in color, from the system's Noto Color Emoji.
-
-Save has an arrow beside it that lists the folders it can save to: the
-usual one, and each `place = "folder"` the config file names. The one
-chosen is where Save saves from then on.
-
-**Enter** or a double click copies the picture to the clipboard,
-**Ctrl+C** copies, **Ctrl+S** saves to `~/Pictures/Screenshots` and
-prints the path. **Ctrl+Z** and **Ctrl+Shift+Z** undo and redo. Shift
-while drawing makes squares, circles and lines at 45°. The arrow keys
-nudge the selection or the shape picked out, Shift by ten pixels, and
-Ctrl+arrows resize. Delete removes the shape picked out. A right click
-opens the colors where the pointer is.
-
-`hotshot --help` lists the options. `-c`, `-s` and `-o FILE` say what
-Enter does; `--edit` opens the editor on `--full`, `--window` or
-`--region` rather than taking the picture at once.
-
-To have it on a key, bind `hotshot` to one in your desktop's keyboard
-settings (Print, say).
-
-## Settings
-
-`~/.config/hotshot/config.toml` sets defaults, using the long option
-names. For a file with every setting in it, commented:
-
-```
-hotshot --default-config > ~/.config/hotshot/config.toml
-```
-
-## Building
-
-```
+```sh
 cargo build --release
 cp target/release/hotshot ~/.local/bin/
 ```
 
-Rust and nothing else: it talks to the X server itself, and carries its
-font and icons. `cargo test` runs the tests, which need no display: the
-editor is told of the pointer and keys and paints into a buffer, and
-knows nothing of X.
+Then bind `hotshot` to a key (Print, say) in your desktop's keyboard
+settings.
 
-    HOTSHOT_SNAPSHOTS=/tmp/shots cargo test snapshots -- --ignored
+## Use
 
-paints the editor in several of its states and writes each as a PNG, to
-be looked at after a change to how it draws.
+```sh
+hotshot                # freeze the screen and pick an area
+hotshot -f             # the whole screen, saved at once
+hotshot -w -c          # the active window, to the clipboard
+hotshot -g 0,0,800,600 -o shot.png
+hotshot --again        # the same area as last time
+hotshot --reopen       # the last picture, its shapes still movable
+hotshot -t calculator  # the window with that in its title
+```
 
-## How it is put together
+Drag to select an area, click a window to take it, or press Enter for
+the whole screen. Then:
 
-| | |
+| Key | |
 |---|---|
-| `main.rs` | the order of things: freeze, read, edit, pack, save, copy |
-| `x11.rs` | the display: the freeze, shared memory, the window, keys |
-| `strips.rs` | reading the frozen screen a strip at a time |
-| `editor.rs` | the selection, the tools, the bar; nothing of X in it |
-| `shapes.rs` | what is drawn, each worked out once as a coverage mask |
-| `canvas.rs` | pixels: rectangles, blending, what changed between frames |
-| `text.rs` | the font and the icons |
-| `clipboard.rs` | owning the clipboard, from a process left behind |
-| `output.rs` | PNG and file names |
-| `bench.rs` | `--benchmark` |
+| `Enter` | copy to the clipboard |
+| `Ctrl+S` | save to `~/Pictures/Screenshots` |
+| `Esc` | cancel |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | undo / redo |
 
-Each frame is painted whole into a buffer, compared with the last, and
-only the rectangles that differ are sent to the display, through memory
-shared with the X server.
+`hotshot --help` lists every option and key.
 
-On X11 a clipboard is not a place a picture is put but a promise to hand
-it over when asked, so after a copy hotshot leaves a small process
-behind to keep it. It goes when something else is copied.
+## Drawing
+
+| Key | Tool |
+|---|---|
+| `V` | move and select |
+| `A` `L` | arrow, line |
+| `R` `O` | rectangle, oval |
+| `P` `H` | pen, marker |
+| `T` | text, in five fonts, bold, italic, highlighted or bulleted |
+| `N` | numbered counters |
+| `B` | blur |
+| `S` | spotlight |
+| `Z` | zoom lens |
+| `J` `E` | badges, emoji |
+| `W` | frame: a backdrop, padding and a shadow |
+| `C` `I` | colors, color picker |
+| `1`-`4` | line width and text size |
+
+Shapes stay editable: move them, resize them, recolor them, duplicate
+them with `Ctrl+D`. They snap to each other, and the selection snaps to
+window edges.
+
+![A window set in a frame, with a backdrop and a shadow](docs/frame.png)
+
+![A spotlight, and a zoom lens that reaches past the picture](docs/zoom.png)
+
+## Speed
+
+On a 4K display the frozen screen is showing 3 ms after launch, and
+hotshot answers the pointer and keys within 10 to 45 ms. The X server
+does the freeze itself, without a pixel leaving the graphics card; the
+pixels are then read in strips, those nearest the pointer first.
+`hotshot --benchmark` measures it on your machine.
+
+## Settings
+
+`~/.config/hotshot/config.toml` sets the defaults, using the long option
+names. For a commented file with every setting in it:
+
+```sh
+hotshot --default-config > ~/.config/hotshot/config.toml
+```
 
 ## Not yet
 
-- Wayland. It reads the screen through X11.
-- The mouse pointer in the picture.
-- A tray icon, and anything else that stays running.
-- Formats other than PNG.
-
-## Icons and fonts
-
-The icons are [Solar](https://www.figma.com/community/file/1166831539721848736)'s
-(CC BY 4.0), drawn at a heavier line and gathered into a font by
-`tools/icon_font.py`, with a few plain shapes added in the same manner.
-The interface is in [Geist](https://vercel.com/font). Text can also be
-typed in [Instrument Serif](https://github.com/Instrument/instrument-serif),
-[Architects Daughter](https://fonts.google.com/specimen/Architects+Daughter),
-[Fira Code](https://github.com/tonsky/FiraCode) and
-[Anton](https://fonts.google.com/specimen/Anton). All five are under
-the SIL Open Font License, a copy of which is beside each in `assets`.
+Wayland, the mouse pointer in the picture, formats other than PNG, and
+a tray icon.
 
 ## License
 
-hotshot itself is under the MIT License: see `LICENSE`.
+MIT; see `LICENSE`. The icons are
+[Solar](https://www.figma.com/community/file/1166831539721848736)'s
+(CC BY 4.0). The fonts are [Geist](https://vercel.com/font),
+[Instrument Serif](https://github.com/Instrument/instrument-serif),
+[Architects Daughter](https://fonts.google.com/specimen/Architects+Daughter),
+[Fira Code](https://github.com/tonsky/FiraCode) and
+[Anton](https://fonts.google.com/specimen/Anton), all under the SIL Open
+Font License; a copy of each license is in `assets`.

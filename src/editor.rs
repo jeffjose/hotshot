@@ -4012,4 +4012,85 @@ mod tests {
         let (_, wide, high, pixels, alpha) = lens.framed().unwrap();
         std::fs::write(dir.join("19-zoom-picture.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
     }
+
+    /// Not a test either: makes the pictures the README shows, out of
+    /// `docs/desk.png`, which is a capture of two terminals on a made-up
+    /// desktop.
+    ///
+    ///     cargo test pictures -- --ignored
+    #[test]
+    #[ignore]
+    fn pictures() {
+        let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
+        let desk = frame::open(&std::fs::read(docs.join("desk.png")).unwrap()).unwrap();
+        let (width, height) = (desk.width, desk.height);
+        let (code, shell) = (Rect::new(120, 90, 786, 658), Rect::new(820, 380, 624, 460));
+        let fresh = || {
+            let pixels: Vec<u32> = desk.pixels.iter().map(|pixel| pixel & 0xFF_FFFF).collect();
+            let mut dim = pixels.clone();
+            canvas::darken_into(&mut dim, &pixels, 128);
+            let shot = Shot { width, height, pixels: Box::new(pixels) };
+            Editor::new(shot, dim, vec![Rect::new(0, 0, width, height)], vec![shell, code], Settings::default(), Text::load())
+        };
+        let stroke = |editor: &mut Editor, key: char, from: (i32, i32), to: (i32, i32)| {
+            editor.key(Key::Char(key), PLAIN);
+            drag(editor, from, to);
+        };
+        let write = |name: &str, wide: i32, high: i32, pixels: &[u32], alpha: bool| {
+            std::fs::write(docs.join(name), crate::output::encode(wide as u32, high as u32, pixels, alpha).unwrap()).unwrap();
+        };
+
+        // The editor: an area selected, drawn on, and the bar under it.
+        let mut editor = fresh();
+        drag(&mut editor, (90, 60), (1470, 848));
+        stroke(&mut editor, 'r', (196, 248), (640, 292));
+        stroke(&mut editor, 'a', (800, 150), (650, 256));
+        editor.key(Key::Char('t'), PLAIN);
+        click(&mut editor, (812, 138), 10_000);
+        for letter in "nearest the pointer first".chars() {
+            editor.key(Key::Char(letter), PLAIN);
+        }
+        editor.key(Key::Enter, Mods { shift: false, ctrl: true });
+        editor.set_color(0xFFFFFF);
+        editor.key(Key::Char('v'), PLAIN);
+        click(&mut editor, (1000, 700), 30_000);
+        editor.set_color(PALETTE[12].0);
+        stroke(&mut editor, 'n', (150, 448), (150, 448));
+        stroke(&mut editor, 'n', (150, 548), (150, 548));
+        editor.set_color(0xFFC53D);
+        stroke(&mut editor, 'h', (1160, 450), (1218, 450));
+        stroke(&mut editor, 'b', (850, 520), (1170, 582));
+        editor.key(Key::Char('v'), PLAIN);
+        click(&mut editor, (1000, 700), 60_000);
+        editor.pointer_moved(1300, 250, PLAIN);
+        let mut out = vec![0u32; (width * height) as usize];
+        editor.draw(&mut out);
+        write("editor.png", width, height, &out, false);
+
+        // A window in a frame: a backdrop, room round it, a shadow.
+        let mut editor = fresh();
+        click(&mut editor, (1300, 700), 0);
+        editor.set_color(0xFFC53D);
+        stroke(&mut editor, 'h', (1160, 450), (1218, 450));
+        editor.set_color(PALETTE[1].0);
+        stroke(&mut editor, 'a', (1330, 520), (1235, 460));
+        editor.corners = 12.0;
+        for cell in [Cell::Backdrop(3), Cell::Shadow] {
+            editor.choose(cell);
+        }
+        let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
+        write("frame.png", wide, high, &pixels, alpha);
+
+        // A zoom that goes past the picture, a spotlight, and a badge.
+        let mut editor = fresh();
+        click(&mut editor, (300, 400), 0);
+        stroke(&mut editor, 's', (150, 225), (880, 350));
+        stroke(&mut editor, 'z', (330, 236), (420, 302));
+        let [middle, rim] = editor.shapes[1].zoom_handles();
+        drag(&mut editor, middle, (1030, 300));
+        let (middle, rim) = (editor.shapes[1].zoom_handles()[0], (rim.0 - middle.0, rim.1 - middle.1));
+        drag(&mut editor, (middle.0 + rim.0, middle.1 + rim.1), (middle.0 + rim.0 * 3 / 2, middle.1 + rim.1 * 3 / 2));
+        let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
+        write("zoom.png", wide, high, &pixels, alpha);
+    }
 }
