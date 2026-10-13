@@ -662,7 +662,7 @@ impl Shape {
             // in the strong one, and an edge between the two.
             Tool::Badge => {
                 let place = self.bounds(text);
-                draw_badge(canvas, text, place, self.number as usize, self.color, self.fill, self.face, self.font_px, &self.text);
+                draw_badge(canvas, text, place, self.number as usize, self.color, self.face, self.font_px, &self.text);
             }
             // What it is of, ringed; lines from that to the larger
             // picture of it; and the larger picture, ringed, over them.
@@ -738,7 +738,10 @@ impl Shape {
 }
 
 /// How many ways a badge can look.
-pub const BADGE_STYLES: usize = 6;
+pub const BADGE_STYLES: usize = 12;
+
+/// What each look of a badge is called.
+pub const BADGE_NAMES: [&str; BADGE_STYLES] = ["Soft", "Solid", "Outline", "Pill", "Dark", "Label", "Gloss", "Blend", "Glow", "Tag", "Marker", "Sticker"];
 
 /// How far in from its left a badge's words begin, in one of its looks
 /// and at a size of letter: after a dot, or a bar, or nothing.
@@ -746,20 +749,118 @@ fn badge_lead(style: usize, px: i32) -> i32 {
     match style {
         0 | 4 => px * 5 / 4,
         5 => px,
+        9 => px * 3 / 2,
+        10 => px / 2,
         _ => px * 3 / 4,
     }
 }
 
-/// Draws a badge in a place: words on a patch of color, in one of six
-/// looks. `solid` is its hue at full strength and `soft` the pale of
-/// it; which of the two is under the words, and what the words are in,
-/// is the look.
+/// A color turned so many degrees round the wheel of them, as light
+/// and as strong as it was.
+fn turned(color: u32, degrees: f32) -> u32 {
+    let [r, g, b] = [16, 8, 0].map(|shift| (color >> shift & 0xFF) as f32 / 255.0);
+    let (most, least) = (r.max(g).max(b), r.min(g).min(b));
+    let (light, spread) = ((most + least) / 2.0, most - least);
+    if spread < 1e-4 {
+        return color;
+    }
+    let strength = spread / (1.0 - (2.0 * light - 1.0).abs()).max(1e-4);
+    let hue = if most == r { ((g - b) / spread).rem_euclid(6.0) } else if most == g { (b - r) / spread + 2.0 } else { (r - g) / spread + 4.0 };
+    let hue = (hue * 60.0 + degrees).rem_euclid(360.0);
+    let part = |turn: f32| {
+        let at = (turn + hue / 30.0).rem_euclid(12.0);
+        let value = light - strength * light.min(1.0 - light) * (at - 3.0).min(9.0 - at).clamp(-1.0, 1.0);
+        (value.clamp(0.0, 1.0) * 255.0).round() as u32
+    };
+    part(0.0) << 16 | part(8.0) << 8 | part(4.0)
+}
+
+/// Fills a rectangle with rounded corners, each pixel in the color a
+/// function gives for where in it the pixel is: so far across and so
+/// far down, each of 0 to 1. `grown` makes it that much larger all
+/// round, and `soft` fades its edge over that many pixels, as a shadow
+/// or a glow has it; `amount` is how opaque, of 256.
+fn patch(canvas: &mut Canvas, place: Rect, radius: i32, grown: i32, soft: f32, amount: u32, color: impl Fn(f32, f32) -> u32) {
+    let (half_w, half_h) = (place.w as f32 / 2.0 + grown as f32, place.h as f32 / 2.0 + grown as f32);
+    let (cx, cy) = (place.x as f32 + place.w as f32 / 2.0, place.y as f32 + place.h as f32 / 2.0);
+    let radius = (radius + grown).min(half_w as i32).min(half_h as i32) as f32;
+    let reach = grown + soft.ceil() as i32 + 1;
+    for y in place.y - reach..place.bottom() + reach {
+        for x in place.x - reach..place.right() + reach {
+            let away = round_box(x as f32 + 0.5 - cx, y as f32 + 0.5 - cy, half_w, half_h, radius);
+            let cover = if soft > 0.0 { (0.5 - away / soft).clamp(0.0, 1.0).powi(2) } else { (0.5 - away).clamp(0.0, 1.0) };
+            if cover > 0.0 {
+                let (across, down) = ((x - place.x) as f32 / place.w.max(1) as f32, (y - place.y) as f32 / place.h.max(1) as f32);
+                canvas.blend(x, y, color(across.clamp(0.0, 1.0), down.clamp(0.0, 1.0)), (cover * amount.min(256) as f32 * 255.0 / 256.0) as u8);
+            }
+        }
+    }
+}
+
+/// Draws a badge in a place: words on a patch, in one of twelve looks,
+/// all of them made of the one color it is given. Which of that color,
+/// the pale of it and the dark of it is under the words, and what the
+/// words are in, is the look.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_badge(canvas: &mut Canvas, text: &mut Text, place: Rect, style: usize, solid: u32, soft: u32, face: usize, px: u32, words: &str) {
+pub fn draw_badge(canvas: &mut Canvas, text: &mut Text, place: Rect, style: usize, solid: u32, face: usize, px: u32, words: &str) {
+    use crate::canvas::mix;
     let (high, size) = (place.h, px as i32);
-    let ink = crate::canvas::mix(solid, 0x000000, 70);
+    let soft = mix(solid, 0xFFFFFF, 216);
+    let ink = mix(solid, 0x000000, 70);
     let dot = |canvas: &mut Canvas| canvas.disc(place.x + size * 5 / 8, place.y + high / 2, (size / 5).max(2), solid, 256);
     let color = match style {
+        // Gloss: lighter at the top than the bottom, with a pale line
+        // along its top edge, as a button has that is lit from above.
+        6 => {
+            let (top, bottom) = (mix(solid, 0xFFFFFF, 60), mix(solid, 0x000000, 50));
+            patch(canvas, place, high / 3, 0, 0.0, 256, |_, _| mix(solid, 0x000000, 90));
+            patch(canvas, place.inflate(-1), high / 3 - 1, 0, 0.0, 256, |_, down| mix(top, bottom, (down * 256.0) as u32));
+            patch(canvas, Rect::new(place.x + high / 3, place.y + 1, place.w - 2 * (high / 3), 1), 0, 0, 0.0, 90, |_, _| 0xFFFFFF);
+            ink_on(solid)
+        }
+        // Blend: from the color to the one a little round the wheel
+        // from it, end to end, and ends as round as it is tall.
+        7 => {
+            let far = turned(solid, 50.0);
+            patch(canvas, place, high / 2, 0, 0.0, 256, |across, down| mix(solid, far, ((across * 0.85 + down * 0.15) * 256.0) as u32));
+            ink_on(solid)
+        }
+        // Glow: the color, with light of the same color round it.
+        8 => {
+            patch(canvas, Rect::new(place.x, place.y + size / 6, place.w, high), high / 2, size / 6, size as f32 * 0.6, 150, |_, _| solid);
+            patch(canvas, place, high / 2, 0, 0.0, 256, |_, down| mix(mix(solid, 0xFFFFFF, 36), solid, (down * 256.0) as u32));
+            ink_on(solid)
+        }
+        // A tag: pointed at its left end, with a hole to hang it by.
+        9 => {
+            let (point, middle) = (high / 2, place.y + high / 2);
+            patch(canvas, Rect::new(place.x + point, place.y, place.w - point, high), high / 5, 0, 0.0, 256, |_, _| solid);
+            for y in place.y..place.bottom() {
+                for x in place.x..place.x + point + high / 5 + 1 {
+                    let away = triangle((x as f32 + 0.5, y as f32 + 0.5), (place.x as f32, middle as f32), ((place.x + point + high / 5 + 1) as f32, place.y as f32), ((place.x + point + high / 5 + 1) as f32, place.bottom() as f32));
+                    canvas.blend(x, y, solid, ((0.5 - away).clamp(0.0, 1.0) * 255.0) as u8);
+                }
+            }
+            canvas.disc(place.x + point + size / 6, middle, (size / 6).max(2), ink_on(solid), 256);
+            ink_on(solid)
+        }
+        // Marker: gone over with a wide pen, a little past the words
+        // at either end and not quite as tall, the words as dark as
+        // what a marker is used on.
+        10 => {
+            let swipe = Rect::new(place.x, place.y + high / 5, place.w, high - high * 2 / 5);
+            patch(canvas, swipe, high / 6, 0, 0.0, 256, |across, _| mix(mix(solid, 0xFFFFFF, 110), mix(solid, 0xFFFFFF, 60), (across * 256.0) as u32));
+            mix(solid, 0x000000, 190)
+        }
+        // A sticker: the color with white all round it, and a shadow
+        // under that, as if it were stuck on.
+        11 => {
+            let edge = (size / 6).max(2);
+            patch(canvas, Rect::new(place.x, place.y + edge, place.w, high), high / 3, edge, size as f32 * 0.5, 110, |_, _| 0x000000);
+            patch(canvas, place, high / 3, edge, 0.0, 256, |_, _| 0xFFFFFF);
+            patch(canvas, place, high / 3, 0, 0.0, 256, |_, down| mix(mix(solid, 0xFFFFFF, 30), mix(solid, 0x000000, 24), (down * 256.0) as u32));
+            ink_on(solid)
+        }
         // Soft: the pale under the dark, with a dot and a faint edge.
         0 => {
             canvas.round_fill(place.x, place.y, place.w, high, high / 3, crate::canvas::mix(soft, solid, 70), 256);
@@ -768,8 +869,10 @@ pub fn draw_badge(canvas: &mut Canvas, text: &mut Text, place: Rect, style: usiz
             ink
         }
         // Solid: the hue itself, and whichever of white and black reads on it.
+        // A shade lighter at its top than its bottom, as each of the
+        // filled ones is: enough not to look cut out of paper.
         1 => {
-            canvas.round_fill(place.x, place.y, place.w, high, high / 3, solid, 256);
+            patch(canvas, place, high / 3, 0, 0.0, 256, |_, down| mix(mix(solid, 0xFFFFFF, 26), mix(solid, 0x000000, 20), (down * 256.0) as u32));
             ink_on(solid)
         }
         // Outlined: nothing under the words but what was there.
@@ -779,7 +882,7 @@ pub fn draw_badge(canvas: &mut Canvas, text: &mut Text, place: Rect, style: usiz
         }
         // A pill: solid, with ends as round as it is tall.
         3 => {
-            canvas.round_fill(place.x, place.y, place.w, high, high / 2, solid, 256);
+            patch(canvas, place, high / 2, 0, 0.0, 256, |_, down| mix(mix(solid, 0xFFFFFF, 26), mix(solid, 0x000000, 20), (down * 256.0) as u32));
             ink_on(solid)
         }
         // Dark: near black, with a dot of the hue.

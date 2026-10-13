@@ -57,7 +57,7 @@ the whole screen. Then:
 | `B` | blur |
 | `S` | spotlight |
 | `Z` | zoom lens |
-| `J` `E` | badges, emoji |
+| `J` `E` | badges in twelve looks and any color, emoji |
 | `W` | frame: one of forty backdrops, padding and a shadow |
 | `M` | the mouse pointer, in the picture or out of it |
 | `C` `I` | colors, color picker |

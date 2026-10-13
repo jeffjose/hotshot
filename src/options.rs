@@ -132,7 +132,9 @@ Keys, once an area is selected:
   A zoom is round, and F makes one square; the dot in its middle moves
   its larger picture, and the one on its rim says how many times larger.
   It may go past the selection, and the picture is then as large as takes
-  it in. A badge is typed over with a double click.
+  it in. A badge is one of twelve looks, in the color in hand: type what
+  it says and press Enter; the box of colors changes it afterwards, and
+  a double click types over it.
   The frame shows round the selection: drag beside the picture to make
   it wider, above or below it to make it taller, and the dot inside its
   corner to round its corners; click it for the backdrops, a photograph

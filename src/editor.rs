@@ -228,27 +228,12 @@ enum Button {
     Emoji,
 }
 
-/// What can be put on the picture ready-made: a word on a pill of a
-/// pale color, with a dot and the word in the strong one of the same
-/// hue. The hues are Radix's, its step for a tinted surface and its
-/// step for text; the look is the one envelope's badges have.
-///
-/// A badge is three things chosen apart: its word, its look, and its
-/// hue. The words are these, any of which can be typed over once it is
-/// on the picture.
-const BADGE_WORDS: [&str; 14] = ["Bug", "Fixed", "New", "To do", "Important", "Note", "Before", "After", "Approved", "Rejected", "WIP", "Question", "Beta", "Tip"];
-
-/// The hues a badge can be in: the pale of each, and its full strength.
-const BADGE_HUES: [(u32, u32); 8] = [
-    (0xFEEBE7, 0xE54D2E),
-    (0xFFEFD6, 0xF76B15),
-    (0xFFF7C2, 0xFFC53D),
-    (0xE6F6EB, 0x30A46C),
-    (0xE6F4FE, 0x0090FF),
-    (0xF4F0FE, 0x6E56CF),
-    (0xFEE9F5, 0xD6409F),
-    (0xF0F0F0, 0x8D8D8D),
-];
+/// What a badge says when it is put on the picture, to be typed over
+/// there and then; and how many of its looks the box of them has to a
+/// row. A badge is a look, chosen from that box, in the color in hand:
+/// which the box of colors changes, as it does any shape's.
+const BADGE_SAYS: &str = "Label";
+const BADGE_ACROSS: i32 = 4;
 
 /// The emoji there are to put on it, as stickers.
 fn emoji() -> &'static [(&'static str, &'static str)] {
@@ -269,9 +254,7 @@ const BACKDROP_KINDS: [(&str, usize); 3] = [("Mesh", 16), ("Gradient", 16), ("Pl
 /// A thing to be chosen in a box that hangs from the bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Cell {
-    /// One of the words a badge can say.
-    Word(usize),
-    /// A badge in one of its looks and hues: eight hues to a look.
+    /// A badge in one of its looks.
     Badge(usize),
     /// An emoji: which of those the search has found.
     Emoji(usize),
@@ -565,8 +548,6 @@ pub struct Editor {
     /// The frame as it shows round the selection: what it was made
     /// from, how wide it is, and its pixels, each with how opaque.
     surround: Option<(String, i32, Vec<u32>)>,
-    /// Which of the words the next badge says.
-    word: usize,
     /// How opaque what is drawn is, out of 256; and how text is set.
     opacity: u32,
     style: u8,
@@ -703,7 +684,6 @@ impl Editor {
             arrow: None,
             arrow_shows: false,
             surround: None,
-            word: 0,
             opacity: 256,
             style: 0,
             square: false,
@@ -1017,26 +997,16 @@ impl Editor {
                 // as far as a row goes, and the stickers in rows of
                 // eight.
                 _ => {
-                    // The words first, to choose what it says; then every
-                    // look of it in every hue, a look to a row; then
-                    // the stickers.
-                    let hues = BADGE_HUES.len() as i32;
-                    let each = side * 3 / 2;
-                    let across = hues * each;
-                    let (mut x, mut y) = (0, 0);
-                    for (index, word) in BADGE_WORDS.iter().enumerate() {
-                        let wide = self.text.width(word, px) + 2 * pad;
-                        if x > 0 && x + wide > across {
-                            (x, y) = (0, y + side);
-                        }
-                        cells.push((Rect::new(x, y, wide, side), Cell::Word(index)));
-                        x += wide;
+                    // Every look of a badge, in the color in hand, each
+                    // with room to be seen as it will be; and under
+                    // them what the one the pointer is on is called.
+                    let (each, tall) = (self.text.width(BADGE_SAYS, px) + px as i32 * 4, side * 3 / 2);
+                    let rows = (shapes::BADGE_STYLES as i32 + BADGE_ACROSS - 1) / BADGE_ACROSS;
+                    for index in 0..shapes::BADGE_STYLES as i32 {
+                        cells.push((Rect::new(index % BADGE_ACROSS * each, index / BADGE_ACROSS * tall, each, tall), Cell::Badge(index as usize)));
                     }
-                    y += side + pad / 2;
-                    for index in 0..(shapes::BADGE_STYLES as i32 * hues) {
-                        cells.push((Rect::new(index % hues * each, y + index / hues * side, each, side), Cell::Badge(index as usize)));
-                    }
-                    (across, y + shapes::BADGE_STYLES as i32 * side)
+                    layout.caption = Some(Rect::new(0, rows * tall, BADGE_ACROSS * each, side));
+                    (BADGE_ACROSS * each, rows * tall + side)
                 }
             };
             let (width, height) = (across + 2 * margin, down + 2 * margin);
@@ -1917,9 +1887,14 @@ impl Editor {
             self.all = true;
             return Outcome::Continue;
         }
-        if let (Some((index, _)), false, true) = (self.editing, mods.ctrl, self.all) {
+        // Shift going down, on its way to a capital letter, is a key
+        // too, and is not what takes the place of what is picked out.
+        if let (Some((index, _)), false, true, false) = (self.editing, mods.ctrl, self.all, key == Key::Other) {
             self.all = false;
-            if matches!(key, Key::Char(_) | Key::Enter | Key::Backspace | Key::Delete) {
+            // Enter ends a badge, which is one line, and takes nothing
+            // from it.
+            let ends = key == Key::Enter && self.shapes[index].tool == Tool::Badge;
+            if matches!(key, Key::Char(_) | Key::Enter | Key::Backspace | Key::Delete) && !ends {
                 self.shapes[index].text.clear();
                 self.caret = 0;
                 if matches!(key, Key::Backspace | Key::Delete) {
@@ -1928,6 +1903,7 @@ impl Editor {
             }
         }
         if let (Some((index, _)), false) = (self.editing, mods.ctrl) {
+            let badge = self.shapes[index].tool == Tool::Badge;
             let text = &mut self.shapes[index].text;
             let caret = self.caret.min(text.len());
             // The line the caret is on, and how many letters along it.
@@ -1941,6 +1917,8 @@ impl Editor {
                     text.insert(caret, letter);
                     self.caret = caret + letter.len_utf8();
                 }
+                // A badge is one line: Enter is the end of it.
+                Key::Enter if badge => self.commit_text(),
                 Key::Enter => {
                     text.insert(caret, '\n');
                     self.caret = caret + 1;
@@ -2332,7 +2310,6 @@ impl Editor {
                 self.photo_arrived(read);
             }
             Cell::Place(place) => (self.place, self.flyout) = (place, None),
-            Cell::Word(word) => self.word = word,
             // The way the tool whose list this is draws from now on;
             // and that tool is the one in hand.
             Cell::Variant(way) => {
@@ -2356,12 +2333,10 @@ impl Editor {
         self.checkpoint();
         let (stroke, font_px) = (self.stroke(), self.font_px());
         let mut shape = match cell {
-            // The word in hand, in the look and the hue clicked on.
-            Cell::Badge(index) => {
-                let (soft, solid) = BADGE_HUES[index % BADGE_HUES.len()];
-                let mut shape = Shape::new(Tool::Badge, solid, stroke, (0.0, 0.0));
-                (shape.fill, shape.text, shape.font_px, shape.face) = (soft, BADGE_WORDS[self.word].to_owned(), font_px, self.face);
-                shape.number = (index / BADGE_HUES.len()) as u32;
+            // The look clicked on, in the color in hand.
+            Cell::Badge(look) => {
+                let mut shape = Shape::new(Tool::Badge, self.color, stroke, (0.0, 0.0));
+                (shape.text, shape.font_px, shape.face, shape.number) = (BADGE_SAYS.to_owned(), font_px, self.face, look as u32);
                 shape
             }
             Cell::Emoji(index) => {
@@ -2375,9 +2350,17 @@ impl Editor {
         let size = shape.bounds(&mut self.text);
         let (cx, cy) = area.center();
         shape.points[0] = ((cx - size.w / 2) as f32, (cy - size.h / 2) as f32);
+        let badge = shape.tool == Tool::Badge;
         self.shapes.push(shape);
         self.made(self.shapes.len() - 1);
         self.flyout = None;
+        // A badge says nothing yet that was meant: what is typed next
+        // is what it says, in place of what it was put down saying.
+        if badge {
+            self.editing = Some((self.shapes.len() - 1, false));
+            (self.caret, self.all) = (BADGE_SAYS.len(), true);
+            self.selected.clear();
+        }
     }
 
     /// A photograph is wanted from the network, of about this size:
@@ -2881,23 +2864,14 @@ impl Editor {
                 }
                 let (cx, cy) = rect.center();
                 match cell {
-                    // As it will look on the picture, but small.
-                    // A word it can say; the one in hand is on the accent.
-                    Cell::Word(index) => {
-                        let ink = if index == self.word {
-                            canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, accent, 256);
-                            on(accent)
-                        } else {
-                            TEXT_COLOR
-                        };
-                        self.text.draw_centered(&mut canvas, cx, cy, px, ink, BADGE_WORDS[index]);
-                    }
-                    // A look of it in a hue, with two letters for words.
-                    Cell::Badge(index) => {
-                        let (soft, solid) = BADGE_HUES[index % BADGE_HUES.len()];
-                        let high = Text::line_height(px) + px as i32 / 4;
-                        let pill = Rect::new(inner.x, cy - high / 2, inner.w, high);
-                        shapes::draw_badge(&mut canvas, &mut self.text, pill, index / BADGE_HUES.len(), solid, soft, 0, px, "Ab");
+                    // A look of a badge, as it will be on the picture: in
+                    // the color in hand, and the size it will be there.
+                    Cell::Badge(look) => {
+                        let mut badge = Shape::new(Tool::Badge, self.color, 1.0, (0.0, 0.0));
+                        (badge.text, badge.font_px, badge.number) = (BADGE_SAYS.to_owned(), px, look as u32);
+                        let size = badge.bounds(&mut self.text);
+                        badge.points[0] = ((cx - size.w / 2) as f32, (cy - size.h / 2) as f32);
+                        badge.draw(&mut canvas, &mut self.text);
                     }
                     Cell::Emoji(index) => {
                         if let Some(&which) = self.emoji_found().get(index) {
@@ -3013,6 +2987,10 @@ impl Editor {
             if let Some(caption) = layout.caption {
                 let found = self.emoji_found();
                 let says = match self.hover {
+                    // Or what the look of a badge is called, in the box
+                    // of those.
+                    Target::Cell(Cell::Badge(look)) => shapes::BADGE_NAMES[look.min(shapes::BADGE_STYLES - 1)].to_owned(),
+                    _ if self.flyout == Some(Button::Badges) => "In the color in hand; type what it says".to_owned(),
                     Target::Cell(Cell::Emoji(index)) => found.get(index).map_or(String::new(), |&which| emoji()[which].1.to_owned()),
                     _ if found.is_empty() => "None by that name".to_owned(),
                     _ => format!("{} emoji; the wheel goes through them", found.len()),
@@ -3835,6 +3813,52 @@ mod tests {
     }
 
     #[test]
+    fn a_badge_is_a_look_in_the_color_in_hand_and_says_what_is_typed() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        // The box of them has every look, and nothing else to choose.
+        editor.key(Key::Char('j'), PLAIN);
+        let cells: Vec<Cell> = editor.layout().cells.iter().map(|(_, cell)| *cell).collect();
+        assert_eq!(cells, (0..shapes::BADGE_STYLES).map(Cell::Badge).collect::<Vec<_>>());
+        // One chosen is put down in the color in hand, saying nothing
+        // meant: what is typed is what it says, and Enter ends it.
+        editor.set_color(0x0090FF);
+        let gloss = editor.layout().cells[6].0.center();
+        click(&mut editor, gloss, 1000);
+        assert_eq!((editor.shapes[0].tool, editor.shapes[0].number, editor.shapes[0].color, editor.shapes[0].text.as_str()), (Tool::Badge, 6, 0x0090FF, BADGE_SAYS));
+        assert!(editor.editing.is_some() && editor.flyout.is_none());
+        // Shift on its way down is a key as well, and changes nothing.
+        editor.key(Key::Other, Mods { shift: true, ctrl: false });
+        for letter in "Ship it".chars() {
+            editor.key(Key::Char(letter), PLAIN);
+        }
+        assert_eq!(editor.key(Key::Enter, PLAIN), Outcome::Continue);
+        assert_eq!((editor.shapes[0].text.as_str(), editor.editing, editor.selected.clone()), ("Ship it", None, vec![0]));
+        // Picked out, the box of colors changes it as it does any
+        // shape; and it is some of that color, and not all one color.
+        editor.set_color(0x30A46C);
+        assert_eq!(editor.shapes[0].color, 0x30A46C);
+        let (area, pixels, _) = editor.result().unwrap();
+        let place = editor.shapes[0].bounds(&mut editor.text);
+        let column: Vec<u32> = (place.y + 2..place.bottom() - 2).map(|y| pixels[((y - area.y) * area.w + place.x + 4 - area.x) as usize] & 0xFF_FFFF).collect();
+        assert!(column.iter().all(|&pixel| (pixel >> 8 & 0xFF) > (pixel >> 16 & 0xFF)), "{column:06x?}");
+        assert!(column.first() != column.last());
+        // One put down and left as it was says what it was put down
+        // saying; every look draws, whatever it is given to say.
+        editor.key(Key::Char('j'), PLAIN);
+        editor.choose(Cell::Badge(11));
+        editor.key(Key::Enter, PLAIN);
+        assert_eq!((editor.shapes.len(), editor.shapes[1].text.as_str()), (2, BADGE_SAYS));
+        let mut out = vec![0u32; 400 * 100];
+        for look in 0..shapes::BADGE_STYLES {
+            let mut canvas = Canvas::new(&mut out, 400, 100);
+            shapes::draw_badge(&mut canvas, &mut editor.text, Rect::new(40, 30, 120, 28), look, 0xE5484D, 0, 16, "Aa");
+            assert!(out.iter().any(|&pixel| pixel != 0), "{look}");
+            out.fill(0);
+        }
+    }
+
+    #[test]
     fn what_is_picked_out_goes_over_and_under_the_other_shapes() {
         let ctrl = Mods { shift: false, ctrl: true };
         let mut editor = editor(1600, 900);
@@ -4316,9 +4340,20 @@ mod tests {
         editor.pressed(0);
         editor.pointer_moved(130 * unit, 80 * unit, PLAIN);
         editor.released();
-        for (cell, to) in [(Cell::Badge(0), (20, 14)), (Cell::Badge(11), (40, 14)), (Cell::Badge(20), (20, 22)), (Cell::Badge(29), (40, 22)), (Cell::Badge(37), (20, 30)), (Cell::Badge(46), (40, 30)), (Cell::Emoji(6), (60, 12)), (Cell::Emoji(40), (70, 12))] {
-            editor.word = (editor.word + 1) % BADGE_WORDS.len();
+        // Every look of a badge, each in a color of its own and saying
+        // what it is called; and two emoji.
+        let looks = (0..shapes::BADGE_STYLES).map(|look| (Cell::Badge(look), (16 + (look as i32 % 4) * 24, 12 + (look as i32 / 4) * 8)));
+        for (cell, to) in looks.chain([(Cell::Emoji(6), (112, 12)), (Cell::Emoji(40), (120, 12))]) {
+            if let Cell::Badge(look) = cell {
+                editor.color = PALETTE[(look * 5 + 1) % PALETTE.len()].0;
+            }
             editor.choose(cell);
+            if let Cell::Badge(look) = cell {
+                for letter in shapes::BADGE_NAMES[look].chars() {
+                    editor.key(Key::Char(letter), PLAIN);
+                }
+                editor.key(Key::Enter, PLAIN);
+            }
             let index = editor.shapes.len() - 1;
             let at = editor.shapes[index].points[0];
             editor.shapes[index].translate((to.0 * unit) as f32 - at.0, (to.1 * unit) as f32 - at.1);
