@@ -271,7 +271,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
 
 /// The names the faces go by in the config file and on the command
 /// line, each with a shorter one for the kind of face it is.
-const FACE_NAMES: [[&str; 2]; 4] = [["geist", "sans"], ["instrument-serif", "serif"], ["architects-daughter", "hand"], ["fira-code", "mono"]];
+const FACE_NAMES: [[&str; 2]; 5] = [["geist", "sans"], ["instrument-serif", "serif"], ["architects-daughter", "hand"], ["fira-code", "mono"], ["anton", "impact"]];
 
 /// Keeps what is in hand, to begin with next time: written the way the
 /// config file is, so that it is read the same way.

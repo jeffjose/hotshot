@@ -9,6 +9,8 @@ license = "MIT"
 x11rb = { version = "0.14", features = ["shm", "randr", "cursor"] }
 fontdue = "0.9"
 png = "0.18"
+ttf-parser = "0.25"
+zune-jpeg = "0.4"
 libc = "0.2"
 rayon = "1"
 

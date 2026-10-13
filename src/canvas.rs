@@ -209,6 +209,29 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Draws what is in one rectangle again in another, larger or
+    /// smaller, each pixel a blend of the four it falls among.
+    pub fn magnify(&mut self, from: Rect, into: Rect) {
+        let source = from.intersect(Rect::new(0, 0, self.width, self.height));
+        let part = into.intersect(self.clip);
+        if source.is_empty() || part.is_empty() || into.is_empty() {
+            return;
+        }
+        // Taken first: where the two overlap, it is the picture as it
+        // was that is wanted, not as it is being made.
+        let taken = crop(self.pixels, self.width, source);
+        let at = |x: i32, y: i32| taken[((y.clamp(0, source.h - 1)) * source.w + x.clamp(0, source.w - 1)) as usize];
+        for y in part.y..part.bottom() {
+            let down = ((y - into.y) as i64 * 256 * from.h as i64 / into.h as i64) as i32 + (from.y - source.y) * 256;
+            for x in part.x..part.right() {
+                let across = ((x - into.x) as i64 * 256 * from.w as i64 / into.w as i64) as i32 + (from.x - source.x) * 256;
+                let (sx, sy, fx, fy) = (across >> 8, down >> 8, (across & 255) as u32, (down & 255) as u32);
+                let (upper, lower) = (mix(at(sx, sy), at(sx + 1, sy), fx), mix(at(sx, sy + 1), at(sx + 1, sy + 1), fx));
+                self.pixels[(y * self.width + x) as usize] = mix(upper, lower, fy);
+            }
+        }
+    }
+
     /// A filled circle about a point.
     pub fn disc(&mut self, cx: i32, cy: i32, radius: i32, color: u32, amount: u32) {
         self.round_fill(cx - radius, cy - radius, 2 * radius, 2 * radius, radius, color, amount);

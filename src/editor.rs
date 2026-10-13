@@ -194,6 +194,37 @@ enum Button {
     Cancel,
     Save,
     Copy,
+    /// The badges and stickers there are to put on the picture.
+    Badges,
+}
+
+/// What can be put on the picture ready-made: a word on a pill of a
+/// pale color, with a dot and the word in the strong one of the same
+/// hue. The hues are Radix's, its step for a tinted surface and its
+/// step for text; the look is the one envelope's badges have.
+const BADGES: [(&str, u32, u32); 12] = [
+    ("Bug", 0xFEEBE7, 0xD13415),
+    ("Fixed", 0xE6F6EB, 0x218358),
+    ("New", 0xE6F4FE, 0x0D74CE),
+    ("To do", 0xFFF7C2, 0xAB6400),
+    ("Important", 0xFFEFD6, 0xCC4E00),
+    ("Note", 0xDEF7F9, 0x107D98),
+    ("Before", 0xF0F0F0, 0x646464),
+    ("After", 0xF4F0FE, 0x6550B9),
+    ("Approved", 0xE6F6EB, 0x218358),
+    ("Rejected", 0xFEEBE7, 0xD13415),
+    ("WIP", 0xFBEBFB, 0x953EA3),
+    ("Question", 0xEDF2FE, 0x3A5BC7),
+];
+
+/// The emoji there are to put on it, as stickers.
+const STICKERS: [&str; 16] = ["✅", "❌", "⚠\u{fe0f}", "❓", "👍", "👎", "🔥", "⭐", "🐛", "💡", "👀", "🎉", "❤\u{fe0f}", "🚀", "👉", "👆"];
+
+/// A thing to be chosen in a box that hangs from the bar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Cell {
+    Badge(usize),
+    Sticker(usize),
 }
 
 /// The bar of tools, in the groups it is divided into.
@@ -210,6 +241,8 @@ const GROUPS: [&[Button]; 4] = [
         Button::Tool(Tool::Counter),
         Button::Tool(Tool::Blur),
         Button::Tool(Tool::Spotlight),
+        Button::Tool(Tool::Zoom),
+        Button::Badges,
     ],
     &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill, Button::Face],
     &[Button::Undo, Button::Redo],
@@ -231,6 +264,8 @@ impl Button {
             Button::Tool(Tool::Counter) => ("Counter", "N"),
             Button::Tool(Tool::Blur) => ("Blur", "B"),
             Button::Tool(Tool::Spotlight) => ("Spotlight", "S"),
+            Button::Tool(Tool::Zoom) => ("Zoom", "Z"),
+            Button::Tool(Tool::Badge) | Button::Badges => ("Badges and stickers", "J"),
             Button::Color => ("Color", "C"),
             Button::Size(0) => ("Thin", "1"),
             Button::Size(1) => ("Medium", "2"),
@@ -259,6 +294,8 @@ impl Button {
             Button::Tool(Tool::Counter) => icons::COUNTER,
             Button::Tool(Tool::Blur) => icons::BLUR,
             Button::Tool(Tool::Spotlight) => icons::SPOTLIGHT,
+            Button::Tool(Tool::Zoom) => icons::ZOOM,
+            Button::Tool(Tool::Badge) | Button::Badges => icons::BADGE,
             Button::Fill => icons::FILLED,
             Button::Undo => icons::UNDO,
             Button::Redo => icons::REDO,
@@ -278,6 +315,8 @@ enum Target {
     Pipette,
     /// A part of the bar, or of the box of colors, that is not a button.
     Panel,
+    /// Something to be chosen in a box hung from the bar.
+    Cell(Cell),
     /// An edge or a corner of the selection: which way it pulls across
     /// and down, each -1, 0 or 1.
     Handle(i32, i32),
@@ -344,6 +383,9 @@ struct Layout {
     popup: Option<Rect>,
     swatches: Vec<(Rect, u32)>,
     pipette: Rect,
+    /// The box hung from one of the bar's buttons, and what is in it.
+    flyout: Option<Rect>,
+    cells: Vec<(Rect, Cell)>,
 }
 
 pub struct Editor {
@@ -385,6 +427,13 @@ pub struct Editor {
     /// Which ends of an arrow have heads: its first, and its last.
     heads: [bool; 2],
     popup: Option<Anchor>,
+    /// The box open under one of the bar's other buttons, by the button.
+    flyout: Option<Button>,
+    /// Whether lines and arrows are drawn in dashes.
+    dashed: bool,
+    /// Whether all of the text being typed is picked out, so that what
+    /// is typed next takes its place.
+    all: bool,
     /// Picking a color off the screen.
     pipette: bool,
     hover: Target,
@@ -413,7 +462,7 @@ const GRIPS: [(i32, i32); 8] = [(-1, -1), (1, -1), (-1, 1), (1, 1), (0, -1), (0,
 /// Not a line or an arrow, which have their two ends; nor a counter,
 /// which is the size it is.
 fn boxed(tool: Tool) -> bool {
-    !matches!(tool, Tool::Arrow | Tool::Line | Tool::Counter)
+    !matches!(tool, Tool::Arrow | Tool::Line | Tool::Counter | Tool::Zoom | Tool::Badge)
 }
 
 /// Where on a box one of its handles is.
@@ -461,6 +510,9 @@ impl Editor {
             caret: 0,
             heads: [false, true],
             popup: None,
+            flyout: None,
+            dashed: false,
+            all: false,
             pipette: false,
             hover: Target::Outside,
             window: None,
@@ -619,11 +671,47 @@ impl Editor {
             layout.pipette = Rect::new(popup.x + margin, popup.y + margin + rows * side + pad / 2, width - 2 * margin, side);
             layout.popup = Some(popup);
         }
+
+        // The box of badges and stickers: the badges as they will look,
+        // one after another for as far as a row goes, and under them
+        // the stickers in rows of eight.
+        if let (Some(from), false) = (self.flyout, hidden) {
+            let across = 8 * side;
+            let mut cells: Vec<(Rect, Cell)> = Vec::new();
+            let (mut x, mut y) = (0, 0);
+            for (index, (label, _, _)) in BADGES.iter().enumerate() {
+                let wide = self.text.width(label, px) + px as i32 * 2 + pad;
+                if x > 0 && x + wide > across {
+                    (x, y) = (0, y + side);
+                }
+                cells.push((Rect::new(x, y, wide, side), Cell::Badge(index)));
+                x += wide;
+            }
+            y += side + pad / 2;
+            for index in 0..STICKERS.len() as i32 {
+                cells.push((Rect::new(index % 8 * side, y + index / 8 * side, side, side), Cell::Sticker(index as usize)));
+            }
+            let (width, height) = (across + 2 * margin, y + (STICKERS.len() as i32 + 7) / 8 * side + 2 * margin);
+            let button = layout.buttons.iter().find(|(_, button)| *button == from).map_or(bar, |(rect, _)| *rect);
+            let under = bar.bottom() + pad / 2;
+            let top = if under + height <= monitor.bottom() - pad { under } else { bar.y - pad / 2 - height };
+            let flyout = Rect::new(button.x + button.w / 2 - width / 2, top, width, height).kept_within(monitor.inflate(-pad));
+            layout.cells = cells.into_iter().map(|(rect, cell)| (rect.moved(flyout.x + margin, flyout.y + margin), cell)).collect();
+            layout.flyout = Some(flyout);
+        }
         layout
     }
 
     fn target_at(&mut self, (x, y): (i32, i32)) -> Target {
         let layout = self.layout();
+        if let Some(flyout) = layout.flyout {
+            if let Some((_, cell)) = layout.cells.iter().find(|(rect, _)| rect.contains(x, y)) {
+                return Target::Cell(*cell);
+            }
+            if flyout.contains(x, y) {
+                return Target::Panel;
+            }
+        }
         if let Some(popup) = layout.popup {
             if let Some((_, color)) = layout.swatches.iter().find(|(rect, _)| rect.contains(x, y)) {
                 return Target::Swatch(*color);
@@ -725,6 +813,8 @@ impl Editor {
         match shape.tool {
             Tool::Arrow | Tool::Line => vec![at(0), at(1)],
             Tool::Counter if shape.points[0] != shape.points[1] => vec![at(1)],
+            // The corner the larger picture of a zoom is put down by.
+            Tool::Zoom => vec![at(2)],
             _ => Vec::new(),
         }
     }
@@ -776,7 +866,7 @@ impl Editor {
     }
 
     pub fn cursor(&self) -> Cursor {
-        if self.pipette && !matches!(self.hover, Target::Button(_) | Target::Panel | Target::Swatch(_) | Target::Pipette) {
+        if self.pipette && !matches!(self.hover, Target::Button(_) | Target::Panel | Target::Swatch(_) | Target::Pipette | Target::Cell(_)) {
             return Cursor::Crosshair;
         }
         let pull = match (self.drag, self.hover) {
@@ -797,7 +887,7 @@ impl Editor {
         match (self.drag, self.hover) {
             (Drag::Move { .. } | Drag::Shape { .. }, _) => Cursor::Move,
             (Drag::Select { .. } | Drag::Draw { .. }, _) => Cursor::Crosshair,
-            (_, Target::Button(_) | Target::Swatch(_) | Target::Pipette | Target::Panel) => Cursor::Arrow,
+            (_, Target::Button(_) | Target::Swatch(_) | Target::Pipette | Target::Panel | Target::Cell(_)) => Cursor::Arrow,
             (_, Target::Inside) => match self.tool {
                 Tool::Select => Cursor::Move,
                 Tool::Text => Cursor::Text,
@@ -940,7 +1030,12 @@ impl Editor {
                                 shape.points.push(to);
                             }
                         }
-                        tool => shape.points[1] = if mods.shift { shapes::constrained(tool, from, to) } else { to },
+                        tool => {
+                            shape.points[1] = if mods.shift { shapes::constrained(tool, from, to) } else { to };
+                            if tool == Tool::Zoom {
+                                shape.place_zoom();
+                            }
+                        }
                     }
                     shape.touch();
                 }
@@ -989,10 +1084,12 @@ impl Editor {
             }
             Target::Pipette => (self.pipette, self.popup) = (true, None),
             Target::Panel => {}
+            Target::Cell(cell) => self.choose(cell),
             Target::Button(button) => self.drag = Drag::Button(button),
             // A click anywhere else puts the box of colors away, and
             // does nothing more.
             _ if self.popup.is_some() => self.popup = None,
+            _ if self.flyout.is_some() => self.flyout = None,
             Target::End(point) => {
                 if let Some(index) = self.picked() {
                     self.checkpoint();
@@ -1067,7 +1164,7 @@ impl Editor {
                     if !self.selected.contains(&index) {
                         self.selected = vec![index];
                     }
-                    match double && self.shapes[index].tool == Tool::Text {
+                    match double && matches!(self.shapes[index].tool, Tool::Text | Tool::Badge) {
                         true => self.edit_text(index),
                         false => self.drag = Drag::Shape { index, last: at, moved: false },
                     }
@@ -1106,6 +1203,7 @@ impl Editor {
                 if tool == Tool::Arrow {
                     shape.heads = self.heads;
                 }
+                shape.dashed = self.dashed && matches!(tool, Tool::Arrow | Tool::Line);
                 shape.number = self.shapes.iter().filter(|shape| shape.tool == Tool::Counter).count() as u32 + 1;
                 self.shapes.push(shape);
                 self.selected.clear();
@@ -1222,6 +1320,22 @@ impl Editor {
         if let (Some(_), Key::Char('v' | 'V'), true) = (self.editing, key, mods.ctrl) {
             return Outcome::Paste;
         }
+        // Ctrl+A is all of the text picked out: what is typed next, or
+        // pasted, takes its place, and Backspace or Delete leaves none.
+        if let (Some(_), Key::Char('a' | 'A'), true) = (self.editing, key, mods.ctrl) {
+            self.all = true;
+            return Outcome::Continue;
+        }
+        if let (Some((index, _)), false, true) = (self.editing, mods.ctrl, self.all) {
+            self.all = false;
+            if matches!(key, Key::Char(_) | Key::Enter | Key::Backspace | Key::Delete) {
+                self.shapes[index].text.clear();
+                self.caret = 0;
+                if matches!(key, Key::Backspace | Key::Delete) {
+                    return Outcome::Continue;
+                }
+            }
+        }
         if let (Some((index, _)), false) = (self.editing, mods.ctrl) {
             let text = &mut self.shapes[index].text;
             let caret = self.caret.min(text.len());
@@ -1270,7 +1384,7 @@ impl Editor {
         };
         match (key, mods.ctrl) {
             (Key::Escape, _) => {
-                if self.popup.take().is_none() && !std::mem::take(&mut self.pipette) {
+                if self.popup.take().is_none() && self.flyout.take().is_none() && !std::mem::take(&mut self.pipette) {
                     return Outcome::Cancel;
                 }
             }
@@ -1316,6 +1430,10 @@ impl Editor {
                     going.sort_unstable();
                     going.iter().rev().for_each(|&index| drop(self.shapes.remove(index)));
                     self.selected.clear();
+                    // The counters left count from one again, in order.
+                    for (number, shape) in self.shapes.iter_mut().filter(|shape| shape.tool == Tool::Counter).enumerate() {
+                        shape.number = number as u32 + 1;
+                    }
                 }
             }
             (Key::Left, ctrl) => self.nudge(-1, 0, ctrl),
@@ -1337,6 +1455,21 @@ impl Editor {
                 'c' => drop(self.activate(Button::Color)),
                 'f' => drop(self.activate(Button::Fill)),
                 'g' => drop(self.activate(Button::Face)),
+                'z' => self.set_tool(Tool::Zoom),
+                'j' => drop(self.activate(Button::Badges)),
+                // Dashes, for the lines and arrows picked out and for
+                // those drawn after.
+                'd' => {
+                    self.dashed = !self.dashed;
+                    let lines: Vec<usize> = self.chosen().into_iter().filter(|&index| matches!(self.shapes[index].tool, Tool::Line | Tool::Arrow)).collect();
+                    if !lines.is_empty() {
+                        self.checkpoint();
+                    }
+                    for index in lines {
+                        self.shapes[index].dashed = self.dashed;
+                        self.shapes[index].touch();
+                    }
+                }
                 // From each roundness of the picture's corners to the
                 // next, and round again to square; one that is none of
                 // them, set by hand, goes to square first.
@@ -1404,12 +1537,20 @@ impl Editor {
                 self.face = (self.face + 1) % FACES.len();
                 let texts: Vec<usize> = match self.editing {
                     Some((index, _)) => vec![index],
-                    None => self.chosen().into_iter().filter(|&index| self.shapes[index].tool == Tool::Text).collect(),
+                    None => self.chosen().into_iter().filter(|&index| matches!(self.shapes[index].tool, Tool::Text | Tool::Badge)).collect(),
                 };
                 if self.editing.is_none() && !texts.is_empty() {
                     self.checkpoint();
                 }
                 texts.iter().for_each(|&index| self.shapes[index].face = self.face);
+            }
+            Button::Badges => {
+                self.commit_text();
+                self.popup = None;
+                self.flyout = match self.flyout {
+                    Some(Button::Badges) => None,
+                    _ => Some(Button::Badges),
+                };
             }
             Button::Undo => self.undo(),
             Button::Redo => self.redo(),
@@ -1490,6 +1631,35 @@ impl Editor {
         }
     }
 
+    /// Something chosen in the box of badges and stickers: it is put
+    /// in the middle of the selection, picked out, to be dragged to
+    /// where it is wanted. A badge can be typed over with a double
+    /// click; a sticker is text like any other, and twice the size.
+    fn choose(&mut self, cell: Cell) {
+        let Some(area) = self.selection else { return };
+        self.checkpoint();
+        let (stroke, font_px) = (self.stroke(), self.font_px());
+        let mut shape = match cell {
+            Cell::Badge(index) => {
+                let (label, fill, ink) = BADGES[index];
+                let mut shape = Shape::new(Tool::Badge, ink, stroke, (0.0, 0.0));
+                (shape.fill, shape.text, shape.font_px) = (fill, label.to_owned(), font_px);
+                shape
+            }
+            Cell::Sticker(index) => {
+                let mut shape = Shape::new(Tool::Text, self.color, stroke, (0.0, 0.0));
+                (shape.text, shape.font_px) = (STICKERS[index].to_owned(), font_px * 2);
+                shape
+            }
+        };
+        let size = shape.bounds(&mut self.text);
+        let (cx, cy) = area.center();
+        shape.points[0] = ((cx - size.w / 2) as f32, (cy - size.h / 2) as f32);
+        self.shapes.push(shape);
+        self.made(self.shapes.len() - 1);
+        self.flyout = None;
+    }
+
     /// Takes up a text that is already there, to be typed into again.
     fn edit_text(&mut self, index: usize) {
         self.commit_text();
@@ -1504,6 +1674,9 @@ impl Editor {
         if let Some((index, _)) = self.editing {
             let pasted: String = pasted.chars().filter(|&letter| letter == '\n' || !letter.is_control()).collect();
             let text = &mut self.shapes[index].text;
+            if std::mem::take(&mut self.all) {
+                text.clear();
+            }
             let caret = self.caret.min(text.len());
             text.insert_str(caret, &pasted);
             self.caret = caret + pasted.len();
@@ -1515,7 +1688,7 @@ impl Editor {
     /// the letter it is nearest the left edge of, on the line it is on.
     fn caret_at(&mut self, index: usize, at: (i32, i32)) -> usize {
         let shape = &self.shapes[index];
-        let (left, top) = (shape.points[0].0.round() as i32, shape.points[0].1.round() as i32);
+        let (left, top) = shape.text_origin();
         let row = ((at.1 - top) / Text::line_height(shape.font_px).max(1)).max(0) as usize;
         let mut start = 0;
         let lines: Vec<&str> = shape.text.split('\n').collect();
@@ -1538,6 +1711,7 @@ impl Editor {
     /// only just begun, neither is the step back to before it. Text
     /// that is kept is picked out, as anything just made is.
     fn commit_text(&mut self) {
+        self.all = false;
         if let Some((index, new)) = self.editing.take() {
             if self.shapes[index].is_slight() {
                 self.shapes.remove(index);
@@ -1562,7 +1736,7 @@ impl Editor {
     /// Whether the magnifier is up: while an edge is being placed, if it
     /// is wanted at all, and always while a color is being picked.
     fn loupe_shows(&self) -> bool {
-        let over_interface = matches!(self.hover, Target::Button(_) | Target::Panel | Target::Swatch(_) | Target::Pipette);
+        let over_interface = matches!(self.hover, Target::Button(_) | Target::Panel | Target::Swatch(_) | Target::Pipette | Target::Cell(_));
         let placing = match self.drag {
             Drag::None => self.selection.is_none(),
             Drag::Select { .. } | Drag::Resize { .. } => true,
@@ -1601,8 +1775,15 @@ impl Editor {
                 let before = &shape.text[..self.caret.min(shape.text.len())];
                 let last = before.rsplit('\n').next().unwrap_or("");
                 let rows = before.split('\n').count() as i32;
-                let x = shape.points[0].0.round() as i32 + self.text.width_in(shape.face, last, shape.font_px);
-                let y = shape.points[0].1.round() as i32 + (rows - 1) * line;
+                let origin = shape.text_origin();
+                // All of it picked out, to be typed over: it shows on a
+                // wash of the accent.
+                if self.all {
+                    let over = shape.bounds(&mut self.text);
+                    canvas.round_fill(over.x, over.y, over.w, over.h, 0, accent, 90);
+                }
+                let x = origin.0 + self.text.width_in(shape.face, last, shape.font_px);
+                let y = origin.1 + (rows - 1) * line;
                 canvas.fill(x + 1, y + line / 8, (shape.font_px as i32 / 12).max(2), line - line / 4, shape.color);
             }
             canvas.reset_clip();
@@ -1699,6 +1880,30 @@ impl Editor {
         }
         if let Some(popup) = layout.popup {
             self.draw_popup(&mut canvas, &layout, popup);
+        }
+        if let Some(flyout) = layout.flyout {
+            let (pad, accent) = (px as i32 / 2, self.settings.accent);
+            panel(&mut canvas, flyout, pad);
+            for &(rect, cell) in &layout.cells {
+                let inner = rect.inflate(-(px as i32 / 6).max(2));
+                if self.hover == Target::Cell(cell) {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, pad / 2, 0xFFFFFF, 30);
+                }
+                let (cx, cy) = rect.center();
+                match cell {
+                    // As it will look on the picture, but small.
+                    Cell::Badge(index) => {
+                        let (label, fill, ink) = BADGES[index];
+                        let high = Text::line_height(px) + px as i32 / 4;
+                        let pill = Rect::new(inner.x, cy - high / 2, inner.w, high);
+                        canvas.round_fill(pill.x, pill.y, pill.w, pill.h, pill.h / 3, fill, 256);
+                        canvas.disc(pill.x + px as i32 * 5 / 8, cy, (px as i32 / 5).max(2), ink, 256);
+                        self.text.draw(&mut canvas, pill.x + px as i32 * 5 / 4, cy - Text::line_height(px) / 2, px, ink, label);
+                    }
+                    Cell::Sticker(index) => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, STICKERS[index]),
+                }
+            }
+            let _ = accent;
         }
         if self.selection.is_none() && !matches!(self.drag, Drag::Select { begun: true, .. }) {
             self.draw_hint(&mut canvas, px);
@@ -2478,5 +2683,33 @@ mod tests {
         let face = button(&mut editor, Button::Face);
         editor.pointer_moved(face.0, face.1, PLAIN);
         write(&mut editor, "11-spotlight-faces");
+
+        // Badges, a sticker, a zoom, a dashed arrow, and the box they
+        // are chosen from.
+        let mut editor = self::editor(width, height);
+        editor.pointer_moved(8 * unit, 6 * unit, PLAIN);
+        editor.pressed(0);
+        editor.pointer_moved(130 * unit, 80 * unit, PLAIN);
+        editor.released();
+        for (cell, to) in [(Cell::Badge(0), (20, 14)), (Cell::Badge(1), (40, 14)), (Cell::Badge(7), (20, 22)), (Cell::Sticker(6), (60, 12)), (Cell::Sticker(4), (70, 12))] {
+            editor.choose(cell);
+            let index = editor.shapes.len() - 1;
+            let at = editor.shapes[index].points[0];
+            editor.shapes[index].translate((to.0 * unit) as f32 - at.0, (to.1 * unit) as f32 - at.1);
+        }
+        editor.key(Key::Char('z'), PLAIN);
+        editor.pointer_moved(14 * unit, 40 * unit, PLAIN);
+        editor.pressed(1000);
+        editor.pointer_moved(34 * unit, 52 * unit, PLAIN);
+        editor.released();
+        editor.key(Key::Char('d'), PLAIN);
+        editor.key(Key::Char('a'), PLAIN);
+        editor.pointer_moved(110 * unit, 70 * unit, PLAIN);
+        editor.pressed(3000);
+        editor.pointer_moved(90 * unit, 40 * unit, PLAIN);
+        editor.released();
+        editor.key(Key::Escape, PLAIN);
+        editor.key(Key::Char('j'), PLAIN);
+        write(&mut editor, "12-badges");
     }
 }

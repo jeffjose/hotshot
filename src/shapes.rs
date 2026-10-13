@@ -25,6 +25,10 @@ pub enum Tool {
     Blur,
     /// A rectangle left as it is while everything round it is darkened.
     Spotlight,
+    /// A word or two on a pill of color: "Bug", "Fixed", "Before".
+    Badge,
+    /// A part of the picture shown again, larger, beside itself.
+    Zoom,
 }
 
 /// How much of its brightness what is outside every spotlight keeps,
@@ -75,14 +79,117 @@ pub struct Shape {
     /// Whether a line has an arrow's head at its first end and at its
     /// last: an arrow is a line with one at its last.
     pub heads: [bool; 2],
+    /// Whether a line or an arrow is drawn in dashes.
+    pub dashed: bool,
+    /// What a badge is filled with, its `color` being that of its words.
+    pub fill: u32,
     pub number: u32,
     mask: RefCell<Option<Rc<Mask>>>,
 }
 
+/// How many times larger a zoom shows what it is of.
+const ZOOM: i32 = 2;
+
+/// The names the tools are kept under, in a file of shapes.
+const TOOL_NAMES: [(Tool, &str); 12] = [
+    (Tool::Arrow, "arrow"),
+    (Tool::Line, "line"),
+    (Tool::Rect, "rect"),
+    (Tool::Ellipse, "oval"),
+    (Tool::Pen, "pen"),
+    (Tool::Marker, "marker"),
+    (Tool::Text, "text"),
+    (Tool::Counter, "counter"),
+    (Tool::Blur, "blur"),
+    (Tool::Spotlight, "spotlight"),
+    (Tool::Badge, "badge"),
+    (Tool::Zoom, "zoom"),
+];
+
 impl Shape {
     pub fn new(tool: Tool, color: u32, stroke: f32, at: Point) -> Shape {
-        let points = if matches!(tool, Tool::Pen | Tool::Marker | Tool::Text) { vec![at] } else { vec![at, at] };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], number: 0, mask: RefCell::new(None) }
+        let points = match tool {
+            Tool::Pen | Tool::Marker | Tool::Text | Tool::Badge => vec![at],
+            Tool::Zoom => vec![at, at, at],
+            _ => vec![at, at],
+        };
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, number: 0, mask: RefCell::new(None) }
+    }
+
+    /// The shape as a line of a file, to be read back by `read`: its
+    /// fields with tabs between, its points last but for its text.
+    pub fn write(&self) -> String {
+        let name = TOOL_NAMES.iter().find(|(tool, _)| *tool == self.tool).map_or("", |(_, name)| name);
+        let points: Vec<String> = self.points.iter().map(|point| format!("{},{}", point.0, point.1)).collect();
+        let text = self.text.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', " ");
+        format!(
+            "{name}\t{:06X}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}\t{:06X}\t{}\t{}\t{text}",
+            self.color,
+            self.stroke,
+            u8::from(self.filled),
+            self.radius,
+            self.font_px,
+            self.face,
+            u8::from(self.heads[0]),
+            u8::from(self.heads[1]),
+            u8::from(self.dashed),
+            self.fill,
+            self.number,
+            points.join(" ")
+        )
+    }
+
+    /// A shape from a line `write` made, or nothing from any other.
+    pub fn read(line: &str) -> Option<Shape> {
+        let fields: Vec<&str> = line.splitn(12, '\t').collect();
+        let [name, color, stroke, filled, radius, font_px, face, heads, dashed, fill, number, rest] = fields[..] else { return None };
+        let (points, text) = rest.split_once('\t')?;
+        let tool = TOOL_NAMES.iter().find(|(_, known)| *known == name)?.0;
+        let points: Vec<Point> = points.split(' ').map(|point| point.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))).collect::<Option<_>>()?;
+        let needed = Shape::new(tool, 0, 1.0, (0.0, 0.0)).points.len();
+        if points.len() < needed || points.iter().any(|point: &Point| !point.0.is_finite() || !point.1.is_finite()) {
+            return None;
+        }
+        let mut shape = Shape::new(tool, u32::from_str_radix(color, 16).ok()?, stroke.parse().ok()?, points[0]);
+        shape.points = points;
+        (shape.filled, shape.radius, shape.font_px, shape.face) = (filled == "1", radius.parse().ok()?, font_px.parse().ok()?, face.parse::<usize>().ok()?.min(crate::text::FACES.len() - 1));
+        (shape.heads, shape.dashed) = ([heads.starts_with('1'), heads.ends_with('1')], dashed == "1");
+        (shape.fill, shape.number) = (u32::from_str_radix(fill, 16).ok()?, number.parse().ok()?);
+        // The text has its new lines and its backslashes said in two
+        // letters each: put back one at a time, in order.
+        let mut letters = text.chars();
+        while let Some(letter) = letters.next() {
+            shape.text.push(match (letter, letter == '\\').1.then(|| letters.next()).flatten() {
+                Some('n') => '\n',
+                Some(other) => other,
+                None => letter,
+            });
+        }
+        Some(shape)
+    }
+
+    /// The rectangle a zoom is of, and the one it shows it in.
+    fn zoomed(&self) -> (Rect, Rect) {
+        let (a, b) = (self.points[0], self.points[1]);
+        let of = Rect::new(a.0.min(b.0).round() as i32, a.1.min(b.1).round() as i32, (a.0 - b.0).abs().round() as i32, (a.1 - b.1).abs().round() as i32);
+        (of, Rect::new(self.points[2].0.round() as i32, self.points[2].1.round() as i32, of.w * ZOOM, of.h * ZOOM))
+    }
+
+    /// Puts a zoom's larger picture where it usually goes: to the right
+    /// of what it is of, and a little above the middle of it.
+    pub fn place_zoom(&mut self) {
+        let (of, _) = self.zoomed();
+        self.points[2] = ((of.right() + of.w / 2 + 24) as f32, (of.y - of.h / 2) as f32);
+    }
+
+    /// Where the first letter of a shape with words on it goes.
+    pub fn text_origin(&self) -> (i32, i32) {
+        let (x, y) = (self.points[0].0.round() as i32, self.points[0].1.round() as i32);
+        match self.tool {
+            // After the dot at the front of a badge.
+            Tool::Badge => (x + self.font_px as i32 * 5 / 4, y + Text::line_height(self.font_px) / 6),
+            _ => (x, y),
+        }
     }
 
     /// To be called when anything about its outline has changed.
@@ -114,7 +221,11 @@ impl Shape {
                 let (a, b) = (self.points[0], self.points[1]);
                 (a.0 - b.0).hypot(a.1 - b.1) < 3.0
             }
-            Tool::Text => self.text.trim().is_empty(),
+            Tool::Text | Tool::Badge => self.text.trim().is_empty(),
+            Tool::Zoom => {
+                let (of, _) = self.zoomed();
+                of.w < 4 || of.h < 4
+            }
             _ => false,
         }
     }
@@ -140,6 +251,18 @@ impl Shape {
                 Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width.max(self.font_px as i32 / 4), line * lines.len() as i32)
             }
             Tool::Blur | Tool::Spotlight => self.frame_rect(),
+            // A badge is as wide as its words, with a dot before them
+            // and room at either end.
+            Tool::Badge => {
+                let line = Text::line_height(self.font_px);
+                let width = text.width_in(self.face, &self.text, self.font_px) + self.font_px as i32 * 2;
+                Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width, line + line / 3)
+            }
+            Tool::Zoom => {
+                let (of, shown) = self.zoomed();
+                let (x, y) = (of.x.min(shown.x), of.y.min(shown.y));
+                Rect::new(x, y, of.right().max(shown.right()) - x, of.bottom().max(shown.bottom()) - y)
+            }
             _ => self.extent(),
         }
     }
@@ -173,7 +296,7 @@ impl Shape {
     /// What its outline is worked out from.
     fn outline(&self) -> Outline {
         let (a, b) = (self.points[0], self.points[self.points.len() - 1]);
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head: self.head(), heads: self.heads, disc: self.disc() }
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head: self.head(), heads: self.heads, dashed: self.dashed, disc: self.disc() }
     }
 }
 
@@ -189,7 +312,28 @@ struct Outline {
     radius: f32,
     head: (f32, f32),
     heads: [bool; 2],
+    dashed: bool,
     disc: f32,
+}
+
+impl Outline {
+    /// How far a point is from a line, which if it is dashed is the
+    /// dashes of it: each a little longer than the gap after it.
+    fn shaft(&self, p: Point, from: Point, to: Point) -> f32 {
+        let half = self.stroke / 2.0;
+        let solid = segment(p, from, to) - half;
+        let length = (to.0 - from.0).hypot(to.1 - from.1);
+        if !self.dashed || length < 1.0 {
+            return solid;
+        }
+        let (dash, gap) = (self.stroke * 2.5 + 4.0, self.stroke * 2.0 + 3.0);
+        let along = ((p.0 - from.0) * (to.0 - from.0) + (p.1 - from.1) * (to.1 - from.1)) / length;
+        let into = along.rem_euclid(dash + gap);
+        // Inside a gap, it is as far from the line as from the gap's
+        // nearer end; inside a dash, the other way about.
+        let outside = if into > dash { (into - dash).min(dash + gap - into) } else { -into.min(dash - into) };
+        solid.max(outside)
+    }
 }
 
 impl Outline {
@@ -203,7 +347,7 @@ impl Outline {
             Tool::Line | Tool::Arrow => {
                 let length = (b.0 - a.0).hypot(b.1 - a.1);
                 if length < 0.5 || self.heads == [false, false] {
-                    return segment((x, y), a, b) - half;
+                    return self.shaft((x, y), a, b);
                 }
                 let (dx, dy) = ((b.0 - a.0) / length, (b.1 - a.1) / length);
                 let (head, wide) = self.head;
@@ -221,7 +365,7 @@ impl Outline {
                     nearest = nearest.min(triangle((x, y), a, (base.0 - dy * wide, base.1 + dx * wide), (base.0 + dy * wide, base.1 - dx * wide)) - 0.6);
                     from = (a.0 + dx * head * 0.8, a.1 + dy * head * 0.8);
                 }
-                nearest.min(segment((x, y), from, to) - half)
+                nearest.min(self.shaft((x, y), from, to))
             }
             Tool::Rect => {
                 let (left, top, w, h) = (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs());
@@ -291,6 +435,35 @@ impl Shape {
                     text.draw_in(self.face, canvas, x, y + index as i32 * Text::line_height(self.font_px), self.font_px, self.color, line);
                 }
             }
+            // A pill of the badge's own pale color, a dot and its words
+            // in the strong one, and an edge between the two.
+            Tool::Badge => {
+                let place = self.bounds(text);
+                let edge = crate::canvas::mix(self.fill, self.color, 70);
+                canvas.round_fill(place.x, place.y, place.w, place.h, place.h / 3, edge, 256);
+                canvas.round_fill(place.x + 1, place.y + 1, place.w - 2, place.h - 2, place.h / 3 - 1, self.fill, 256);
+                let px = self.font_px as i32;
+                canvas.disc(place.x + px * 5 / 8, place.y + place.h / 2, (px / 5).max(2), self.color, 256);
+                let (x, y) = self.text_origin();
+                text.draw_in(self.face, canvas, x, y, self.font_px, self.color, &self.text);
+            }
+            // What it is of, framed; lines from that to the larger
+            // picture of it; and the larger picture, framed, over them.
+            Tool::Zoom => {
+                let (of, shown) = self.zoomed();
+                let thick = (self.stroke.round() as i32).max(1);
+                for (from, to) in [(of.x, of.y), (of.right(), of.y), (of.x, of.bottom()), (of.right(), of.bottom())].into_iter().zip([(shown.x, shown.y), (shown.right(), shown.y), (shown.x, shown.bottom()), (shown.right(), shown.bottom())]) {
+                    let (from, to) = ((from.0 as f32, from.1 as f32), (to.0 as f32, to.1 as f32));
+                    let reach = Rect::spanning((from.0 as i32, from.1 as i32), (to.0 as i32, to.1 as i32)).inflate(thick + 2);
+                    let mut line = Mask { bounds: reach, alpha: vec![0; reach.w as usize * reach.h as usize] };
+                    stamp(&mut line, from, to, self.stroke / 4.0 + 0.5);
+                    canvas.mask(&line, self.color, 256);
+                }
+                canvas.magnify(of, shown);
+                let (around, about) = (of.inflate(thick), shown.inflate(thick));
+                canvas.round_outline(around.x, around.y, around.w, around.h, thick + 2, thick, self.color);
+                canvas.round_outline(about.x, about.y, about.w, about.h, thick + 4, thick, self.color);
+            }
             Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY),
             Tool::Counter => {
                 canvas.mask(&self.mask(), self.color, 256);
@@ -304,7 +477,11 @@ impl Shape {
     /// Whether a click at a point is on it.
     pub fn hit(&self, x: i32, y: i32, text: &mut Text) -> bool {
         match self.tool {
-            Tool::Text | Tool::Blur | Tool::Spotlight => self.bounds(text).inflate(REACH).contains(x, y),
+            Tool::Text | Tool::Blur | Tool::Spotlight | Tool::Badge => self.bounds(text).inflate(REACH).contains(x, y),
+            Tool::Zoom => {
+                let (of, shown) = self.zoomed();
+                of.inflate(REACH).contains(x, y) || shown.inflate(REACH).contains(x, y)
+            }
             _ => {
                 let mask = self.mask();
                 let near = Rect::new(x - REACH, y - REACH, 2 * REACH + 1, 2 * REACH + 1).intersect(mask.bounds);
@@ -322,7 +499,7 @@ impl Shape {
 pub fn constrained(tool: Tool, from: Point, to: Point) -> Point {
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     match tool {
-        Tool::Rect | Tool::Ellipse | Tool::Blur | Tool::Spotlight => {
+        Tool::Rect | Tool::Ellipse | Tool::Blur | Tool::Spotlight | Tool::Zoom => {
             let side = dx.abs().max(dy.abs());
             (from.0 + side.copysign(dx), from.1 + side.copysign(dy))
         }
