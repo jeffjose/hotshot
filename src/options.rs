@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::canvas::Rect;
-use crate::editor::{Finish, Settings, PALETTE};
+use crate::editor::{Finish, Settings, Windows, PALETTE};
 
 pub const USAGE: &str = "\
 Usage: hotshot [OPTIONS]
@@ -53,6 +53,12 @@ Look:
       --dim PERCENT          how much darker what is not selected is made
       --magnifier            a magnifier beside the pointer while an edge is
                              being placed (config: magnifier = true)
+      --windows HOW          before anything is selected, how the window
+                             under the pointer, which a click would take,
+                             shows: outline (the default): a line round it,
+                             the screen all dark; bright: undarkened, which
+                             is most of the screen where a window fills it;
+                             off: not at all, and a click takes no window
 
 Other:
       --monitors             list the monitors and quit
@@ -174,7 +180,7 @@ fn short_flag(flag: char) -> Option<&'static str> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter"].contains(&name)
+    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -212,6 +218,15 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "dim" => options.settings.dim = (number(value()?, "dim")? as u32).min(100),
         "magnifier" => options.settings.magnifier = true,
         "no-magnifier" => options.settings.magnifier = false,
+        "windows" => {
+            let text = value()?;
+            options.settings.windows = match text.as_str() {
+                "outline" => Windows::Outline,
+                "bright" => Windows::Bright,
+                "off" => Windows::Off,
+                _ => return Err(format!("invalid windows '{text}', expected outline, bright or off")),
+            };
+        }
         "enter" => {
             let text = value()?;
             options.settings.enter = match text.as_str() {
@@ -418,6 +433,10 @@ mod tests {
         assert_eq!(options.settings.enter, Finish { copy: true, save: true });
         assert!(!options.settings.magnifier);
         assert_eq!((options.settings.size, options.settings.accent, options.settings.color), (2, 0x12A594, 0x00FF00));
+        assert_eq!(options.settings.windows, Windows::Outline);
+        read_config(&mut options, "windows = \"bright\"").unwrap();
+        assert_eq!(options.settings.windows, Windows::Bright);
+        assert!(read_config(&mut options, "windows = \"dim\"").is_err());
         read_config(&mut options, "color = \"jade\"").unwrap();
         assert_eq!(options.settings.color, 0x29A383);
         assert!(read_config(&mut options, "size = 9").unwrap_err().starts_with("line 1"));

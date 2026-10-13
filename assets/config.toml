@@ -47,6 +47,13 @@
 # being taken.
 # rounded = 0
 
+# Before anything is selected, the whole screen is dark, and the window
+# under the pointer, which a click would take, has a line round it:
+# "outline". With "bright" that window shows undarkened instead, which
+# where one window fills the screen is the screen left bright until an
+# area is dragged out. With "off" windows are not shown or taken at all.
+# windows = "outline"
+
 # A magnifier that follows the pointer while an edge of the selection is
 # being placed, for placing it to the pixel.
 # magnifier = false

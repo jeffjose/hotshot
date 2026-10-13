@@ -125,6 +125,20 @@ pub enum Cursor {
     Upright,
 }
 
+/// How the window under the pointer shows, while nothing is selected
+/// and a click would take it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Windows {
+    /// Not at all, and a click takes nothing: the whole screen is dark
+    /// until an area is dragged out.
+    Off,
+    /// By a line round it, dark like the rest.
+    Outline,
+    /// As it is, undarkened: on a screen one window fills, that is the
+    /// whole screen bright until an area is dragged out.
+    Bright,
+}
+
 #[derive(Clone)]
 pub struct Settings {
     pub accent: u32,
@@ -133,6 +147,9 @@ pub struct Settings {
     /// Which of the line widths, counted from 0.
     pub size: usize,
     pub magnifier: bool,
+    /// What is made of the window under the pointer before anything is
+    /// selected.
+    pub windows: Windows,
     /// How much darker what is not selected is made, as a percentage.
     pub dim: u32,
     /// The radius of a rectangle's corners, in pixels of a screen 1080 high.
@@ -146,7 +163,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, dim: 50, radius: 6.0, corners: 0.0, enter: Finish { copy: true, save: false } }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, enter: Finish { copy: true, save: false } }
     }
 }
 
@@ -380,7 +397,8 @@ impl Editor {
     pub fn new(shot: Shot, dim: Vec<u32>, monitors: Vec<Rect>, windows: Vec<Rect>, settings: Settings, text: Text) -> Editor {
         let screen = Rect::new(0, 0, shot.width, shot.height);
         let monitors: Vec<Rect> = monitors.into_iter().map(|monitor| monitor.intersect(screen)).filter(|monitor| !monitor.is_empty()).collect();
-        let windows = windows.into_iter().map(|window| window.intersect(screen)).filter(|window| window.w > 8 && window.h > 8).collect();
+        let wanted = settings.windows != Windows::Off;
+        let windows = windows.into_iter().map(|window| window.intersect(screen)).filter(|window| wanted && window.w > 8 && window.h > 8).collect();
         Editor {
             dim,
             monitors: if monitors.is_empty() { vec![screen] } else { monitors },
@@ -1326,9 +1344,12 @@ impl Editor {
         let accent = self.settings.accent;
 
         canvas::copy_into(out, &self.dim);
-        // What is selected shows as it is; so, before there is a
-        // selection, does the window a click would take.
-        let lit = self.selection.or(if self.drag == Drag::None { self.window } else { None });
+        // What is selected shows as it is. Before there is a selection,
+        // everything is dark, as the screen was the moment it froze;
+        // the window a click would take is told by a line round it, or
+        // if it is wanted so, by showing as it is too.
+        let window = if self.drag == Drag::None && self.selection.is_none() { self.window } else { None };
+        let lit = self.selection.or(window.filter(|_| self.settings.windows == Windows::Bright));
         let round = self.corner_radius();
         if let Some(area) = lit {
             canvas::copy_rect(out, &self.shot.pixels, width, area);
@@ -1368,6 +1389,10 @@ impl Editor {
                 canvas.fill(around.x, area.y, thick, area.h, accent);
                 canvas.fill(around.right() - thick, area.y, thick, area.h, accent);
             }
+        } else if let Some(area) = window {
+            // Just inside it, where a window as large as the screen
+            // still has room for a line.
+            canvas.round_outline(area.x, area.y, area.w, area.h, 0, 2 * thick, accent);
         }
         if let Some(selection) = self.selection {
             // With the move tool, the shape under the pointer shows the
@@ -1542,17 +1567,17 @@ impl Editor {
         let monitor = self.monitor();
         let pad = px as i32 / 2;
         let line = Text::line_height(px);
-        let rows: [&[(&str, u32)]; 2] = [
-            &[("Drag", TEXT_COLOR), (" to select an area", DIM_TEXT_COLOR)],
-            &[
-                ("Click", TEXT_COLOR),
-                (" a window    ", DIM_TEXT_COLOR),
-                ("Enter", TEXT_COLOR),
-                (" this screen    ", DIM_TEXT_COLOR),
-                ("Esc", TEXT_COLOR),
-                (" cancel", DIM_TEXT_COLOR),
-            ],
+        let keys: &[(&str, u32)] = &[
+            ("Click", TEXT_COLOR),
+            (" a window    ", DIM_TEXT_COLOR),
+            ("Enter", TEXT_COLOR),
+            (" this screen    ", DIM_TEXT_COLOR),
+            ("Esc", TEXT_COLOR),
+            (" cancel", DIM_TEXT_COLOR),
         ];
+        // No word of clicking a window where a click takes none.
+        let keys = if self.settings.windows == Windows::Off { &keys[2..] } else { keys };
+        let rows: [&[(&str, u32)]; 2] = [&[("Drag", TEXT_COLOR), (" to select an area", DIM_TEXT_COLOR)], keys];
         let widths: Vec<i32> = rows.iter().map(|row| row.iter().map(|(run, _)| self.text.width(run, px)).sum()).collect();
         let width = widths.iter().copied().max().unwrap_or(0) + 4 * pad;
         let height = line * rows.len() as i32 + 2 * pad;
@@ -1717,6 +1742,18 @@ mod tests {
         let mut editor = self::editor(1600, 900);
         click(&mut editor, (1500, 50), 0);
         assert_eq!(editor.selection(), None);
+
+        // Until something is selected the screen is dark all over, the
+        // window under the pointer too, which has only a line round it;
+        // unless it is wanted bright.
+        let mut out = vec![0u32; 1600 * 900];
+        let mut editor = self::editor(1600, 900);
+        editor.pointer_moved(150, 300, PLAIN);
+        editor.draw(&mut out);
+        assert_eq!((out[300 * 1600 + 400], out[80 * 1600 + 400]), (0x7A7A7A, Settings::default().accent));
+        editor.settings.windows = Windows::Bright;
+        editor.draw(&mut out);
+        assert_eq!(out[300 * 1600 + 400], 0xF4F4F4);
     }
 
     #[test]

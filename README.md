@@ -52,6 +52,9 @@ long each step of starting up took.
 
 With nothing selected: **drag** to select an area, **click** a window to
 take it, **Enter** for the screen the pointer is on, **Esc** to cancel.
+The whole screen is dark until an area is selected, and the window a
+click would take has a line round it; `windows = "bright"` shows that
+window undarkened instead, and `"off"` leaves windows out of it.
 With `--magnifier`, or `magnifier = true` in the config file, a
 magnifier follows the pointer for placing an edge to the pixel.
 
