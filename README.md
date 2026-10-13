@@ -82,7 +82,7 @@ With an area selected, a bar of tools appears beside it:
 | `S` | spotlight: everything but a rectangle of the picture darkened |
 | `Z` | zoom: a part of the picture shown again beside itself, larger, in a round lens; `F` makes it square. The dot in its middle moves it, and the one on its rim, dragged out or in, says how many times larger (the figure shows beside the pointer). It may be put past the edge of the selection: the picture is then as large as takes it in, see-through where there is neither |
 | `J` | badges: a word (Bug, Fixed, New...) in one of six looks and eight hues, typed over with a double click |
-| `M` | emoji: all of them, in a box that scrolls; type to search them by name, Enter takes the first found |
+| `E` | emoji: all of them, in a box that scrolls; type to search them by name, Enter takes the first found |
 | `W` | the frame: a backdrop of two colors, or a photograph (the die is one nobody chose), room round the picture, and a shadow. It shows round the selection; drag it wider, click it for the choices |
 | `D` | lines and arrows in dashes |
 | `C` `I` | the colors, 24 of Radix's; pick a color off the screen |

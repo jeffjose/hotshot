@@ -319,7 +319,7 @@ impl Button {
             Button::Tool(Tool::Spotlight) => ("Spotlight", "S"),
             Button::Tool(Tool::Zoom) => ("Zoom", "Z"),
             Button::Tool(Tool::Badge) | Button::Badges => ("Badges", "J"),
-            Button::Emoji => ("Emoji", "M"),
+            Button::Emoji => ("Emoji", "E"),
             Button::Color => ("Color", "C"),
             Button::Size(0) => ("Thin", "1"),
             Button::Size(1) => ("Medium", "2"),
@@ -1884,10 +1884,10 @@ impl Editor {
                 'a' => self.set_tool(Tool::Arrow),
                 'l' => self.set_tool(Tool::Line),
                 'r' => self.set_tool(Tool::Rect),
-                'o' | 'e' => self.set_tool(Tool::Ellipse),
+                'o' => self.set_tool(Tool::Ellipse),
                 'p' => self.set_tool(Tool::Pen),
                 'h' => self.set_tool(Tool::Marker),
-                'm' => drop(self.activate(Button::Emoji)),
+                'e' => drop(self.activate(Button::Emoji)),
                 't' => self.set_tool(Tool::Text),
                 'n' => self.set_tool(Tool::Counter),
                 'b' => self.set_tool(Tool::Blur),
@@ -3579,7 +3579,7 @@ mod tests {
     fn emoji_are_searched_by_name_scrolled_and_put_on_the_picture() {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (300, 200), (900, 600));
-        editor.key(Key::Char('m'), PLAIN);
+        editor.key(Key::Char('e'), PLAIN);
         assert_eq!((editor.flyout, editor.emoji_found().len()), (Some(Button::Emoji), emoji().len()));
         assert!(emoji().len() > 1300);
         // The wheel goes down them, and no further up than the top.
@@ -3914,7 +3914,7 @@ mod tests {
         editor.key(Key::Escape, PLAIN);
         editor.key(Key::Char('j'), PLAIN);
         write(&mut editor, "12-badges");
-        editor.key(Key::Char('m'), PLAIN);
+        editor.key(Key::Char('e'), PLAIN);
         write(&mut editor, "12b-emoji");
         for letter in "heart".chars() {
             editor.key(Key::Char(letter), PLAIN);
