@@ -45,49 +45,120 @@ fn path_of(link: &str) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf8(bytes).ok()?))
 }
 
+/// Asks something of the desktop's portal and waits for what comes of
+/// it, which may be after the user has been asked: the names and
+/// values it answers with. What is asked is some values and then the
+/// ways it is to be done, each under a name.
+pub fn request(bus: &mut Bus, interface: &str, member: &str, mut asked: Vec<Value>, mut how: Vec<(&str, Value)>) -> dbus::Result<Vec<Value>> {
+    // The answer comes as a signal from a place named for whoever
+    // asked and a word of their choosing: listened for before asking,
+    // so that it cannot come and go unheard.
+    static ASKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let token = format!("hotshot{}n{}", std::process::id(), ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    let from = bus.name.trim_start_matches(':').replace('.', "_");
+    let place = format!("{PORTAL_PATH}/request/{from}/{token}");
+    let rule = format!("type='signal',interface='org.freedesktop.portal.Request',member='Response',path='{place}'");
+    bus.ask(Message::call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::text(&rule)]))?;
+    how.push(("handle_token", Value::text(&token)));
+    asked.push(Value::named(how));
+    let handle = bus.ask(Message::call(PORTAL, PORTAL_PATH, interface, member, asked)).map_err(|error| format!("the desktop's portal would not ({member}): {error}"))?;
+    // An older portal answers from a place of its own choosing.
+    let place = handle.body.first().and_then(Value::as_str).map_or(place.clone(), str::to_owned);
+    let began = Instant::now();
+    loop {
+        if began.elapsed() > Duration::from_secs(120) {
+            return Err(format!("the desktop did not answer ({member})").into());
+        }
+        let Some(said) = bus.next(Some(Duration::from_secs(1)))? else { continue };
+        if said.kind != dbus::SIGNAL || said.member != "Response" || said.path != place {
+            continue;
+        }
+        return match (said.body.first().and_then(Value::as_i32), said.body.get(1)) {
+            (Some(0), Some(Value::Array(_, results))) => Ok(results.clone()),
+            (Some(0), _) => Ok(Vec::new()),
+            (Some(1), _) => Err("it was called off".into()),
+            _ => Err(format!("the desktop could not ({member})").into()),
+        };
+    }
+}
+
+/// What the portal answered under a name, among what it answered.
+pub fn answered<'a>(results: &'a [Value], wanted: &str) -> Option<&'a Value> {
+    results.iter().find_map(|entry| match entry {
+        Value::Entry(name, value) if name.as_str() == Some(wanted) => match &**value {
+            Value::Variant(inner) => Some(&**inner),
+            other => Some(other),
+        },
+        _ => None,
+    })
+}
+
 /// Asks the desktop for a picture of the screen, and waits for it: the
 /// file it is in. The desktop is asked not to put questions to the
 /// user, which some do all the same the first time.
 pub fn asked_of_portal() -> dbus::Result<PathBuf> {
     let mut bus = Bus::session()?;
-    // The answer comes as a signal from a place named for whoever
-    // asked and a word of their choosing: listened for before asking,
-    // so that it cannot come and go unheard.
-    let token = format!("hotshot{}", std::process::id());
-    let from = bus.name.trim_start_matches(':').replace('.', "_");
-    let request = format!("{PORTAL_PATH}/request/{from}/{token}");
-    let rule = format!("type='signal',interface='org.freedesktop.portal.Request',member='Response',path='{request}'");
-    bus.ask(Message::call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::text(&rule)]))?;
-    let how = Value::named(vec![("handle_token", Value::text(&token)), ("modal", Value::Bool(false)), ("interactive", Value::Bool(false))]);
-    let handle = bus.ask(Message::call(PORTAL, PORTAL_PATH, "org.freedesktop.portal.Screenshot", "Screenshot", vec![Value::text(""), how])).map_err(|error| format!("the desktop's portal would not take a picture of the screen: {error}"))?;
-    // An older portal answers from a place of its own choosing.
-    let request = handle.body.first().and_then(Value::as_str).map_or(request.clone(), str::to_owned);
-    let asked = Instant::now();
-    loop {
-        let waited = asked.elapsed();
-        if waited > Duration::from_secs(90) {
-            return Err("the desktop did not hand over a picture of the screen".into());
-        }
-        let Some(said) = bus.next(Some(Duration::from_secs(1)))? else { continue };
-        if said.kind != dbus::SIGNAL || said.member != "Response" || said.path != request {
-            continue;
-        }
-        return match said.body.first().and_then(Value::as_i32) {
-            Some(0) => {
-                let Some(Value::Array(_, results)) = said.body.get(1) else { return Err("the desktop handed over nothing".into()) };
-                let link = results.iter().find_map(|entry| match entry {
-                    Value::Entry(name, value) if name.as_str() == Some("uri") => match &**value {
-                        Value::Variant(link) => link.as_str().map(str::to_owned),
-                        _ => None,
-                    },
-                    _ => None,
-                });
-                link.as_deref().and_then(path_of).ok_or_else(|| "the desktop handed over a picture hotshot cannot find".into())
-            }
-            Some(1) => Err("the picture of the screen was called off".into()),
-            _ => Err("the desktop could not take a picture of the screen".into()),
-        };
+    let results = request(&mut bus, "org.freedesktop.portal.Screenshot", "Screenshot", vec![Value::text("")], vec![("modal", Value::Bool(false)), ("interactive", Value::Bool(false))]).map_err(|error| format!("no picture of the screen: {error}"))?;
+    answered(&results, "uri").and_then(Value::as_str).and_then(path_of).ok_or_else(|| "the desktop handed over a picture hotshot cannot find".into())
+}
+
+/// The screen being handed over as it changes, for a recording: by
+/// which of PipeWire's streams, and where on the whole screen and how
+/// large what it shows is, as the desktop counts. The bus is part of
+/// it: the desktop stops handing over when whoever asked goes.
+pub struct Cast {
+    pub bus: Bus,
+    pub node: u32,
+    pub place: Rect,
+}
+
+/// Asks the desktop to hand the screen over as it changes: the monitor
+/// an area is on, of those the user lets it. The desktop asks the user
+/// which the first time, and is asked to remember, so that it need
+/// not again.
+pub fn cast(area: Rect, pointer: bool) -> dbus::Result<Cast> {
+    const CAST: &str = "org.freedesktop.portal.ScreenCast";
+    let mut bus = Bus::session()?;
+    let session = format!("hotshot{}", std::process::id());
+    let made = request(&mut bus, CAST, "CreateSession", Vec::new(), vec![("session_handle_token", Value::text(&session))])?;
+    let handle = Value::Path(answered(&made, "session_handle").and_then(Value::as_str).ok_or("the desktop began no handing over of the screen")?.to_owned());
+    // What it remembered of last time, if anything, to ask nothing now.
+    let kept = crate::output::state_file("screencast");
+    let token = kept.as_ref().and_then(|file| std::fs::read_to_string(file).ok()).map(|token| token.trim().to_owned()).filter(|token| !token.is_empty());
+    let mut how = vec![("types", Value::U32(1)), ("multiple", Value::Bool(true)), ("cursor_mode", Value::U32(if pointer { 2 } else { 1 })), ("persist_mode", Value::U32(2))];
+    if let Some(token) = &token {
+        how.push(("restore_token", Value::text(token)));
     }
+    request(&mut bus, CAST, "SelectSources", vec![handle.clone()], how)?;
+    let begun = request(&mut bus, CAST, "Start", vec![handle, Value::text("")], Vec::new())?;
+    if let (Some(file), Some(token)) = (&kept, answered(&begun, "restore_token").and_then(Value::as_str)) {
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(file, token);
+    }
+    // Each monitor let be seen is a stream: the one the middle of the
+    // area is on, or failing that the first.
+    let Some(Value::Array(_, streams)) = answered(&begun, "streams") else { return Err("the desktop handed over none of the screen".into()) };
+    let pair = |value: Option<&Value>| match value {
+        Some(Value::Struct(parts)) => Some((parts.first()?.as_i32()?, parts.get(1)?.as_i32()?)),
+        _ => None,
+    };
+    let known: Vec<(u32, Option<Rect>)> = streams
+        .iter()
+        .filter_map(|stream| match stream {
+            Value::Struct(parts) => {
+                let node = parts.first()?.as_i32()? as u32;
+                let Some(Value::Array(_, said)) = parts.get(1) else { return Some((node, None)) };
+                let place = pair(answered(said, "position")).zip(pair(answered(said, "size"))).map(|((x, y), (wide, high))| Rect::new(x, y, wide, high));
+                Some((node, place))
+            }
+            _ => None,
+        })
+        .collect();
+    let middle = area.center();
+    let (node, place) = known.iter().copied().find(|(_, place)| place.is_some_and(|place| place.contains(middle.0, middle.1))).or(known.first().copied()).ok_or("the desktop handed over none of the screen")?;
+    Ok(Cast { bus, node, place: place.unwrap_or(area) })
 }
 
 /// A picture of the whole screen, as the desktop hands it over: how
@@ -204,5 +275,59 @@ mod tests {
         assert_eq!(asked_of_portal().unwrap(), file);
         stand_in.join().unwrap();
         std::fs::remove_file(file).unwrap();
+    }
+
+    /// The same way, and for the same reason not run unless asked:
+    ///
+    ///     dbus-run-session -- cargo test handed_over -- --ignored
+    ///
+    /// The stand-in is asked the three things it takes to have the
+    /// screen handed over as it changes, and answers with two monitors.
+    #[test]
+    #[ignore]
+    fn the_screen_is_handed_over_by_the_monitor_the_area_is_on() {
+        let state = std::env::temp_dir().join(format!("hotshot-cast-{}", std::process::id()));
+        std::env::set_var("HOTSHOT_STATE", &state);
+        let mut desktop = Bus::session().unwrap();
+        desktop.ask(Message::call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName", vec![Value::text(PORTAL), Value::U32(0)])).unwrap();
+        let stand_in = std::thread::spawn(move || {
+            let mut heard = Vec::new();
+            while heard.len() < 3 {
+                let Some(asked) = desktop.next(Some(Duration::from_secs(10))).unwrap() else { panic!("the portal was asked {heard:?} and no more") };
+                if asked.kind != dbus::CALL || asked.interface != "org.freedesktop.portal.ScreenCast" {
+                    continue;
+                }
+                let Some(Value::Array(_, options)) = asked.body.last() else { panic!("no options") };
+                let token = answered(options, "handle_token").and_then(Value::as_str).unwrap().to_owned();
+                let request = format!("{PORTAL_PATH}/request/{}/{token}", asked.sender.trim_start_matches(':').replace('.', "_"));
+                let results = match asked.member.as_str() {
+                    "CreateSession" => vec![("session_handle", Value::text("/org/freedesktop/portal/desktop/session/x/y"))],
+                    // Asked for monitors, more than one, to be remembered.
+                    "SelectSources" => {
+                        assert_eq!(asked.body.first(), Some(&Value::Path("/org/freedesktop/portal/desktop/session/x/y".into())));
+                        assert_eq!((answered(options, "types"), answered(options, "persist_mode"), answered(options, "cursor_mode")), (Some(&Value::U32(1)), Some(&Value::U32(2)), Some(&Value::U32(2))));
+                        Vec::new()
+                    }
+                    "Start" => {
+                        let monitor = |node: u32, x: i32| Value::Struct(vec![Value::U32(node), Value::named(vec![("position", Value::Struct(vec![Value::I32(x), Value::I32(0)])), ("size", Value::Struct(vec![Value::I32(1920), Value::I32(1080)]))])]);
+                        vec![("streams", Value::Array("(ua{sv})".into(), vec![monitor(41, 0), monitor(42, 1920)])), ("restore_token", Value::text("remembered"))]
+                    }
+                    other => panic!("asked {other}"),
+                };
+                heard.push(asked.member.clone());
+                desktop.answer(&asked, vec![Value::Path(request.clone())]).unwrap();
+                let mut said = Message::signal(&request, "org.freedesktop.portal.Request", "Response", vec![Value::U32(0), Value::named(results)]);
+                said.destination = asked.sender.clone();
+                desktop.send(&said).unwrap();
+            }
+            heard
+        });
+        // An area on the second monitor is recorded by its stream.
+        let cast = cast(Rect::new(2000, 100, 300, 200), true).unwrap();
+        assert_eq!((cast.node, cast.place), (42, Rect::new(1920, 0, 1920, 1080)));
+        assert_eq!(stand_in.join().unwrap(), ["CreateSession", "SelectSources", "Start"]);
+        // And what the desktop said to remember is kept for next time.
+        assert_eq!(std::fs::read_to_string(state.join("screencast")).unwrap(), "remembered");
+        std::fs::remove_dir_all(state).unwrap();
     }
 }

@@ -112,8 +112,8 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // being looked at: that is asked of the desktop. And the window is
     // one the desktop manages, one to each monitor, or it is given no keys.
     let wayland = wayland::session();
-    if wayland && (options.record || options.benchmark) {
-        return Err("under Wayland hotshot takes pictures, and does not yet record or time itself".into());
+    if wayland && options.benchmark {
+        return Err("under Wayland hotshot does not time itself: what takes the time there is the desktop's".into());
     }
     let mut display = Display::open().map_err(|error| if wayland { format!("{error}; under Wayland hotshot shows its window through XWayland, which this session is not running").into() } else { error })?;
     if wayland {
@@ -207,7 +207,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // to choose or draw on it.
     if let (true, Some(area), false) = (options.record, named, options.edit) {
         drop(display);
-        return recorded(area, &options);
+        return recorded(area, screen, &options);
     }
     let taken = match (named, options.edit) {
         (Some(area), false) => {
@@ -254,7 +254,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // has had a moment to show the screen as it is again.
     if how.record {
         drop(display);
-        return recorded(taken.area, &options);
+        return recorded(taken.area, screen, &options);
     }
 
     // A file is of the kind its name says, or the kind asked for; what
@@ -308,9 +308,14 @@ fn read_screen(display: &mut Display) -> x11::Result<x11::Buffer> {
 
 /// Records an area until it is stopped, says where the recording is,
 /// and puts the file on the clipboard if that was asked.
-fn recorded(area: Rect, options: &Options) -> x11::Result<ExitCode> {
+fn recorded(area: Rect, screen: Rect, options: &Options) -> x11::Result<ExitCode> {
     std::thread::sleep(Duration::from_millis(120));
-    let file = record::run(area, options, Text::load())?;
+    // Under Wayland by having the desktop hand the screen over; on
+    // X11 by reading it.
+    let file = match wayland::session() {
+        true => record::run_cast(area, screen, options)?,
+        false => record::run(area, options, Text::load())?,
+    };
     println!("{}", file.display());
     if options.copy {
         clipboard::offer_file(Display::open()?, &file)?;

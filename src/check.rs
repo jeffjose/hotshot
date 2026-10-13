@@ -34,10 +34,7 @@ enum Came {
 
 use Came::{Failed, Left, Worked};
 
-/// Whether a program by a name is to be found.
-fn installed(name: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
-}
+use crate::record::installed;
 
 /// Starts hotshot again, told something, and waits for it to end: how
 /// it ended, or nothing if it had not within a while, when it is ended.
@@ -266,7 +263,7 @@ pub fn run(options: &Options) -> ExitCode {
         results.push((
             "keys said",
             match (wayland, display.conn.xinput_xi_query_version(2, 0).ok().and_then(|cookie| cookie.reply().ok())) {
-                (true, _) => Left("not under Wayland, where recording is not done yet".into()),
+                (true, _) => Left("not under Wayland, which lets no program hear the keys pressed in another".into()),
                 (false, Some(_)) => Worked("the display will say what keys are pressed, for --keys".into()),
                 (false, None) => Failed("the display will not say what keys are pressed: --keys shows none".into()),
             },
@@ -294,7 +291,25 @@ pub fn run(options: &Options) -> ExitCode {
     results.push((
         "recording",
         if wayland {
-            Left("not under Wayland yet".into())
+            // What it takes there, each looked for; the recording
+            // itself is not tried, as the desktop would ask the user
+            // what of the screen to hand over.
+            let has = |element: &str| Command::new("gst-inspect-1.0").args(["--exists", element]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success());
+            let cast = Bus::session().and_then(|mut bus| bus.ask(Message::call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.DBus.Properties", "Get", vec![Value::text("org.freedesktop.portal.ScreenCast"), Value::text("version")])));
+            let mut lacking = Vec::new();
+            if !installed("gst-launch-1.0") {
+                lacking.push("GStreamer's gst-launch-1.0 (gstreamer1.0-tools)");
+            } else if !has("pipewiresrc") {
+                lacking.push("GStreamer's PipeWire plugin (gstreamer1.0-pipewire)");
+            }
+            if cast.is_err() {
+                lacking.push("a portal that hands the screen over as it changes (ScreenCast)");
+            }
+            match (lacking.is_empty(), installed("ffmpeg")) {
+                (false, _) => Failed(format!("it lacks {}", lacking.join(", and "))),
+                (true, false) => Left("what it takes is here but for ffmpeg: it would record all of a monitor, and not an area of it. Not tried, as the desktop would ask what to share: `hotshot --record -f --duration 2` tries it".into()),
+                (true, true) => Left("what it takes is here. Not tried, as the desktop would ask what to share: `hotshot --record -f --duration 2` tries it".into()),
+            }
         } else if !installed("ffmpeg") {
             Failed("ffmpeg is not installed, which is what records".into())
         } else {

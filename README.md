@@ -146,8 +146,15 @@ What is different there:
   monitors made larger by different amounts may not line up;
 - the clipboard is `wl-copy`'s where that is installed
   (`wl-clipboard`), which is the sure way;
-- no recording yet, no mouse pointer in the picture, no snapping to
-  windows, and `-w` knows of no window.
+- a recording is of a monitor the desktop hands over as it changes,
+  which it asks about the first time, and the area is cut out of it
+  afterwards. That takes GStreamer with its PipeWire plugin
+  (`gst-launch-1.0`, `gstreamer1.0-pipewire`) as well as ffmpeg. It is
+  stopped by `hotshot --record` again, or by the desktop's own sign
+  that the screen is being shared: there is no line round the area, no
+  button, and no saying of the keys pressed;
+- no mouse pointer in a picture, no snapping to windows, and `-w` knows
+  of no window.
 
 ## Does it work here?
 
@@ -164,7 +171,7 @@ with no display at all.
 
 ## Not yet
 
-Recording under Wayland, and zooming in on part of a recording.
+Zooming in on part of a recording.
 
 ## License
 

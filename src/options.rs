@@ -65,7 +65,9 @@ What to do with it:
   When dragging an area out, these say what Enter does; the usual is to
   copy. Taken at once, a picture is saved unless told otherwise.
 
-Recording, which needs ffmpeg:
+Recording, which needs ffmpeg (and under Wayland GStreamer with its
+PipeWire plugin, where the desktop asks what to share the first time
+and there is no line, button or keys):
   -R, --record               record the area, not take a picture of it:
                              drag it out and press Enter, or name it with
                              -g, -f, -w or -m. A line shows round it, and

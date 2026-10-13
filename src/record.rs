@@ -284,13 +284,21 @@ fn ffmpeg(told: &[&str]) -> Result<()> {
 /// gifski where that is installed, which makes a far better one than
 /// ffmpeg; and no more than 50 frames a second, which is as fast as a
 /// GIF can say it goes.
-fn convert(from: &Path, to: &Path, kind: Video, fps: u32) -> Result<()> {
+///
+/// `cut` is how it is cut down first, as ffmpeg has such things said:
+/// for a recording that is of more of the screen than was asked for.
+fn convert(from: &Path, to: &Path, kind: Video, fps: u32, cut: Option<&str>) -> Result<()> {
     let (from, to) = (from.to_string_lossy(), to.to_string_lossy());
+    // Nothing done to it is `null`, to ffmpeg.
+    let first = cut.unwrap_or("null");
     match kind {
-        Video::Mp4 => Ok(()),
+        // An MP4 recorded as one is done already; one cut out of a
+        // recording of something else is made now.
+        Video::Mp4 if cut.is_none() && from == to => Ok(()),
+        Video::Mp4 => ffmpeg(&["-i", &from, "-vf", first, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", &to]),
         Video::Gif => {
             let fps = fps.min(50).to_string();
-            let frames = Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-i", &from, "-r", &fps, "-pix_fmt", "yuv444p", "-f", "yuv4mpegpipe", "-"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+            let frames = Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-i", &from, "-vf", first, "-r", &fps, "-pix_fmt", "yuv444p", "-f", "yuv4mpegpipe", "-"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
             if let Ok(mut frames) = frames {
                 let pipe = frames.stdout.take().expect("its output was asked for");
                 let made = Command::new("gifski").args(["--quiet", "--fps", &fps, "--quality", "90", "-o", &to, "-"]).stdin(pipe).stdout(Stdio::null()).stderr(Stdio::null()).status();
@@ -299,12 +307,135 @@ fn convert(from: &Path, to: &Path, kind: Video, fps: u32) -> Result<()> {
                     return Ok(());
                 }
             }
-            let through = format!("fps={fps},split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a");
+            let through = format!("{first},fps={fps},split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a");
             ffmpeg(&["-i", &from, "-vf", &through, "-loop", "0", &to])
         }
-        Video::Apng => ffmpeg(&["-i", &from, "-plays", "0", "-f", "apng", &to]),
-        Video::Webp => ffmpeg(&["-i", &from, "-c:v", "libwebp_anim", "-lossless", "0", "-q:v", "82", "-loop", "0", "-an", &to]),
+        Video::Apng => ffmpeg(&["-i", &from, "-vf", first, "-plays", "0", "-f", "apng", &to]),
+        Video::Webp => ffmpeg(&["-i", &from, "-vf", first, "-c:v", "libwebp_anim", "-lossless", "0", "-q:v", "82", "-loop", "0", "-an", &to]),
     }
+}
+
+/// Whether a program by a name is to be found.
+pub fn installed(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
+}
+
+/// What GStreamer packs a recording with, of what it has here: the
+/// best of them first, and at the last one it always has.
+fn packer() -> &'static str {
+    let has = |element: &str| Command::new("gst-inspect-1.0").args(["--exists", element]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success());
+    if has("x264enc") {
+        "x264enc speed-preset=ultrafast pass=quant quantizer=16 key-int-max=120"
+    } else if has("openh264enc") {
+        "openh264enc bitrate=24000000 complexity=low ! h264parse"
+    } else if has("vp8enc") {
+        "vp8enc deadline=1 cpu-used=8 threads=8 target-bitrate=16000000 keyframe-max-dist=120"
+    } else {
+        "jpegenc quality=92"
+    }
+}
+
+/// Records an area under Wayland, where the screen is not read but
+/// handed over by the desktop as it changes: a monitor of it, by a
+/// stream of PipeWire's, which GStreamer packs as it comes and ffmpeg
+/// cuts the area out of afterwards. Until hotshot is started to record
+/// again, the time it was given runs out, or the desktop is told to
+/// stop handing over. There is no line round the area and no button,
+/// which the desktop would not keep over what is recorded; it shows
+/// that the screen is being handed over itself.
+///
+/// `HOTSHOT_GST_SOURCE` names what GStreamer is to record instead, of
+/// all of `screen`, for trying this with no desktop to ask.
+pub fn run_cast(area: Rect, screen: Rect, options: &Options) -> Result<PathBuf> {
+    if !installed("gst-launch-1.0") {
+        return Err("recording under Wayland is done by GStreamer (gst-launch-1.0, with its PipeWire plugin), which is not installed".into());
+    }
+    let (file, kind) = destination(options)?;
+    let raw = output::state_file("recording.mkv").ok_or("there is nowhere to keep a recording while it is made")?;
+    if let Some(dir) = raw.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let (source, place, mut cast) = match std::env::var("HOTSHOT_GST_SOURCE") {
+        Ok(source) => (source, screen, None),
+        Err(_) => {
+            let cast = crate::wayland::cast(area, options.record_pointer).map_err(|error| format!("the desktop would not hand the screen over to be recorded: {error}"))?;
+            (format!("pipewiresrc path={} do-timestamp=true keepalive-time=1000", cast.node), cast.place, Some(cast))
+        }
+    };
+    // SAFETY: the handler does nothing but set a flag.
+    unsafe {
+        for signal in [libc::SIGUSR1, libc::SIGINT, libc::SIGTERM] {
+            libc::signal(signal, told_to_stop as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        }
+    }
+    if let Some(marker) = marker() {
+        std::fs::write(marker, std::process::id().to_string())?;
+    }
+    let (rate, to) = (format!("video/x-raw,framerate={}/1", options.fps), format!("location={}", raw.display()));
+    let mut told: Vec<&str> = vec!["-e", "-q"];
+    told.extend(source.split_whitespace());
+    told.extend(["!", "videoconvert", "!", "videorate", "!", &rate, "!", "queue", "!"]);
+    told.extend(packer().split_whitespace());
+    told.extend(["!", "matroskamux", "!", "filesink", &to]);
+    let mut recorder = Command::new("gst-launch-1.0").args(&told).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|error| format!("cannot run gst-launch-1.0: {error}"))?;
+    eprintln!("hotshot: recording; start it again with --record to stop");
+
+    let began = Instant::now();
+    loop {
+        // The bus is listened to as the time passes: the desktop says
+        // on it when it has been told to stop handing over.
+        let closed = match cast.as_mut().map(|cast| cast.bus.next(Some(Duration::from_millis(50)))) {
+            Some(Ok(Some(said))) => said.kind == crate::dbus::SIGNAL && said.member == "Closed",
+            Some(Err(_)) => true,
+            Some(Ok(None)) => false,
+            None => {
+                std::thread::sleep(Duration::from_millis(50));
+                false
+            }
+        };
+        let over = options.duration > 0.0 && began.elapsed().as_secs_f64() >= options.duration;
+        if closed || over || STOP.load(Ordering::SeqCst) || recorder.try_wait()?.is_some() {
+            break;
+        }
+    }
+    // Told to end, GStreamer writes the end of its file; it is given a
+    // while to, and ended anyway after that.
+    // SAFETY: the process is one this started, and is told to stop.
+    unsafe { libc::kill(recorder.id() as i32, libc::SIGINT) };
+    let asked = Instant::now();
+    while recorder.try_wait()?.is_none() {
+        if asked.elapsed() > Duration::from_secs(10) {
+            let _ = recorder.kill();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let done = recorder.wait_with_output()?;
+    drop(cast);
+    if let Some(marker) = marker() {
+        let _ = std::fs::remove_file(marker);
+    }
+    if std::fs::metadata(&raw).map_or(0, |file| file.len()) == 0 {
+        return Err(format!("GStreamer recorded nothing: {}", String::from_utf8_lossy(&done.stderr).trim()).into());
+    }
+    // The area out of the monitor recorded, as parts of it: how many
+    // pixels the recording is across is the desktop's affair, and need
+    // not be how many the display counts.
+    let part = area.intersect(place);
+    let part = if part.is_empty() { place } else { part };
+    let of = |length: i32, whole: i32| length as f64 / whole.max(1) as f64;
+    let cut = format!("crop=trunc(iw*{:.6}/2)*2:trunc(ih*{:.6}/2)*2:trunc(iw*{:.6}):trunc(ih*{:.6})", of(part.w, place.w), of(part.h, place.h), of(part.x - place.x, place.w), of(part.y - place.y, place.h));
+    if !installed("ffmpeg") {
+        // With nothing to cut it or make it another kind of file: all
+        // of the monitor, as GStreamer packed it.
+        let whole = file.with_extension("mkv");
+        std::fs::rename(&raw, &whole).or_else(|_| std::fs::copy(&raw, &whole).map(|_| ()))?;
+        eprintln!("hotshot: ffmpeg is not installed, so this is all of the monitor and not the area, as GStreamer recorded it");
+        return Ok(whole);
+    }
+    let made = convert(&raw, &file, kind, options.fps, Some(&cut));
+    let _ = std::fs::remove_file(&raw);
+    made?;
+    Ok(file)
 }
 
 /// Records an area of the screen until it is stopped: by the button
@@ -500,7 +631,7 @@ pub fn run(area: Rect, options: &Options, mut text: Text) -> Result<PathBuf> {
         return Err(format!("ffmpeg recorded nothing: {}", String::from_utf8_lossy(&done.stderr).trim()).into());
     }
     if kind != Video::Mp4 {
-        let made = convert(&raw, &file, kind, options.fps);
+        let made = convert(&raw, &file, kind, options.fps, None);
         let _ = std::fs::remove_file(&raw);
         made?;
     }
