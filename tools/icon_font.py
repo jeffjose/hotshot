@@ -58,6 +58,13 @@ OWN = {
         '<rect x="13.6" y="13.6" width="3.4" height="3.4" rx="0.6" fill="currentColor"/>'
     ),
     "FILLED": '<rect x="3" y="5" width="18" height="14" rx="4" fill="currentColor"/>',
+    # A die showing five.
+    "DICE": (
+        f'<rect x="3" y="3" width="18" height="18" rx="5" {LINE}/>'
+        '<circle cx="8.2" cy="8.2" r="1.5" fill="currentColor"/><circle cx="15.8" cy="8.2" r="1.5" fill="currentColor"/>'
+        '<circle cx="12" cy="12" r="1.5" fill="currentColor"/>'
+        '<circle cx="8.2" cy="15.8" r="1.5" fill="currentColor"/><circle cx="15.8" cy="15.8" r="1.5" fill="currentColor"/>'
+    ),
 }
 
 EM = 1000

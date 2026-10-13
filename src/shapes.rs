@@ -110,7 +110,7 @@ impl Shape {
     pub fn new(tool: Tool, color: u32, stroke: f32, at: Point) -> Shape {
         let points = match tool {
             Tool::Pen | Tool::Marker | Tool::Text | Tool::Badge => vec![at],
-            Tool::Zoom => vec![at, at, at],
+            Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
         Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, number: 0, mask: RefCell::new(None) }
@@ -168,18 +168,35 @@ impl Shape {
         Some(shape)
     }
 
-    /// The rectangle a zoom is of, and the one it shows it in.
+    /// The rectangle a zoom is of, and the one it shows it in: from its
+    /// third point, as many times larger as its fourth is across from
+    /// that, and the same shape as what it is of.
     fn zoomed(&self) -> (Rect, Rect) {
         let (a, b) = (self.points[0], self.points[1]);
         let of = Rect::new(a.0.min(b.0).round() as i32, a.1.min(b.1).round() as i32, (a.0 - b.0).abs().round() as i32, (a.1 - b.1).abs().round() as i32);
-        (of, Rect::new(self.points[2].0.round() as i32, self.points[2].1.round() as i32, of.w * ZOOM, of.h * ZOOM))
+        let times = ((self.points[3].0 - self.points[2].0) / of.w.max(1) as f32).clamp(1.25, 12.0);
+        (of, Rect::new(self.points[2].0.round() as i32, self.points[2].1.round() as i32, (of.w as f32 * times).round() as i32, (of.h as f32 * times).round() as i32))
     }
 
     /// Puts a zoom's larger picture where it usually goes: to the right
-    /// of what it is of, and a little above the middle of it.
+    /// of what it is of, a little above the middle of it, and twice
+    /// the size.
     pub fn place_zoom(&mut self) {
         let (of, _) = self.zoomed();
         self.points[2] = ((of.right() + of.w / 2 + 24) as f32, (of.y - of.h / 2) as f32);
+        self.points[3] = (self.points[2].0 + (of.w * ZOOM) as f32, self.points[2].1 + (of.h * ZOOM) as f32);
+    }
+
+    /// After one of a zoom's two handles has been taken somewhere: the
+    /// corner the larger picture is put down by, `by` which it went and
+    /// the far corner goes with it; or the far corner, which says how
+    /// many times larger and is put back on the corner that makes.
+    pub fn settle_zoom(&mut self, point: usize, by: Point) {
+        if point == 2 {
+            self.points[3] = (self.points[3].0 + by.0, self.points[3].1 + by.1);
+        }
+        let (_, shown) = self.zoomed();
+        self.points[3] = (shown.right() as f32, shown.bottom() as f32);
     }
 
     /// Where the first letter of a shape with words on it goes.

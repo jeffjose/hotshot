@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::canvas::Rect;
 use crate::editor::{Finish, Settings, Windows, PALETTE};
+use crate::frame::{Backdrop, GRADIENTS, PADS};
 
 pub const USAGE: &str = "\
 Usage: hotshot [OPTIONS]
@@ -127,6 +128,11 @@ pub struct Options {
     pub save: bool,
     pub output: Option<PathBuf>,
     pub dir: PathBuf,
+    /// The folders Save can save to: `dir`, and any others the config
+    /// file names, in the order it names them.
+    pub places: Vec<PathBuf>,
+    /// Which of them Save saves to, as it was last left.
+    pub save_to: Option<PathBuf>,
     pub filename: String,
     pub settings: Settings,
     pub list_monitors: bool,
@@ -166,6 +172,8 @@ fn defaults() -> Options {
         save: false,
         output: None,
         dir: home().join("Pictures/Screenshots"),
+        places: Vec::new(),
+        save_to: None,
         filename: "screenshot-%Y-%m-%d-%H%M%S".into(),
         settings: Settings::default(),
         list_monitors: false,
@@ -196,7 +204,7 @@ fn short_flag(flag: char) -> Option<&'static str> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font"].contains(&name)
+    ["monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -221,6 +229,27 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "save" => options.save = true,
         "output" => options.output = Some(path(&value()?)),
         "dir" => options.dir = path(&value()?),
+        // Another folder Save can save to: as many as are named.
+        "place" => options.places.push(path(&value()?)),
+        // The one of them it saves to, by its path: looked for once
+        // they have all been named.
+        "save-to" => options.save_to = Some(path(&value()?)),
+        "backdrop" => {
+            let text = value()?;
+            let wanted = text.to_lowercase();
+            options.settings.frame.backdrop = match GRADIENTS.iter().position(|(name, _, _)| name.to_lowercase() == wanted) {
+                Some(which) => Backdrop::Gradient(which),
+                None if wanted == "none" => Backdrop::None,
+                None => return Err(format!("invalid backdrop '{text}', expected none, dusk, ocean, sunset, mint, peach, violet, slate or paper")),
+            };
+        }
+        "padding" => {
+            let text = value()?;
+            options.settings.frame.pad = text.parse::<usize>().ok().filter(|pad| *pad < PADS.len()).ok_or(format!("invalid padding '{text}', expected 0 to 3"))?;
+        }
+        "shadow" => options.settings.frame.shadow = true,
+        "no-shadow" => options.settings.frame.shadow = false,
+        "photo" => options.settings.photo = Some(path(&value()?)),
         "filename" => options.filename = value()?,
         "accent" => options.settings.accent = parse_accent(&value()?)?,
         "color" => options.settings.color = parse_ink(&value()?)?,
@@ -275,20 +304,29 @@ const FACE_NAMES: [[&str; 2]; 5] = [["geist", "sans"], ["instrument-serif", "ser
 
 /// Keeps what is in hand, to begin with next time: written the way the
 /// config file is, so that it is read the same way.
-pub fn remember_tools(settings: &Settings) {
+pub fn remember_tools(settings: &Settings, save_to: Option<&std::path::Path>) {
     let Some(file) = crate::output::state_file("tools") else { return };
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let text = format!(
-        "color = \"{:06X}\"\nsize = {}\ncorner-radius = {}\nrounded = {}\nfilled = {}\nfont = \"{}\"\n",
+    let backdrop = match settings.frame.backdrop {
+        Backdrop::Gradient(which) => GRADIENTS[which.min(GRADIENTS.len() - 1)].0.to_lowercase(),
+        _ => "none".to_owned(),
+    };
+    let mut text = format!(
+        "color = \"{:06X}\"\nsize = {}\ncorner-radius = {}\nrounded = {}\nfilled = {}\nfont = \"{}\"\nbackdrop = \"{backdrop}\"\npadding = {}\nshadow = {}\n",
         settings.color,
         settings.size + 1,
         settings.radius,
         settings.corners,
         settings.filled,
-        FACE_NAMES[settings.face.min(FACE_NAMES.len() - 1)][0]
+        FACE_NAMES[settings.face.min(FACE_NAMES.len() - 1)][0],
+        settings.frame.pad,
+        settings.frame.shadow
     );
+    if let Some(folder) = save_to {
+        text += &format!("save-to = \"{}\"\n", folder.display());
+    }
     let _ = std::fs::write(file, text);
 }
 
@@ -318,7 +356,7 @@ fn read_config(options: &mut Options, text: &str) -> Result<(), String> {
         let name = match (takes_value(name), value) {
             (true, _) => name.to_owned(),
             (false, "true") => name.to_owned(),
-            (false, "false") if ["magnifier", "remember", "filled"].contains(&name) => format!("no-{name}"),
+            (false, "false") if ["magnifier", "remember", "filled", "shadow"].contains(&name) => format!("no-{name}"),
             (false, "false") => continue,
             (false, _) => return Err(wrong(format!("{name} is either true or false"))),
         };
@@ -341,8 +379,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
         if let Some(text) = crate::output::state_file("tools").and_then(|file| std::fs::read_to_string(file).ok()) {
             let mut kept = defaults();
             if read_config(&mut kept, &text).is_ok() {
+                options.save_to = kept.save_to.take().or(options.save_to.take());
                 let (now, kept) = (&mut options.settings, kept.settings);
                 (now.color, now.size, now.radius, now.corners, now.filled, now.face) = (kept.color, kept.size, kept.radius, kept.corners, kept.filled, kept.face);
+                now.frame = kept.frame;
             }
         }
     }
@@ -384,6 +424,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
             }
         }
     }
+    // The folders Save can save to: the usual one first, then the
+    // others; and of them, the one it was last pointed at.
+    options.places.insert(0, options.dir.clone());
+    options.places.dedup();
+    options.settings.places = options.places.iter().map(|place| place.file_name().map_or_else(|| place.display().to_string(), |name| name.to_string_lossy().into_owned())).collect();
+    options.settings.place = options.save_to.as_ref().and_then(|wanted| options.places.iter().position(|place| place == wanted)).unwrap_or(0);
     Ok(Parsed::Run(Box::new(options)))
 }
 

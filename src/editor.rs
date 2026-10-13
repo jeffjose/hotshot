@@ -8,6 +8,7 @@ use std::ops::Deref;
 
 use crate::canvas::{self, Canvas, Rect};
 use crate::shapes::{self, Shape, Tool};
+use crate::frame::{self, Backdrop, Frame, Photo, GRADIENTS, PADS};
 use crate::text::{icons, Text, FACES};
 
 // jog's colors, so that the two look like one family.
@@ -165,13 +166,22 @@ pub struct Settings {
     pub filled: bool,
     /// Which of the faces text is typed in to begin with, counted from 0.
     pub face: usize,
+    /// What the picture is set on, with how much room and whether with
+    /// a shadow, to begin with.
+    pub frame: Frame,
+    /// A photograph of the user's own to set it on, if there is one.
+    pub photo: Option<std::path::PathBuf>,
+    /// What the folders Save can save to are called, and which of them
+    /// it saves to to begin with.
+    pub places: Vec<String>,
+    pub place: usize,
     /// What Enter, and a double click, do.
     pub enter: Finish,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, enter: Finish { copy: true, save: false } }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, save: false } }
     }
 }
 
@@ -196,6 +206,10 @@ enum Button {
     Copy,
     /// The badges and stickers there are to put on the picture.
     Badges,
+    /// What the picture is set on, and how.
+    Frame,
+    /// Which folder Save saves to.
+    Places,
 }
 
 /// What can be put on the picture ready-made: a word on a pill of a
@@ -225,10 +239,22 @@ const STICKERS: [&str; 16] = ["✅", "❌", "⚠\u{fe0f}", "❓", "👍", "👎"
 enum Cell {
     Badge(usize),
     Sticker(usize),
+    /// What the picture is set on: nothing, or one of the gradients
+    /// counted from 1.
+    Backdrop(usize),
+    /// A photograph of the user's own, behind the picture.
+    Own,
+    /// A photograph nobody chose, and a different one each time.
+    Dice,
+    /// How much room there is round the picture.
+    Pad(usize),
+    Shadow,
+    /// One of the folders Save can save to.
+    Place(usize),
 }
 
 /// The bar of tools, in the groups it is divided into.
-const GROUPS: [&[Button]; 4] = [
+const GROUPS: [&[Button]; 5] = [
     &[
         Button::Tool(Tool::Select),
         Button::Tool(Tool::Arrow),
@@ -246,7 +272,8 @@ const GROUPS: [&[Button]; 4] = [
     ],
     &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill, Button::Face],
     &[Button::Undo, Button::Redo],
-    &[Button::Cancel, Button::Save, Button::Copy],
+    &[Button::Frame],
+    &[Button::Cancel, Button::Save, Button::Places, Button::Copy],
 ];
 
 impl Button {
@@ -277,6 +304,8 @@ impl Button {
             Button::Redo => ("Redo", "Ctrl+Shift+Z"),
             Button::Cancel => ("Cancel", "Esc"),
             Button::Save => ("Save", "Ctrl+S"),
+            Button::Frame => ("Backdrop, room and shadow", "W"),
+            Button::Places => ("Where Save saves to", ""),
             Button::Copy => ("Copy", "Ctrl+C"),
         }
     }
@@ -301,6 +330,8 @@ impl Button {
             Button::Redo => icons::REDO,
             Button::Cancel => icons::CLOSE,
             Button::Save => icons::SAVE,
+            Button::Frame => icons::FRAME,
+            Button::Places => icons::DOWN,
             Button::Copy => icons::COPY,
             Button::Color | Button::Size(_) | Button::Face => "",
         }
@@ -386,6 +417,8 @@ struct Layout {
     /// The box hung from one of the bar's buttons, and what is in it.
     flyout: Option<Rect>,
     cells: Vec<(Rect, Cell)>,
+    /// Where in that box the picture is shown as it will be, framed.
+    look: Option<Rect>,
 }
 
 pub struct Editor {
@@ -431,6 +464,19 @@ pub struct Editor {
     flyout: Option<Button>,
     /// Whether lines and arrows are drawn in dashes.
     dashed: bool,
+    /// What the picture is set on, and how.
+    frame: Frame,
+    /// The photograph it is set on, when it is set on one.
+    photo: Option<Photo>,
+    /// A photograph is wanted, of about this size: for whoever has the
+    /// network to fetch.
+    wish: Option<(i32, i32)>,
+    /// The picture as it will be, framed, made small for the box the
+    /// frame is chosen in; and what it was made from, to tell when it
+    /// is out of date.
+    look: Option<(String, i32, i32, Vec<u32>)>,
+    /// Which of the folders Save saves to.
+    place: usize,
     /// Whether all of the text being typed is picked out, so that what
     /// is typed next takes its place.
     all: bool,
@@ -491,6 +537,11 @@ impl Editor {
             corners: settings.corners,
             filled: settings.filled,
             face: settings.face.min(FACES.len() - 1),
+            frame: settings.frame,
+            place: settings.place.min(settings.places.len().saturating_sub(1)),
+            photo: None,
+            wish: None,
+            look: None,
             size: settings.size.min(STROKES.len() - 1),
             settings,
             text,
@@ -676,27 +727,66 @@ impl Editor {
         // one after another for as far as a row goes, and under them
         // the stickers in rows of eight.
         if let (Some(from), false) = (self.flyout, hidden) {
-            let across = 8 * side;
             let mut cells: Vec<(Rect, Cell)> = Vec::new();
-            let (mut x, mut y) = (0, 0);
-            for (index, (label, _, _)) in BADGES.iter().enumerate() {
-                let wide = self.text.width(label, px) + px as i32 * 2 + pad;
-                if x > 0 && x + wide > across {
-                    (x, y) = (0, y + side);
+            let (across, down) = match from {
+                // What the picture is set on: a look at it as it will
+                // be; under that the backdrops, none first; and under
+                // those a photograph nobody chose, one of the user's
+                // own if there is one, how much room, and the shadow.
+                Button::Frame => {
+                    let across = (GRADIENTS.len() as i32 + 1) * side;
+                    let look = across * 9 / 16;
+                    layout.look = Some(Rect::new(0, 0, across, look));
+                    for index in 0..=GRADIENTS.len() {
+                        cells.push((Rect::new(index as i32 * side, look + pad, side, side), Cell::Backdrop(index)));
+                    }
+                    let mut row = vec![Cell::Dice];
+                    row.extend(self.settings.photo.is_some().then_some(Cell::Own));
+                    row.extend((0..PADS.len()).map(Cell::Pad));
+                    row.push(Cell::Shadow);
+                    for (index, cell) in row.into_iter().enumerate() {
+                        cells.push((Rect::new(index as i32 * side, look + pad + side, side, side), cell));
+                    }
+                    (across, look + pad + 2 * side)
                 }
-                cells.push((Rect::new(x, y, wide, side), Cell::Badge(index)));
-                x += wide;
-            }
-            y += side + pad / 2;
-            for index in 0..STICKERS.len() as i32 {
-                cells.push((Rect::new(index % 8 * side, y + index / 8 * side, side, side), Cell::Sticker(index as usize)));
-            }
-            let (width, height) = (across + 2 * margin, y + (STICKERS.len() as i32 + 7) / 8 * side + 2 * margin);
+                // Where Save saves to: the folders the config file
+                // names, one to a row.
+                Button::Places => {
+                    let widest = self.settings.places.iter().map(|place| self.text.width(place, px)).max().unwrap_or(0);
+                    let across = widest + side + 2 * pad;
+                    for index in 0..self.settings.places.len() {
+                        cells.push((Rect::new(0, index as i32 * side, across, side), Cell::Place(index)));
+                    }
+                    (across, self.settings.places.len() as i32 * side)
+                }
+                // The badges as they will look, one after another for
+                // as far as a row goes, and the stickers in rows of
+                // eight.
+                _ => {
+                    let across = 8 * side;
+                    let (mut x, mut y) = (0, 0);
+                    for (index, (label, _, _)) in BADGES.iter().enumerate() {
+                        let wide = self.text.width(label, px) + px as i32 * 2 + pad;
+                        if x > 0 && x + wide > across {
+                            (x, y) = (0, y + side);
+                        }
+                        cells.push((Rect::new(x, y, wide, side), Cell::Badge(index)));
+                        x += wide;
+                    }
+                    y += side + pad / 2;
+                    for index in 0..STICKERS.len() as i32 {
+                        cells.push((Rect::new(index % 8 * side, y + index / 8 * side, side, side), Cell::Sticker(index as usize)));
+                    }
+                    (across, y + (STICKERS.len() as i32 + 7) / 8 * side)
+                }
+            };
+            let (width, height) = (across + 2 * margin, down + 2 * margin);
             let button = layout.buttons.iter().find(|(_, button)| *button == from).map_or(bar, |(rect, _)| *rect);
             let under = bar.bottom() + pad / 2;
             let top = if under + height <= monitor.bottom() - pad { under } else { bar.y - pad / 2 - height };
             let flyout = Rect::new(button.x + button.w / 2 - width / 2, top, width, height).kept_within(monitor.inflate(-pad));
             layout.cells = cells.into_iter().map(|(rect, cell)| (rect.moved(flyout.x + margin, flyout.y + margin), cell)).collect();
+            layout.look = layout.look.map(|look| look.moved(flyout.x + margin, flyout.y + margin));
             layout.flyout = Some(flyout);
         }
         layout
@@ -814,7 +904,8 @@ impl Editor {
             Tool::Arrow | Tool::Line => vec![at(0), at(1)],
             Tool::Counter if shape.points[0] != shape.points[1] => vec![at(1)],
             // The corner the larger picture of a zoom is put down by.
-            Tool::Zoom => vec![at(2)],
+            // And its far corner, which says how many times larger.
+            Tool::Zoom => vec![at(2), at(3)],
             _ => Vec::new(),
         }
     }
@@ -966,7 +1057,11 @@ impl Editor {
                 let shape = &mut self.shapes[index];
                 // With Shift, at one of eight angles from the other end.
                 let other = shape.points[1 - point.min(1)];
-                shape.points[point] = if mods.shift { shapes::constrained(Tool::Line, other, to) } else { to };
+                let was = shape.points[point];
+                shape.points[point] = if mods.shift && shape.tool != Tool::Zoom { shapes::constrained(Tool::Line, other, to) } else { to };
+                if shape.tool == Tool::Zoom {
+                    shape.settle_zoom(point, (to.0 - was.0, to.1 - was.1));
+                }
                 shape.touch();
                 self.dirty = true;
             }
@@ -1457,6 +1552,7 @@ impl Editor {
                 'g' => drop(self.activate(Button::Face)),
                 'z' => self.set_tool(Tool::Zoom),
                 'j' => drop(self.activate(Button::Badges)),
+                'w' => drop(self.activate(Button::Frame)),
                 // Dashes, for the lines and arrows picked out and for
                 // those drawn after.
                 'd' => {
@@ -1544,13 +1640,10 @@ impl Editor {
                 }
                 texts.iter().for_each(|&index| self.shapes[index].face = self.face);
             }
-            Button::Badges => {
+            Button::Badges | Button::Frame | Button::Places => {
                 self.commit_text();
                 self.popup = None;
-                self.flyout = match self.flyout {
-                    Some(Button::Badges) => None,
-                    _ => Some(Button::Badges),
-                };
+                self.flyout = if self.flyout == Some(button) { None } else { Some(button) };
             }
             Button::Undo => self.undo(),
             Button::Redo => self.redo(),
@@ -1637,6 +1730,34 @@ impl Editor {
     /// click; a sticker is text like any other, and twice the size.
     fn choose(&mut self, cell: Cell) {
         let Some(area) = self.selection else { return };
+        // What the picture is set on, and where it is saved, are not
+        // things put on it: they are set, and the box stays open for
+        // the next of them, but for the folder, which is one choice.
+        match cell {
+            Cell::Backdrop(0) => self.frame.backdrop = Backdrop::None,
+            Cell::Backdrop(which) => {
+                self.frame.backdrop = Backdrop::Gradient(which - 1);
+                // A backdrop with no room round the picture is not seen.
+                self.frame.pad = self.frame.pad.max(2);
+            }
+            Cell::Pad(pad) => self.frame.pad = pad,
+            Cell::Shadow => self.frame.shadow = !self.frame.shadow,
+            // Asked for here, fetched by whoever has the network, and
+            // set behind the picture when it comes.
+            Cell::Dice => {
+                let room = 2 * self.frame.room(self.scale()).max(128);
+                self.wish = Some((area.w + room, area.h + room));
+            }
+            Cell::Own => {
+                let read = self.settings.photo.as_ref().and_then(|file| std::fs::read(file).ok()).and_then(|bytes| frame::open(&bytes));
+                self.photo_arrived(read);
+            }
+            Cell::Place(place) => (self.place, self.flyout) = (place, None),
+            Cell::Badge(_) | Cell::Sticker(_) => {}
+        }
+        if !matches!(cell, Cell::Badge(_) | Cell::Sticker(_)) {
+            return;
+        }
         self.checkpoint();
         let (stroke, font_px) = (self.stroke(), self.font_px());
         let mut shape = match cell {
@@ -1651,6 +1772,7 @@ impl Editor {
                 (shape.text, shape.font_px) = (STICKERS[index].to_owned(), font_px * 2);
                 shape
             }
+            _ => return,
         };
         let size = shape.bounds(&mut self.text);
         let (cx, cy) = area.center();
@@ -1658,6 +1780,44 @@ impl Editor {
         self.shapes.push(shape);
         self.made(self.shapes.len() - 1);
         self.flyout = None;
+    }
+
+    /// A photograph is wanted from the network, of about this size:
+    /// said once, to whoever asks.
+    pub fn take_wish(&mut self) -> Option<(i32, i32)> {
+        self.wish.take()
+    }
+
+    /// The photograph asked for has come, or has not: with one, the
+    /// picture is set on it, with room round it to see it by.
+    pub fn photo_arrived(&mut self, photo: Option<Photo>) {
+        if let Some(photo) = photo {
+            self.photo = Some(photo);
+            self.frame.backdrop = Backdrop::Photo;
+            self.frame.pad = self.frame.pad.max(2);
+            self.look = None;
+        }
+        self.dirty = true;
+    }
+
+    /// Which of the folders Save saves to.
+    pub fn place(&self) -> usize {
+        self.place
+    }
+
+    /// The picture that is taken, set in its frame: how wide and tall
+    /// it is with the room round it, its pixels, and whether any of it
+    /// is see-through, which is said in the top byte of each.
+    pub fn framed(&mut self) -> Option<(Rect, i32, i32, Vec<u32>, bool)> {
+        let (area, mut pixels, rounded) = self.result()?;
+        if self.frame.is_plain() {
+            return Some((area, area.w, area.h, pixels, rounded));
+        }
+        if !rounded {
+            pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
+        }
+        let (wide, high, set) = frame::set(self.frame, &pixels, area.w, area.h, self.corner_radius(), self.scale(), self.photo.as_ref());
+        Some((area, wide, high, set, self.frame.backdrop == Backdrop::None || (self.frame.backdrop == Backdrop::Photo && self.photo.is_none())))
     }
 
     /// Takes up a text that is already there, to be typed into again.
@@ -1901,9 +2061,62 @@ impl Editor {
                         self.text.draw(&mut canvas, pill.x + px as i32 * 5 / 4, cy - Text::line_height(px) / 2, px, ink, label);
                     }
                     Cell::Sticker(index) => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, STICKERS[index]),
+                    // No backdrop: an empty square with a line through it.
+                    Cell::Backdrop(0) => {
+                        canvas.round_outline(inner.x, inner.y, inner.w, inner.h, pad / 2, 1, DIM_TEXT_COLOR);
+                        self.text.draw_centered(&mut canvas, cx, cy, px, DIM_TEXT_COLOR, icons::CLOSE);
+                    }
+                    // A gradient, as a small square of itself.
+                    Cell::Backdrop(which) => {
+                        let (_, from, to) = GRADIENTS[which - 1];
+                        for row in 0..inner.h {
+                            canvas.fill(inner.x, inner.y + row, inner.w, 1, canvas::mix(from, to, (row * 256 / inner.h.max(1)) as u32));
+                        }
+                        canvas.round_outline(inner.x - 1, inner.y - 1, inner.w + 2, inner.h + 2, pad / 2, 2, MENU_COLOR);
+                    }
+                    Cell::Dice => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::DICE),
+                    Cell::Own => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::FRAME),
+                    // A square with as much room round it as that is.
+                    Cell::Pad(room) => {
+                        let around = inner.inflate(-(px as i32 / 6));
+                        canvas.round_outline(around.x, around.y, around.w, around.h, 2, 1, DIM_TEXT_COLOR);
+                        let within = around.inflate(-(1 + room as i32 * around.w / 9));
+                        canvas.round_fill(within.x, within.y, within.w, within.h, 2, TEXT_COLOR, 256);
+                    }
+                    // A square with its shadow under it.
+                    Cell::Shadow => {
+                        let square = inner.inflate(-(px as i32 / 3));
+                        canvas.round_fill(square.x + 2, square.y + 4, square.w, square.h, 3, 0x000000, 150);
+                        canvas.round_fill(square.x, square.y, square.w, square.h, 3, TEXT_COLOR, 256);
+                    }
+                    Cell::Place(place) => {
+                        let line = cy - Text::line_height(px) / 2;
+                        if place == self.place {
+                            self.text.draw_centered(&mut canvas, rect.x + rect.h / 2, cy, px, TEXT_COLOR, icons::CHECK);
+                        }
+                        let name = self.settings.places[place].clone();
+                        self.text.draw(&mut canvas, rect.x + rect.h, line, px, TEXT_COLOR, &name);
+                    }
+                }
+                // What is chosen now has a line of the accent round it.
+                let on = match cell {
+                    Cell::Backdrop(0) => self.frame.backdrop == Backdrop::None,
+                    Cell::Backdrop(which) => self.frame.backdrop == Backdrop::Gradient(which - 1),
+                    Cell::Dice | Cell::Own => false,
+                    Cell::Pad(room) => self.frame.pad == room,
+                    Cell::Shadow => self.frame.shadow,
+                    _ => false,
+                };
+                if on {
+                    canvas.round_outline(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2, pad / 2, 2, accent);
                 }
             }
-            let _ = accent;
+            // The picture as it will be, made to fit the room there is
+            // to show it in.
+            if let Some(room) = layout.look {
+                canvas.round_fill(room.x, room.y, room.w, room.h, pad / 2, 0x101010, 256);
+                self.draw_look(&mut canvas, room);
+            }
         }
         if self.selection.is_none() && !matches!(self.drag, Drag::Select { begun: true, .. }) {
             self.draw_hint(&mut canvas, px);
@@ -2019,6 +2232,26 @@ impl Editor {
         self.text.draw(canvas, row.right() - pad - key, line, px, dim, "I");
     }
 
+    /// The picture as it will be, framed, drawn small in the box the
+    /// frame is chosen in. Made again only when something it is made
+    /// from has changed: it is the whole picture each time.
+    fn draw_look(&mut self, canvas: &mut Canvas, room: Rect) {
+        let made_from = format!("{:?} {:?} {} {} {} {}", self.frame, self.selection, self.corners, self.shapes.len(), self.undo.len(), self.photo.as_ref().map_or(0, |photo| photo.pixels.len()));
+        if self.look.as_ref().is_none_or(|look| look.0 != made_from) {
+            let Some((_, wide, high, pixels, _)) = self.framed() else { return };
+            // No larger than the room, and the same shape as it is.
+            let times = (room.w as f32 / wide as f32).min(room.h as f32 / high as f32).min(1.0);
+            let (w, h) = (((wide as f32 * times) as i32).max(1), ((high as f32 * times) as i32).max(1));
+            let small = (0..w * h).map(|at| pixels[((at / w) * high / h * wide + (at % w) * wide / w) as usize]).collect();
+            self.look = Some((made_from, w, h, small));
+        }
+        let Some((_, w, h, small)) = &self.look else { return };
+        let (left, top) = (room.x + (room.w - w) / 2, room.y + (room.h - h) / 2);
+        for (at, pixel) in small.iter().enumerate() {
+            canvas.blend(left + at as i32 % w, top + at as i32 / w, pixel & 0xFF_FFFF, (pixel >> 24) as u8);
+        }
+    }
+
     /// What there is to do, said in the middle of the screen while
     /// nothing has been selected.
     fn draw_hint(&mut self, canvas: &mut Canvas, px: u32) {
@@ -2099,7 +2332,10 @@ impl Editor {
     /// color, the width of line, how round a rectangle's corners and
     /// the picture's are, whether shapes are filled, and the face.
     pub fn in_hand(&self) -> Settings {
-        Settings { color: self.color, size: self.size, corners: self.corners, filled: self.filled, face: self.face, ..self.settings.clone() }
+        // A photograph is not kept: it was one nobody chose, or is the
+        // user's own to choose again.
+        let frame = Frame { backdrop: if self.frame.backdrop == Backdrop::Photo { Backdrop::None } else { self.frame.backdrop }, ..self.frame };
+        Settings { color: self.color, size: self.size, corners: self.corners, filled: self.filled, face: self.face, frame, place: self.place, ..self.settings.clone() }
     }
 
     /// The last of the three says whether its corners are rounded: then
@@ -2711,5 +2947,20 @@ mod tests {
         editor.key(Key::Escape, PLAIN);
         editor.key(Key::Char('j'), PLAIN);
         write(&mut editor, "12-badges");
+
+        // The picture set on a backdrop, with room and a shadow, as the
+        // box it is chosen in shows it and as it comes out.
+        editor.key(Key::Escape, PLAIN);
+        editor.corners = 16.0;
+        for cell in [Cell::Backdrop(1), Cell::Shadow] {
+            editor.choose(cell);
+        }
+        editor.key(Key::Char('w'), PLAIN);
+        write(&mut editor, "13-frame");
+        let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
+        std::fs::write(dir.join("14-framed.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
+        editor.choose(Cell::Backdrop(0));
+        let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
+        std::fs::write(dir.join("15-shadow-only.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
     }
 }

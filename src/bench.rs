@@ -7,7 +7,7 @@
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::canvas;
+use crate::canvas::{self, Rect};
 use crate::editor::{Editor, Key, Mods, Shot};
 use crate::options::Options;
 use crate::output;
@@ -175,7 +175,8 @@ pub fn run(mut display: Display, options: Options, font: JoinHandle<Text>, start
 
     // And the picture of it, as it would be saved or copied.
     let began = Instant::now();
-    let (area, pixels, rounded) = editor.result().ok_or("the benchmark lost its selection")?;
+    let (_, width, height, pixels, rounded) = editor.framed().ok_or("the benchmark lost its selection")?;
+    let area = Rect::new(0, 0, width, height);
     let drawn = began.elapsed();
     let began = Instant::now();
     let png = output::encode(area.w as u32, area.h as u32, &pixels, rounded)?;

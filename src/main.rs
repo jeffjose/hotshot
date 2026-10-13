@@ -2,6 +2,7 @@ mod bench;
 mod canvas;
 mod clipboard;
 mod editor;
+mod frame;
 mod options;
 mod output;
 mod shapes;
@@ -107,18 +108,26 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         options.settings.enter = said;
     }
 
-    let (area, pixels, rounded, how) = match (named, options.edit) {
+    let taken = match (named, options.edit) {
         (Some(area), false) => {
             let how = if said.copy || said.save { said } else { Finish { copy: false, save: true } };
             let shot = display.capture()?;
             trace("screen read");
             let mut pixels = canvas::crop(&shot, display.width, area);
-            // Corners as round as the editor would have made them.
-            let round = (options.settings.corners * editor::scale_for(display.height)).round() as i32;
-            if round > 0 {
+            // Corners as round as the editor would have made them, and
+            // the frame it would have set the picture in.
+            let scale = editor::scale_for(display.height);
+            let round = ((options.settings.corners * scale).round() as i32).clamp(0, area.w.min(area.h) / 2);
+            let frame = options.settings.frame;
+            let (mut width, mut height, mut alpha) = (area.w, area.h, round > 0);
+            if round > 0 || !frame.is_plain() {
                 canvas::round_alpha(&mut pixels, area.w, round);
             }
-            (area, pixels, round > 0, how)
+            if !frame.is_plain() {
+                (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, None);
+                alpha = !matches!(frame.backdrop, frame::Backdrop::Gradient(_));
+            }
+            Taken { area, width, height, pixels, alpha, how, place: options.settings.place }
         }
         (named, _) => match pick(&mut display, named, &options, font, &trace)? {
             Some(taken) => taken,
@@ -126,14 +135,17 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         },
     };
     trace("picture taken");
-    output::remember_area(area);
+    output::remember_area(taken.area);
+    let how = taken.how;
 
-    let png = output::encode(area.w as u32, area.h as u32, &pixels, rounded)?;
+    let png = output::encode(taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha)?;
     trace("packed as PNG");
     if how.save {
+        // Into the folder Save was last pointed at, of those there are.
+        let dir = options.places.get(taken.place).unwrap_or(&options.dir);
         match &options.output {
             Some(file) => output::save_as(file, &png)?,
-            None => println!("{}", output::save(&options.dir, &options.filename, &png)?.display()),
+            None => println!("{}", output::save(dir, &options.filename, &png)?.display()),
         }
         trace("saved");
     }
@@ -144,10 +156,24 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// A picture taken: the area of the screen it is of, how wide and tall
+/// it came out with whatever it is set in, its pixels, whether any are
+/// see-through, what is to be done with it, and which folder it goes to
+/// if it is saved.
+struct Taken {
+    area: Rect,
+    width: i32,
+    height: i32,
+    pixels: Vec<u32>,
+    alpha: bool,
+    how: Finish,
+    place: usize,
+}
+
 /// Freezes the screen and lets an area be dragged out and drawn on.
 /// Gives the area, the picture of it, and what is to be done with it;
 /// or nothing, if it was called off.
-fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<(Rect, Vec<u32>, bool, Finish)>> {
+fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<Taken>> {
     // The first frame is the screen darkened and nothing else: it is
     // what says hotshot has started, and the server makes it of its own
     // copy of the screen, without a pixel having come here. The keyboard
@@ -206,6 +232,7 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
     // How many strips have come since a frame was last drawn: drawing
     // one is not nothing, and is not done for every strip.
     let mut unseen = 0;
+    let mut fetching: Option<std::sync::mpsc::Receiver<Option<frame::Photo>>> = None;
     let how = 'events: loop {
         if !strips.done() {
             strips.read(display, &mut editor, &mut frame)?;
@@ -231,7 +258,18 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
         // With strips still to come, only what is already waiting is
         // heard, and then the next strip is read. Until the keyboard is
         // had, it is asked for again every so often.
-        let inputs = display.inputs(if !strips.done() { Some(0) } else if grabbed { None } else { Some(20) })?;
+        // A photograph asked for is fetched on a thread of its own, the
+        // network being what it is, and looked for every so often.
+        if let Some((wide, high)) = editor.take_wish() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || drop(sender.send(frame::random(wide, high))));
+            fetching = Some(receiver);
+        }
+        if let Some(Ok(photo)) = fetching.as_ref().map(|receiver| receiver.try_recv()) {
+            editor.photo_arrived(photo);
+            fetching = None;
+        }
+        let inputs = display.inputs(if !strips.done() { Some(0) } else if fetching.is_some() { Some(50) } else if grabbed { None } else { Some(20) })?;
         if !grabbed {
             grabbed = display.grab();
         }
@@ -287,7 +325,8 @@ fn pick(display: &mut Display, named: Option<Rect>, options: &Options, font: std
         strips.read(display, &mut editor, &mut frame)?;
     }
     if options.remember {
-        options::remember_tools(&editor.in_hand());
+        options::remember_tools(&editor.in_hand(), options.places.get(editor.place()).map(|place| place.as_path()));
     }
-    Ok(how.and_then(|how| editor.result().map(|(area, pixels, rounded)| (area, pixels, rounded, how))))
+    let place = editor.place();
+    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place })))
 }

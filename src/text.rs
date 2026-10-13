@@ -32,7 +32,10 @@ pub mod icons {
     pub const ZOOM: &str = "\u{e017}";
     pub const BADGE: &str = "\u{e018}";
     pub const FRAME: &str = "\u{e019}";
+    pub const STICKER: &str = "\u{e01a}";
     pub const DOWN: &str = "\u{e01b}";
+    pub const DICE: &str = "\u{e01c}";
+    pub const CHECK: &str = "\u{e010}";
 }
 
 const FONT_PATHS: &[&str] = &[
