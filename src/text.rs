@@ -65,6 +65,21 @@ const FACE_FILES: [&[u8]; 4] = [
     include_bytes!("../assets/Anton-Regular.ttf"),
 ];
 
+/// The heavy and the slanted cuts there are of the faces: which face,
+/// whether heavy, whether slanted, and the file. A face with no cut of
+/// its own for what is asked has it made of its letters instead: laid
+/// down twice for heavy, each row moved over for slanted.
+const CUTS: [(usize, bool, bool, &[u8]); 5] = [
+    (0, true, false, include_bytes!("../assets/Geist-Bold.ttf")),
+    (0, false, true, include_bytes!("../assets/Geist-Italic.ttf")),
+    (0, true, true, include_bytes!("../assets/Geist-BoldItalic.ttf")),
+    (1, false, true, include_bytes!("../assets/InstrumentSerif-Italic.ttf")),
+    (3, true, false, include_bytes!("../assets/FiraCode-Bold.ttf")),
+];
+
+/// Which font the first of the cuts is, the rest counted back from it.
+const CUT: usize = usize::MAX - 32;
+
 /// Text rendering with the font hotshot carries. Loading it takes a few
 /// milliseconds, so it is done on a thread of its own while the screen
 /// is being read.
@@ -74,6 +89,10 @@ pub struct Text {
     /// The faces after the first, each read the first time something is
     /// to be drawn in it: most pictures have no text on them at all.
     faces: [Option<fontdue::Font>; 4],
+    /// Their heavy and slanted cuts, each read the same way; and
+    /// whether it has been tried.
+    cuts: [Option<fontdue::Font>; CUTS.len()],
+    cuts_read: [bool; CUTS.len()],
     /// Fonts for the letters the main one lacks, Korean say, each found
     /// through fontconfig the first time such a letter is typed.
     others: Vec<fontdue::Font>,
@@ -92,9 +111,10 @@ pub struct Text {
 }
 
 /// How letters are drawn, apart from their face and their size: heavy,
-/// slanted, or faint. The faces carried are one weight each and upright,
-/// so heavy is the letter laid down again beside itself, and slanted is
-/// each row of it moved over, which is how a typewriter would have to.
+/// slanted, or faint. Where a face has a heavy or a slanted cut of its
+/// own, that is what is drawn; where it has not, heavy is the letter
+/// laid down again beside itself, and slanted is each row of it moved
+/// over, which is how a typewriter would have to.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Look {
     /// How many pixels further right each letter is laid down again.
@@ -132,7 +152,7 @@ impl Text {
             eprintln!("hotshot: no usable font found, text will not be drawn (set HOTSHOT_FONT to a .ttf file)");
         }
         let icons = load(include_bytes!("../assets/icons.ttf").to_vec());
-        Text { font, icons, faces: [None, None, None, None], others: Vec::new(), sought: HashSet::new(), glyphs: HashMap::new(), emoji: None, emoji_sought: false, pictures: HashMap::new(), look: Look::default() }
+        Text { font, icons, faces: [None, None, None, None], cuts: Default::default(), cuts_read: [false; CUTS.len()], others: Vec::new(), sought: HashSet::new(), glyphs: HashMap::new(), emoji: None, emoji_sought: false, pictures: HashMap::new(), look: Look::default() }
     }
 
     /// An emoji as a picture `px` high, from the system's emoji, which
@@ -202,6 +222,16 @@ impl Text {
             return ICONS;
         }
         let has = |font: &fontdue::Font| font.lookup_glyph_index(c) != 0;
+        // Heavy or slanted, it is the face's own cut for that, where
+        // there is one and it has the letter.
+        if let Some(cut) = self.cut(face) {
+            if !std::mem::replace(&mut self.cuts_read[cut], true) {
+                self.cuts[cut] = fontdue::Font::from_bytes(CUTS[cut].3, fontdue::FontSettings::default()).ok();
+            }
+            if self.cuts[cut].as_ref().is_some_and(has) {
+                return CUT - cut;
+            }
+        }
         // A face has the letters it has; the rest are the main font's.
         if (1..=FACE_FILES.len()).contains(&face) {
             let slot = &mut self.faces[face - 1];
@@ -232,10 +262,30 @@ impl Text {
         0
     }
 
+    /// The cut of a face that does the most of what the look in hand
+    /// asks, heavy and slanted, and nothing it does not ask.
+    fn cut(&self, face: usize) -> Option<usize> {
+        let (heavy, slanted) = (self.look.heavy > 0, self.look.slant > 0.0);
+        let does = |&(_, cut): &(usize, &(usize, bool, bool, &[u8]))| cut.0 == face && (cut.1 || cut.2) && (!cut.1 || heavy) && (!cut.2 || slanted);
+        CUTS.iter().enumerate().filter(does).max_by_key(|(_, cut)| u8::from(cut.1) + u8::from(cut.2)).map(|(at, _)| at)
+    }
+
+    /// What is left to be made of the letters themselves, of the look
+    /// in hand: how heavy and how slanted, less what the face's own cut
+    /// is already.
+    fn made(&self, face: usize) -> (i32, f32) {
+        let (heavy, slant) = (self.look.heavy.max(0), self.look.slant);
+        match self.cut(face).filter(|&cut| self.cuts[cut].is_some() || !self.cuts_read[cut]) {
+            Some(cut) => (if CUTS[cut].1 { 0 } else { heavy }, if CUTS[cut].2 { 0.0 } else { slant }),
+            None => (heavy, slant),
+        }
+    }
+
     fn font(&self, which: usize) -> Option<&fontdue::Font> {
         match which {
             0 => self.font.as_ref(),
             ICONS => self.icons.as_ref(),
+            cut if (CUT + 1 - CUTS.len()..=CUT).contains(&cut) => self.cuts[CUT - cut].as_ref(),
             face if face >= ICONS - FACE_FILES.len() => self.faces[ICONS - face - 1].as_ref(),
             other => self.others.get(other - 1),
         }
@@ -254,13 +304,14 @@ impl Text {
     /// How wide text is in one of the faces.
     pub fn width_in(&mut self, face: usize, text: &str, px: u32) -> i32 {
         let mut width = 0.0;
+        let heavy = self.made(face).0;
         for c in text.chars() {
             let which = self.font_with(c, face);
             if which == EMOJI {
                 width += self.picture(c, px).map_or(0.0, |picture| picture.0 as f32 * 1.08);
                 continue;
             }
-            width += self.font(which).map_or(0.0, |font| font.metrics(c, Self::size(which, px)).advance_width) + self.look.heavy.max(0) as f32;
+            width += self.font(which).map_or(0.0, |font| font.metrics(c, Self::size(which, px)).advance_width) + heavy as f32;
         }
         width.ceil() as i32
     }
@@ -282,10 +333,12 @@ impl Text {
         let baseline = y + ((Self::line_height(px) as f32 + ascent + descent) / 2.0).round() as i32;
 
         let mut pen = x as f32;
+        let (heavy, slant) = self.made(face);
         for c in text.chars() {
             // An emoji is laid down as the picture it is, in the middle
             // of the line, whatever color the words are in.
-            if self.font_with(c, face) == EMOJI {
+            let which = self.font_with(c, face);
+            if which == EMOJI {
                 if let Some((wide, high, pixels)) = self.picture(c, px) {
                     let (left, top) = (pen.round() as i32, y + (Self::line_height(px) - high) / 2);
                     for (at, pixel) in pixels.iter().enumerate() {
@@ -295,13 +348,12 @@ impl Text {
                 }
                 continue;
             }
-            if !self.glyphs.contains_key(&(face, c, px)) {
-                let which = self.font_with(c, face);
+            if !self.glyphs.contains_key(&(which, c, px)) {
                 let Some(font) = self.font(which) else { continue };
                 let glyph = font.rasterize(c, Self::size(which, px));
-                self.glyphs.insert((face, c, px), glyph);
+                self.glyphs.insert((which, c, px), glyph);
             }
-            let (metrics, coverage) = &self.glyphs[&(face, c, px)];
+            let (metrics, coverage) = &self.glyphs[&(which, c, px)];
             let left = pen.round() as i32 + metrics.xmin;
             // An icon sits in the middle of the line, whatever its font
             // takes for a baseline; letters stand on the text's.
@@ -313,9 +365,9 @@ impl Text {
             // The look in hand: each row of a slanted letter a little
             // further right the higher it is; a heavy one laid down
             // again beside itself; a faint one, less of each pixel.
-            let (heavy, faint) = (self.look.heavy.max(0), self.look.opacity.min(256));
+            let faint = self.look.opacity.min(256);
             for (row, line) in coverage.chunks_exact(metrics.width.max(1)).enumerate() {
-                let lean = ((baseline - top - row as i32) as f32 * self.look.slant).round() as i32;
+                let lean = ((baseline - top - row as i32) as f32 * slant).round() as i32;
                 for (column, &amount) in line.iter().enumerate() {
                     if amount > 0 {
                         let amount = ((u32::from(amount) * faint) >> 8) as u8;

@@ -56,7 +56,7 @@ const OPACITIES: [u32; 4] = [64, 128, 192, 256];
 
 /// The ways text is set, in the order the bar over it has them, with
 /// the letter each is shown by.
-const STYLES: [(u8, &str); 4] = [(shapes::BOLD, "B"), (shapes::ITALIC, "I"), (shapes::HIGHLIGHT, "H"), (shapes::BULLETS, "\u{2022}")];
+const STYLES: [(u8, &str); 5] = [(shapes::BOLD, "B"), (shapes::ITALIC, "I"), (shapes::HIGHLIGHT, "H"), (shapes::BOXED, "A"), (shapes::BULLETS, "\u{2022}")];
 
 /// How many of them stand in a row of the box they are picked from.
 const PALETTE_COLUMNS: i32 = 8;
@@ -439,7 +439,9 @@ enum Drag {
     /// `opens` when it was the frame itself that was pressed and not a
     /// handle on its edge: a click there, with no drag, opens the box
     /// of what there is to choose about it.
-    Room { from: (i32, i32), slack: (i32, i32), sides: (bool, bool), moved: bool, opens: bool },
+    /// `shape` is how many times as wide as it was tall when taken hold
+    /// of, which with Shift it stays.
+    Room { from: (i32, i32), slack: (i32, i32), sides: (bool, bool), moved: bool, opens: bool, shape: f32 },
     /// Making the corners of the frame rounder, by the dot in one.
     FrameCorner { slack: i32 },
     /// Dragging out a box, with Shift or Ctrl held, to pick out the
@@ -607,6 +609,24 @@ fn variants(tool: Tool) -> &'static [&'static str] {
 /// is within reach of it, and otherwise left where it is.
 fn snapped(edges: &[i32], value: i32, reach: i32) -> i32 {
     edges.iter().copied().filter(|edge| (edge - value).abs() <= reach).min_by_key(|edge| (edge - value).abs()).unwrap_or(value)
+}
+
+/// How wide and tall a rectangle is that was dragged to `size` and is
+/// kept to a shape, so wide to so tall. `lead` says which of the two it
+/// was dragged by: its width, its height, or both, when the larger
+/// says. It is no larger than there is `room` for.
+fn shaped(ratio: (i32, i32), size: (i32, i32), lead: (bool, bool), room: (i32, i32)) -> (i32, i32) {
+    let (across, down) = (ratio.0.max(1) as f32, ratio.1.max(1) as f32);
+    let (wide, high) = (size.0.max(1) as f32, size.1.max(1) as f32);
+    let by_width = match lead {
+        (true, false) => true,
+        (false, true) => false,
+        _ => wide / across >= high / down,
+    };
+    let (mut wide, mut high) = if by_width { (wide, wide * down / across) } else { (high * across / down, high) };
+    let fits = (room.0.max(1) as f32 / wide).min(room.1.max(1) as f32 / high).min(1.0);
+    (wide, high) = (wide * fits, high * fits);
+    ((wide.round() as i32).max(1), (high.round() as i32).max(1))
 }
 
 /// Whether a shape picked out has a box with handles to resize it by.
@@ -1126,7 +1146,16 @@ impl Editor {
         let shape = &self.shapes[index];
         let at = |point: usize| (point, (shape.points[point].0.round() as i32, shape.points[point].1.round() as i32));
         match shape.tool {
-            Tool::Arrow | Tool::Line => vec![at(0), at(1)],
+            // And of those two, the dot half way along that bends it,
+            // where it is long enough for a third dot.
+            Tool::Arrow | Tool::Line => {
+                let (a, b, middle) = (shape.points[0], shape.points[1], shape.middle());
+                let mut ends = vec![at(0), at(1)];
+                if (a.0 - b.0).hypot(a.1 - b.1) >= 3.0 * ui_px(self.monitor().h) as f32 {
+                    ends.push((2, (middle.0.round() as i32, middle.1.round() as i32)));
+                }
+                ends
+            }
             Tool::Counter if shape.points[0] != shape.points[1] => vec![at(1)],
             // The corner the larger picture of a zoom is put down by.
             // And its far corner, which says how many times larger.
@@ -1288,17 +1317,19 @@ impl Editor {
                 let other = shape.points[1 - point.min(1)];
                 // A zoom's handles are not its points: one moves its
                 // larger picture, the other says how many times larger.
+                // Nor is the dot in the middle of a line, which bends it.
                 match shape.tool {
                     Tool::Zoom => shape.zoom_to(point, to),
+                    Tool::Arrow | Tool::Line if point == 2 => shape.bend_to(to),
                     _ => shape.points[point] = if mods.shift { shapes::constrained(Tool::Line, other, to) } else { to },
                 }
                 shape.touch();
                 self.dirty = true;
             }
             Drag::Marquee { .. } => self.dirty = true,
-            Drag::Room { from, slack, sides, moved, .. } => {
+            Drag::Room { from, slack, sides, moved, shape, .. } => {
                 *moved |= (at.0 - from.0).abs().max((at.1 - from.1).abs()) >= DRAG_AFTER;
-                let (slack, sides, moved) = (*slack, *sides, *moved);
+                let (slack, sides, moved, shape) = (*slack, *sides, *moved, *shape);
                 if moved {
                     // As much room as the pointer is out from the
                     // selection, less where on the frame it took hold:
@@ -1310,6 +1341,16 @@ impl Editor {
                     }
                     if sides.1 {
                         self.frame.pad.1 = room(out.1, slack.1);
+                    }
+                    // With Shift, the frame keeps the shape it had: the
+                    // room the way it was not dragged is what makes it so,
+                    // and across is the way it was, where it was both.
+                    if let (true, Some(area)) = (mods.shift, self.selection) {
+                        let other = |room: i32, size: i32, other: i32, shape: f32| ((((size + 2 * room) as f32 * shape - other as f32) / 2.0).max(0.0) / scale).round() as i32;
+                        match sides.0 {
+                            true => self.frame.pad.1 = other((self.frame.pad.0 as f32 * scale).round() as i32, area.w, area.h, 1.0 / shape).clamp(0, 800),
+                            false => self.frame.pad.0 = other((self.frame.pad.1 as f32 * scale).round() as i32, area.h, area.w, shape).clamp(0, 800),
+                        }
                     }
                     self.dirty = true;
                 }
@@ -1349,8 +1390,17 @@ impl Editor {
                     // edge being placed goes to the edge of a window,
                     // when it comes near one, unless Ctrl says not.
                     let at = if mods.ctrl { at } else { (snapped(&self.edges.0, at.0, self.reach), snapped(&self.edges.1, at.1, self.reach)) };
-                    let area = Rect::spanning(*from, at);
-                    self.selection = Some(Rect::new(area.x, area.y, area.w + 1, area.h + 1));
+                    let (from, area) = (*from, Rect::spanning(*from, at));
+                    let mut area = Rect::new(area.x, area.y, area.w + 1, area.h + 1);
+                    // Kept to the shape that was asked for; or, with
+                    // Shift, square.
+                    if let Some(ratio) = self.settings.aspect.or(mods.shift.then_some((1, 1))) {
+                        let (left, up) = (at.0 < from.0, at.1 < from.1);
+                        let room = (if left { from.0 + 1 - screen.x } else { screen.right() - from.0 }, if up { from.1 + 1 - screen.y } else { screen.bottom() - from.1 });
+                        let (wide, high) = shaped(ratio, (area.w, area.h), (true, true), room);
+                        area = Rect::new(if left { from.0 + 1 - wide } else { from.0 }, if up { from.1 + 1 - high } else { from.1 }, wide, high);
+                    }
+                    self.selection = Some(area);
                     (self.window, self.popup) = (None, None);
                     self.selected.clear();
                     self.dirty = true;
@@ -1370,7 +1420,36 @@ impl Editor {
                 let top = near(&self.edges.1, origin.y + if pull.1 < 0 { dy } else { 0 }, pull.1 < 0);
                 let bottom = near(&self.edges.1, origin.bottom() + if pull.1 > 0 { dy } else { 0 }, pull.1 > 0);
                 // Pulled past the far side, it turns inside out.
-                let area = Rect::new(left.min(right), top.min(bottom), (right - left).abs().max(1), (bottom - top).abs().max(1));
+                let mut area = Rect::new(left.min(right), top.min(bottom), (right - left).abs().max(1), (bottom - top).abs().max(1));
+                // Kept to the shape that was asked for; or, with Shift,
+                // to the shape it was. The corner opposite the one held
+                // stays where it is, and an edge pulled leaves the
+                // middle of the two beside it where that was.
+                let (pull, origin) = (*pull, *origin);
+                if let Some(ratio) = self.settings.aspect.or(mods.shift.then_some((origin.w, origin.h))) {
+                    // Along one way of the screen: which side of what
+                    // stays still it is on, and the room there is.
+                    let along = |pull: i32, moving: i32, near: i32, far: i32, least: i32, most: i32| {
+                        let middle = (near + far) / 2;
+                        match pull {
+                            0 => (None, 2 * (middle - least).min(most - middle)),
+                            _ => {
+                                let still = if pull < 0 { far } else { near };
+                                let back = moving < still;
+                                (Some((still, back)), if back { still - least } else { most - still })
+                            }
+                        }
+                    };
+                    let (across, room_x) = along(pull.0, if pull.0 < 0 { left } else { right }, origin.x, origin.right(), screen.x, screen.right());
+                    let (down, room_y) = along(pull.1, if pull.1 < 0 { top } else { bottom }, origin.y, origin.bottom(), screen.y, screen.bottom());
+                    let (wide, high) = shaped(ratio, (area.w, area.h), (pull.0 != 0, pull.1 != 0), (room_x, room_y));
+                    let place = |side: Option<(i32, bool)>, middle: i32, size: i32| match side {
+                        Some((still, true)) => still - size,
+                        Some((still, false)) => still,
+                        None => middle - size / 2,
+                    };
+                    area = Rect::new(place(across, origin.x + origin.w / 2, wide), place(down, origin.y + origin.h / 2, high), wide, high);
+                }
                 self.selection = Some(area.intersect(screen));
                 self.dirty = true;
             }
@@ -1523,20 +1602,30 @@ impl Editor {
             Target::Outside => {
                 self.commit_text();
                 self.drag = Drag::Select { from: at, begun: false, before: self.selection };
+                // An area of a set size is put down round the pointer
+                // there and then, and a drag takes it elsewhere.
+                if let Some((wide, high)) = self.settings.fixed {
+                    let screen = self.screen();
+                    let origin = Rect::new(at.0 - wide / 2, at.1 - high / 2, wide.min(screen.w), high.min(screen.h)).kept_within(screen);
+                    self.selection = Some(origin);
+                    (self.window, self.popup) = (None, None);
+                    self.selected.clear();
+                    self.drag = Drag::Move { from: at, origin };
+                }
             }
             // On the frame: a drag makes it wider or narrower, and a
             // click opens what there is to choose about it.
             Target::Backdrop => {
                 self.commit_text();
                 let (out, room) = (self.outward(at), self.frame_room());
-                self.drag = Drag::Room { from: at, slack: (out.0 - room.0, out.1 - room.1), sides: (out.0 > 0, out.1 > 0), moved: false, opens: true };
+                self.drag = Drag::Room { from: at, slack: (out.0 - room.0, out.1 - room.1), sides: (out.0 > 0, out.1 > 0), moved: false, opens: true, shape: self.frame_shape() };
             }
             // A handle on the edge of the frame: the frame is made
             // larger or smaller that way, across, down, or both.
             Target::FrameGrip(across, down) => {
                 self.commit_text();
                 let (out, room) = (self.outward(at), self.frame_room());
-                self.drag = Drag::Room { from: at, slack: (out.0 - room.0, out.1 - room.1), sides: (across != 0, down != 0), moved: false, opens: false };
+                self.drag = Drag::Room { from: at, slack: (out.0 - room.0, out.1 - room.1), sides: (across != 0, down != 0), moved: false, opens: false, shape: self.frame_shape() };
             }
             Target::FrameCorner => {
                 let rect = self.frame_rect();
@@ -1669,7 +1758,13 @@ impl Editor {
             // arrows drawn after have theirs where this one now does.
             Drag::End { index, point, moved: false, .. } => {
                 let shape = &mut self.shapes[index];
-                if matches!(shape.tool, Tool::Arrow | Tool::Line) {
+                // A click on the dot a line is bent by straightens it.
+                if point == 2 && shape.bend().is_some() {
+                    let (a, b) = (shape.points[0], shape.points[1]);
+                    shape.bend_to(((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0));
+                } else if point == 2 {
+                    self.undo.pop();
+                } else if matches!(shape.tool, Tool::Arrow | Tool::Line) {
                     shape.heads[point] = !shape.heads[point];
                     shape.touch();
                     if shape.tool == Tool::Arrow && shape.heads != [false, false] {
@@ -2286,6 +2381,12 @@ impl Editor {
         Rect::new(area.x - room.0, area.y - room.1, area.w + 2 * room.0, area.h + 2 * room.1)
     }
 
+    /// How many times as wide as it is tall the frame is.
+    fn frame_shape(&self) -> f32 {
+        let rect = self.frame_rect();
+        rect.w.max(1) as f32 / rect.h.max(1) as f32
+    }
+
     /// The handles the frame has on its edges, to be made larger by:
     /// all eight, with the move tool in hand and a frame to have them.
     fn frame_grips(&self) -> Vec<(i32, i32)> {
@@ -2703,6 +2804,13 @@ impl Editor {
                 if style == shapes::HIGHLIGHT {
                     canvas.round_fill(cx - px as i32 * 2 / 3, cy - px as i32 / 2, px as i32 * 4 / 3, px as i32, 2, 0xFFE629, 150);
                 }
+                // On a patch: the letter dark on a patch of the light.
+                let ink = if style == shapes::BOXED {
+                    canvas.round_fill(cx - px as i32 * 3 / 4, cy - px as i32 * 3 / 4, px as i32 * 3 / 2, px as i32 * 3 / 2, px as i32 / 4, ink, 256);
+                    on(ink)
+                } else {
+                    ink
+                };
                 self.text.look = crate::text::Look { heavy: i32::from(style == shapes::BOLD), slant: if style == shapes::ITALIC { 0.2 } else { 0.0 }, opacity: 256 };
                 self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, ink, letter);
                 self.text.look = crate::text::Look::default();
@@ -3253,6 +3361,57 @@ mod tests {
     }
 
     #[test]
+    fn the_selection_and_the_frame_keep_their_shape_with_shift_or_when_told_to() {
+        let shift = Mods { shift: true, ctrl: false };
+        let pull = |editor: &mut Editor, from: (i32, i32), to: (i32, i32)| {
+            editor.pointer_moved(from.0, from.1, PLAIN);
+            editor.pressed(0);
+            editor.pointer_moved(to.0, to.1, shift);
+            editor.released();
+            editor.pointer_moved(to.0, to.1, PLAIN);
+        };
+        let mut editor = editor(1600, 900);
+        editor.edges = (Vec::new(), Vec::new());
+        drag(&mut editor, (200, 150), (599, 349));
+        // By a corner with Shift, twice as wide as tall as it was; by
+        // an edge, and the middle of the edges beside it stays put.
+        pull(&mut editor, (600, 350), (700, 360));
+        assert_eq!(editor.selection(), Some(Rect::new(200, 150, 500, 250)));
+        pull(&mut editor, (700, 275), (800, 275));
+        assert_eq!(editor.selection(), Some(Rect::new(200, 125, 600, 300)));
+        // Dragged out with Shift, an area is square.
+        pull(&mut editor, (1000, 500), (1100, 540));
+        assert_eq!(editor.selection(), Some(Rect::new(1000, 500, 101, 101)));
+
+        // Told to keep a shape, it does with no Shift, whichever way it
+        // is dragged, and is no larger than the screen has room for.
+        editor.settings.aspect = Some((16, 9));
+        drag(&mut editor, (100, 100), (419, 150));
+        assert_eq!(editor.selection(), Some(Rect::new(100, 100, 320, 180)));
+        drag(&mut editor, (800, 700), (481, 690));
+        assert_eq!(editor.selection(), Some(Rect::new(481, 521, 320, 180)));
+        drag(&mut editor, (1500, 100), (1599, 899));
+        assert_eq!(editor.selection(), Some(Rect::new(1500, 100, 100, 56)));
+
+        // Told a size, a press puts that much down round the pointer,
+        // all of it on the screen, and a drag takes it elsewhere.
+        (editor.settings.aspect, editor.settings.fixed) = (None, Some((300, 200)));
+        click(&mut editor, (1200, 700), 50_000);
+        assert_eq!(editor.selection(), Some(Rect::new(1050, 600, 300, 200)));
+        drag(&mut editor, (30, 30), (130, 80));
+        assert_eq!(editor.selection(), Some(Rect::new(100, 50, 300, 200)));
+
+        // The frame, made wider with Shift, is made taller with it.
+        let mut editor = self::editor(1600, 900);
+        drag(&mut editor, (400, 300), (799, 599));
+        editor.choose(Cell::Backdrop(7));
+        let shape = editor.frame_shape();
+        pull(&mut editor, (380, 400), (340, 400));
+        assert_eq!(editor.frame.pad.0, PADS[2] + 40);
+        assert!(editor.frame.pad.1 > PADS[2] + 20 && (editor.frame_shape() - shape).abs() < 0.01, "{:?}", editor.frame.pad);
+    }
+
+    #[test]
     fn shapes_are_drawn_undone_and_end_up_in_the_picture() {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
@@ -3460,7 +3619,7 @@ mod tests {
         drag(&mut editor, (200, 200), (400, 300));
         // An arrow picked out has its two ends, and no box to be resized
         // by: its head is taken elsewhere, and its tail stays.
-        assert_eq!(editor.ends(0), [(0, (201, 201)), (1, (401, 301))]);
+        assert_eq!(editor.ends(0), [(0, (201, 201)), (1, (401, 301)), (2, (301, 251))]);
         assert_eq!(editor.target_at((400, 300)), Target::End(1));
         drag(&mut editor, (400, 300), (500, 250));
         assert_eq!(editor.shapes[0].points, [(200.5, 200.5), (500.5, 250.5)]);
@@ -3520,6 +3679,43 @@ mod tests {
     }
 
     #[test]
+    fn an_arrow_is_bent_by_the_dot_in_its_middle_and_straightened_by_a_click_on_it() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('a'), PLAIN);
+        drag(&mut editor, (200, 400), (600, 400));
+        assert_eq!(editor.target_at((400, 400)), Target::End(2));
+        drag(&mut editor, (400, 400), (400, 300));
+        assert_eq!(editor.shapes[0].bend(), Some((400.5, 300.5)));
+        // It goes through where the dot was taken, and no longer along
+        // where it was straight; and its ends are where they were.
+        let mut pixels = vec![0u32; 1600 * 900];
+        editor.shapes[0].draw(&mut Canvas::new(&mut pixels, 1600, 900), &mut editor.text);
+        assert!(pixels[300 * 1600 + 400] != 0 && pixels[400 * 1600 + 400] == 0 && pixels[400 * 1600 + 202] != 0);
+        // Its head points the way it is going as it comes in: down and
+        // to the right, so that above the end there is more of it than
+        // below.
+        let above = (585..600).filter(|&x| (380..399).any(|y| pixels[y * 1600 + x] != 0)).count();
+        let below = (585..600).filter(|&x| (402..420).any(|y| pixels[y * 1600 + x] != 0)).count();
+        assert!(above > below, "{above} {below}");
+        // Written down and read back, it is as bent; and moved, the
+        // bend goes with it.
+        let mut read = Shape::read(&editor.shapes[0].write()).unwrap();
+        assert_eq!(read.bend(), Some((400.5, 300.5)));
+        read.translate(10.0, 0.0);
+        assert_eq!(read.middle(), (410.5, 300.5));
+        // A click on the dot, and it is straight again; as it is when
+        // the dot is taken back to where it would be.
+        click(&mut editor, (400, 300), 40_000);
+        assert_eq!((editor.shapes[0].bend(), editor.shapes[0].points.len()), (None, 2));
+        drag(&mut editor, (400, 400), (400, 300));
+        drag(&mut editor, (400, 300), (402, 401));
+        assert_eq!(editor.shapes[0].bend(), None);
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        assert!(editor.shapes[0].bend().is_some());
+    }
+
+    #[test]
     fn what_is_picked_out_goes_over_and_under_the_other_shapes() {
         let ctrl = Mods { shift: false, ctrl: true };
         let mut editor = editor(1600, 900);
@@ -3544,6 +3740,18 @@ mod tests {
         assert_eq!((colors(&editor), editor.selected.clone()), (vec![0x111111, 0x222222, 0x333333], vec![2]));
         editor.key(Key::Char('z'), ctrl);
         assert_eq!(colors(&editor), vec![0x333333, 0x111111, 0x222222]);
+
+        // An arrow, and a rectangle drawn over it and then put under.
+        let mut editor = self::editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('a'), PLAIN);
+        drag(&mut editor, (250, 300), (650, 300));
+        editor.key(Key::Char('r'), PLAIN);
+        editor.key(Key::Char('f'), PLAIN);
+        drag(&mut editor, (400, 200), (500, 320));
+        assert_eq!((editor.shapes[1].tool, editor.selected.clone()), (Tool::Rect, vec![1]));
+        editor.key(Key::Char('['), ctrl);
+        assert_eq!((editor.shapes[1].tool, editor.selected.clone()), (Tool::Arrow, vec![0]));
     }
 
     #[test]
@@ -4094,6 +4302,31 @@ mod tests {
         lens.released();
         let (_, wide, high, pixels, alpha) = lens.framed().unwrap();
         std::fs::write(dir.join("19-zoom-picture.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
+
+        // Each face plain, heavy, slanted and both, and on a patch; and
+        // arrows bent, one of them in dashes with a head at each end.
+        let mut cuts = self::editor(width, height);
+        cuts.pointer_moved(4 * unit, 4 * unit, PLAIN);
+        cuts.pressed(0);
+        cuts.pointer_moved(170 * unit, 90 * unit, PLAIN);
+        cuts.released();
+        for face in 0..FACES.len() {
+            for (column, style) in [0, shapes::BOLD, shapes::ITALIC, shapes::BOLD | shapes::ITALIC, shapes::BOXED | shapes::BOLD].into_iter().enumerate() {
+                let mut shape = Shape::new(Tool::Text, if style & shapes::BOXED != 0 { PALETTE[face * 4].0 } else { 0xFFFFFF }, 3.0, ((8 + column as i32 * 30) as f32 * unit as f32, (8 + face as i32 * 9) as f32 * unit as f32));
+                (shape.face, shape.style, shape.font_px, shape.text) = (face, style, 3 * unit as u32, "Hamburg 123".into());
+                cuts.shapes.push(shape);
+            }
+        }
+        for (row, (heads, dashed)) in [([false, true], false), ([true, true], true), ([false, false], false)].into_iter().enumerate() {
+            let y = (60 + row as i32 * 9) as f32 * unit as f32;
+            let mut shape = Shape::new(Tool::Arrow, RED, 4.0, (10.0 * unit as f32, y));
+            shape.points[1] = (70.0 * unit as f32, y + 4.0 * unit as f32);
+            shape.bend_to((45.0 * unit as f32, y - 8.0 * unit as f32));
+            (shape.heads, shape.dashed) = (heads, dashed);
+            cuts.shapes.push(shape);
+        }
+        cuts.selected = vec![cuts.shapes.len() - 3];
+        write(&mut cuts, "20-cuts-and-bends");
     }
 
     /// Not a test either: makes the pictures the README shows, out of

@@ -92,3 +92,22 @@
 
 # Seconds to wait before the screen is frozen: time to open a menu.
 # delay = 0
+
+# What kind of file a picture is saved as: "png", "jpg" or "webp". A
+# name given with -o that ends in one of them says so itself. What goes
+# to the clipboard is a PNG whichever.
+# format = "png"
+
+# How good a JPEG is, 1 to 100.
+# quality = 90
+
+# The mouse pointer in the picture, where it was when the screen was
+# frozen.
+# pointer = false
+
+# Keep the area dragged out to a shape, so wide to so tall ("16:9"), or
+# to a size in pixels ("1280x720"), which a press puts down and a drag
+# moves. Without either, Shift held keeps an area square as it is
+# dragged out, and the shape it has as it is resized.
+# aspect = "free"
+# fixed = "free"

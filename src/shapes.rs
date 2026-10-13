@@ -99,6 +99,9 @@ pub const BOLD: u8 = 1;
 pub const ITALIC: u8 = 2;
 pub const HIGHLIGHT: u8 = 4;
 pub const BULLETS: u8 = 8;
+/// On a patch of its own color, its letters in whichever of white and
+/// black reads on that.
+pub const BOXED: u8 = 16;
 
 /// What a highlight is the color of, and how opaque out of 256.
 const HIGHLIGHT_COLOR: (u32, u32) = (0xFFE629, 150);
@@ -312,7 +315,7 @@ impl Shape {
 
     /// The rectangle between its two points.
     pub fn frame(&self) -> (f32, f32, f32, f32) {
-        let (a, b) = (self.points[0], self.points[self.points.len() - 1]);
+        let (a, b) = (self.points[0], self.points[self.far()]);
         (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs())
     }
 
@@ -358,7 +361,10 @@ impl Shape {
             _ => self.stroke / 2.0,
         } + 2.0;
         let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for &(x, y) in &self.points {
+        // A bent line goes where its curve goes, which may be a little
+        // past the point it bends through.
+        let curve = self.curve();
+        for &(x, y) in self.points.iter().chain(curve.iter().flatten()) {
             (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x), bottom.max(y));
         }
         let (x, y) = ((left - margin).floor() as i32, (top - margin).floor() as i32);
@@ -377,10 +383,72 @@ impl Shape {
 
     /// What its outline is worked out from.
     fn outline(&self) -> Outline {
-        let (a, b) = (self.points[0], self.points[self.points.len() - 1]);
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head: self.head(), heads: self.heads, dashed: self.dashed, disc: self.disc() }
+        let (a, b) = (self.points[0], self.points[self.far()]);
+        let (curve, head) = (self.curve(), self.head());
+        let back = |points: &mut dyn Iterator<Item = Point>| {
+            let (mut last, mut gone) = (None::<Point>, 0.0);
+            for point in points {
+                gone += last.map_or(0.0, |last| (point.0 - last.0).hypot(point.1 - last.1));
+                last = Some(point);
+                if gone >= head.0 {
+                    break;
+                }
+            }
+            last.unwrap_or(a)
+        };
+        let backs = curve.map_or([b, a], |curve| [back(&mut curve.into_iter()), back(&mut curve.into_iter().rev())]);
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head, heads: self.heads, dashed: self.dashed, disc: self.disc(), curve, backs }
+    }
+
+    /// Which of its points is the far one of the two it is between: the
+    /// last, but that a line or an arrow may have a third it bends by.
+    fn far(&self) -> usize {
+        if matches!(self.tool, Tool::Line | Tool::Arrow) { 1 } else { self.points.len() - 1 }
+    }
+
+    /// The point a line or an arrow bends through, half way along it,
+    /// if it bends.
+    pub fn bend(&self) -> Option<Point> {
+        self.points.get(2).copied().filter(|_| matches!(self.tool, Tool::Line | Tool::Arrow))
+    }
+
+    /// Where the dot is that a line or an arrow is bent by: on its
+    /// bend, or half way along it while it is straight.
+    pub fn middle(&self) -> Point {
+        let (a, b) = (self.points[0], self.points[1]);
+        self.bend().unwrap_or(((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0))
+    }
+
+    /// Bends a line or an arrow through a point; or, taken back to
+    /// within a few pixels of where it would be straight, straightens
+    /// it again.
+    pub fn bend_to(&mut self, to: Point) {
+        let (a, b) = (self.points[0], self.points[1]);
+        self.points.truncate(2);
+        if segment(to, a, b) > 4.0 {
+            self.points.push(to);
+        }
+        self.touch();
+    }
+
+    /// A bent line as the short straight ones it is drawn as: a curve
+    /// from one end to the other, through its bend half way.
+    fn curve(&self) -> Option<[Point; BENDS + 1]> {
+        let (a, b, through) = (self.points[0], self.points[1], self.bend()?);
+        // What the curve is pulled towards, which is twice as far from
+        // the straight line as the curve gets.
+        let pull = (2.0 * through.0 - (a.0 + b.0) / 2.0, 2.0 * through.1 - (a.1 + b.1) / 2.0);
+        let mut points = [a; BENDS + 1];
+        for (step, point) in points.iter_mut().enumerate() {
+            let (t, u) = (step as f32 / BENDS as f32, 1.0 - step as f32 / BENDS as f32);
+            *point = (u * u * a.0 + 2.0 * u * t * pull.0 + t * t * b.0, u * u * a.1 + 2.0 * u * t * pull.1 + t * t * b.1);
+        }
+        Some(points)
     }
 }
+
+/// How many straight lines a bent one is drawn as.
+const BENDS: usize = 24;
 
 /// The few numbers a shape's outline is worked out from, apart from the
 /// shape, so that every core can be at it.
@@ -396,6 +464,10 @@ struct Outline {
     heads: [bool; 2],
     dashed: bool,
     disc: f32,
+    curve: Option<[Point; BENDS + 1]>,
+    /// Where a bent line is a head's length back from either end: the
+    /// way it is going there is the way the head at that end points.
+    backs: [Point; 2],
 }
 
 impl Outline {
@@ -416,6 +488,37 @@ impl Outline {
         let outside = if into > dash { (into - dash).min(dash + gap - into) } else { -into.min(dash - into) };
         solid.max(outside)
     }
+
+    /// The same of a bent line, less `trim` of it at either end, where
+    /// an arrow's head is: the nearest of the short lines it is made of,
+    /// and its dashes counted along all of them.
+    fn bent(&self, p: Point, curve: &[Point; BENDS + 1], trim: (f32, f32)) -> f32 {
+        let half = self.stroke / 2.0;
+        let lengths = curve.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1));
+        let whole: f32 = lengths.clone().sum();
+        let (first, last) = (trim.0.min(whole / 2.0), whole - trim.1.min(whole / 2.0));
+        let (dash, gap) = (self.stroke * 2.5 + 4.0, self.stroke * 2.0 + 3.0);
+        let (mut nearest, mut gone) = (f32::MAX, 0.0f32);
+        for (pair, length) in curve.windows(2).zip(lengths) {
+            let (begins, ends) = (gone, gone + length);
+            gone = ends;
+            if ends <= first || begins >= last || length <= 0.0 {
+                continue;
+            }
+            // As much of this one as is not under a head.
+            let at = |along: f32| (pair[0].0 + (pair[1].0 - pair[0].0) * along / length, pair[0].1 + (pair[1].1 - pair[0].1) * along / length);
+            let (from, to) = (at((first - begins).max(0.0)), at((last - begins).min(length)));
+            let mut far = segment(p, from, to) - half;
+            if self.dashed {
+                let run = (to.0 - from.0).hypot(to.1 - from.1).max(1e-3);
+                let along = (((p.0 - from.0) * (to.0 - from.0) + (p.1 - from.1) * (to.1 - from.1)) / run).clamp(0.0, run);
+                let into = (begins.max(first) - first + along).rem_euclid(dash + gap);
+                far = far.max(if into > dash { (into - dash).min(dash + gap - into) } else { -into.min(dash - into) });
+            }
+            nearest = nearest.min(far);
+        }
+        nearest
+    }
 }
 
 impl Outline {
@@ -427,12 +530,31 @@ impl Outline {
         let half = self.stroke / 2.0;
         match self.tool {
             Tool::Line | Tool::Arrow => {
+                let (head, wide) = self.head;
+                // Bent, each head points the way the line is going as
+                // it comes to that end.
+                if let Some(curve) = &self.curve {
+                    let barbs = |tip: Point, back: Point| {
+                        let length = (tip.0 - back.0).hypot(tip.1 - back.1).max(1e-3);
+                        let (dx, dy) = ((tip.0 - back.0) / length, (tip.1 - back.1) / length);
+                        let base = (tip.0 - dx * head, tip.1 - dy * head);
+                        triangle((x, y), tip, (base.0 - dy * wide, base.1 + dx * wide), (base.0 + dy * wide, base.1 - dx * wide)) - 0.6
+                    };
+                    let mut nearest = f32::MAX;
+                    if self.heads[1] {
+                        nearest = nearest.min(barbs(b, self.backs[1]));
+                    }
+                    if self.heads[0] {
+                        nearest = nearest.min(barbs(a, self.backs[0]));
+                    }
+                    let trim = (if self.heads[0] { head * 0.8 } else { 0.0 }, if self.heads[1] { head * 0.8 } else { 0.0 });
+                    return nearest.min(self.bent((x, y), curve, trim));
+                }
                 let length = (b.0 - a.0).hypot(b.1 - a.1);
                 if length < 0.5 || self.heads == [false, false] {
                     return self.shaft((x, y), a, b);
                 }
                 let (dx, dy) = ((b.0 - a.0) / length, (b.1 - a.1) / length);
-                let (head, wide) = self.head;
                 // A head at an end: its point there, its barbs back
                 // along the line. The shaft stops inside it, where its
                 // round end would otherwise blunt the point.
@@ -514,6 +636,14 @@ impl Shape {
             Tool::Text => {
                 let (x, y) = (self.points[0].0.round() as i32, self.points[0].1.round() as i32);
                 let high = Text::line_height(self.font_px);
+                // On a patch, the patch first: round all of its lines,
+                // with a little room, and the letters in what reads on it.
+                let mut ink = self.color;
+                if self.style & BOXED != 0 && !self.text.is_empty() {
+                    let (place, room) = (self.bounds(text), high / 4);
+                    canvas.round_fill(place.x - room * 3 / 2, place.y - room / 2, place.w + room * 3, place.h + room, room, self.color, self.opacity);
+                    ink = ink_on(self.color);
+                }
                 text.look = self.look();
                 for (index, line) in self.text.split('\n').enumerate() {
                     let shown = format!("{}{line}", self.lead());
@@ -524,7 +654,7 @@ impl Shape {
                         let wide = text.width_in(self.face, &shown, self.font_px);
                         canvas.round_fill(x - high / 8, top + high / 10, wide + high / 4, high - high / 5, high / 8, HIGHLIGHT_COLOR.0, HIGHLIGHT_COLOR.1 * self.opacity / 256);
                     }
-                    text.draw_in(self.face, canvas, x, top, self.font_px, self.color, &shown);
+                    text.draw_in(self.face, canvas, x, top, self.font_px, ink, &shown);
                 }
                 text.look = Look::default();
             }

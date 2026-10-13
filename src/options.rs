@@ -140,7 +140,14 @@ Keys, once an area is selected:
   The box of colors also says how opaque. A shape being moved goes to
   the edges and middles of the others; Ctrl held leaves it be.
   An edge of the selection goes to the edge of a window near it; Ctrl
-  held leaves it where it is put.
+  held leaves it where it is put. Shift held keeps an area square as it
+  is dragged out, and the selection, a shape or the frame the shape it
+  has as it is made larger or smaller.
+  Ctrl+] puts what is picked out over the shape above it, Ctrl+[ under
+  the one below; with Shift, over or under them all.
+  A line or an arrow picked out has a dot half way along it: dragged, it
+  bends the line through where it is taken; clicked, it straightens it.
+  The bar over text also sets it on a patch of its own color.
   Arrows nudge the selection, or the shape picked out; Shift by ten;
   Ctrl+arrows resize. Delete removes the shape picked out. Ctrl+A is the
   whole screen. A right click is the colors.
@@ -463,7 +470,7 @@ fn read_config(options: &mut Options, text: &str) -> Result<(), String> {
         let name = match (takes_value(name), value) {
             (true, _) => name.to_owned(),
             (false, "true") => name.to_owned(),
-            (false, "false") if ["magnifier", "remember", "filled", "shadow"].contains(&name) => format!("no-{name}"),
+            (false, "false") if ["magnifier", "remember", "filled", "shadow", "pointer"].contains(&name) => format!("no-{name}"),
             (false, "false") => continue,
             (false, _) => return Err(wrong(format!("{name} is either true or false"))),
         };
@@ -630,6 +637,18 @@ mod tests {
         assert!(run(&["--nonsense"]).err().unwrap().contains("unknown option --nonsense"));
         assert!(run(&["-o"]).err().unwrap().contains("needs a value"));
         assert!(run(&["stray"]).is_err());
+    }
+
+    #[test]
+    fn the_kind_of_file_the_pointer_and_the_shape_of_the_area_are_said() {
+        let options = run(&["--format", "JPG", "--quality=70", "--pointer", "--aspect", "16:9", "--fixed", "1280x720"]).unwrap();
+        assert_eq!((options.format, options.quality, options.pointer), (Format::Jpeg, 70, true));
+        assert_eq!((options.settings.aspect, options.settings.fixed), (Some((16, 9)), Some((1280, 720))));
+        let plain = run(&["--aspect", "free"]).unwrap();
+        assert_eq!((plain.format, plain.quality, plain.pointer, plain.settings.aspect), (Format::Png, 90, false, None));
+        for wrong in [&["--format", "gif"][..], &["--quality", "0"], &["--aspect", "16x9"], &["--fixed", "0x100"]] {
+            assert!(run(wrong).is_err(), "{wrong:?}");
+        }
     }
 
     #[test]

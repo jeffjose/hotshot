@@ -27,6 +27,9 @@ hotshot -g 0,0,800,600 -o shot.png
 hotshot --again        # the same area as last time
 hotshot --reopen       # the last picture, its shapes still movable
 hotshot -t calculator  # the window with that in its title
+hotshot -D 3 --pointer # after three seconds, with the mouse pointer in it
+hotshot --aspect 16:9  # an area kept to that shape; --fixed 1280x720 to a size
+hotshot -f -o shot.jpg # a JPEG, or .webp; --format says it for Save
 ```
 
 Drag to select an area, click a window to take it, or press Enter for
@@ -49,7 +52,7 @@ the whole screen. Then:
 | `A` `L` | arrow, line |
 | `R` `O` | rectangle, oval |
 | `P` `H` | pen, marker |
-| `T` | text, in five fonts, bold, italic, highlighted or bulleted |
+| `T` | text, in five fonts, bold, italic, highlighted, bulleted, or on a patch of color |
 | `N` | numbered counters |
 | `B` | blur |
 | `S` | spotlight |
@@ -60,8 +63,11 @@ the whole screen. Then:
 | `1`-`4` | line width and text size |
 
 Shapes stay editable: move them, resize them, recolor them, duplicate
-them with `Ctrl+D`. They snap to each other, and the selection snaps to
-window edges.
+them with `Ctrl+D`, and put one over or under another with `Ctrl+]` and
+`Ctrl+[`. An arrow or a line bends by the dot in its middle. They snap
+to each other, and the selection snaps to window edges. Shift held
+keeps the shape of whatever is being resized: the selection, a shape,
+or the frame.
 
 ![A window set in a frame, with a backdrop and a shadow](docs/frame.png)
 
@@ -86,8 +92,7 @@ hotshot --default-config > ~/.config/hotshot/config.toml
 
 ## Not yet
 
-Wayland, the mouse pointer in the picture, formats other than PNG, and
-a tray icon.
+Wayland, a tray icon, and pinning a picture to the screen.
 
 ## License
 
