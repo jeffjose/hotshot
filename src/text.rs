@@ -35,6 +35,7 @@ pub mod icons {
     pub const STICKER: &str = "\u{e01a}";
     pub const DOWN: &str = "\u{e01b}";
     pub const DICE: &str = "\u{e01c}";
+    pub const POINTER: &str = "\u{e01d}";
     pub const CHECK: &str = "\u{e010}";
 }
 

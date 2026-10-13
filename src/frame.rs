@@ -1,5 +1,5 @@
-//! The picture set on something: a backdrop of two colors run into
-//! each other, or a photograph, with room round it and a shadow under
+//! The picture set on something: a backdrop of colors run into each
+//! other, or a photograph, with room round it and a shadow under
 //! it. This is the picture as it is shown off, where the plain one is
 //! the picture as it is.
 
@@ -9,18 +9,101 @@ use rayon::prelude::*;
 
 use crate::canvas::mix;
 
-/// The backdrops there are of two colors: what each is called, the
-/// color at its top-left and the one at its bottom-right.
-pub const GRADIENTS: [(&str, u32, u32); 8] = [
-    ("Dusk", 0x4F46E5, 0xEC4899),
-    ("Ocean", 0x06B6D4, 0x3B82F6),
-    ("Sunset", 0xF97316, 0xEC4899),
-    ("Mint", 0x34D399, 0x06B6D4),
-    ("Peach", 0xFDBA74, 0xF9A8D4),
-    ("Violet", 0x8E4EC6, 0x3E63DD),
-    ("Slate", 0x334155, 0x0F172A),
-    ("Paper", 0xF8FAFC, 0xE2E8F0),
+/// How a backdrop is colored.
+#[derive(Clone, Copy, Debug)]
+pub enum Kind {
+    /// A color with soft patches of others on it, each with where its
+    /// middle is and how far it reaches, as parts of the whole: colors
+    /// that run into each other every way at once.
+    Mesh(u32, &'static [(f32, f32, f32, u32)]),
+    /// Colors run one into the next along a line at an angle, in
+    /// degrees: 0 is left to right, 90 top to bottom.
+    Line(f32, &'static [u32]),
+    /// One color.
+    Plain(u32),
+}
+
+/// The backdrops there are, by what each is called: sixteen meshes,
+/// sixteen that run along a line, and eight plain. The box of them
+/// shows them eight to a row, so each kind has rows to itself.
+pub const BACKDROPS: [(&str, Kind); 40] = [
+    ("Aurora", Kind::Mesh(0x172554, &[(0.15, 0.2, 0.75, 0x3B82F6), (0.85, 0.15, 0.65, 0x8B5CF6), (0.6, 0.95, 0.7, 0x14B8A6)])),
+    ("Orchid", Kind::Mesh(0x2E1065, &[(0.1, 0.1, 0.75, 0xEC4899), (0.9, 0.3, 0.7, 0x8B5CF6), (0.5, 1.0, 0.7, 0x6366F1)])),
+    ("Ember", Kind::Mesh(0x7C2D12, &[(0.1, 0.9, 0.85, 0xF97316), (0.9, 0.1, 0.85, 0xE11D48), (0.65, 0.5, 0.45, 0xFBBF24)])),
+    ("Lagoon", Kind::Mesh(0x115E59, &[(0.2, 0.2, 0.75, 0x06B6D4), (0.9, 0.8, 0.8, 0x10B981), (0.85, 0.1, 0.5, 0x3B82F6)])),
+    ("Nebula", Kind::Mesh(0x1E1B4B, &[(0.2, 0.8, 0.75, 0x7C3AED), (0.8, 0.2, 0.65, 0xDB2777), (0.95, 0.95, 0.5, 0x2563EB)])),
+    ("Peacock", Kind::Mesh(0x0C4A6E, &[(0.1, 0.9, 0.8, 0x0D9488), (0.9, 0.1, 0.7, 0x6D28D9), (0.5, 0.4, 0.5, 0x0EA5E9)])),
+    ("Rosewood", Kind::Mesh(0x4C0519, &[(0.1, 0.1, 0.8, 0xBE123C), (0.9, 0.9, 0.8, 0x9D174D), (0.9, 0.1, 0.5, 0xFB923C)])),
+    ("Midnight", Kind::Mesh(0x020617, &[(0.1, 0.1, 0.85, 0x1E3A8A), (0.9, 0.9, 0.8, 0x312E81), (0.9, 0.1, 0.5, 0x0F766E)])),
+    ("Sorbet", Kind::Mesh(0xFFF1E6, &[(0.0, 0.0, 0.85, 0xFDBA74), (1.0, 0.2, 0.75, 0xF9A8D4), (0.5, 1.0, 0.7, 0xFDE68A)])),
+    ("Candy", Kind::Mesh(0xFDE2F3, &[(0.1, 0.2, 0.75, 0xFDA4AF), (0.9, 0.1, 0.7, 0xC4B5FD), (0.6, 0.95, 0.7, 0x93C5FD)])),
+    ("Glacier", Kind::Mesh(0xE0F2FE, &[(0.1, 0.1, 0.75, 0x7DD3FC), (0.9, 0.2, 0.7, 0xC7D2FE), (0.5, 1.0, 0.8, 0xA5F3FC)])),
+    ("Meadow", Kind::Mesh(0xECFCCB, &[(0.1, 0.9, 0.75, 0x86EFAC), (0.9, 0.1, 0.7, 0xFDE68A), (0.9, 0.9, 0.6, 0x67E8F9)])),
+    ("Sunrise", Kind::Mesh(0xFEF3C7, &[(0.0, 1.0, 0.9, 0xFB7185), (1.0, 0.0, 0.8, 0xFBBF24), (0.5, 0.5, 0.45, 0xFDBA74)])),
+    ("Citrus", Kind::Mesh(0xFEF9C3, &[(0.0, 0.0, 0.8, 0xBEF264), (1.0, 1.0, 0.8, 0xFDBA74), (1.0, 0.0, 0.6, 0xFDE047)])),
+    ("Dune", Kind::Mesh(0xF5E6D3, &[(0.1, 0.9, 0.8, 0xE7B98A), (0.9, 0.1, 0.7, 0xF3D9B1), (0.9, 0.9, 0.6, 0xD4A373)])),
+    ("Pearl", Kind::Mesh(0xFAFAF9, &[(0.1, 0.1, 0.75, 0xE7E5E4), (0.9, 0.9, 0.8, 0xDDD6FE), (0.9, 0.1, 0.6, 0xFBCFE8)])),
+    ("Dusk", Kind::Line(45.0, &[0x4F46E5, 0xEC4899])),
+    ("Ocean", Kind::Line(45.0, &[0x06B6D4, 0x3B82F6])),
+    ("Sunset", Kind::Line(45.0, &[0xF97316, 0xEC4899])),
+    ("Mint", Kind::Line(45.0, &[0x34D399, 0x06B6D4])),
+    ("Peach", Kind::Line(45.0, &[0xFDBA74, 0xF9A8D4])),
+    ("Violet", Kind::Line(45.0, &[0x8E4EC6, 0x3E63DD])),
+    ("Iris", Kind::Line(60.0, &[0x1E1B4B, 0x4338CA, 0x7C3AED])),
+    ("Arctic", Kind::Line(30.0, &[0x0EA5E9, 0x6366F1, 0xA855F7])),
+    ("Grape", Kind::Line(30.0, &[0x7E22CE, 0xDB2777, 0xF97316])),
+    ("Flamingo", Kind::Line(60.0, &[0xFB7185, 0xFDBA74])),
+    ("Lime", Kind::Line(60.0, &[0xA3E635, 0x22C55E, 0x0D9488])),
+    ("Rose", Kind::Line(90.0, &[0xFFE4E6, 0xFECDD3, 0xFDA4AF])),
+    ("Sky", Kind::Line(90.0, &[0xE0F2FE, 0x7DD3FC, 0x38BDF8])),
+    ("Steel", Kind::Line(90.0, &[0x64748B, 0x1E293B])),
+    ("Slate", Kind::Line(45.0, &[0x334155, 0x0F172A])),
+    ("Paper", Kind::Line(45.0, &[0xF8FAFC, 0xE2E8F0])),
+    ("White", Kind::Plain(0xFFFFFF)),
+    ("Fog", Kind::Plain(0xF1F5F9)),
+    ("Sand", Kind::Plain(0xF5F0E6)),
+    ("Blush", Kind::Plain(0xFCE7F3)),
+    ("Navy", Kind::Plain(0x172554)),
+    ("Forest", Kind::Plain(0x14532D)),
+    ("Graphite", Kind::Plain(0x27272A)),
+    ("Ink", Kind::Plain(0x0B0B0F)),
 ];
+
+/// The backdrops the box of them shows before it is asked for the rest.
+pub const FIRST: [&str; 6] = ["Aurora", "Orchid", "Sorbet", "Glacier", "Dusk", "Graphite"];
+
+/// Which of the backdrops one is, by what it is called, in whatever case.
+pub fn named(name: &str) -> Option<usize> {
+    BACKDROPS.iter().position(|(known, _)| known.eq_ignore_ascii_case(name))
+}
+
+/// The color of a backdrop at a place on it: so far across and so far
+/// down, each as a part of the whole. `noise`, of 0 to 1 and different
+/// from one pixel to the next, keeps the steps between colors from
+/// showing as bands.
+pub fn shade(which: usize, across: f32, down: f32, noise: f32) -> u32 {
+    let parts = |color: u32| [(color >> 16 & 0xFF) as f32, (color >> 8 & 0xFF) as f32, (color & 0xFF) as f32];
+    let between = |from: [f32; 3], to: [f32; 3], amount: f32| [0, 1, 2].map(|part| from[part] + (to[part] - from[part]) * amount);
+    let color = match BACKDROPS[which.min(BACKDROPS.len() - 1)].1 {
+        Kind::Plain(color) => return color,
+        // Each patch laid over what is there, less of it the further
+        // from its middle, and none past its reach.
+        Kind::Mesh(under, patches) => patches.iter().fold(parts(under), |color, &(x, y, reach, patch)| {
+            let near = (1.0 - (across - x).hypot(down - y) / reach).clamp(0.0, 1.0);
+            between(color, parts(patch), near * near * (3.0 - 2.0 * near))
+        }),
+        // How far along the line the place is, from one corner of the
+        // whole to the one opposite; and between which two colors.
+        Kind::Line(angle, colors) => {
+            let (sine, cosine) = angle.to_radians().sin_cos();
+            let along = (((across - 0.5) * cosine + (down - 0.5) * sine) / (cosine.abs() + sine.abs()) + 0.5).clamp(0.0, 1.0) * (colors.len() - 1) as f32;
+            let from = (along as usize).min(colors.len() - 2);
+            between(parts(colors[from]), parts(colors[from + 1]), along - from as f32)
+        }
+    };
+    let whole = |part: f32| (part + noise - 0.5).round().clamp(0.0, 255.0) as u32;
+    whole(color[0]) << 16 | whole(color[1]) << 8 | whole(color[2])
+}
 
 /// How much room there is round the picture, in pixels of a screen 1080
 /// high: none, and three widths of it.
@@ -46,7 +129,7 @@ pub enum Backdrop {
     /// Nothing: what is round the picture is see-through.
     #[default]
     None,
-    /// One of `GRADIENTS`.
+    /// One of `BACKDROPS`.
     Gradient(usize),
     /// A photograph, handed over with it.
     Photo,
@@ -113,12 +196,7 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
             // noise so that the steps between colors do not show.
             let behind = match frame.backdrop {
                 Backdrop::None => None,
-                Backdrop::Gradient(which) => {
-                    let (_, from, to) = GRADIENTS[which.min(GRADIENTS.len() - 1)];
-                    let along = (x as f32 / wide as f32 + y as f32 / high as f32) * 128.0;
-                    let noise = ((x * 7 + y * 13) % 16) as f32 / 16.0;
-                    Some(mix(from, to, (along + noise).clamp(0.0, 256.0) as u32))
-                }
+                Backdrop::Gradient(which) => Some(shade(which, (x as f32 + 0.5) / wide as f32, (y as f32 + 0.5) / high as f32, ((x * 7 + y * 13) % 16) as f32 / 16.0)),
                 // The photograph, as large as it takes to cover, and its
                 // middle in the middle.
                 Backdrop::Photo => photo.filter(|photo| photo.width > 0 && photo.height > 0).map(|photo| {
@@ -219,7 +297,8 @@ mod tests {
         assert_eq!((wide, high, plain[0]), (4, 2, 0xFF11_2233));
         assert!(Frame::default().is_plain());
 
-        let frame = Frame { backdrop: Backdrop::Gradient(6), pad: (PADS[1], PADS[1]), radius: 0, shadow: false };
+        let slate = named("slate").unwrap();
+        let frame = Frame { backdrop: Backdrop::Gradient(slate), pad: (PADS[1], PADS[1]), radius: 0, shadow: false };
         let (wide, high, framed) = set(frame, &picture, 4, 2, 0, 1.0, None);
         assert_eq!((wide, high), (4 + 64, 2 + 64));
         // Opaque everywhere; the picture in the middle of it, and at
@@ -227,7 +306,15 @@ mod tests {
         assert!(framed.iter().all(|pixel| pixel >> 24 == 255));
         assert_eq!(framed[(32 * wide + 32) as usize], 0xFF11_2233);
         let near = |pixel: u32, color: u32| (0..3).all(|channel| ((pixel >> (channel * 8) & 0xFF) as i32 - (color >> (channel * 8) & 0xFF) as i32).abs() < 8);
-        assert!(near(framed[0], GRADIENTS[6].1) && near(framed[framed.len() - 1], GRADIENTS[6].2));
+        assert!(near(framed[0], 0x334155) && near(framed[framed.len() - 1], 0x0F172A));
+        // Every backdrop is called something no other is, and is a
+        // color everywhere; a mesh is its patches' colors near them.
+        for (which, (name, _)) in BACKDROPS.iter().enumerate() {
+            assert_eq!(named(&name.to_uppercase()), Some(which));
+        }
+        assert!(FIRST.iter().all(|name| named(name).is_some()));
+        assert!(near(shade(named("aurora").unwrap(), 0.15, 0.2, 0.5), 0x3B82F6));
+        assert_eq!(shade(named("ink").unwrap(), 0.3, 0.7, 0.9), 0x0B0B0F);
     }
 
     #[test]

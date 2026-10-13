@@ -445,7 +445,13 @@ impl Pointer {
     /// byte of each pixel is left as it is.
     pub fn stamp(&self, into: &mut [u32], width: i32, origin: (i32, i32)) {
         let height = into.len() as i32 / width.max(1);
-        let part = Rect::new(self.x - origin.0, self.y - origin.1, self.w, self.h).intersect(Rect::new(0, 0, width, height));
+        self.stamp_within(into, width, origin, Rect::new(0, 0, width, height));
+    }
+
+    /// The same, and no further than a rectangle of the picture.
+    pub fn stamp_within(&self, into: &mut [u32], width: i32, origin: (i32, i32), within: Rect) {
+        let height = into.len() as i32 / width.max(1);
+        let part = Rect::new(self.x - origin.0, self.y - origin.1, self.w, self.h).intersect(Rect::new(0, 0, width, height)).intersect(within);
         for y in part.y..part.bottom() {
             for x in part.x..part.right() {
                 let over = self.pixels[((y + origin.1 - self.y) * self.w + x + origin.0 - self.x) as usize];

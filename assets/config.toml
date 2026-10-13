@@ -70,10 +70,15 @@
 # place = "~/Pictures/work"
 # place = "~/Documents/bugs"
 
-# The picture set in a frame every time: on a backdrop (dusk, ocean,
-# sunset, mint, peach, violet, slate, paper), with room round it (0 to
-# 3, or a number of pixels), and a shadow. Without these it is plain,
-# and a frame is something chosen for one picture with W.
+# The picture set in a frame every time: on a backdrop, with room round
+# it (0 to 3, or a number of pixels), and a shadow. Without these it is
+# plain, and a frame is something chosen for one picture with W.
+#   the backdrops, as the box of them has them:
+#   meshes: aurora orchid ember lagoon nebula peacock rosewood midnight
+#           sorbet candy glacier meadow sunrise citrus dune pearl
+#   lines:  dusk ocean sunset mint peach violet iris arctic grape
+#           flamingo lime rose sky steel slate paper
+#   plain:  white fog sand blush navy forest graphite ink
 # backdrop = "none"
 # padding = 0
 # shadow = false
@@ -102,7 +107,8 @@
 # quality = 90
 
 # The mouse pointer in the picture, where it was when the screen was
-# frozen.
+# frozen. Either way, the button for it in the bar, or M, puts it in
+# and takes it out for the picture being taken.
 # pointer = false
 
 # Keep the area dragged out to a shape, so wide to so tall ("16:9"), or

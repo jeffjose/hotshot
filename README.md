@@ -58,7 +58,8 @@ the whole screen. Then:
 | `S` | spotlight |
 | `Z` | zoom lens |
 | `J` `E` | badges, emoji |
-| `W` | frame: a backdrop, padding and a shadow |
+| `W` | frame: one of forty backdrops, padding and a shadow |
+| `M` | the mouse pointer, in the picture or out of it |
 | `C` `I` | colors, color picker |
 | `1`-`4` | line width and text size |
 

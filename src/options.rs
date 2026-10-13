@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::canvas::Rect;
 use crate::editor::{Finish, Settings, Windows, PALETTE};
-use crate::frame::{Backdrop, GRADIENTS, PADS};
+use crate::frame::{self, Backdrop, BACKDROPS, PADS};
 use crate::output::Format;
 
 pub const USAGE: &str = "\
@@ -49,7 +49,9 @@ What to do with it:
       --format KIND          png (the default), jpg or webp; a name given
                              with -o that ends in one of them says so itself
       --quality N            how good a JPEG is, 1 to 100 (90)
-      --pointer              with the mouse pointer in the picture
+      --pointer              with the mouse pointer in the picture (in the
+                             editor, the button for it or M puts it in and
+                             takes it out)
       --aspect W:H           keep the area dragged out to a shape, as 16:9
       --fixed WxH            or to a size in pixels, as 1280x720: a press
                              puts it down and a drag moves it
@@ -83,8 +85,10 @@ Look:
                              (sans, the default), instrument-serif (serif),
                              architects-daughter (hand), fira-code (mono)
                              or anton (impact), which is for captions
-      --backdrop NAME        set the picture on a backdrop: dusk, ocean,
-                             sunset, mint, peach, violet, slate or paper
+      --backdrop NAME        set the picture on a backdrop: aurora, orchid,
+                             sorbet, glacier, dusk, graphite or any other
+                             of the forty the box of them names (W, then
+                             the dots; a wrong name here lists them all)
       --padding N            with this much room round it: 0 to 3, or past
                              that so many pixels
       --shadow               and a shadow under it
@@ -111,7 +115,7 @@ Keys, once an area is selected:
   V move   A arrow   L line   R rectangle   O oval   P pen   H marker
   T text   N counter   B blur   S spotlight   Z zoom   G the next font
   J badges   E emoji (type to search)   W backdrop, room and shadow
-  D dashes
+  D dashes   M the mouse pointer, in the picture or out of it
   C colors   I pick a color off the screen
   In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends
   it; the arrows, Home, End and a click move the caret; Ctrl+V pastes;
@@ -348,11 +352,13 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "save-to" => options.save_to = Some(path(&value()?)),
         "backdrop" => {
             let text = value()?;
-            let wanted = text.to_lowercase();
-            options.settings.frame.backdrop = match GRADIENTS.iter().position(|(name, _, _)| name.to_lowercase() == wanted) {
+            options.settings.frame.backdrop = match frame::named(&text) {
                 Some(which) => Backdrop::Gradient(which),
-                None if wanted == "none" => Backdrop::None,
-                None => return Err(format!("invalid backdrop '{text}', expected none, dusk, ocean, sunset, mint, peach, violet, slate or paper")),
+                None if text.eq_ignore_ascii_case("none") => Backdrop::None,
+                None => {
+                    let names: Vec<String> = BACKDROPS.iter().map(|(name, _)| name.to_lowercase()).collect();
+                    return Err(format!("invalid backdrop '{text}', expected none or one of: {}", names.join(", ")));
+                }
             };
         }
         "padding" => {

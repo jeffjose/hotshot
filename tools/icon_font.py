@@ -37,6 +37,7 @@ PICKS = {
     "PIN": "pin", "MARKER": "paint-roller", "MONITOR": "monitor", "FOLDER": "folder",
     "SPOTLIGHT": "flashlight-on", "ZOOM": "magnifier-zoom-in", "BADGE": "tag-horizontal",
     "FRAME": "gallery-wide", "STICKER": "smile-circle", "DOWN": "alt-arrow-down",
+    "POINTER": "cursor-square",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'

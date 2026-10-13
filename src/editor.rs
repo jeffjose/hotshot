@@ -8,7 +8,7 @@ use std::ops::DerefMut;
 
 use crate::canvas::{self, Canvas, Rect};
 use crate::shapes::{self, Shape, Tool};
-use crate::frame::{self, Backdrop, Frame, Photo, GRADIENTS, PADS};
+use crate::frame::{self, Backdrop, Frame, Photo, BACKDROPS, FIRST, PADS};
 use crate::text::{icons, Text, FACES};
 
 // jog's colors, so that the two look like one family.
@@ -220,6 +220,8 @@ enum Button {
     Badges,
     /// What the picture is set on, and how.
     Frame,
+    /// Whether the mouse pointer is in the picture.
+    Pointer,
     /// Which folder Save saves to.
     Places,
     /// Every emoji there is, to be searched and put on the picture.
@@ -259,6 +261,11 @@ fn emoji() -> &'static [(&'static str, &'static str)] {
 const EMOJI_ACROSS: i32 = 10;
 const EMOJI_DOWN: i32 = 7;
 
+/// How many backdrops the box of them has to a row; and the kinds of
+/// them, in the order `BACKDROPS` has them, with how many of each.
+const BACKDROP_ACROSS: i32 = 8;
+const BACKDROP_KINDS: [(&str, usize); 3] = [("Mesh", 16), ("Gradient", 16), ("Plain", 8)];
+
 /// A thing to be chosen in a box that hangs from the bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Cell {
@@ -270,9 +277,11 @@ enum Cell {
     Emoji(usize),
     /// One of the ways a tool can draw: a tool's own short list.
     Variant(usize),
-    /// What the picture is set on: nothing, or one of the gradients
+    /// What the picture is set on: nothing, or one of the backdrops
     /// counted from 1.
     Backdrop(usize),
+    /// The rest of the backdrops, shown or put away again.
+    More,
     /// A photograph of the user's own, behind the picture.
     Own,
     /// A photograph nobody chose, and a different one each time.
@@ -302,7 +311,7 @@ const GROUPS: [&[Button]; 5] = [
     ],
     &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill, Button::Face],
     &[Button::Undo, Button::Redo],
-    &[Button::Frame],
+    &[Button::Frame, Button::Pointer],
     &[Button::Cancel, Button::Save, Button::Places, Button::Copy],
 ];
 
@@ -336,6 +345,7 @@ impl Button {
             Button::Cancel => ("Cancel", "Esc"),
             Button::Save => ("Save", "Ctrl+S"),
             Button::Frame => ("Backdrop, room and shadow", "W"),
+            Button::Pointer => ("Mouse pointer in the picture", "M"),
             Button::Places => ("Where Save saves to", ""),
             Button::Copy => ("Copy", "Ctrl+C"),
         }
@@ -363,6 +373,7 @@ impl Button {
             Button::Cancel => icons::CLOSE,
             Button::Save => icons::SAVE,
             Button::Frame => icons::FRAME,
+            Button::Pointer => icons::POINTER,
             Button::Places => icons::DOWN,
             Button::Copy => icons::COPY,
             Button::Color | Button::Size(_) | Button::Face => "",
@@ -482,6 +493,8 @@ struct Layout {
     /// The line to type a search in, and the line a name is said on.
     field: Option<Rect>,
     caption: Option<Rect>,
+    /// What each kind of backdrop is called, over the rows of it.
+    captions: Vec<((i32, i32), &'static str)>,
 }
 
 pub struct Editor {
@@ -541,6 +554,12 @@ pub struct Editor {
     /// frame is chosen in; and what it was made from, to tell when it
     /// is out of date.
     look: Option<(String, i32, i32, Vec<u32>)>,
+    /// Whether the box of backdrops shows all of them, or the few.
+    more: bool,
+    /// The mouse pointer as it was when the screen was frozen, where
+    /// the display would say; and whether it is in the picture.
+    arrow: Option<canvas::Pointer>,
+    arrow_shows: bool,
     /// Which of the folders Save saves to.
     place: usize,
     /// The frame as it shows round the selection: what it was made
@@ -680,6 +699,9 @@ impl Editor {
             wish: None,
             photos: 0,
             look: None,
+            more: false,
+            arrow: None,
+            arrow_shows: false,
             surround: None,
             word: 0,
             opacity: 256,
@@ -780,16 +802,11 @@ impl Editor {
         canvas::darken_into(&mut self.dim[pixels.clone()], &self.shot.pixels[pixels], keep);
     }
 
-    /// The mouse pointer, put into the screen where it was when the
-    /// screen was frozen: once the rows it is on have been read.
-    pub fn put_pointer(&mut self, pointer: &canvas::Pointer) {
-        let (width, height) = (self.shot.width, self.shot.height);
-        pointer.stamp(&mut self.shot.pixels, width, (0, 0));
-        let rows = pointer.y.clamp(0, height)..(pointer.y + pointer.h).clamp(0, height);
-        if !rows.is_empty() {
-            self.arrived(rows);
-        }
-        self.dirty = true;
+    /// The mouse pointer as it was when the screen was frozen, and
+    /// whether it is in the picture to begin with: the button for it,
+    /// or M, puts it in and takes it out.
+    pub fn set_pointer(&mut self, pointer: canvas::Pointer, shows: bool) {
+        (self.arrow, self.arrow_shows, self.dirty) = (Some(pointer), shows, true);
     }
 
     /// The screen darkened, as far as it has been read.
@@ -916,20 +933,46 @@ impl Editor {
                 // those a photograph nobody chose, one of the user's
                 // own if there is one, how much room, and the shadow.
                 Button::Frame => {
-                    let across = (GRADIENTS.len() as i32 + 1) * side;
                     // The picture itself shows what is chosen, where it
-                    // is, so there is nothing here but the choosing.
-                    let look = -pad;
-                    for index in 0..=GRADIENTS.len() {
-                        cells.push((Rect::new(index as i32 * side, look + pad, side, side), Cell::Backdrop(index)));
+                    // is, so there is nothing here but the choosing:
+                    // none, a few of the backdrops and dots for the
+                    // rest; or, the dots pressed, all of them, each
+                    // kind under what it is called, eight to a row.
+                    let across = BACKDROP_ACROSS * side;
+                    let mut down = 0;
+                    match self.more {
+                        false => {
+                            let row = [Cell::Backdrop(0)].into_iter().chain(FIRST.iter().filter_map(|name| frame::named(name)).map(|which| Cell::Backdrop(which + 1))).chain([Cell::More]);
+                            for (index, cell) in row.enumerate() {
+                                cells.push((Rect::new(index as i32 * side, 0, side, side), cell));
+                            }
+                            down += side;
+                        }
+                        true => {
+                            let line = Text::line_height(px) + pad / 2;
+                            let mut from = 0;
+                            for (name, count) in BACKDROP_KINDS {
+                                layout.captions.push(((pad / 2, down + pad / 4), name));
+                                down += line;
+                                for index in 0..count {
+                                    cells.push((Rect::new(index as i32 % BACKDROP_ACROSS * side, down + index as i32 / BACKDROP_ACROSS * side, side, side), Cell::Backdrop(from + index + 1)));
+                                }
+                                from += count;
+                                down += (count as i32 + BACKDROP_ACROSS - 1) / BACKDROP_ACROSS * side;
+                            }
+                            down += pad / 2;
+                        }
                     }
                     let mut row = vec![Cell::Dice];
                     row.extend(self.settings.photo.is_some().then_some(Cell::Own));
                     row.push(Cell::Shadow);
-                    for (index, cell) in row.into_iter().enumerate() {
-                        cells.push((Rect::new(index as i32 * side, look + pad + side, side, side), cell));
+                    if self.more {
+                        row.extend([Cell::Backdrop(0), Cell::More]);
                     }
-                    (across, look + pad + 2 * side)
+                    for (index, cell) in row.into_iter().enumerate() {
+                        cells.push((Rect::new(index as i32 * side, down, side, side), cell));
+                    }
+                    (across, down + side)
                 }
                 // Every emoji there is, or those whose names have in
                 // them what has been typed: a line to type in, as many
@@ -1005,6 +1048,7 @@ impl Editor {
             layout.look = layout.look.map(|look| look.moved(flyout.x + margin, flyout.y + margin));
             layout.field = layout.field.map(|field| field.moved(flyout.x + margin, flyout.y + margin));
             layout.caption = layout.caption.map(|caption| caption.moved(flyout.x + margin, flyout.y + margin));
+            layout.captions.iter_mut().for_each(|(at, _)| *at = (at.0 + flyout.x + margin, at.1 + flyout.y + margin));
             layout.flyout = Some(flyout);
         }
         layout
@@ -2015,6 +2059,7 @@ impl Editor {
                 'z' => self.set_tool(Tool::Zoom),
                 'j' => drop(self.activate(Button::Badges)),
                 'w' => drop(self.activate(Button::Frame)),
+                'm' => drop(self.activate(Button::Pointer)),
                 // Dashes, for the lines and arrows picked out and for
                 // those drawn after.
                 'd' => {
@@ -2119,6 +2164,7 @@ impl Editor {
                 }
             }
             Button::Size(size) => self.set_size(size),
+            Button::Pointer => self.arrow_shows = !self.arrow_shows && self.arrow.is_some(),
             Button::Fill => {
                 // A zoom picked out is made square, or round again: that
                 // is what there is to fill or not about a zoom, and it
@@ -2274,6 +2320,7 @@ impl Editor {
                 self.frame.pad = (self.frame.pad.0.max(PADS[2]), self.frame.pad.1.max(PADS[2]));
             }
             Cell::Shadow => self.frame.shadow = !self.frame.shadow,
+            Cell::More => self.more = !self.more,
             // Asked for here, fetched by whoever has the network, and
             // set behind the picture when it comes.
             Cell::Dice => {
@@ -2613,6 +2660,11 @@ impl Editor {
         let round = self.corner_radius();
         if let Some(area) = lit {
             canvas::copy_rect(out, &self.shot.pixels, width, area);
+            // The mouse pointer, where it is wanted in the picture:
+            // under whatever is drawn, as the screen itself is.
+            if let (Some(arrow), true) = (&self.arrow, self.arrow_shows) {
+                arrow.stamp_within(out, width, (0, 0), area);
+            }
         }
         let mut canvas = Canvas::new(out, width, height);
 
@@ -2857,14 +2909,24 @@ impl Editor {
                         canvas.round_outline(inner.x, inner.y, inner.w, inner.h, pad / 2, 1, DIM_TEXT_COLOR);
                         self.text.draw_centered(&mut canvas, cx, cy, px, DIM_TEXT_COLOR, icons::CLOSE);
                     }
-                    // A gradient, as a small square of itself.
+                    // A backdrop, as a small square of itself.
                     Cell::Backdrop(which) => {
-                        let (_, from, to) = GRADIENTS[which - 1];
-                        for row in 0..inner.h {
-                            canvas.fill(inner.x, inner.y + row, inner.w, 1, canvas::mix(from, to, (row * 256 / inner.h.max(1)) as u32));
+                        for at in 0..inner.w * inner.h {
+                            let (x, y) = (at % inner.w, at / inner.w);
+                            let color = frame::shade(which - 1, (x as f32 + 0.5) / inner.w as f32, (y as f32 + 0.5) / inner.h as f32, 0.5);
+                            canvas.blend(inner.x + x, inner.y + y, color, 255);
                         }
                         canvas.round_outline(inner.x - 1, inner.y - 1, inner.w + 2, inner.h + 2, pad / 2, 2, MENU_COLOR);
+                        // One too near the box's own color to be told
+                        // from it has a faint line round it.
+                        canvas.round_outline(inner.x, inner.y, inner.w, inner.h, pad / 2, 1, canvas::mix(MENU_COLOR, 0xFFFFFF, 40));
                     }
+                    // The dots, for the rest of them; or, with the rest
+                    // showing, a mark to put them away again.
+                    Cell::More => match self.more {
+                        true => self.text.draw_centered(&mut canvas, cx, cy, px, TEXT_COLOR, icons::DOWN),
+                        false => (-1..=1).for_each(|dot| canvas.disc(cx + dot * (px as i32 * 2 / 5).max(4), cy, (px as i32 / 9).max(1), TEXT_COLOR, 256)),
+                    },
                     Cell::Dice => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::DICE),
                     Cell::Own => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::FRAME),
                     // A square with its shadow under it.
@@ -2906,6 +2968,22 @@ impl Editor {
                 };
                 if on {
                     canvas.round_outline(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2, pad / 2, 2, accent);
+                }
+            }
+            // What each kind of backdrop is called, over its rows; and
+            // on the first of those lines, at its far end, what the one
+            // under the pointer is called, or the one chosen.
+            for (index, &((x, y), kind)) in layout.captions.iter().enumerate() {
+                self.text.draw(&mut canvas, x, y, px * 7 / 8, DIM_TEXT_COLOR, kind);
+                let named = match (self.hover, self.frame.backdrop) {
+                    (Target::Cell(Cell::Backdrop(which)), _) if which > 0 => Some(which - 1),
+                    (_, Backdrop::Gradient(which)) => Some(which),
+                    _ => None,
+                };
+                if let (0, Some(which)) = (index, named) {
+                    let name = BACKDROPS[which.min(BACKDROPS.len() - 1)].0;
+                    let wide = self.text.width(name, px * 7 / 8);
+                    self.text.draw(&mut canvas, flyout.right() - pad - wide, y, px * 7 / 8, TEXT_COLOR, name);
                 }
             }
             // The picture as it will be, made to fit the room there is
@@ -2981,12 +3059,16 @@ impl Editor {
                 Button::Tool(tool) => tool == self.tool && !self.pipette,
                 Button::Size(size) => size == self.size,
                 Button::Fill => self.filled,
+                Button::Pointer => self.arrow_shows && self.arrow.is_some(),
                 Button::Color => self.popup.is_some() || self.pipette,
                 _ => false,
             };
             let able = match button {
                 Button::Undo => !self.undo.is_empty(),
                 Button::Redo => !self.redo.is_empty(),
+                // Where the display would not say what the pointer
+                // looked like, there is none to put in.
+                Button::Pointer => self.arrow.is_some(),
                 _ => true,
             };
             let inner = rect.inflate(-(px as i32 / 8).max(1));
@@ -3226,12 +3308,21 @@ impl Editor {
     pub fn result(&mut self) -> Option<(Rect, Vec<u32>, bool)> {
         self.commit_text();
         let selection = self.selection?;
+        let arrow = self.arrow.as_ref().filter(|_| self.arrow_shows);
         let mut pixels = if self.shapes.is_empty() {
-            canvas::crop(&self.shot.pixels, self.shot.width, selection)
+            let mut pixels = canvas::crop(&self.shot.pixels, self.shot.width, selection);
+            if let Some(arrow) = arrow {
+                arrow.stamp(&mut pixels, selection.w, (selection.x, selection.y));
+            }
+            pixels
         } else {
             // Drawn on a copy of the whole screen, where the shapes are
-            // already in the right place, and then cut out of it.
+            // already in the right place, and then cut out of it. The
+            // mouse pointer first, which is under them.
             let mut whole = self.shot.pixels.to_vec();
+            if let Some(arrow) = arrow {
+                arrow.stamp(&mut whole, self.shot.width, (0, 0));
+            }
             let mut canvas = Canvas::new(&mut whole, self.shot.width, self.shot.height);
             shapes::paint(&self.shapes, &mut canvas, &mut self.text, selection);
             canvas::crop(&whole, self.shot.width, selection)
@@ -3716,6 +3807,34 @@ mod tests {
     }
 
     #[test]
+    fn the_mouse_pointer_is_put_in_the_picture_and_taken_out_by_its_button() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        // With no pointer to put in, the button does nothing.
+        let at = button(&mut editor, Button::Pointer);
+        click(&mut editor, at, 1000);
+        assert!(!editor.arrow_shows);
+        // A green square for a pointer, half of it past the selection.
+        editor.set_pointer(canvas::Pointer { x: 890, y: 300, w: 20, h: 20, pixels: vec![0xFF00_FF00; 400] }, false);
+        let green = |editor: &mut Editor| editor.result().unwrap().1.iter().filter(|&&pixel| pixel & 0xFF_FFFF == 0x00FF00).count();
+        assert_eq!(green(&mut editor), 0);
+        click(&mut editor, at, 2000);
+        assert_eq!((editor.arrow_shows, green(&mut editor)), (true, 200));
+        // It shows as the picture will have it, and no further; and
+        // what is drawn is over it.
+        let mut out = vec![0u32; 1600 * 900];
+        editor.draw(&mut out);
+        assert_eq!((out[310 * 1600 + 895] & 0xFF_FFFF, out[310 * 1600 + 905] & 0xFF_FFFF == 0x00FF00), (0x00FF00, false));
+        editor.key(Key::Char('r'), PLAIN);
+        editor.key(Key::Char('f'), PLAIN);
+        drag(&mut editor, (880, 290), (899, 330));
+        assert_eq!(green(&mut editor), 0);
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        editor.key(Key::Char('m'), PLAIN);
+        assert_eq!((editor.arrow_shows, green(&mut editor)), (false, 0));
+    }
+
+    #[test]
     fn what_is_picked_out_goes_over_and_under_the_other_shapes() {
         let ctrl = Mods { shift: false, ctrl: true };
         let mut editor = editor(1600, 900);
@@ -3900,15 +4019,28 @@ mod tests {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (400, 300), (799, 599));
         assert!(editor.in_hand().frame.is_plain());
-        editor.choose(Cell::Backdrop(7));
+        // The box of backdrops has none, a few, and dots for the rest:
+        // which pressed show every one of them, and pressed again go.
+        editor.key(Key::Char('w'), PLAIN);
+        let backdrops = |editor: &mut Editor| editor.layout().cells.iter().filter(|(_, cell)| matches!(cell, Cell::Backdrop(which) if *which > 0)).count();
+        assert_eq!(backdrops(&mut editor), FIRST.len());
+        let dots = editor.layout().cells.iter().find(|(_, cell)| *cell == Cell::More).map(|(rect, _)| rect.center()).unwrap();
+        click(&mut editor, dots, 1000);
+        assert_eq!((backdrops(&mut editor), editor.layout().captions.len(), editor.flyout), (BACKDROPS.len(), 3, Some(Button::Frame)));
+        let slate = frame::named("slate").unwrap();
+        let cell = editor.layout().cells.iter().find(|(_, cell)| *cell == Cell::Backdrop(slate + 1)).map(|(rect, _)| rect.center()).unwrap();
+        click(&mut editor, cell, 2000);
+        editor.choose(Cell::More);
+        assert_eq!(backdrops(&mut editor), FIRST.len());
+        editor.key(Key::Escape, PLAIN);
         // Slate, with room: the backdrop shows outside the selection,
         // where the darkened screen was, and the bar is clear of it.
         let room = editor.frame_room().0;
-        assert_eq!((editor.frame.backdrop, editor.frame_room()), (Backdrop::Gradient(6), (PADS[2], PADS[2])));
+        assert_eq!((editor.frame.backdrop, editor.frame_room()), (Backdrop::Gradient(slate), (PADS[2], PADS[2])));
         let mut out = vec![0u32; 1600 * 900];
         editor.draw(&mut out);
         let near = |pixel: u32, color: u32| (0..3).all(|channel| ((pixel >> (channel * 8) & 0xFF) as i32 - (color >> (channel * 8) & 0xFF) as i32).abs() < 40);
-        assert!(near(out[(290 * 1600 + 390) as usize], GRADIENTS[6].1), "{:06x}", out[(290 * 1600 + 390) as usize]);
+        assert!(near(out[(290 * 1600 + 390) as usize], 0x334155), "{:06x}", out[(290 * 1600 + 390) as usize]);
         assert!(editor.layout().bar.unwrap().y >= 600 + room);
         assert_eq!(editor.target_at((380, 400)), Target::Backdrop);
 
@@ -4223,6 +4355,20 @@ mod tests {
         }
         editor.key(Key::Char('w'), PLAIN);
         write(&mut editor, "13-frame");
+        editor.choose(Cell::More);
+        write(&mut editor, "13b-backdrops");
+        // Every backdrop, each as wide as a card and side by side.
+        let (across, wide, high) = (8, 240, 150);
+        let mut sheet = vec![0u32; (across * wide * 5 * high) as usize];
+        for which in 0..BACKDROPS.len() as i32 {
+            for at in 0..wide * high {
+                let (x, y) = (at % wide, at / wide);
+                let color = frame::shade(which as usize, (x as f32 + 0.5) / wide as f32, (y as f32 + 0.5) / high as f32, ((x * 7 + y * 13) % 16) as f32 / 16.0);
+                sheet[((which / across * high + y) * across * wide + which % across * wide + x) as usize] = color;
+            }
+        }
+        std::fs::write(dir.join("13c-every-backdrop.png"), crate::output::encode((across * wide) as u32, (5 * high) as u32, &sheet, false).unwrap()).unwrap();
+        editor.choose(Cell::More);
         // The frame wider than it is tall, with its own corners round.
         editor.key(Key::Escape, PLAIN);
         (editor.frame.pad, editor.frame.radius) = ((96, 40), 28);
@@ -4391,7 +4537,7 @@ mod tests {
         editor.set_color(PALETTE[1].0);
         stroke(&mut editor, 'a', (1330, 520), (1235, 460));
         editor.corners = 12.0;
-        for cell in [Cell::Backdrop(3), Cell::Shadow] {
+        for cell in [Cell::Backdrop(frame::named("sorbet").unwrap() + 1), Cell::Shadow] {
             editor.choose(cell);
         }
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();

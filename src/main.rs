@@ -71,8 +71,9 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     }
     let mut display = Display::open()?;
     trace("display opened");
-    // The pointer as it is now, before it is made hotshot's own.
-    let arrow = if options.pointer { display.pointer_picture() } else { None };
+    // The pointer as it is now, before it is made hotshot's own: to go
+    // in the picture if it is wanted there, now or by the button for it.
+    let arrow = display.pointer_picture();
     if options.list_monitors {
         for (number, monitor) in display.monitors().iter().enumerate() {
             println!("{number}: {}x{}+{}+{}", monitor.w, monitor.h, monitor.x, monitor.y);
@@ -167,7 +168,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                 }
             };
             trace("screen read");
-            if let Some(arrow) = &arrow {
+            if let Some(arrow) = arrow.as_ref().filter(|_| options.pointer) {
                 arrow.stamp(&mut pixels, area.w, (area.x, area.y));
             }
             // Corners as round as the editor would have made them, and
@@ -275,10 +276,10 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
         _ => {
             shot = display.capture()?;
             trace("screen read");
-            // The pointer goes into a screen just read; one come back
-            // to has, or has not, the pointer it had.
-            if let Some(arrow) = arrow.take().filter(|_| reopened.is_none()) {
-                arrow.stamp(&mut shot, width, (0, 0));
+            // A picture come back to has, or has not, the pointer it
+            // had: the one there is now is nothing to do with it.
+            if reopened.is_some() {
+                arrow = None;
             }
             // A picture come back to is put where it was, over the
             // screen as it is now: all that is left of how it was then.
@@ -310,6 +311,9 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     let text = font.join().map_err(|_| "the font could not be read")?;
     let mut editor = Editor::new(shot, dimmed, monitors, windows, options.settings.clone(), text);
     editor.pointer_moved(pointer.0, pointer.1, editor::Mods::default());
+    if let Some(arrow) = arrow {
+        editor.set_pointer(arrow, options.pointer);
+    }
     if let Some(area) = named {
         editor.select(area);
     }
@@ -330,13 +334,6 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
             unseen += 1;
             if strips.done() {
                 trace("screen read");
-            }
-        }
-        // The pointer goes in once all of the screen is there for it
-        // to go into.
-        if strips.done() {
-            if let Some(arrow) = arrow.take() {
-                editor.put_pointer(&arrow);
             }
         }
         if editor.take_dirty() || unseen >= 4 || (unseen > 0 && strips.done()) {
@@ -421,9 +418,6 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     // for the rest of it.
     while how.is_some() && !strips.done() {
         strips.read(display, &mut editor, &mut frame)?;
-    }
-    if let Some(arrow) = arrow.take() {
-        editor.put_pointer(&arrow);
     }
     if options.remember {
         options::remember_tools(&editor.in_hand(), options.places.get(editor.place()).map(|place| place.as_path()));
