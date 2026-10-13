@@ -217,6 +217,11 @@ The icons are [Solar](https://www.figma.com/community/file/1166831539721848736)'
 `tools/icon_font.py`, with a few plain shapes added in the same manner.
 The interface is in [Geist](https://vercel.com/font). Text can also be
 typed in [Instrument Serif](https://github.com/Instrument/instrument-serif),
-[Architects Daughter](https://fonts.google.com/specimen/Architects+Daughter)
-and [Fira Code](https://github.com/tonsky/FiraCode). All four are under
+[Architects Daughter](https://fonts.google.com/specimen/Architects+Daughter),
+[Fira Code](https://github.com/tonsky/FiraCode) and
+[Anton](https://fonts.google.com/specimen/Anton). All five are under
 the SIL Open Font License, a copy of which is beside each in `assets`.
+
+## License
+
+hotshot itself is under the MIT License: see `LICENSE`.
