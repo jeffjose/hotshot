@@ -1,21 +1,24 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/hotshot-core",
-    "crates/hotshot-cli",
-    "crates/hotshot-ui/src-tauri",
-]
-default-members = [
-    "crates/hotshot-core",
-    "crates/hotshot-cli",
-]
-
-[workspace.package]
-version = "0.1.0"
-edition = "2024"
+[package]
+name = "hotshot"
+version = "0.2.0"
+edition = "2021"
+description = "An extremely fast screenshot and annotation tool"
 license = "MIT"
 
+[dependencies]
+x11rb = { version = "0.13", features = ["shm", "randr", "cursor"] }
+fontdue = "0.9"
+png = "0.18"
+libc = "0.2"
+rayon = "1"
+
 [profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 strip = true
-lto = true
-opt-level = "s"
+
+# Drawing in an unoptimised build is unusably slow.
+[profile.dev.package."*"]
+opt-level = 3

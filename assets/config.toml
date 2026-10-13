@@ -1,0 +1,47 @@
+# hotshot's settings. This file goes at ~/.config/hotshot/config.toml:
+#
+#     hotshot --default-config > ~/.config/hotshot/config.toml
+#
+# Every line here is commented out, and says what hotshot does anyway.
+# Options on the command line override what is set here.
+
+# The folder Save puts pictures in.
+# dir = "~/Pictures/Screenshots"
+
+# What a saved picture is called, less the .png: the time, set out as
+# strftime does.
+# filename = "screenshot-%Y-%m-%d-%H%M%S"
+
+# What Enter, and a double click inside the selection, do with the
+# picture: "copy" it to the clipboard, "save" it to the folder, or "both".
+# enter = "copy"
+
+# The colour of the selection's edge and of what is picked out in the bar.
+# accent = "indigo"
+#   a Radix colour by name:
+#   tomato red ruby crimson pink plum purple violet iris indigo blue cyan
+#   teal jade green grass orange brown bronze gold
+#   or any colour as "RRGGBB", such as "3E63DD"
+
+# The colour drawn in to begin with.
+# color = "red"
+#   red orange amber green blue indigo purple pink white black
+#   or any colour as "RRGGBB"
+
+# The width of line drawn with to begin with, and the size of text that
+# goes with it: 1 (thin) to 4 (heavy).
+# size = 2
+
+# How round the corners of a rectangle are, in pixels of a screen 1080
+# high; 0 for square ones.
+# corner-radius = 6
+
+# How much darker what is not selected is made, as a percentage.
+# dim = 50
+
+# The magnifier that follows the pointer while an edge of the selection
+# is being placed.
+# magnifier = true
+
+# Seconds to wait before the screen is frozen: time to open a menu.
+# delay = 0
