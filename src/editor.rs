@@ -50,6 +50,14 @@ pub const PALETTE: [(u32, &str); 24] = [
 ];
 /// The one drawn in unless another is asked for.
 const RED: u32 = 0xE5484D;
+/// How opaque what is drawn can be, out of 256: a quarter, a half,
+/// three quarters and wholly.
+const OPACITIES: [u32; 4] = [64, 128, 192, 256];
+
+/// The ways text is set, in the order the bar over it has them, with
+/// the letter each is shown by.
+const STYLES: [(u8, &str); 4] = [(shapes::BOLD, "B"), (shapes::ITALIC, "I"), (shapes::HIGHLIGHT, "H"), (shapes::BULLETS, "\u{2022}")];
+
 /// How many of them stand in a row of the box they are picked from.
 const PALETTE_COLUMNS: i32 = 8;
 
@@ -256,6 +264,8 @@ enum Cell {
     Badge(usize),
     /// An emoji: which of those the search has found.
     Emoji(usize),
+    /// One of the ways a tool can draw: a tool's own short list.
+    Variant(usize),
     /// What the picture is set on: nothing, or one of the gradients
     /// counted from 1.
     Backdrop(usize),
@@ -263,8 +273,6 @@ enum Cell {
     Own,
     /// A photograph nobody chose, and a different one each time.
     Dice,
-    /// How much room there is round the picture.
-    Pad(usize),
     Shadow,
     /// One of the folders Save can save to.
     Place(usize),
@@ -363,6 +371,10 @@ impl Button {
 enum Target {
     Button(Button),
     Swatch(u32),
+    /// A step of how opaque what is drawn is, out of 256.
+    Opacity(u32),
+    /// One of the ways text is set: heavy, slanted and the rest.
+    Style(u8),
     Pipette,
     /// A part of the bar, or of the box of colors, that is not a button.
     Panel,
@@ -381,6 +393,8 @@ enum Target {
     Curve(i32, i32),
     /// The frame the picture is set in: what is round the selection.
     Backdrop,
+    /// The dot inside a corner of the frame, which rounds its corners.
+    FrameCorner,
     /// An end of the line or arrow picked out, or the tip a counter
     /// points with: which of the shape's points it is.
     End(usize),
@@ -413,7 +427,11 @@ enum Drag {
     End { index: usize, point: usize, from: (i32, i32), moved: bool },
     /// Dragging the frame wider or narrower, by anywhere on it: taken
     /// hold of `slack` further out than the room there was.
-    Room { from: (i32, i32), slack: i32, moved: bool },
+    /// Wider when it was taken hold of beside the picture, taller when
+    /// above or below it, and both at a corner.
+    Room { from: (i32, i32), slack: (i32, i32), sides: (bool, bool), moved: bool },
+    /// Making the corners of the frame rounder, by the dot in one.
+    FrameCorner { slack: i32 },
     /// Dragging out a box, with Shift or Ctrl held, to pick out the
     /// shapes it touches.
     Marquee { from: (i32, i32) },
@@ -438,6 +456,11 @@ struct Layout {
     label: Option<(Rect, String)>,
     popup: Option<Rect>,
     swatches: Vec<(Rect, u32)>,
+    /// The steps of how opaque, in the same box.
+    opacities: Vec<(Rect, u32)>,
+    /// The small bar over text being typed or picked out: how it is set.
+    styles: Vec<(Rect, u8)>,
+    styles_bar: Option<Rect>,
     pipette: Rect,
     /// The box hung from one of the bar's buttons, and what is in it.
     flyout: Option<Rect>,
@@ -499,6 +522,9 @@ pub struct Editor {
     /// A photograph is wanted, of about this size: for whoever has the
     /// network to fetch.
     wish: Option<(i32, i32)>,
+    /// How many photographs there have been: what tells one from the
+    /// next, to whatever is made of them and kept.
+    photos: u32,
     /// The picture as it will be, framed, made small for the box the
     /// frame is chosen in; and what it was made from, to tell when it
     /// is out of date.
@@ -510,6 +536,15 @@ pub struct Editor {
     surround: Option<(String, i32, Vec<u32>)>,
     /// Which of the words the next badge says.
     word: usize,
+    /// How opaque what is drawn is, out of 256; and how text is set.
+    opacity: u32,
+    style: u8,
+    /// Whether the next zoom is square, where it is usually round.
+    square: bool,
+    /// The shapes being moved, as they were when taken hold of; and the
+    /// lines they have gone to, across and down, to be shown.
+    moving: Vec<(usize, Shape)>,
+    guides: Vec<(bool, i32)>,
     /// What has been typed to look for emoji by, and how many rows
     /// down them the box is.
     query: String,
@@ -545,6 +580,18 @@ fn on(color: u32) -> u32 {
 /// resize it both ways, and the middles of its sides, which do one.
 /// Each as which way it pulls across and down.
 const GRIPS: [(i32, i32); 8] = [(-1, -1), (1, -1), (-1, 1), (1, 1), (0, -1), (0, 1), (-1, 0), (1, 0)];
+
+/// The ways a tool can draw, for the tools that have more than one:
+/// what is behind the small mark in the corner of its button.
+fn variants(tool: Tool) -> &'static [&'static str] {
+    match tool {
+        Tool::Arrow => &["One head", "A head at each end", "Dashed"],
+        Tool::Line => &["Solid", "Dashed"],
+        Tool::Rect | Tool::Ellipse => &["Outlined", "Filled"],
+        Tool::Zoom => &["Round", "Square"],
+        _ => &[],
+    }
+}
 
 /// A place along the screen, moved to the nearest of some edges if one
 /// is within reach of it, and otherwise left where it is.
@@ -601,9 +648,15 @@ impl Editor {
             place: settings.place.min(settings.places.len().saturating_sub(1)),
             photo: None,
             wish: None,
+            photos: 0,
             look: None,
             surround: None,
             word: 0,
+            opacity: 256,
+            style: 0,
+            square: false,
+            moving: Vec::new(),
+            guides: Vec::new(),
             query: String::new(),
             scroll: 0,
             size: settings.size.min(STROKES.len() - 1),
@@ -725,7 +778,7 @@ impl Editor {
         let width = 2 * margin + count * side + (GROUPS.len() as i32 - 1) * gap;
         let height = side + 2 * margin;
         // Clear of the frame the picture is set in, when it is in one.
-        let room = self.frame_room();
+        let room = self.frame_room().1;
         let left = selection.x + (selection.w - width) / 2;
         let below = selection.bottom() + room + pad;
         let above = selection.y - room - pad - height;
@@ -753,6 +806,21 @@ impl Editor {
             }
         }
 
+        // Over the text being typed, or picked out by itself, a small
+        // bar of the ways it can be set: heavy, slanted, gone over
+        // with a marker, and each line after a dot. Under it, where
+        // there is no room over.
+        if let (Some(index), false) = (self.styled(), reshaping) {
+            let around = self.shapes[index].bounds(&mut self.text);
+            let (wide, high) = (STYLES.len() as i32 * side + 2 * margin, side + 2 * margin);
+            let top = if around.y - high - pad >= monitor.y { around.y - high - pad } else { around.bottom() + pad };
+            let place = Rect::new(around.x, top, wide, high).kept_within(monitor.inflate(-pad));
+            for (index, (style, _)) in STYLES.iter().enumerate() {
+                layout.styles.push((Rect::new(place.x + margin + index as i32 * side, place.y + margin, side, side), *style));
+            }
+            layout.styles_bar = Some(place);
+        }
+
         // The size of the selection, over its top-left corner, or inside
         // it where there is no room or the bar is in the way.
         let words = format!("{} \u{d7} {}", selection.w, selection.h);
@@ -770,7 +838,8 @@ impl Editor {
             let rows = (PALETTE.len() as i32 + columns - 1) / columns;
             let words = self.text.width("Pick from the screen", px) + self.text.width("I", px) + side + 3 * pad;
             let width = (columns * side).max(words) + 2 * margin;
-            let height = rows * side + side + 2 * margin + pad / 2;
+            // A row more than the colors and the pipette: how opaque.
+            let height = rows * side + 2 * side + 2 * margin + pad / 2;
             let at = match anchor {
                 Anchor::At(x, y) => (x + pad / 2, y + pad / 2),
                 Anchor::Bar => {
@@ -785,7 +854,12 @@ impl Editor {
                 let (column, row) = (index as i32 % columns, index as i32 / columns);
                 layout.swatches.push((Rect::new(popup.x + margin + column * across, popup.y + margin + row * side, across, side), color));
             }
-            layout.pipette = Rect::new(popup.x + margin, popup.y + margin + rows * side + pad / 2, width - 2 * margin, side);
+            // How opaque: four steps of it, under the colors.
+            let each = (width - 2 * margin) / OPACITIES.len() as i32;
+            for (index, &opacity) in OPACITIES.iter().enumerate() {
+                layout.opacities.push((Rect::new(popup.x + margin + index as i32 * each, popup.y + margin + rows * side, each, side), opacity));
+            }
+            layout.pipette = Rect::new(popup.x + margin, popup.y + margin + (rows + 1) * side + pad / 2, width - 2 * margin, side);
             layout.popup = Some(popup);
         }
 
@@ -809,7 +883,6 @@ impl Editor {
                     }
                     let mut row = vec![Cell::Dice];
                     row.extend(self.settings.photo.is_some().then_some(Cell::Own));
-                    row.extend((0..PADS.len()).map(Cell::Pad));
                     row.push(Cell::Shadow);
                     for (index, cell) in row.into_iter().enumerate() {
                         cells.push((Rect::new(index as i32 * side, look + pad + side, side, side), cell));
@@ -834,6 +907,16 @@ impl Editor {
                     let line = Text::line_height(px);
                     layout.caption = Some(Rect::new(0, top + EMOJI_DOWN * side + pad / 4, across, line));
                     (across, top + EMOJI_DOWN * side + pad / 4 + line)
+                }
+                // The ways a tool can draw, one to a row.
+                Button::Tool(tool) => {
+                    let ways = variants(tool);
+                    let widest = ways.iter().map(|way| self.text.width(way, px)).max().unwrap_or(0);
+                    let across = widest + side + 2 * pad;
+                    for index in 0..ways.len() {
+                        cells.push((Rect::new(0, index as i32 * side, across, side), Cell::Variant(index)));
+                    }
+                    (across, ways.len() as i32 * side)
                 }
                 // Where Save saves to: the folders the config file
                 // names, one to a row.
@@ -887,6 +970,14 @@ impl Editor {
 
     fn target_at(&mut self, (x, y): (i32, i32)) -> Target {
         let layout = self.layout();
+        if let Some(bar) = layout.styles_bar {
+            if let Some((_, style)) = layout.styles.iter().find(|(rect, _)| rect.contains(x, y)) {
+                return Target::Style(*style);
+            }
+            if bar.contains(x, y) {
+                return Target::Panel;
+            }
+        }
         if let Some(flyout) = layout.flyout {
             if let Some((_, cell)) = layout.cells.iter().find(|(rect, _)| rect.contains(x, y)) {
                 return Target::Cell(*cell);
@@ -898,6 +989,9 @@ impl Editor {
         if let Some(popup) = layout.popup {
             if let Some((_, color)) = layout.swatches.iter().find(|(rect, _)| rect.contains(x, y)) {
                 return Target::Swatch(*color);
+            }
+            if let Some((_, opacity)) = layout.opacities.iter().find(|(rect, _)| rect.contains(x, y)) {
+                return Target::Opacity(*opacity);
             }
             if layout.pipette.contains(x, y) {
                 return Target::Pipette;
@@ -961,7 +1055,9 @@ impl Editor {
         }
         if selection.contains(x, y) {
             Target::Inside
-        } else if selection.inflate(self.frame_room()).contains(x, y) {
+        } else if self.frame_dot().is_some_and(|dot| (x - dot.0).abs() <= 7 && (y - dot.1).abs() <= 7) {
+            Target::FrameCorner
+        } else if self.frame_rect().contains(x, y) {
             Target::Backdrop
         } else {
             Target::Outside
@@ -1062,7 +1158,7 @@ impl Editor {
         let pull = match (self.drag, self.hover) {
             (Drag::Resize { pull, .. } | Drag::Scale { pull, .. }, _) => Some(pull),
             (Drag::None, Target::Handle(across, down) | Target::Grip(across, down)) => Some((across, down)),
-            (Drag::Round { .. } | Drag::Curve { .. } | Drag::End { .. }, _) | (Drag::None, Target::Rounder(..) | Target::Curve(..) | Target::End(_)) => return Cursor::Arrow,
+            (Drag::Round { .. } | Drag::Curve { .. } | Drag::End { .. } | Drag::FrameCorner { .. }, _) | (Drag::None, Target::Rounder(..) | Target::Curve(..) | Target::End(_) | Target::FrameCorner) => return Cursor::Arrow,
             (Drag::Marquee { .. }, _) => return Cursor::Crosshair,
             _ => None,
         };
@@ -1078,7 +1174,7 @@ impl Editor {
             (Drag::Move { .. } | Drag::Shape { .. }, _) => Cursor::Move,
             (Drag::Select { .. } | Drag::Draw { .. }, _) => Cursor::Crosshair,
             (Drag::Room { .. }, _) => Cursor::Move,
-            (_, Target::Button(_) | Target::Swatch(_) | Target::Pipette | Target::Panel | Target::Cell(_) | Target::Backdrop) => Cursor::Arrow,
+            (_, Target::Button(_) | Target::Swatch(_) | Target::Pipette | Target::Panel | Target::Cell(_) | Target::Backdrop | Target::Style(_) | Target::Opacity(_)) => Cursor::Arrow,
             (_, Target::Inside) => match self.tool {
                 Tool::Select => Cursor::Move,
                 Tool::Text => Cursor::Text,
@@ -1166,16 +1262,29 @@ impl Editor {
                 self.dirty = true;
             }
             Drag::Marquee { .. } => self.dirty = true,
-            Drag::Room { from, slack, moved } => {
+            Drag::Room { from, slack, sides, moved } => {
                 *moved |= (at.0 - from.0).abs().max((at.1 - from.1).abs()) >= DRAG_AFTER;
-                let (slack, moved) = (*slack, *moved);
+                let (slack, sides, moved) = (*slack, *sides, *moved);
                 if moved {
                     // As much room as the pointer is out from the
-                    // selection, less where on the frame it took hold.
-                    let room = (self.outward(at) - slack).max(0) as f32 / self.scale();
-                    self.frame.pad = (room.round() as i32).clamp(0, 600);
+                    // selection, less where on the frame it took hold:
+                    // across, down, or both.
+                    let (out, scale) = (self.outward(at), self.scale());
+                    let room = |out: i32, slack: i32| (((out - slack).max(0) as f32 / scale).round() as i32).clamp(0, 800);
+                    if sides.0 {
+                        self.frame.pad.0 = room(out.0, slack.0);
+                    }
+                    if sides.1 {
+                        self.frame.pad.1 = room(out.1, slack.1);
+                    }
                     self.dirty = true;
                 }
+            }
+            Drag::FrameCorner { slack } => {
+                let (slack, rect) = (*slack, self.frame_rect());
+                let inward = (at.0 - rect.x).min(at.1 - rect.y) - slack;
+                self.frame.radius = ((inward.clamp(0, rect.w.min(rect.h) / 2) as f32 / self.scale()).round() as i32).max(0);
+                self.dirty = true;
             }
             Drag::Curve { corner, slack } => {
                 // Kept as it would be on a screen 1080 high, which is
@@ -1254,22 +1363,52 @@ impl Editor {
                 self.dirty = true;
             }
             Drag::Shape { index, last, moved } => {
+                // `last` is where it was taken hold of: how far it has
+                // gone is counted from there, and from the shapes as
+                // they then were, so that going to a line and coming
+                // away from it again leaves nothing behind.
                 let (index, by) = (*index, (at.0 - last.0, at.1 - last.1));
-                let first = !*moved;
-                (*last, *moved) = (at, true);
-                if first {
+                if !std::mem::replace(moved, true) {
                     self.checkpoint();
+                    // All that are picked out go with the one held.
+                    let mut going = self.chosen();
+                    if !going.contains(&index) {
+                        going = vec![index];
+                    }
+                    self.moving = going.into_iter().map(|index| (index, self.shapes[index].clone())).collect();
                 }
-                // All that are picked out go with the one that is held.
-                let mut going = self.chosen();
-                if !going.contains(&index) {
-                    going = vec![index];
-                }
-                for index in going {
-                    if let Some(shape) = self.shapes.get_mut(index) {
-                        shape.translate(by.0 as f32, by.1 as f32);
+                let (mut by, mut guides) = (by, Vec::new());
+                if !mods.ctrl {
+                    // The box round what is moving, where it would be;
+                    // and the edges and middles of everything else, and
+                    // of the selection, for its own to go to.
+                    let mut around: Option<Rect> = None;
+                    for (_, shape) in &self.moving {
+                        let place = shape.bounds(&mut self.text).moved(by.0, by.1);
+                        around = Some(around.map_or(place, |all| Rect::spanning((all.x.min(place.x), all.y.min(place.y)), (all.right().max(place.right()), all.bottom().max(place.bottom())))));
+                    }
+                    let held: Vec<usize> = self.moving.iter().map(|(index, _)| *index).collect();
+                    let mut others: Vec<Rect> = (0..self.shapes.len()).filter(|index| !held.contains(index)).map(|index| self.shapes[index].bounds(&mut self.text)).collect();
+                    others.extend(self.selection);
+                    if let Some(around) = around {
+                        let lines = |from: i32, size: i32| [from, from + size / 2, from + size];
+                        let nearest = |mine: [i32; 3], theirs: Vec<i32>| mine.iter().flat_map(|&at| theirs.iter().map(move |&line| (line - at, line))).filter(|(off, _)| off.abs() <= 6).min_by_key(|(off, _)| off.abs());
+                        if let Some((off, line)) = nearest(lines(around.x, around.w), others.iter().flat_map(|rect| lines(rect.x, rect.w)).collect()) {
+                            by.0 += off;
+                            guides.push((true, line));
+                        }
+                        if let Some((off, line)) = nearest(lines(around.y, around.h), others.iter().flat_map(|rect| lines(rect.y, rect.h)).collect()) {
+                            by.1 += off;
+                            guides.push((false, line));
+                        }
                     }
                 }
+                for (index, before) in &self.moving {
+                    let mut shape = before.clone();
+                    shape.translate(by.0 as f32, by.1 as f32);
+                    self.shapes[*index] = shape;
+                }
+                self.guides = guides;
                 self.dirty = true;
             }
         }
@@ -1294,6 +1433,16 @@ impl Editor {
                 self.set_color(color);
                 self.popup = None;
             }
+            // How opaque: for what is picked out, and what is drawn after.
+            Target::Opacity(opacity) => {
+                self.opacity = opacity;
+                let chosen = self.chosen();
+                if !chosen.is_empty() {
+                    self.checkpoint();
+                    chosen.iter().for_each(|&index| self.shapes[index].opacity = opacity);
+                }
+            }
+            Target::Style(style) => self.toggle_style(style),
             Target::Pipette => (self.pipette, self.popup) = (true, None),
             Target::Panel => {}
             Target::Cell(cell) => self.choose(cell),
@@ -1345,7 +1494,13 @@ impl Editor {
             // click opens what there is to choose about it.
             Target::Backdrop => {
                 self.commit_text();
-                self.drag = Drag::Room { from: at, slack: self.outward(at) - self.frame_room(), moved: false };
+                let (out, room) = (self.outward(at), self.frame_room());
+                self.drag = Drag::Room { from: at, slack: (out.0 - room.0, out.1 - room.1), sides: (out.0 > 0, out.1 > 0), moved: false };
+            }
+            Target::FrameCorner => {
+                let rect = self.frame_rect();
+                let radius = (self.frame.radius as f32 * self.scale()).round() as i32;
+                self.drag = Drag::FrameCorner { slack: (at.0 - rect.x).min(at.1 - rect.y) - radius };
             }
             Target::Inside => return self.pressed_inside(at, double),
         }
@@ -1406,6 +1561,7 @@ impl Editor {
                     let mut shape = Shape::new(Tool::Text, self.color, self.stroke(), (at.0 as f32, (at.1 - Text::line_height(font_px) / 2) as f32));
                     shape.font_px = font_px;
                     shape.face = self.face;
+                    (shape.style, shape.opacity) = (self.style, self.opacity);
                     self.shapes.push(shape);
                     self.caret = 0;
                     self.editing = Some((self.shapes.len() - 1, true));
@@ -1415,7 +1571,8 @@ impl Editor {
             tool => {
                 self.checkpoint();
                 let mut shape = Shape::new(tool, self.color, self.stroke(), point);
-                shape.filled = self.filled && tool != Tool::Zoom;
+                shape.filled = if tool == Tool::Zoom { self.square } else { self.filled };
+                shape.opacity = self.opacity;
                 shape.radius = self.settings.radius * self.scale();
                 shape.font_px = self.font_px();
                 if tool == Tool::Arrow {
@@ -1462,6 +1619,7 @@ impl Editor {
                 }
             }
             Drag::Scale { .. } => self.scaling = None,
+            Drag::Shape { .. } => (self.moving, self.guides) = (Vec::new(), Vec::new()),
             // A click on the frame, not a drag of it, opens what there
             // is to choose about it.
             Drag::Room { moved: false, .. } => outcome = self.activate(Button::Frame),
@@ -1490,6 +1648,16 @@ impl Editor {
             }
             Drag::Button(button) => {
                 if self.target_at(self.pointer) == Target::Button(button) {
+                    // A press on the mark in the corner of a tool's
+                    // button is for the list of its ways, whichever
+                    // tool is in hand: it is taken in hand first.
+                    let place = self.layout().buttons.iter().find(|(_, other)| *other == button).map(|(rect, _)| *rect);
+                    let corner = place.is_some_and(|rect| self.pointer.0 > rect.x + rect.w * 3 / 5 && self.pointer.1 > rect.y + rect.h * 3 / 5);
+                    if let (Button::Tool(tool), true) = (button, corner) {
+                        if !variants(tool).is_empty() && self.tool != tool {
+                            self.set_tool(tool);
+                        }
+                    }
                     outcome = self.activate(button);
                 }
             }
@@ -1644,6 +1812,9 @@ impl Editor {
             (Key::Char('a'), true) => self.select(self.screen()),
             // A copy of each shape picked out, a little down and to the
             // right of it, and picked out in its place.
+            // Heavy and slanted, for the text picked out.
+            (Key::Char('b'), true) => self.toggle_style(shapes::BOLD),
+            (Key::Char('i'), true) => self.toggle_style(shapes::ITALIC),
             (Key::Char('d'), true) => {
                 let chosen = self.chosen();
                 if !chosen.is_empty() {
@@ -1757,6 +1928,13 @@ impl Editor {
     fn activate(&mut self, button: Button) -> Outcome {
         self.dirty = true;
         match button {
+            // A tool with more than one way of drawing, pressed when it
+            // is already the one in hand, opens the list of them.
+            Button::Tool(tool) if self.tool == tool && !variants(tool).is_empty() => {
+                self.commit_text();
+                self.popup = None;
+                self.flyout = if self.flyout == Some(button) { None } else { Some(button) };
+            }
             Button::Tool(tool) => self.set_tool(tool),
             Button::Color => {
                 self.popup = match self.popup {
@@ -1833,6 +2011,24 @@ impl Editor {
         }
     }
 
+    /// The text there is something to say about how it is set: the one
+    /// being typed, or the one picked out by itself.
+    fn styled(&self) -> Option<usize> {
+        self.editing.map(|(index, _)| index).or(self.picked()).filter(|&index| self.shapes[index].tool == Tool::Text)
+    }
+
+    /// Sets that text one of the ways, or sets it back; and what is
+    /// typed after is set as it then is.
+    fn toggle_style(&mut self, style: u8) {
+        let Some(index) = self.styled() else { return };
+        if self.editing.is_none() {
+            self.checkpoint();
+        }
+        self.shapes[index].style ^= style;
+        self.style = self.shapes[index].style;
+        self.dirty = true;
+    }
+
     fn set_color(&mut self, color: u32) {
         self.color = color;
         let chosen = self.chosen();
@@ -1899,15 +2095,14 @@ impl Editor {
             Cell::Backdrop(which) => {
                 self.frame.backdrop = Backdrop::Gradient(which - 1);
                 // A backdrop with no room round the picture is not seen.
-                self.frame.pad = self.frame.pad.max(PADS[2]);
+                self.frame.pad = (self.frame.pad.0.max(PADS[2]), self.frame.pad.1.max(PADS[2]));
             }
-            Cell::Pad(pad) => self.frame.pad = PADS[pad],
             Cell::Shadow => self.frame.shadow = !self.frame.shadow,
             // Asked for here, fetched by whoever has the network, and
             // set behind the picture when it comes.
             Cell::Dice => {
-                let room = 2 * self.frame.room(self.scale()).max(128);
-                self.wish = Some((area.w + room, area.h + room));
+                let room = self.frame.room(self.scale());
+                self.wish = Some((area.w + 2 * room.0.max(128), area.h + 2 * room.1.max(128)));
             }
             Cell::Own => {
                 let read = self.settings.photo.as_ref().and_then(|file| std::fs::read(file).ok()).and_then(|bytes| frame::open(&bytes));
@@ -1915,6 +2110,21 @@ impl Editor {
             }
             Cell::Place(place) => (self.place, self.flyout) = (place, None),
             Cell::Word(word) => self.word = word,
+            // The way the tool whose list this is draws from now on;
+            // and that tool is the one in hand.
+            Cell::Variant(way) => {
+                if let Some(Button::Tool(tool)) = self.flyout {
+                    match tool {
+                        Tool::Arrow => (self.heads, self.dashed) = ([way == 1, true], way == 2),
+                        Tool::Line => self.dashed = way == 1,
+                        Tool::Rect | Tool::Ellipse => self.filled = way == 1,
+                        Tool::Zoom => self.square = way == 1,
+                        _ => {}
+                    }
+                    self.set_tool(tool);
+                    self.flyout = None;
+                }
+            }
             Cell::Badge(_) | Cell::Emoji(_) => {}
         }
         if !matches!(cell, Cell::Badge(_) | Cell::Emoji(_)) {
@@ -1958,8 +2168,11 @@ impl Editor {
     pub fn photo_arrived(&mut self, photo: Option<Photo>) {
         if let Some(photo) = photo {
             self.photo = Some(photo);
+            // Another photograph, though it may be the size of the last:
+            // what was made of the last is out of date.
+            self.photos += 1;
             self.frame.backdrop = Backdrop::Photo;
-            self.frame.pad = self.frame.pad.max(PADS[2]);
+            self.frame.pad = (self.frame.pad.0.max(PADS[2]), self.frame.pad.1.max(PADS[2]));
             self.look = None;
         }
         self.dirty = true;
@@ -1975,15 +2188,33 @@ impl Editor {
 
     /// How far outside the selection a point is: by whichever of its
     /// sides it is furthest out from.
-    fn outward(&self, at: (i32, i32)) -> i32 {
+    fn outward(&self, at: (i32, i32)) -> (i32, i32) {
         let area = self.selection.unwrap_or_default();
-        (area.x - at.0).max(at.0 - area.right()).max(area.y - at.1).max(at.1 - area.bottom())
+        ((area.x - at.0).max(at.0 - area.right()), (area.y - at.1).max(at.1 - area.bottom()))
     }
 
-    /// How much room the frame takes round the picture, on this screen;
-    /// none, with no frame.
-    fn frame_room(&self) -> i32 {
-        if self.frame.is_plain() { 0 } else { self.frame.room(self.scale()) }
+    /// How much room the frame takes beside the picture, and above and
+    /// below it, on this screen; none, with no frame.
+    fn frame_room(&self) -> (i32, i32) {
+        if self.frame.is_plain() { (0, 0) } else { self.frame.room(self.scale()) }
+    }
+
+    /// The selection with its frame round it: the selection, with none.
+    fn frame_rect(&self) -> Rect {
+        let (area, room) = (self.selection.unwrap_or_default(), self.frame_room());
+        Rect::new(area.x - room.0, area.y - room.1, area.w + 2 * room.0, area.h + 2 * room.1)
+    }
+
+    /// Where the dot is by which the corners of the frame are made
+    /// rounder: inside its top-left corner, as far in as they are
+    /// round. None with no backdrop, which has no corners to see.
+    fn frame_dot(&self) -> Option<(i32, i32)> {
+        if self.frame.backdrop == Backdrop::None || self.selection.is_none() || self.tool != Tool::Select {
+            return None;
+        }
+        let (rect, least) = (self.frame_rect(), ui_px(self.monitor().h) as i32);
+        let inset = ((self.frame.radius as f32 * self.scale()).round() as i32).max(least).min(rect.w.min(rect.h) / 2);
+        Some((rect.x + inset, rect.y + inset))
     }
 
     /// Which of the folders Save saves to.
@@ -2003,7 +2234,7 @@ impl Editor {
             pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
         }
         let (wide, high, set) = frame::set(self.frame, &pixels, area.w, area.h, self.corner_radius(), self.scale(), self.photo.as_ref());
-        Some((area, wide, high, set, self.frame.backdrop == Backdrop::None || (self.frame.backdrop == Backdrop::Photo && self.photo.is_none())))
+        Some((area, wide, high, set, self.frame.is_clear() || (self.frame.backdrop == Backdrop::Photo && self.photo.is_none())))
     }
 
     /// Takes up a text that is already there, to be typed into again.
@@ -2044,12 +2275,14 @@ impl Editor {
         }
         let line = lines[row];
         let mut nearest = (i32::MAX, 0);
+        self.text.look = shape.look();
         for at_letter in line.char_indices().map(|(at, _)| at).chain([line.len()]) {
-            let off = (left + self.text.width_in(shape.face, &line[..at_letter], shape.font_px) - at.0).abs();
+            let off = (left + self.text.width_in(shape.face, &format!("{}{}", shape.lead(), &line[..at_letter]), shape.font_px) - at.0).abs();
             if off < nearest.0 {
                 nearest = (off, at_letter);
             }
         }
+        self.text.look = crate::text::Look::default();
         start + nearest.1
     }
 
@@ -2106,7 +2339,7 @@ impl Editor {
         let framed = self.selection.filter(|_| !self.frame.is_plain() && !reshaping);
         if let Some(area) = framed {
             let (room, radius, scale) = (self.frame_room(), self.corner_radius(), self.scale());
-            let made_from = format!("{:?} {} {} {radius} {}", self.frame, area.w, area.h, self.photo.as_ref().map_or(0, |photo| photo.pixels.len()));
+            let made_from = format!("{:?} {} {} {radius} {}", self.frame, area.w, area.h, self.photos);
             if self.surround.as_ref().is_none_or(|kept| kept.0 != made_from) {
                 // Made as the picture's frame is, round a picture with
                 // nothing in it.
@@ -2115,7 +2348,7 @@ impl Editor {
                 self.surround = Some((made_from, wide, pixels));
             }
             if let Some((_, wide, pixels)) = &self.surround {
-                let (left, top) = (area.x - room, area.y - room);
+                let (left, top) = (area.x - room.0, area.y - room.1);
                 let part = Rect::new(left, top, *wide, pixels.len() as i32 / wide.max(&1)).intersect(Rect::new(0, 0, width, height));
                 for y in part.y..part.bottom() {
                     let from = &pixels[((y - top) * wide + part.x - left) as usize..][..part.w as usize];
@@ -2166,7 +2399,12 @@ impl Editor {
                     let over = shape.bounds(&mut self.text);
                     canvas.round_fill(over.x, over.y, over.w, over.h, 0, accent, 90);
                 }
-                let x = origin.0 + self.text.width_in(shape.face, last, shape.font_px);
+                // As far along as the letters before it are wide, set
+                // the way this text is set and after its dot if it has one.
+                self.text.look = shape.look();
+                let along = self.text.width_in(shape.face, &format!("{}{last}", shape.lead()), shape.font_px);
+                self.text.look = crate::text::Look::default();
+                let x = origin.0 + along;
                 let y = origin.1 + (rows - 1) * line;
                 canvas.fill(x + 1, y + line / 8, (shape.font_px as i32 / 12).max(2), line - line / 4, shape.color);
             }
@@ -2214,6 +2452,30 @@ impl Editor {
                     canvas.round_outline(frame.x, frame.y, frame.w, frame.h, 0, thick, accent);
                 }
             }
+            // The lines a shape being moved has gone to: the edge or
+            // the middle of another, or of the selection.
+            for &(upright, at) in &self.guides {
+                match upright {
+                    true => canvas.fill(at, selection.y, 1, selection.h, soft(accent)),
+                    false => canvas.fill(selection.x, at, selection.w, 1, soft(accent)),
+                }
+            }
+            // How round, in pixels, while a corner is being rounded:
+            // of a rectangle, or of the picture.
+            let rounding = match self.drag {
+                Drag::Round { index, .. } => self.shapes.get(index).map(|shape| shape.radius.round() as i32),
+                Drag::Curve { .. } => Some(self.corner_radius()),
+                Drag::FrameCorner { .. } => Some((self.frame.radius as f32 * self.scale()).round() as i32),
+                _ => None,
+            };
+            if let Some(radius) = rounding {
+                let says = format!("{radius} px");
+                let wide = self.text.width(&says, px) + 2 * pad;
+                let high = Text::line_height(px) + pad / 2;
+                let (x, y) = (self.pointer.0 + px as i32, self.pointer.1 + px as i32);
+                canvas.round_fill(x, y, wide, high, pad / 2, 0x000000, 210);
+                self.text.draw(&mut canvas, x + pad, y + pad / 4, px, TEXT_COLOR, &says);
+            }
             // The box being dragged out to pick shapes with.
             if let Drag::Marquee { from } = self.drag {
                 let reach = Rect::spanning(from, self.pointer);
@@ -2242,6 +2504,11 @@ impl Editor {
                 canvas.disc(x, y, grip + thick, accent, 256);
                 canvas.disc(x, y, grip, 0xFFFFFF, 256);
             }
+            // And the frame, one for its own.
+            if let Some((x, y)) = self.frame_dot().filter(|_| !reshaping) {
+                canvas.disc(x, y, grip + thick, accent, 256);
+                canvas.disc(x, y, grip, 0xFFFFFF, 256);
+            }
             let _ = selection;
             // Handles at the corners and the middles of the sides, on a
             // selection large enough to have room for them.
@@ -2262,6 +2529,32 @@ impl Editor {
         }
         if let Some(bar) = layout.bar {
             self.draw_bar(&mut canvas, &layout, bar);
+        }
+        // The bar over text: each way it can be set, by a letter set
+        // that way, on the accent when the text is.
+        if let (Some(place), Some(index)) = (layout.styles_bar, self.styled()) {
+            let pad = px as i32 / 2;
+            panel(&mut canvas, place, pad);
+            let set = self.shapes[index].style;
+            for (&(rect, style), (_, letter)) in layout.styles.iter().zip(STYLES) {
+                let inner = rect.inflate(-(px as i32 / 8).max(1));
+                let ink = if set & style != 0 {
+                    canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, accent, 256);
+                    on(accent)
+                } else {
+                    if self.hover == Target::Style(style) {
+                        canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0xFFFFFF, 30);
+                    }
+                    TEXT_COLOR
+                };
+                let (cx, cy) = rect.center();
+                if style == shapes::HIGHLIGHT {
+                    canvas.round_fill(cx - px as i32 * 2 / 3, cy - px as i32 / 2, px as i32 * 4 / 3, px as i32, 2, 0xFFE629, 150);
+                }
+                self.text.look = crate::text::Look { heavy: i32::from(style == shapes::BOLD), slant: if style == shapes::ITALIC { 0.2 } else { 0.0 }, opacity: 256 };
+                self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, ink, letter);
+                self.text.look = crate::text::Look::default();
+            }
         }
         if let Some(popup) = layout.popup {
             self.draw_popup(&mut canvas, &layout, popup);
@@ -2314,13 +2607,6 @@ impl Editor {
                     }
                     Cell::Dice => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::DICE),
                     Cell::Own => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::FRAME),
-                    // A square with as much room round it as that is.
-                    Cell::Pad(room) => {
-                        let around = inner.inflate(-(px as i32 / 6));
-                        canvas.round_outline(around.x, around.y, around.w, around.h, 2, 1, DIM_TEXT_COLOR);
-                        let within = around.inflate(-(1 + room as i32 * around.w / 9));
-                        canvas.round_fill(within.x, within.y, within.w, within.h, 2, TEXT_COLOR, 256);
-                    }
                     // A square with its shadow under it.
                     Cell::Shadow => {
                         let square = inner.inflate(-(px as i32 / 3));
@@ -2335,13 +2621,26 @@ impl Editor {
                         let name = self.settings.places[place].clone();
                         self.text.draw(&mut canvas, rect.x + rect.h, line, px, TEXT_COLOR, &name);
                     }
+                    // A way a tool draws, with a tick by the one in hand.
+                    Cell::Variant(way) => {
+                        let Some(Button::Tool(tool)) = self.flyout else { continue };
+                        let now = match tool {
+                            Tool::Arrow => if self.dashed { 2 } else { usize::from(self.heads == [true, true]) },
+                            Tool::Line => usize::from(self.dashed),
+                            Tool::Zoom => usize::from(self.square),
+                            _ => usize::from(self.filled),
+                        };
+                        if way == now {
+                            self.text.draw_centered(&mut canvas, rect.x + rect.h / 2, cy, px, TEXT_COLOR, icons::CHECK);
+                        }
+                        self.text.draw(&mut canvas, rect.x + rect.h, cy - Text::line_height(px) / 2, px, TEXT_COLOR, variants(tool)[way]);
+                    }
                 }
                 // What is chosen now has a line of the accent round it.
                 let on = match cell {
                     Cell::Backdrop(0) => self.frame.backdrop == Backdrop::None,
                     Cell::Backdrop(which) => self.frame.backdrop == Backdrop::Gradient(which - 1),
                     Cell::Dice | Cell::Own => false,
-                    Cell::Pad(room) => self.frame.pad == PADS[room],
                     Cell::Shadow => self.frame.shadow,
                     _ => false,
                 };
@@ -2385,6 +2684,20 @@ impl Editor {
         }
         if self.selection.is_none() && !matches!(self.drag, Drag::Select { begun: true, .. }) {
             self.draw_hint(&mut canvas, px);
+        }
+        // A frame that does not fit on the screen round the selection,
+        // as round one that fills the screen it never will: the whole
+        // of it is shown small, in a corner, so that it can be seen at
+        // all. Not while text is being typed, which making the picture
+        // would bring to an end.
+        if let (Some(_), None) = (framed, self.editing) {
+            let (whole, monitor) = (self.frame_rect(), self.monitor());
+            if whole.intersect(monitor) != whole {
+                let wide = monitor.w / 4;
+                let room = Rect::new(monitor.right() - wide - px as i32, monitor.y + px as i32, wide, wide * 10 / 16);
+                panel(&mut canvas, room.inflate(px as i32 / 3), px as i32 / 2);
+                self.draw_look(&mut canvas, room);
+            }
         }
         if self.loupe_shows() {
             self.draw_loupe(&mut canvas, px);
@@ -2447,7 +2760,20 @@ impl Editor {
                     let radius = ((STROKES[size] * px as f32 / 13.0 * 0.62).round() as i32 + 1).min(side * 3 / 10);
                     canvas.disc(cx, cy, radius, ink, 256);
                 }
-                _ => self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, button.icon()),
+                _ => {
+                    self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, button.icon());
+                    // A small mark in the corner of a tool that has
+                    // more than one way of drawing: press it, or the
+                    // tool again, for the list of them.
+                    if let Button::Tool(tool) = button {
+                        if !variants(tool).is_empty() {
+                            let mark = (px as i32 / 4).max(3);
+                            for row in 0..mark {
+                                canvas.fill(rect.right() - mark - 3 + (mark - 1 - row), rect.bottom() - mark - 3 + row, row + 1, 1, ink);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -2484,6 +2810,22 @@ impl Editor {
             canvas.disc(cx, cy, radius + (px as i32 / 10).max(1) + i32::from(color == self.color), ring, 256);
             canvas.disc(cx, cy, radius, color, 256);
         }
+        // How opaque: the color in hand at each step, over a square
+        // half light and half dark, to show what comes through.
+        for &(rect, opacity) in &layout.opacities {
+            let (cx, cy) = rect.center();
+            let radius = side * 3 / 10;
+            if self.hover == Target::Opacity(opacity) {
+                let inner = rect.inflate(-(px as i32 / 8).max(1));
+                canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0xFFFFFF, 30);
+            }
+            canvas.fill(cx - radius, cy - radius, radius, 2 * radius, 0xE0E0E0);
+            canvas.fill(cx, cy - radius, radius, 2 * radius, 0x404040);
+            canvas.disc(cx, cy, radius, self.color, opacity);
+            if opacity == self.opacity {
+                canvas.round_outline(cx - radius - 3, cy - radius - 3, 2 * radius + 6, 2 * radius + 6, pad / 2, 2, TEXT_COLOR);
+            }
+        }
         let row = layout.pipette;
         canvas.fill(popup.x + pad, row.y - pad / 4, popup.w - 2 * pad, 1, MENU_EDGE_COLOR);
         if self.hover == Target::Pipette {
@@ -2501,7 +2843,7 @@ impl Editor {
     /// frame is chosen in. Made again only when something it is made
     /// from has changed: it is the whole picture each time.
     fn draw_look(&mut self, canvas: &mut Canvas, room: Rect) {
-        let made_from = format!("{:?} {:?} {} {} {} {}", self.frame, self.selection, self.corners, self.shapes.len(), self.undo.len(), self.photo.as_ref().map_or(0, |photo| photo.pixels.len()));
+        let made_from = format!("{:?} {:?} {} {} {} {}", self.frame, self.selection, self.corners, self.shapes.len(), self.undo.len(), self.photos);
         if self.look.as_ref().is_none_or(|look| look.0 != made_from) {
             let Some((_, wide, high, pixels, _)) = self.framed() else { return };
             // No larger than the room, and the same shape as it is.
@@ -2934,7 +3276,14 @@ mod tests {
         editor.released();
         assert_eq!(editor.selected, [0, 1]);
         let before = (editor.shapes[0].points[0], editor.shapes[1].points[0]);
-        drag(&mut editor, (730, 620), (740, 600));
+        // (With Ctrl held, so that they go where they are put and not to
+        // the edge of something a pixel off.)
+        let ctrl = Mods { shift: false, ctrl: true };
+        editor.pointer_moved(730, 620, PLAIN);
+        editor.pressed(65_000);
+        editor.pointer_moved(735, 610, ctrl);
+        editor.pointer_moved(740, 600, ctrl);
+        editor.released();
         let after = (editor.shapes[0].points[0], editor.shapes[1].points[0]);
         assert_eq!((after.0 .0 - before.0 .0, after.0 .1 - before.0 .1, after.1 .0 - before.1 .0, after.1 .1 - before.1 .1), (10.0, -20.0, 10.0, -20.0));
         editor.set_color(PALETTE[10].0);
@@ -3126,8 +3475,8 @@ mod tests {
         editor.choose(Cell::Backdrop(7));
         // Slate, with room: the backdrop shows outside the selection,
         // where the darkened screen was, and the bar is clear of it.
-        let room = editor.frame_room();
-        assert_eq!((editor.frame.backdrop, room), (Backdrop::Gradient(6), PADS[2]));
+        let room = editor.frame_room().0;
+        assert_eq!((editor.frame.backdrop, editor.frame_room()), (Backdrop::Gradient(6), (PADS[2], PADS[2])));
         let mut out = vec![0u32; 1600 * 900];
         editor.draw(&mut out);
         let near = |pixel: u32, color: u32| (0..3).all(|channel| ((pixel >> (channel * 8) & 0xFF) as i32 - (color >> (channel * 8) & 0xFF) as i32).abs() < 40);
@@ -3135,17 +3484,106 @@ mod tests {
         assert!(editor.layout().bar.unwrap().y >= 600 + room);
         assert_eq!(editor.target_at((380, 400)), Target::Backdrop);
 
-        // Dragged outward by forty pixels, it is forty pixels wider;
-        // and a click on it opens what there is to choose about it.
+        // Dragged outward by forty pixels beside the picture, it is
+        // forty pixels wider and no taller; from under it, taller; and
+        // a click on it opens what there is to choose about it.
         drag(&mut editor, (380, 400), (340, 400));
-        assert_eq!(editor.frame.pad, PADS[2] + 40);
+        assert_eq!(editor.frame.pad, (PADS[2] + 40, PADS[2]));
+        drag(&mut editor, (600, 620), (600, 630));
+        assert_eq!(editor.frame.pad, (PADS[2] + 40, PADS[2] + 10));
         assert_eq!(editor.flyout, None);
         click(&mut editor, (350, 400), 9000);
         assert_eq!(editor.flyout, Some(Button::Frame));
+        editor.key(Key::Escape, PLAIN);
 
-        // The picture comes out with that much round it.
+        // The picture comes out with that much round it, and nothing
+        // of it see-through.
         let (_, wide, high, _, alpha) = editor.framed().unwrap();
-        assert_eq!((wide, high, alpha), (400 + 2 * (PADS[2] + 40), 300 + 2 * (PADS[2] + 40), false));
+        assert_eq!((wide, high, alpha), (400 + 2 * (PADS[2] + 40), 300 + 2 * (PADS[2] + 10), false));
+
+        // The dot inside the frame's corner rounds its corners, by as
+        // much as it is taken in; and then the corners of what comes
+        // out are see-through.
+        let dot = editor.frame_dot().unwrap();
+        assert_eq!(editor.target_at(dot), Target::FrameCorner);
+        drag(&mut editor, dot, (dot.0 + 30, dot.1 + 30));
+        assert_eq!(editor.frame.radius, 30);
+        let (_, wide, _, pixels, alpha) = editor.framed().unwrap();
+        assert!(alpha && pixels[0] >> 24 == 0 && pixels[(40 * wide + 40) as usize] >> 24 == 255);
+    }
+
+    #[test]
+    fn text_is_set_heavy_slanted_and_after_dots_and_shapes_are_made_faint() {
+        let ctrl = Mods { shift: false, ctrl: true };
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('t'), PLAIN);
+        click(&mut editor, (300, 300), 0);
+        for letter in "one".chars() {
+            editor.key(Key::Char(letter), PLAIN);
+        }
+        // The bar over the text sets it: heavy is wider, and each line
+        // after a dot wider still. The text is still being typed.
+        let plain = editor.shapes[0].bounds(&mut editor.text).w;
+        let bold = editor.layout().styles[0].0.center();
+        click(&mut editor, bold, 5000);
+        assert_eq!((editor.shapes[0].style, editor.editing.is_some()), (shapes::BOLD, true));
+        let heavy = editor.shapes[0].bounds(&mut editor.text).w;
+        editor.key(Key::Char('i'), ctrl);
+        editor.toggle_style(shapes::BULLETS);
+        let dotted = editor.shapes[0].bounds(&mut editor.text).w;
+        assert!(heavy > plain && dotted > heavy);
+        assert_eq!(editor.shapes[0].style, shapes::BOLD | shapes::ITALIC | shapes::BULLETS);
+        editor.key(Key::Enter, ctrl);
+
+        // How opaque: for what is picked out, and what is drawn after.
+        editor.key(Key::Char('c'), PLAIN);
+        let half = editor.layout().opacities[1].0.center();
+        click(&mut editor, half, 9000);
+        assert_eq!((editor.shapes[0].opacity, editor.opacity), (128, 128));
+        editor.key(Key::Escape, PLAIN);
+        editor.key(Key::Char('r'), PLAIN);
+        editor.key(Key::Char('f'), PLAIN);
+        drag(&mut editor, (500, 400), (700, 500));
+        assert_eq!(editor.shapes[1].opacity, 128);
+        // A red rectangle half there, over the dark window: neither.
+        let (area, pixels, _) = editor.result().unwrap();
+        let at = pixels[((450 - area.y) * area.w + 600 - area.x) as usize] & 0xFF_FFFF;
+        assert!(at != RED && at != 0x24283B, "{at:06x}");
+    }
+
+    #[test]
+    fn a_tool_with_more_ways_than_one_has_a_list_of_them_and_shapes_go_to_lines() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        // The arrow, pressed again when it is in hand, opens its list;
+        // the second of it is a head at each end, from then on.
+        editor.key(Key::Char('a'), PLAIN);
+        let arrow = button(&mut editor, Button::Tool(Tool::Arrow));
+        click(&mut editor, arrow, 0);
+        assert_eq!(editor.flyout, Some(Button::Tool(Tool::Arrow)));
+        editor.choose(Cell::Variant(1));
+        assert_eq!((editor.flyout, editor.tool, editor.heads), (None, Tool::Arrow, [true, true]));
+        drag(&mut editor, (200, 200), (400, 200));
+        assert_eq!(editor.shapes[0].heads, [true, true]);
+
+        // A second shape, moved until its left edge is within a few
+        // pixels of the first one's, goes to it; and a line shows where.
+        editor.key(Key::Char('r'), PLAIN);
+        drag(&mut editor, (300, 400), (500, 500));
+        let first = editor.shapes[0].bounds(&mut editor.text);
+        let second = editor.shapes[1].bounds(&mut editor.text);
+        let by = first.x - second.x + 4;
+        editor.pointer_moved(400, 400, PLAIN);
+        editor.pressed(50_000);
+        editor.pointer_moved(400 + by, 420, PLAIN);
+        assert_eq!(editor.shapes[1].bounds(&mut editor.text).x, first.x);
+        assert_eq!(editor.guides, [(true, first.x)]);
+        // With Ctrl held it stays where it is put.
+        editor.pointer_moved(400 + by, 421, Mods { shift: false, ctrl: true });
+        assert_eq!(editor.shapes[1].bounds(&mut editor.text).x, first.x + 4);
+        editor.released();
+        assert!(editor.guides.is_empty());
     }
 
     #[test]
@@ -3341,6 +3779,51 @@ mod tests {
         }
         editor.key(Key::Char('w'), PLAIN);
         write(&mut editor, "13-frame");
+        // The frame wider than it is tall, with its own corners round.
+        editor.key(Key::Escape, PLAIN);
+        (editor.frame.pad, editor.frame.radius) = ((96, 40), 28);
+        write(&mut editor, "13b-frame-shaped");
+        // Text set heavy, slanted, gone over and after dots, with the
+        // bar that sets it; a faint filled rectangle; the arrow's list.
+        let mut styled = self::editor(width, height);
+        styled.pointer_moved(8 * unit, 6 * unit, PLAIN);
+        styled.pressed(0);
+        styled.pointer_moved(130 * unit, 80 * unit, PLAIN);
+        styled.released();
+        for (row, style) in [(0, shapes::BOLD), (1, shapes::ITALIC), (2, shapes::HIGHLIGHT), (3, shapes::BULLETS | shapes::BOLD)] {
+            styled.style = style;
+            styled.key(Key::Char('3'), PLAIN);
+            styled.key(Key::Char('t'), PLAIN);
+            styled.pointer_moved(20 * unit, (16 + row * 9) * unit, PLAIN);
+            styled.pressed(1000 * row as u32 + 1000);
+            styled.released();
+            for letter in "Set this way".chars() {
+                styled.key(Key::Char(letter), PLAIN);
+            }
+            if row == 3 {
+                styled.key(Key::Enter, PLAIN);
+                for letter in "and this".chars() {
+                    styled.key(Key::Char(letter), PLAIN);
+                }
+            } else {
+                styled.key(Key::Enter, Mods { shift: false, ctrl: true });
+            }
+        }
+        write(&mut styled, "16-text-set");
+        styled.key(Key::Enter, Mods { shift: false, ctrl: true });
+        styled.opacity = 128;
+        styled.key(Key::Char('r'), PLAIN);
+        styled.key(Key::Char('f'), PLAIN);
+        styled.pointer_moved(70 * unit, 30 * unit, PLAIN);
+        styled.pressed(20_000);
+        styled.pointer_moved(110 * unit, 60 * unit, PLAIN);
+        styled.released();
+        styled.key(Key::Char('a'), PLAIN);
+        let arrow = button(&mut styled, Button::Tool(Tool::Arrow));
+        styled.pointer_moved(arrow.0, arrow.1, PLAIN);
+        styled.pressed(30_000);
+        styled.released();
+        write(&mut styled, "17-ways");
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
         std::fs::write(dir.join("14-framed.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
         editor.choose(Cell::Backdrop(0));

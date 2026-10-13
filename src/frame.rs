@@ -57,23 +57,33 @@ pub enum Backdrop {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Frame {
     pub backdrop: Backdrop,
-    /// How much room there is round the picture, in pixels of a screen
-    /// 1080 high: any amount, of which `PADS` are the usual ones.
-    pub pad: i32,
+    /// How much room there is beside the picture, and above and below
+    /// it, in pixels of a screen 1080 high: any amount of each.
+    pub pad: (i32, i32),
+    /// How round the corners of the whole are, in the same pixels.
+    pub radius: i32,
     pub shadow: bool,
 }
 
 impl Frame {
     /// Whether it does anything at all to the picture.
     pub fn is_plain(&self) -> bool {
-        self.backdrop == Backdrop::None && self.pad == 0 && !self.shadow
+        self.backdrop == Backdrop::None && self.pad == (0, 0) && !self.shadow
     }
 
-    /// The room round the picture, in pixels at a scale. A shadow has
-    /// to have somewhere to fall, whatever the room asked for.
-    pub fn room(&self, scale: f32) -> i32 {
-        let asked = (self.pad.max(0) as f32 * scale).round() as i32;
-        if self.shadow { asked.max((56.0 * scale).round() as i32) } else { asked }
+    /// The room beside the picture, and above and below it, in pixels
+    /// at a scale. A shadow has to have somewhere to fall, whatever the
+    /// room asked for.
+    pub fn room(&self, scale: f32) -> (i32, i32) {
+        let least = if self.shadow { (56.0 * scale).round() as i32 } else { 0 };
+        let asked = |pad: i32| ((pad.max(0) as f32 * scale).round() as i32).max(least);
+        (asked(self.pad.0), asked(self.pad.1))
+    }
+
+    /// Whether what it makes is see-through anywhere: with nothing
+    /// behind the picture, or with the corners of the whole rounded.
+    pub fn is_clear(&self) -> bool {
+        self.backdrop == Backdrop::None || self.radius > 0
     }
 }
 
@@ -90,7 +100,8 @@ fn round_box(x: f32, y: f32, half_w: f32, half_h: f32, radius: f32) -> f32 {
 /// of the picture's corners, which its shadow has too.
 pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, scale: f32, photo: Option<&Photo>) -> (i32, i32, Vec<u32>) {
     let room = frame.room(scale);
-    let (wide, high) = (width + 2 * room, height + 2 * room);
+    let (wide, high) = (width + 2 * room.0, height + 2 * room.1);
+    let outer = ((frame.radius.max(0) as f32 * scale).round()).min(wide.min(high) as f32 / 2.0);
     let mut out = vec![0u32; (wide * high) as usize];
     let (half_w, half_h, radius) = (width as f32 / 2.0, height as f32 / 2.0, (round as f32).max(2.0 * scale));
     out.par_chunks_mut(wide as usize).enumerate().for_each(|(y, row)| {
@@ -123,7 +134,7 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
             if frame.shadow {
                 for (down, spread, dark) in SHADOWS {
                     let (down, spread) = (down * scale, spread * scale);
-                    let away = round_box(x as f32 + 0.5 - room as f32 - half_w, y as f32 + 0.5 - room as f32 - half_h - down, half_w, half_h, radius);
+                    let away = round_box(x as f32 + 0.5 - room.0 as f32 - half_w, y as f32 + 0.5 - room.1 as f32 - half_h - down, half_w, half_h, radius);
                     let near = (0.5 - away / spread).clamp(0.0, 1.0);
                     light *= 1.0 - dark * near * near * (3.0 - 2.0 * near);
                 }
@@ -134,12 +145,18 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
                 None => (0, shade.min(255)),
             };
             // And the picture over it, where the pixel is in it.
-            let (px, py) = (x - room, y - room);
+            let (px, py) = (x - room.0, y - room.1);
             if px >= 0 && py >= 0 && px < width && py < height {
                 let over = picture[(py * width + px) as usize];
                 let cover = over >> 24;
                 color = mix(color, over & 0xFF_FFFF, cover + (cover >> 7));
                 opaque = opaque + (255 - opaque) * cover / 255;
+            }
+            // The corners of the whole, rounded: nothing outside the
+            // curve of them.
+            if outer > 0.0 {
+                let away = round_box(x as f32 + 0.5 - wide as f32 / 2.0, y as f32 + 0.5 - high as f32 / 2.0, wide as f32 / 2.0, high as f32 / 2.0, outer);
+                opaque = (opaque as f32 * (0.5 - away).clamp(0.0, 1.0)) as u32;
             }
             *pixel = opaque << 24 | color;
         }
@@ -180,7 +197,10 @@ pub fn open(bytes: &[u8]) -> Option<Photo> {
 /// a program that spoke to the network itself would be several times
 /// the size of this one. Nothing, where there is no network or no curl.
 pub fn random(width: i32, height: i32) -> Option<Photo> {
-    let from = format!("https://picsum.photos/{}/{}.jpg", width.clamp(64, 2560), height.clamp(64, 2560));
+    // Asked for with the time in it, so that nothing between here and
+    // there takes it for the one it handed over last.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis());
+    let from = format!("https://picsum.photos/{}/{}.jpg?random={now}", width.clamp(64, 2560), height.clamp(64, 2560));
     let fetched = Command::new("curl").args(["-sL", "--max-time", "12", &from]).output().ok()?;
     if !fetched.status.success() {
         return None;
@@ -199,7 +219,7 @@ mod tests {
         assert_eq!((wide, high, plain[0]), (4, 2, 0xFF11_2233));
         assert!(Frame::default().is_plain());
 
-        let frame = Frame { backdrop: Backdrop::Gradient(6), pad: PADS[1], shadow: false };
+        let frame = Frame { backdrop: Backdrop::Gradient(6), pad: (PADS[1], PADS[1]), radius: 0, shadow: false };
         let (wide, high, framed) = set(frame, &picture, 4, 2, 0, 1.0, None);
         assert_eq!((wide, high), (4 + 64, 2 + 64));
         // Opaque everywhere; the picture in the middle of it, and at
@@ -214,7 +234,7 @@ mod tests {
     fn a_shadow_makes_its_own_room_and_is_darkest_under_the_picture() {
         let mut picture = vec![0x00FF_FFFFu32; 200 * 100];
         crate::canvas::round_alpha(&mut picture, 200, 8);
-        let frame = Frame { backdrop: Backdrop::None, pad: 0, shadow: true };
+        let frame = Frame { backdrop: Backdrop::None, pad: (0, 0), radius: 0, shadow: true };
         let (wide, high, framed) = set(frame, &picture, 200, 100, 8, 1.0, None);
         assert_eq!((wide, high), (200 + 112, 100 + 112));
         let alpha = |x: i32, y: i32| framed[(y * wide + x) as usize] >> 24;

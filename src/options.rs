@@ -17,12 +17,15 @@ What to take:
   -m, --monitor N            one monitor, as --monitors numbers them, or
                              'pointer' for the one the pointer is on
   -w, --window               the window that has the keyboard
-  -i, --choose               one of the windows there are: they are listed
-                             with numbers, and the number typed is taken
+  -i, --choose               one of a list: the whole screen, each display
+                             where there are several, and the windows.
+                             They are listed with numbers, and the one
+                             whose number is typed is opened selected, to
+                             be drawn on
   -t, --title TEXT           the window with TEXT in its title, whatever
                              the capitals; the topmost, if several have.
-                             Either of these takes the window's own
-                             picture, whatever is in front of it
+                             Taken at once, as the window's own picture,
+                             whatever is in front of it
   -g, --region X,Y,W,H       this rectangle of the screen (also WxH+X+Y)
   -a, --again                the same area as the last picture was of,
                              however that one was taken; --last and
@@ -117,8 +120,16 @@ Keys, once an area is selected:
   A zoom is round, and F makes one square; the dots at its two corners
   move its larger picture and say how many times larger. A badge is
   typed over with a double click.
-  The frame shows round the selection: drag it wider or narrower, and
-  click it for the backdrops, a photograph nobody chose, and the shadow.
+  The frame shows round the selection: drag beside the picture to make
+  it wider, above or below it to make it taller, and the dot inside its
+  corner to round its corners; click it for the backdrops, a photograph
+  nobody chose, and the shadow.
+  A tool with a mark in the corner of its button has more ways than one
+  of drawing: press the mark, or the tool again, for the list.
+  Text being typed or picked out has a bar over it: heavy (Ctrl+B),
+  slanted (Ctrl+I), gone over with a marker, and each line after a dot.
+  The box of colors also says how opaque. A shape being moved goes to
+  the edges and middles of the others; Ctrl held leaves it be.
   An edge of the selection goes to the edge of a window near it; Ctrl
   held leaves it where it is put.
   Arrows nudge the selection, or the shape picked out; Shift by ten;
@@ -165,6 +176,10 @@ pub struct Options {
     pub places: Vec<PathBuf>,
     /// Which of them Save saves to, as it was last left.
     pub save_to: Option<PathBuf>,
+    /// How round the corners are of a picture taken at once: what the
+    /// config file and the command line say, and not what was last in
+    /// hand in the editor.
+    pub plain_corners: f32,
     pub filename: String,
     pub settings: Settings,
     pub list_monitors: bool,
@@ -206,6 +221,7 @@ fn defaults() -> Options {
         dir: home().join("Pictures/Screenshots"),
         places: Vec::new(),
         save_to: None,
+        plain_corners: 0.0,
         filename: "screenshot-%Y-%m-%d-%H%M%S".into(),
         settings: Settings::default(),
         list_monitors: false,
@@ -285,7 +301,8 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
             let text = value()?;
             // A step of it, 0 to 3, or past that so many pixels.
             let asked = text.parse::<i32>().ok().filter(|pad| (0..=600).contains(pad)).ok_or(format!("invalid padding '{text}', expected 0 to 3, or a number of pixels"))?;
-            options.settings.frame.pad = PADS.get(asked as usize).copied().unwrap_or(asked);
+            let room = PADS.get(asked as usize).copied().unwrap_or(asked);
+            options.settings.frame.pad = (room, room);
         }
         "shadow" => options.settings.frame.shadow = true,
         "no-shadow" => options.settings.frame.shadow = false,
@@ -355,10 +372,11 @@ pub fn remember_tools(settings: &Settings, save_to: Option<&std::path::Path>) {
     // and one that came out framed because the last one was is a
     // surprise nobody wants.
     let mut text = format!(
-        "color = \"{:06X}\"\nsize = {}\ncorner-radius = {}\nfilled = {}\nfont = \"{}\"\n",
+        "color = \"{:06X}\"\nsize = {}\ncorner-radius = {}\nrounded = {}\nfilled = {}\nfont = \"{}\"\n",
         settings.color,
         settings.size + 1,
         settings.radius,
+        settings.corners,
         settings.filled,
         FACE_NAMES[settings.face.min(FACE_NAMES.len() - 1)][0]
     );
@@ -413,6 +431,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     // says how things are to begin with, and before the command line,
     // which says how they are to be now. A file that cannot be read,
     // or made sense of, is as good as none.
+    options.plain_corners = options.settings.corners;
     if options.remember {
         if let Some(text) = crate::output::state_file("tools").and_then(|file| std::fs::read_to_string(file).ok()) {
             let mut kept = defaults();
@@ -420,9 +439,15 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
                 options.save_to = kept.save_to.take().or(options.save_to.take());
                 let (now, kept) = (&mut options.settings, kept.settings);
                 (now.color, now.size, now.radius, now.filled, now.face) = (kept.color, kept.size, kept.radius, kept.filled, kept.face);
+                // How round the picture's corners were is kept too, for
+                // the next one that is opened to be drawn on; a picture
+                // taken at once has the corners the config file and the
+                // command line say, which is usually square.
+                now.corners = kept.corners;
             }
         }
     }
+    let kept_corners = options.settings.corners;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -460,6 +485,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
                 name => apply(&mut options, name, &mut value).map_err(|error| error.replace("unknown option ", "unknown option --"))?,
             }
         }
+    }
+    if options.settings.corners != kept_corners {
+        options.plain_corners = options.settings.corners;
     }
     // The folders Save can save to: the usual one first, then the
     // others; and of them, the one it was last pointed at.

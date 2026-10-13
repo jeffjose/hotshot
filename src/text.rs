@@ -87,6 +87,28 @@ pub struct Text {
     /// The emoji drawn so far, each at a size: how wide and tall, and
     /// its pixels, each with how opaque it is in its top byte.
     pictures: HashMap<(char, u32), (i32, i32, Vec<u32>)>,
+    /// How what is drawn next is to look, apart from its face and size.
+    pub look: Look,
+}
+
+/// How letters are drawn, apart from their face and their size: heavy,
+/// slanted, or faint. The faces carried are one weight each and upright,
+/// so heavy is the letter laid down again beside itself, and slanted is
+/// each row of it moved over, which is how a typewriter would have to.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Look {
+    /// How many pixels further right each letter is laid down again.
+    pub heavy: i32,
+    /// How far right a row is moved for each pixel it is above the line.
+    pub slant: f32,
+    /// How opaque, out of 256.
+    pub opacity: u32,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look { heavy: 0, slant: 0.0, opacity: 256 }
+    }
 }
 
 /// Which font an emoji is said to be in: none of the others, since it
@@ -110,7 +132,7 @@ impl Text {
             eprintln!("hotshot: no usable font found, text will not be drawn (set HOTSHOT_FONT to a .ttf file)");
         }
         let icons = load(include_bytes!("../assets/icons.ttf").to_vec());
-        Text { font, icons, faces: [None, None, None, None], others: Vec::new(), sought: HashSet::new(), glyphs: HashMap::new(), emoji: None, emoji_sought: false, pictures: HashMap::new() }
+        Text { font, icons, faces: [None, None, None, None], others: Vec::new(), sought: HashSet::new(), glyphs: HashMap::new(), emoji: None, emoji_sought: false, pictures: HashMap::new(), look: Look::default() }
     }
 
     /// An emoji as a picture `px` high, from the system's emoji, which
@@ -238,7 +260,7 @@ impl Text {
                 width += self.picture(c, px).map_or(0.0, |picture| picture.0 as f32 * 1.08);
                 continue;
             }
-            width += self.font(which).map_or(0.0, |font| font.metrics(c, Self::size(which, px)).advance_width);
+            width += self.font(which).map_or(0.0, |font| font.metrics(c, Self::size(which, px)).advance_width) + self.look.heavy.max(0) as f32;
         }
         width.ceil() as i32
     }
@@ -288,14 +310,22 @@ impl Text {
                 true => y + (Self::line_height(px) - metrics.height as i32) / 2,
                 false => baseline - metrics.ymin - metrics.height as i32,
             };
+            // The look in hand: each row of a slanted letter a little
+            // further right the higher it is; a heavy one laid down
+            // again beside itself; a faint one, less of each pixel.
+            let (heavy, faint) = (self.look.heavy.max(0), self.look.opacity.min(256));
             for (row, line) in coverage.chunks_exact(metrics.width.max(1)).enumerate() {
+                let lean = ((baseline - top - row as i32) as f32 * self.look.slant).round() as i32;
                 for (column, &amount) in line.iter().enumerate() {
                     if amount > 0 {
-                        canvas.blend(left + column as i32, top + row as i32, color, amount);
+                        let amount = ((u32::from(amount) * faint) >> 8) as u8;
+                        for beside in 0..=heavy {
+                            canvas.blend(left + column as i32 + lean + beside, top + row as i32, color, amount);
+                        }
                     }
                 }
             }
-            pen += metrics.advance_width;
+            pen += metrics.advance_width + heavy as f32;
         }
     }
 

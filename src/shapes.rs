@@ -9,7 +9,7 @@ use std::rc::Rc;
 use rayon::prelude::*;
 
 use crate::canvas::{Canvas, Mask, Rect};
-use crate::text::Text;
+use crate::text::{Look, Text};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -83,9 +83,25 @@ pub struct Shape {
     pub dashed: bool,
     /// What a badge is filled with, its `color` being that of its words.
     pub fill: u32,
+    /// How opaque it is, out of 256.
+    pub opacity: u32,
+    /// How its text is set, as some of `BOLD`, `ITALIC`, `HIGHLIGHT`
+    /// and `BULLETS` together.
+    pub style: u8,
     pub number: u32,
     mask: RefCell<Option<Rc<Mask>>>,
 }
+
+/// The ways text can be set, any of them together: heavier, slanted,
+/// on a wash of yellow as if gone over with a marker, and each line
+/// after a dot.
+pub const BOLD: u8 = 1;
+pub const ITALIC: u8 = 2;
+pub const HIGHLIGHT: u8 = 4;
+pub const BULLETS: u8 = 8;
+
+/// What a highlight is the color of, and how opaque out of 256.
+const HIGHLIGHT_COLOR: (u32, u32) = (0xFFE629, 150);
 
 /// How many times larger a zoom shows what it is of.
 const ZOOM: i32 = 2;
@@ -113,7 +129,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, number: 0, mask: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, opacity: 256, style: 0, number: 0, mask: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -132,7 +148,7 @@ impl Shape {
             self.face,
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
-            u8::from(self.dashed),
+            format_args!("{},{},{}", u8::from(self.dashed), self.opacity, self.style),
             self.fill,
             self.number,
             points.join(" ")
@@ -153,7 +169,12 @@ impl Shape {
         let mut shape = Shape::new(tool, u32::from_str_radix(color, 16).ok()?, stroke.parse().ok()?, points[0]);
         shape.points = points;
         (shape.filled, shape.radius, shape.font_px, shape.face) = (filled == "1", radius.parse().ok()?, font_px.parse().ok()?, face.parse::<usize>().ok()?.min(crate::text::FACES.len() - 1));
-        (shape.heads, shape.dashed) = ([heads.starts_with('1'), heads.ends_with('1')], dashed == "1");
+        // With whether it is dashed go how opaque it is and how its
+        // text is set, which a file from before either was has not.
+        let mut more = dashed.split(',');
+        (shape.heads, shape.dashed) = ([heads.starts_with('1'), heads.ends_with('1')], more.next() == Some("1"));
+        shape.opacity = more.next().and_then(|opacity| opacity.parse().ok()).unwrap_or(256).min(256);
+        shape.style = more.next().and_then(|style| style.parse().ok()).unwrap_or(0);
         (shape.fill, shape.number) = (u32::from_str_radix(fill, 16).ok()?, number.parse().ok()?);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
@@ -166,6 +187,20 @@ impl Shape {
             });
         }
         Some(shape)
+    }
+
+    /// How its letters are drawn: heavier, slanted and faint as it is.
+    pub fn look(&self) -> Look {
+        Look {
+            heavy: if self.style & BOLD != 0 { (self.font_px as i32 / 14).max(1) } else { 0 },
+            slant: if self.style & ITALIC != 0 { 0.2 } else { 0.0 },
+            opacity: self.opacity,
+        }
+    }
+
+    /// What each line of its text begins with: a dot, with bullets.
+    pub fn lead(&self) -> &'static str {
+        if self.tool == Tool::Text && self.style & BULLETS != 0 { "\u{2022} " } else { "" }
     }
 
     /// The rectangle a zoom is of, and the one it shows it in: from its
@@ -263,9 +298,11 @@ impl Shape {
         match self.tool {
             Tool::Text => {
                 let line = Text::line_height(self.font_px);
-                let lines: Vec<&str> = self.text.split('\n').collect();
-                let width = lines.iter().map(|line| text.width_in(self.face, line, self.font_px)).max().unwrap_or(0);
-                Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width.max(self.font_px as i32 / 4), line * lines.len() as i32)
+                text.look = self.look();
+                let widths: Vec<i32> = self.text.split('\n').map(|line| text.width_in(self.face, &format!("{}{line}", self.lead()), self.font_px)).collect();
+                text.look = Look::default();
+                let width = widths.iter().copied().max().unwrap_or(0);
+                Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width.max(self.font_px as i32 / 4), line * widths.len() as i32)
             }
             Tool::Blur | Tool::Spotlight => self.frame_rect(),
             // A badge is as wide as its words, with a dot before them
@@ -448,9 +485,20 @@ impl Shape {
             Tool::Blur => canvas.pixelate(self.frame_rect(), (self.stroke * 3.0 + 4.0).round() as i32),
             Tool::Text => {
                 let (x, y) = (self.points[0].0.round() as i32, self.points[0].1.round() as i32);
+                let high = Text::line_height(self.font_px);
+                text.look = self.look();
                 for (index, line) in self.text.split('\n').enumerate() {
-                    text.draw_in(self.face, canvas, x, y + index as i32 * Text::line_height(self.font_px), self.font_px, self.color, line);
+                    let shown = format!("{}{line}", self.lead());
+                    let top = y + index as i32 * high;
+                    // Gone over with a marker first, as wide as the
+                    // words of the line are.
+                    if self.style & HIGHLIGHT != 0 && !line.is_empty() {
+                        let wide = text.width_in(self.face, &shown, self.font_px);
+                        canvas.round_fill(x - high / 8, top + high / 10, wide + high / 4, high - high / 5, high / 8, HIGHLIGHT_COLOR.0, HIGHLIGHT_COLOR.1 * self.opacity / 256);
+                    }
+                    text.draw_in(self.face, canvas, x, top, self.font_px, self.color, &shown);
                 }
+                text.look = Look::default();
             }
             // A pill of the badge's own pale color, a dot and its words
             // in the strong one, and an edge between the two.
@@ -499,13 +547,15 @@ impl Shape {
                     }
                 }
             }
-            Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY),
+            Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY * self.opacity / 256),
             Tool::Counter => {
-                canvas.mask(&self.mask(), self.color, 256);
+                canvas.mask(&self.mask(), self.color, self.opacity);
                 let (cx, cy) = (self.points[0].0.round() as i32, self.points[0].1.round() as i32);
+                text.look = Look { opacity: self.opacity, ..Look::default() };
                 text.draw_centered(canvas, cx, cy, self.font_px, ink_on(self.color), &self.number.to_string());
+                text.look = Look::default();
             }
-            _ => canvas.mask(&self.mask(), self.color, 256),
+            _ => canvas.mask(&self.mask(), self.color, self.opacity),
         }
     }
 

@@ -84,26 +84,37 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     let screen = Rect::new(0, 0, display.width, display.height);
     // A window by its number in a list, or by its title: found here,
     // and taken as its own picture where the display will give one.
-    let mut chosen = None;
+    let mut chosen: Option<(Option<u32>, Rect)> = None;
     if matches!(options.take, Take::Choose | Take::Titled(_)) {
         let windows = display.titled();
-        let found = match &options.take {
-            Take::Titled(wanted) => windows.iter().find(|(_, title, _)| title.to_lowercase().contains(&wanted.to_lowercase())).ok_or_else(|| format!("no window has '{wanted}' in its title"))?,
+        chosen = Some(match &options.take {
+            Take::Titled(wanted) => {
+                let found = windows.iter().find(|(_, title, _)| title.to_lowercase().contains(&wanted.to_lowercase())).ok_or_else(|| format!("no window has '{wanted}' in its title"))?;
+                (Some(found.0), found.2.intersect(screen))
+            }
+            // The list: the whole screen first, then each display where
+            // there is more than one, then the windows, the topmost
+            // first. What is chosen is opened to be drawn on, not
+            // taken there and then.
             _ => {
-                if windows.is_empty() {
-                    return Err("there are no windows to choose from".into());
+                let monitors = display.monitors();
+                let mut list: Vec<(String, Option<u32>, Rect)> = vec![("The whole screen".to_owned(), None, screen)];
+                if monitors.len() > 1 {
+                    list.extend(monitors.iter().enumerate().map(|(number, monitor)| (format!("Display {}", number + 1), None, *monitor)));
                 }
-                for (number, (_, title, place)) in windows.iter().enumerate() {
-                    eprintln!("{:>3}  {:<56.56}  {} x {}", number + 1, title, place.w, place.h);
+                list.extend(windows.iter().map(|(window, title, place)| (title.clone(), Some(*window), *place)));
+                for (number, (name, _, place)) in list.iter().enumerate() {
+                    eprintln!("{:>3}  {:<56.56}  {} x {}", number + 1, name, place.w, place.h);
                 }
                 eprint!("\n> ");
                 let mut typed = String::new();
                 std::io::stdin().read_line(&mut typed)?;
                 let number: usize = typed.trim().parse().map_err(|_| "that is not one of the numbers")?;
-                windows.get(number.wrapping_sub(1)).ok_or("that is not one of the numbers")?
+                let (_, window, place) = list.get(number.wrapping_sub(1)).ok_or("that is not one of the numbers")?;
+                options.edit = true;
+                (*window, place.intersect(screen))
             }
-        };
-        chosen = Some((found.0, found.2.intersect(screen)));
+        });
     }
     // What was asked for by name is known already.
     let mut reopened = None;
@@ -145,7 +156,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             // A window chosen is its own picture, if there is one to be
             // had; anything else, and a window with none, is that much
             // of the screen.
-            let own = chosen.and_then(|(window, _)| display.window_picture(window));
+            let own = chosen.and_then(|(window, _)| window).and_then(|window| display.window_picture(window));
             let (area, mut pixels) = match own {
                 Some((wide, high, pixels)) => (Rect::new(area.x, area.y, wide, high), pixels),
                 None => {
@@ -157,7 +168,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             // Corners as round as the editor would have made them, and
             // the frame it would have set the picture in.
             let scale = editor::scale_for(display.height);
-            let round = ((options.settings.corners * scale).round() as i32).clamp(0, area.w.min(area.h) / 2);
+            let round = ((options.plain_corners * scale).round() as i32).clamp(0, area.w.min(area.h) / 2);
             let frame = options.settings.frame;
             let (mut width, mut height, mut alpha) = (area.w, area.h, round > 0);
             if round > 0 || !frame.is_plain() {
@@ -165,7 +176,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             }
             if !frame.is_plain() {
                 (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, None);
-                alpha = !matches!(frame.backdrop, frame::Backdrop::Gradient(_));
+                alpha = frame.is_clear() || frame.backdrop == frame::Backdrop::Photo;
             }
             Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None }
         }

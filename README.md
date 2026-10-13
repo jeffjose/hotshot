@@ -13,7 +13,8 @@ hotshot -g 0,0,800,600 -o shot.png
 hotshot --again        # the same area as last time, at once
                        # (--last and --repeat say the same)
 hotshot --reopen       # the last picture, with its shapes still to be moved
-hotshot -i             # list the windows, and take the one whose number is typed
+hotshot -i             # list the screen, the displays and the windows, and
+                       # open the one whose number is typed, to be drawn on
 hotshot -t calculator  # the window with that in its title
 ```
 
@@ -109,6 +110,24 @@ opened; `--no-remember`, or `remember = false`, begins with what the
 config file says every time. The frame and the picture's rounded corners
 are not kept: a plain picture is what is taken unless it is asked
 otherwise that time.
+
+A tool with a small mark in the corner of its button has more ways than
+one of drawing: the arrow with a head at each end or in dashes, the
+rectangle and the oval filled, the zoom square. Press the mark, or the
+tool again when it is in hand, for the list.
+
+Text being typed, or picked out, has a small bar over it that sets it
+heavy (Ctrl+B), slanted (Ctrl+I), gone over with a marker, or each line
+after a dot. The box of colors has a row for how opaque what is drawn
+is. A shape being moved goes to the edges and the middles of the others
+and of the selection, and a line shows which.
+
+The frame's width, its height and the roundness of its own corners are
+each dragged where they are: beside the picture, above or below it, and
+by the dot inside the frame's corner. While a corner is being rounded,
+of the frame, the picture or a rectangle, how round it is in pixels is
+said beside the pointer. A frame too large to show round the selection
+is shown whole, small, in a corner of the screen.
 
 An edge of the selection goes to the edge of a window when it comes
 near one; Ctrl held leaves it where it is put. Emoji typed or pasted
