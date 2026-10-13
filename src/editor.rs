@@ -1018,13 +1018,19 @@ impl Editor {
     pub fn key(&mut self, key: Key, mods: Mods) -> Outcome {
         self.dirty = true;
         self.mods = mods;
+        // While text is being typed, Enter is a new line of it; Ctrl+Enter,
+        // or Esc, is the end of it, and takes no picture.
+        if let (Some(_), Key::Enter, true) = (self.editing, key, mods.ctrl) {
+            self.commit_text();
+            return Outcome::Continue;
+        }
         if let (Some((index, _)), false) = (self.editing, mods.ctrl) {
             let shape = &mut self.shapes[index];
             match key {
                 Key::Char(letter) => shape.text.push(letter),
-                Key::Enter if mods.shift => shape.text.push('\n'),
+                Key::Enter => shape.text.push('\n'),
                 Key::Backspace => drop(shape.text.pop()),
-                Key::Enter | Key::Escape => self.commit_text(),
+                Key::Escape => self.commit_text(),
                 _ => {}
             }
             return Outcome::Continue;
@@ -1740,9 +1746,13 @@ mod tests {
             editor.key(Key::Char(letter), PLAIN);
         }
         editor.key(Key::Backspace, PLAIN);
-        editor.key(Key::Enter, PLAIN);
+        // Enter is a new line of it, and Ctrl+Enter the end of it, which
+        // takes no picture.
+        assert_eq!(editor.key(Key::Enter, PLAIN), Outcome::Continue);
+        editor.key(Key::Char('x'), PLAIN);
+        assert_eq!(editor.key(Key::Enter, Mods { shift: false, ctrl: true }), Outcome::Continue);
         // Done, it is picked out, and the tool in hand is the move tool.
-        assert_eq!((editor.shapes.len(), editor.shapes[0].text.as_str(), editor.tool, editor.selected.clone()), (1, "Hi ", Tool::Select, vec![0]));
+        assert_eq!((editor.shapes.len(), editor.shapes[0].text.as_str(), editor.tool, editor.selected.clone()), (1, "Hi \nx", Tool::Select, vec![0]));
         // Begun and left with nothing typed, it is as if it never was.
         editor.key(Key::Char('t'), PLAIN);
         click(&mut editor, (500, 500), 5000);
@@ -1946,7 +1956,7 @@ mod tests {
             editor.key(Key::Char(letter), PLAIN);
         }
         write(&mut editor, "4-drawn");
-        editor.key(Key::Enter, PLAIN);
+        editor.key(Key::Enter, Mods { shift: false, ctrl: true });
         let arrow = button(&mut editor, Button::Tool(Tool::Arrow));
         editor.pointer_moved(arrow.0, arrow.1, PLAIN);
         write(&mut editor, "5-tooltip");

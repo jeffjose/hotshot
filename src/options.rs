@@ -68,6 +68,7 @@ Keys, once an area is selected:
   Ctrl+C  copy    Ctrl+S  save    Ctrl+Z  undo    Ctrl+Shift+Z  redo
   V move   A arrow   L line   R rectangle   O oval   P pen   H marker
   T text   N counter   B blur   C colours   I pick a colour off the screen
+  In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends it
   F filled   1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
   K rounds the corners of the picture, more each time and then not at all
   What is drawn is picked out, with the move tool in hand: drag it, or a

@@ -63,7 +63,7 @@ With an area selected, a bar of tools appears beside it:
 | `A` `L` | arrow, line |
 | `R` `O` | rectangle (rounded), oval; `F` fills them |
 | `P` `H` | pen, marker |
-| `T` | text: click, type, Enter (Shift+Enter for a new line) |
+| `T` | text: click and type; Enter is a new line, Ctrl+Enter or Esc ends it |
 | `N` | counter: numbered discs, dragged to point at something |
 | `B` | blur: a mosaic over what should not be read |
 | `C` `I` | the colours, 24 of Radix's; pick a colour off the screen |
