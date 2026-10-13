@@ -475,13 +475,33 @@ impl Display {
     /// compositor keeps of it, where there is a compositor, which is
     /// the inside of the window without the title bar round it.
     pub fn window_picture(&self, window: Window) -> Option<(i32, i32, Vec<u32>)> {
-        let size = self.conn.get_geometry(window).ok()?.reply().ok()?;
-        let image = self.conn.get_image(ImageFormat::Z_PIXMAP, window, 0, 0, size.width, size.height, !0).ok()?.reply().ok()?;
+        use x11rb::protocol::composite::ConnectionExt as _;
+        // What the compositor keeps is the picture of the window the
+        // window manager wrapped this one in: the one whose parent is
+        // the root. That has the title bar on it too.
+        let mut outer = window;
+        loop {
+            let tree = self.conn.query_tree(outer).ok()?.reply().ok()?;
+            if tree.parent == self.root || tree.parent == NONE {
+                break;
+            }
+            outer = tree.parent;
+        }
+        self.conn.composite_query_version(0, 4).ok()?.reply().ok()?;
+        let size = self.conn.get_geometry(outer).ok()?.reply().ok()?;
+        let kept = self.conn.generate_id().ok()?;
+        self.conn.composite_name_window_pixmap(outer, kept).ok()?.check().ok()?;
+        let image = self.conn.get_image(ImageFormat::Z_PIXMAP, kept, 0, 0, size.width, size.height, !0).ok().and_then(|cookie| cookie.reply().ok());
+        let _ = self.conn.free_pixmap(kept);
+        let image = image?;
         if image.depth != 24 && image.depth != 32 {
             return None;
         }
         let pixels: Vec<u32> = image.data.chunks_exact(4).map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0])).collect();
-        (pixels.len() == usize::from(size.width) * usize::from(size.height)).then_some((i32::from(size.width), i32::from(size.height), pixels))
+        // A picture that is one color all over is no picture: the
+        // display had nothing kept, and said so with black.
+        let whole = pixels.len() == usize::from(size.width) * usize::from(size.height) && pixels.iter().any(|pixel| *pixel != pixels[0]);
+        whole.then_some((i32::from(size.width), i32::from(size.height), pixels))
     }
 
     /// The window that has the keyboard.
