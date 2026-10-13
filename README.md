@@ -1,6 +1,7 @@
 # hotshot
 
-A fast screenshot tool for Linux (X11). Run it and the screen freezes;
+A fast screenshot tool for Linux: X11 first, and Wayland by way of the
+desktop's portal. Run it and the screen freezes;
 drag out an area, draw on it if you like, and copy, save, pin or record
 it. It is one small native program: no web view, no toolkit, and
 nothing left running in between unless its tray icon is asked for.
@@ -128,11 +129,41 @@ names. For a commented file with every setting in it:
 hotshot --default-config > ~/.config/hotshot/config.toml
 ```
 
+## Wayland
+
+Under Wayland no program may read the screen for itself, so hotshot
+asks the desktop for a picture of it, through the portal desktops keep
+for that (GNOME, KDE, and wlroots compositors with a portal installed),
+and then shows it to be drawn on as it does on X11. Its window is an
+X11 one, so the session has to be running XWayland, as nearly all do.
+What is different there:
+
+- it starts in the time the desktop takes to hand a picture over, not
+  in three milliseconds, and the desktop may ask first;
+- it keeps to one monitor;
+- on a screen the desktop has made larger, the picture is as many
+  pixels as the desktop counts, not as many as the screen has;
+- the clipboard is `wl-copy`'s where that is installed
+  (`wl-clipboard`), which is the sure way;
+- no recording yet, no mouse pointer in the picture, no snapping to
+  windows, and `-w` knows of no window.
+
+## Does it work here?
+
+```sh
+hotshot --check        # add -c to try the clipboard as well
+```
+
+tries each thing hotshot does on the machine as it is — the screen
+read, the window and its keys, saving, pinning, a second of recording,
+the tray — and says which worked and what went wrong with the rest. It
+puts a window up for a moment and takes it down again; nothing it makes
+is kept. `cargo test` is the other half: what hotshot works out, tried
+with no display at all.
+
 ## Not yet
 
-Taking pictures under Wayland: hotshot reads the screen through X11,
-so in a Wayland session its tray icon shows and what it starts cannot
-take a picture yet. And zooming in on part of a recording.
+Recording under Wayland, and zooming in on part of a recording.
 
 ## License
 

@@ -1,5 +1,6 @@
 mod bench;
 mod canvas;
+mod check;
 mod clipboard;
 mod dbus;
 mod editor;
@@ -12,6 +13,7 @@ mod shapes;
 mod strips;
 mod text;
 mod tray;
+mod wayland;
 mod x11;
 
 use std::process::ExitCode;
@@ -68,6 +70,10 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         std::thread::sleep(Duration::from_secs_f64(options.delay));
     }
 
+    // Each thing hotshot does, tried, and said to have worked or not.
+    if options.check {
+        return Ok(check::run(&options));
+    }
     // A recording being made is stopped by being asked for again: one
     // key starts and stops.
     if options.record && record::stop_other() {
@@ -101,16 +107,23 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         options.settings.enter = Finish { record: true, ..Finish::NONE };
     }
 
-    // Under Wayland there is still an X server to talk to, but the screen
-    // it would hand over is not the one being looked at.
-    if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|name| !name.is_empty()) {
-        return Err("hotshot reads the screen through X11, and this is a Wayland session, which does not let it".into());
+    // Under Wayland there is still an X server to talk to, and to show
+    // a window by, but the screen it would hand over is not the one
+    // being looked at: that is asked of the desktop. And the window is
+    // one the desktop manages, on one monitor, or it is given no keys.
+    let wayland = wayland::session();
+    if wayland && (options.record || options.benchmark) {
+        return Err("under Wayland hotshot takes pictures, and does not yet record or time itself".into());
     }
-    let mut display = Display::open()?;
+    let mut display = Display::open().map_err(|error| if wayland { format!("{error}; under Wayland hotshot shows its window through XWayland, which this session is not running").into() } else { error })?;
+    if wayland {
+        display.confine();
+    }
     trace("display opened");
     // The pointer as it is now, before it is made hotshot's own: to go
     // in the picture if it is wanted there, now or by the button for it.
-    let arrow = display.pointer_picture();
+    // Under Wayland the display does not know what it looks like.
+    let arrow = if wayland { None } else { display.pointer_picture() };
     if options.list_monitors {
         for (number, monitor) in display.monitors().iter().enumerate() {
             println!("{number}: {}x{}+{}+{}", monitor.w, monitor.h, monitor.x, monitor.y);
@@ -206,7 +219,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             let (area, mut pixels) = match own {
                 Some((wide, high, pixels)) => (Rect::new(area.x, area.y, wide, high), pixels),
                 None => {
-                    let shot = display.capture()?;
+                    let shot = read_screen(&mut display)?;
                     (area, canvas::crop(&shot, display.width, area))
                 }
             };
@@ -274,10 +287,23 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         trace("kept to be opened again");
     }
     if how.copy {
-        clipboard::offer(display, png)?;
+        // Under Wayland by the clipboard's own keeper there, where
+        // that is installed; and by X11's otherwise, as ever.
+        if !(wayland && wayland::copy(&png, "image/png")) {
+            clipboard::offer(display, png)?;
+        }
         trace("on the clipboard");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The screen as it is now: read off the display, or under Wayland
+/// asked of the desktop.
+fn read_screen(display: &mut Display) -> x11::Result<x11::Buffer> {
+    match display.managed {
+        true => Ok(x11::Buffer::Own(wayland::screen(display)?)),
+        false => display.capture(),
+    }
 }
 
 /// Records an area until it is stopped, says where the recording is,
@@ -320,7 +346,9 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     // is taken there and then, so that nothing typed goes to what is
     // under the window.
     let dim = options.settings.dim.min(100);
-    let frozen = display.freeze(dim)?;
+    // Not under Wayland, where the server has nothing of the screen to
+    // freeze: the picture is asked for first, and then shown.
+    let frozen = !display.managed && display.freeze(dim)?;
     let mut grabbed = false;
     if frozen {
         trace("frozen screen up");
@@ -341,7 +369,7 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     let mut strips = match (frozen, shot.segment()) {
         (true, Some(segment)) if reopened.is_none() => Strips::new(segment, width, height, pointer.1),
         _ => {
-            shot = display.capture()?;
+            shot = read_screen(display)?;
             trace("screen read");
             // A picture come back to has, or has not, the pointer it
             // had: the one there is now is nothing to do with it.

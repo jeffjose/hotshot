@@ -114,6 +114,12 @@ pub struct Display {
     /// The server's time at the latest event, which owning the clipboard
     /// is dated by.
     pub time: u32,
+    /// Under Wayland the window is one the compositor manages, on one
+    /// monitor, which is then all the screen there is to this: where
+    /// that monitor's corner is on the whole, and how large the whole is.
+    pub managed: bool,
+    pub origin: (i32, i32),
+    pub whole: (i32, i32),
 }
 
 impl Display {
@@ -129,7 +135,16 @@ impl Display {
         }
         let (root, width, height, depth) = (root.root, i32::from(root.width_in_pixels), i32::from(root.height_in_pixels), root.root_depth);
         let shared = conn.extension_information(shm::X11_EXTENSION_NAME)?.is_some();
-        Ok(Display { conn, screen, root, width, height, depth, shared, window: NONE, gc: NONE, frozen: NONE, keys: (0, 0, Vec::new()), cursors: HashMap::new(), cursor: None, waiting: VecDeque::new(), time: CURRENT_TIME })
+        Ok(Display { conn, screen, root, width, height, depth, shared, window: NONE, gc: NONE, frozen: NONE, keys: (0, 0, Vec::new()), cursors: HashMap::new(), cursor: None, waiting: VecDeque::new(), time: CURRENT_TIME, managed: false, origin: (0, 0), whole: (width, height) })
+    }
+
+    /// Keeps to one monitor, in a window the compositor manages: for a
+    /// Wayland session, where a window of the old kind is given no
+    /// keys. The monitor the pointer was last seen on, or the first.
+    pub fn confine(&mut self) {
+        let (monitors, pointer) = (self.monitors(), self.pointer());
+        let monitor = monitors.iter().copied().find(|monitor| monitor.contains(pointer.0, pointer.1)).unwrap_or(monitors[0]);
+        (self.origin, self.width, self.height, self.managed) = ((monitor.x, monitor.y), monitor.w, monitor.h, true);
     }
 
     /// A screenful of pixels, shared with the server if it can be: it
@@ -251,13 +266,43 @@ impl Display {
         self.gc = self.conn.generate_id()?;
         self.window = self.conn.generate_id()?;
         let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::KEY_PRESS;
-        let look = CreateWindowAux::new().override_redirect(1).background_pixmap(background).event_mask(events);
-        self.conn.create_window(self.depth, self.window, self.root, 0, 0, width, height, 0, WindowClass::INPUT_OUTPUT, x11rb::COPY_FROM_PARENT, &look)?;
+        let look = match self.managed {
+            false => CreateWindowAux::new().override_redirect(1).background_pixmap(background).event_mask(events),
+            true => CreateWindowAux::new().background_pixel(0).event_mask(events),
+        };
+        self.conn.create_window(self.depth, self.window, self.root, self.origin.0 as i16, self.origin.1 as i16, width, height, 0, WindowClass::INPUT_OUTPUT, x11rb::COPY_FROM_PARENT, &look)?;
         self.conn.create_gc(self.gc, self.window, &CreateGCAux::new().graphics_exposures(0))?;
         self.conn.change_property8(PropMode::REPLACE, self.window, AtomEnum::WM_NAME, AtomEnum::STRING, b"hotshot")?;
         self.conn.change_property8(PropMode::REPLACE, self.window, AtomEnum::WM_CLASS, AtomEnum::STRING, b"hotshot\0hotshot\0")?;
+        if self.managed {
+            // Told to whoever manages windows: all of this monitor,
+            // nothing round it, over the rest, in no list of windows,
+            // where it was put, and given the keys.
+            let hints = self.atom("_MOTIF_WM_HINTS");
+            self.conn.change_property32(PropMode::REPLACE, self.window, hints, hints, &[2, 0, 0, 0, 0])?;
+            let states = [self.atom("_NET_WM_STATE_FULLSCREEN"), self.atom("_NET_WM_STATE_ABOVE"), self.atom("_NET_WM_STATE_SKIP_TASKBAR"), self.atom("_NET_WM_STATE_SKIP_PAGER")];
+            self.conn.change_property32(PropMode::REPLACE, self.window, self.atom("_NET_WM_STATE"), AtomEnum::ATOM, &states)?;
+            let sizes = [1 | 2, self.origin.0 as u32, self.origin.1 as u32, u32::from(width), u32::from(height), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            self.conn.change_property32(PropMode::REPLACE, self.window, AtomEnum::WM_NORMAL_HINTS, AtomEnum::WM_SIZE_HINTS, &sizes)?;
+            self.conn.change_property32(PropMode::REPLACE, self.window, AtomEnum::WM_HINTS, AtomEnum::WM_HINTS, &[1, 1, 0, 0, 0, 0, 0, 0, 0])?;
+        }
         self.conn.map_window(self.window)?;
         self.conn.flush()?;
+        if self.managed {
+            // It is up when it is told to draw itself, which a window
+            // that is managed is not at once: waited for, a while.
+            let asked = std::time::Instant::now();
+            let mut up = false;
+            while !up && asked.elapsed() < std::time::Duration::from_millis(1500) {
+                match self.conn.poll_for_event()? {
+                    Some(Event::Expose(_)) => up = true,
+                    Some(other) => self.waiting.push_back(other),
+                    None => std::thread::sleep(std::time::Duration::from_millis(5)),
+                }
+            }
+            let _ = self.conn.set_input_focus(InputFocus::PARENT, self.window, CURRENT_TIME);
+            self.conn.flush()?;
+        }
         Ok(())
     }
 
@@ -312,6 +357,11 @@ impl Display {
     /// Fails while another program has them: the one that started
     /// hotshot at a key press does until the key is let go.
     pub fn grab(&self) -> bool {
+        // A managed window is given the keys by whoever manages it, and
+        // taking them from the rest of the display would take nothing.
+        if self.managed {
+            return true;
+        }
         let keys = self.conn.grab_keyboard(false, self.window, CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC);
         let held = keys.ok().and_then(|cookie| cookie.reply().ok()).is_some_and(|reply| reply.status == GrabStatus::SUCCESS);
         if held {
@@ -374,7 +424,7 @@ impl Display {
     /// Where the pointer is.
     pub fn pointer(&self) -> (i32, i32) {
         let asked = self.conn.query_pointer(self.root).ok().and_then(|cookie| cookie.reply().ok());
-        asked.map_or((self.width / 2, self.height / 2), |reply| (i32::from(reply.root_x), i32::from(reply.root_y)))
+        asked.map_or((self.width / 2, self.height / 2), |reply| (i32::from(reply.root_x) - self.origin.0, i32::from(reply.root_y) - self.origin.1))
     }
 
     /// The pointer as it is drawn just now, to be put in a picture: the
@@ -390,6 +440,9 @@ impl Display {
 
     /// The monitors that make up the screen.
     pub fn monitors(&self) -> Vec<Rect> {
+        if self.managed {
+            return vec![Rect::new(0, 0, self.width, self.height)];
+        }
         let asked = self.conn.randr_get_monitors(self.root, true).ok().and_then(|cookie| cookie.reply().ok());
         let found = asked.map(|reply| reply.monitors.iter().map(|m| Rect::new(i32::from(m.x), i32::from(m.y), i32::from(m.width), i32::from(m.height))).collect());
         found.filter(|monitors: &Vec<Rect>| !monitors.is_empty()).unwrap_or_else(|| vec![Rect::new(0, 0, self.width, self.height)])
@@ -454,6 +507,11 @@ impl Display {
     }
 
     fn listed(&self, property: &str) -> Vec<Window> {
+        // Under Wayland the display knows of few of the windows there
+        // are, and not where they are on the monitor kept to.
+        if self.managed {
+            return Vec::new();
+        }
         let asked = self.conn.get_property(false, self.root, self.atom(property), AtomEnum::WINDOW, 0, 4096);
         asked.ok().and_then(|cookie| cookie.reply().ok()).and_then(|reply| reply.value32().map(Iterator::collect)).unwrap_or_default()
     }
@@ -573,15 +631,15 @@ impl Display {
             let input = match next {
                 Event::MotionNotify(motion) => {
                     self.time = motion.time;
-                    Some(Input::Motion(i32::from(motion.root_x), i32::from(motion.root_y), mods(motion.state.into())))
+                    Some(Input::Motion(i32::from(motion.root_x) - self.origin.0, i32::from(motion.root_y) - self.origin.1, mods(motion.state.into())))
                 }
                 Event::ButtonPress(press) => {
                     self.time = press.time;
-                    Some(Input::Press(press.detail, i32::from(press.root_x), i32::from(press.root_y), mods(press.state.into()), press.time))
+                    Some(Input::Press(press.detail, i32::from(press.root_x) - self.origin.0, i32::from(press.root_y) - self.origin.1, mods(press.state.into()), press.time))
                 }
                 Event::ButtonRelease(release) => {
                     self.time = release.time;
-                    Some(Input::Release(release.detail, i32::from(release.root_x), i32::from(release.root_y), mods(release.state.into())))
+                    Some(Input::Release(release.detail, i32::from(release.root_x) - self.origin.0, i32::from(release.root_y) - self.origin.1, mods(release.state.into())))
                 }
                 Event::KeyPress(press) => {
                     self.time = press.time;

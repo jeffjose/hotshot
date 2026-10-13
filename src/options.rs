@@ -129,6 +129,12 @@ Look:
                              in hand when hotshot was last used
 
 Other:
+      --check                try each thing hotshot does on this machine,
+                             and say which worked: the screen read, the
+                             window and its keys, saving, pinning, a
+                             second of recording, the tray. With -c the
+                             clipboard too, which takes the place of
+                             what is on it. Nothing it makes is kept
       --monitors             list the monitors and quit
       --benchmark            freeze the screen, drag, draw and encode by itself,
                              timing each, print the figures and quit
@@ -262,6 +268,9 @@ pub struct Options {
     /// list that icon opens, by itself, where the pointer is.
     pub tray: bool,
     pub menu: bool,
+    /// Each thing hotshot does tried on this machine, and said to have
+    /// worked or not.
+    pub check: bool,
     pub settings: Settings,
     pub list_monitors: bool,
     pub benchmark: bool,
@@ -320,6 +329,7 @@ fn defaults() -> Options {
         keys: false,
         tray: false,
         menu: false,
+        check: false,
         settings: Settings::default(),
         list_monitors: false,
         benchmark: false,
@@ -430,6 +440,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "no-keys" => options.keys = false,
         "tray" => options.tray = true,
         "menu" => options.menu = true,
+        "check" => options.check = true,
         // The shape an area is kept to as it is dragged out: so wide to
         // so tall, as 16:9; or so many pixels each way, as 1280x720.
         "aspect" => {
