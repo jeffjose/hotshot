@@ -48,7 +48,8 @@ Look:
                              square
       --rounded N            round the corners of the picture itself by N
                              pixels, leaving what is outside them see-through
-                             (K, or its button, goes through 8, 16 and 28)
+                             (the dot inside a corner of the selection does
+                             it by hand; K goes through 8, 16 and 28)
       --dim PERCENT          how much darker what is not selected is made
       --magnifier            a magnifier beside the pointer while an edge is
                              being placed (config: magnifier = true)
@@ -70,7 +71,8 @@ Keys, once an area is selected:
   T text   N counter   B blur   C colours   I pick a colour off the screen
   In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends it
   F filled   1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
-  K rounds the corners of the picture, more each time and then not at all
+  The dot inside each corner of the selection rounds the corners of the
+  picture as it is dragged in; K does it by steps, and then not at all
   What is drawn is picked out, with the move tool in hand: drag it, or a
   handle of its box to resize it, or the dot in a rectangle's corner to
   round it. Shift or Ctrl with a click picks out several.

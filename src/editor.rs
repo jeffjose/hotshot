@@ -164,14 +164,13 @@ enum Button {
     Fill,
     Undo,
     Redo,
-    Corners,
     Cancel,
     Save,
     Copy,
 }
 
 /// The bar of tools, in the groups it is divided into.
-const GROUPS: [&[Button]; 5] = [
+const GROUPS: [&[Button]; 4] = [
     &[
         Button::Tool(Tool::Select),
         Button::Tool(Tool::Arrow),
@@ -186,7 +185,6 @@ const GROUPS: [&[Button]; 5] = [
     ],
     &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill],
     &[Button::Undo, Button::Redo],
-    &[Button::Corners],
     &[Button::Cancel, Button::Save, Button::Copy],
 ];
 
@@ -212,7 +210,6 @@ impl Button {
             Button::Fill => ("Filled", "F"),
             Button::Undo => ("Undo", "Ctrl+Z"),
             Button::Redo => ("Redo", "Ctrl+Shift+Z"),
-            Button::Corners => ("Rounded corners", "K"),
             Button::Cancel => ("Cancel", "Esc"),
             Button::Save => ("Save", "Ctrl+S"),
             Button::Copy => ("Copy", "Ctrl+C"),
@@ -237,7 +234,7 @@ impl Button {
             Button::Cancel => icons::CLOSE,
             Button::Save => icons::SAVE,
             Button::Copy => icons::COPY,
-            Button::Color | Button::Size(_) | Button::Corners => "",
+            Button::Color | Button::Size(_) => "",
         }
     }
 }
@@ -258,6 +255,9 @@ enum Target {
     /// The dot inside a corner of the rectangle picked out, by which its
     /// corners are made rounder.
     Rounder(i32, i32),
+    /// The dot inside a corner of the selection, by which the corners
+    /// of the picture itself are.
+    Curve(i32, i32),
     Inside,
     Outside,
 }
@@ -281,6 +281,8 @@ enum Drag {
     /// Making a rectangle's corners rounder by the dot in one of them,
     /// which was taken hold of `slack` further in than the radius.
     Round { index: usize, corner: (i32, i32), slack: f32 },
+    /// The same of the picture's own corners, by a dot in the selection's.
+    Curve { corner: (i32, i32), slack: i32 },
     Button(Button),
 }
 
@@ -587,6 +589,13 @@ impl Editor {
             }
         }
         if !self.pipette {
+            let reach = (layout.px as i32 / 3).max(5);
+            let near = |&(_, _, (px, py)): &(i32, i32, (i32, i32))| (x - px).abs() <= reach && (y - py).abs() <= reach;
+            if let Some((across, down, _)) = self.curves().into_iter().flatten().find(near) {
+                return Target::Curve(across, down);
+            }
+        }
+        if !self.pipette {
             // The corners reach a little further than the edges, being
             // harder to find; and a selection too small for both keeps
             // its inside for moving it by.
@@ -632,6 +641,31 @@ impl Editor {
         self.shapes[index].bounds(&mut self.text).inflate(room)
     }
 
+    /// Where the dots are by which the corners of the picture itself are
+    /// made rounder: one inside each corner of the selection, with the
+    /// move tool in hand, as a rectangle picked out has them. None on a
+    /// selection too small to have them, or while it is being reshaped.
+    fn curves(&self) -> Option<[(i32, i32, (i32, i32)); 4]> {
+        let area = self.selection?;
+        let least = ui_px(self.monitor().h) as i32;
+        let busy = matches!(self.drag, Drag::Select { begun: true, .. } | Drag::Move { .. } | Drag::Resize { .. } | Drag::Draw { .. });
+        if self.tool != Tool::Select || busy || area.w.min(area.h) < least * 4 {
+            return None;
+        }
+        let inset = self.corner_radius().max(least).min(area.w / 2).min(area.h / 2);
+        let at = |across: i32, down: i32| (across, down, (if across < 0 { area.x + inset } else { area.right() - inset }, if down < 0 { area.y + inset } else { area.bottom() - inset }));
+        Some([at(-1, -1), at(1, -1), at(-1, 1), at(1, 1)])
+    }
+
+    /// How far in from a corner of the selection a point is, by the
+    /// lesser of across and down.
+    fn inward(&self, corner: (i32, i32), at: (i32, i32)) -> i32 {
+        let area = self.selection.unwrap_or_default();
+        let across = if corner.0 < 0 { at.0 - area.x } else { area.right() - at.0 };
+        let down = if corner.1 < 0 { at.1 - area.y } else { area.bottom() - at.1 };
+        across.min(down)
+    }
+
     /// Where the dots are by which a rectangle's corners are made
     /// rounder: one inside each corner, as far in as the corner is
     /// round, or far enough to be got hold of if that is not far. Each
@@ -660,7 +694,7 @@ impl Editor {
         let pull = match (self.drag, self.hover) {
             (Drag::Resize { pull, .. } | Drag::Scale { pull, .. }, _) => Some(pull),
             (Drag::None, Target::Handle(across, down) | Target::Grip(across, down)) => Some((across, down)),
-            (Drag::Round { .. }, _) | (Drag::None, Target::Rounder(..)) => return Cursor::Arrow,
+            (Drag::Round { .. } | Drag::Curve { .. }, _) | (Drag::None, Target::Rounder(..) | Target::Curve(..)) => return Cursor::Arrow,
             _ => None,
         };
         if let Some((across, down)) = pull {
@@ -739,6 +773,14 @@ impl Editor {
                 }
                 shape.touch();
                 self.shapes[index] = shape;
+                self.dirty = true;
+            }
+            Drag::Curve { corner, slack } => {
+                // Kept as it would be on a screen 1080 high, which is
+                // how it is set in the config file too.
+                let (corner, slack) = (*corner, *slack);
+                let most = self.selection.map_or(0, |area| area.w.min(area.h) / 2);
+                self.corners = (self.inward(corner, at) - slack).clamp(0, most) as f32 / self.scale();
                 self.dirty = true;
             }
             Drag::Round { index, corner, slack } => {
@@ -826,7 +868,7 @@ impl Editor {
         let target = self.target_at(at);
         self.hover = target;
 
-        if self.pipette && matches!(target, Target::Inside | Target::Outside | Target::Handle(..) | Target::Grip(..) | Target::Rounder(..)) {
+        if self.pipette && matches!(target, Target::Inside | Target::Outside | Target::Handle(..) | Target::Grip(..) | Target::Rounder(..) | Target::Curve(..)) {
             self.pipette = false;
             self.set_color(self.shot.pixels[(at.1 * self.shot.width + at.0) as usize] & 0xFFFFFF);
             return Outcome::Continue;
@@ -848,6 +890,11 @@ impl Editor {
                     self.scaling = Some(self.shapes[index].clone());
                     self.drag = Drag::Scale { index, pull: (across, down), from: at, origin: self.frame_of(index) };
                 }
+            }
+            // As with a rectangle's: moved by how far it goes.
+            Target::Curve(across, down) => {
+                self.commit_text();
+                self.drag = Drag::Curve { corner: (across, down), slack: self.inward((across, down), at) - self.corner_radius() };
             }
             Target::Rounder(across, down) => {
                 if let Some(index) = self.picked() {
@@ -1083,7 +1130,13 @@ impl Editor {
                 'b' => self.set_tool(Tool::Blur),
                 'c' => drop(self.activate(Button::Color)),
                 'f' => drop(self.activate(Button::Fill)),
-                'k' => drop(self.activate(Button::Corners)),
+                // From each roundness of the picture's corners to the
+                // next, and round again to square; one that is none of
+                // them, set by hand, goes to square first.
+                'k' => {
+                    let at = CORNERS.iter().position(|&radius| radius == self.corners);
+                    self.corners = at.map_or(0.0, |at| CORNERS[(at + 1) % CORNERS.len()]);
+                }
                 'i' => (self.pipette, self.popup) = (!self.pipette, None),
                 '1'..='4' => self.set_size(letter as usize - '1' as usize),
                 '[' => self.scrolled(false),
@@ -1140,13 +1193,6 @@ impl Editor {
             }
             Button::Undo => self.undo(),
             Button::Redo => self.redo(),
-            // From each roundness to the next, and round again to square;
-            // one set in the config file that is none of them goes to
-            // square first.
-            Button::Corners => {
-                let at = CORNERS.iter().position(|&radius| radius == self.corners);
-                self.corners = at.map_or(0.0, |at| CORNERS[(at + 1) % CORNERS.len()]);
-            }
             Button::Cancel => return Outcome::Cancel,
             Button::Save => return self.finish(Finish { copy: false, save: true }),
             Button::Copy => return self.finish(Finish { copy: true, save: false }),
@@ -1350,6 +1396,12 @@ impl Editor {
                     canvas.disc(x, y, grip, 0xFFFFFF, 256);
                 }
             }
+            // And the selection has its own dots, for the corners of the
+            // picture itself.
+            for (_, _, (x, y)) in self.curves().into_iter().flatten() {
+                canvas.disc(x, y, grip + thick, accent, 256);
+                canvas.disc(x, y, grip, 0xFFFFFF, 256);
+            }
             let _ = selection;
             // Handles at the corners and the middles of the sides, on a
             // selection large enough to have room for them.
@@ -1399,7 +1451,6 @@ impl Editor {
                 Button::Tool(tool) => tool == self.tool && !self.pipette,
                 Button::Size(size) => size == self.size,
                 Button::Fill => self.filled,
-                Button::Corners => self.corners > 0.0,
                 Button::Color => self.popup.is_some() || self.pipette,
                 _ => false,
             };
@@ -1433,12 +1484,6 @@ impl Editor {
                 Button::Size(size) => {
                     let radius = ((STROKES[size] * px as f32 / 13.0 * 0.62).round() as i32 + 1).min(side * 3 / 10);
                     canvas.disc(cx, cy, radius, ink, 256);
-                }
-                // A frame with corners as round as the picture's are.
-                Button::Corners => {
-                    let across = side / 2;
-                    let radius = (self.corners / CORNERS[CORNERS.len() - 1] * across as f32 / 2.0).round() as i32;
-                    canvas.round_outline(cx - across / 2, cy - across / 2, across, across, radius, (px as i32 / 8).max(1), ink);
                 }
                 _ => self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, button.icon()),
             }
@@ -1726,6 +1771,19 @@ mod tests {
             editor.key(Key::Char('k'), PLAIN);
         }
         assert!(!editor.result().unwrap().2);
+
+        // The dot inside a corner of the selection does the same by
+        // hand: taken forty pixels further in, the corners are forty
+        // pixels round; and taken back out, square again.
+        editor.selected.clear();
+        let (_, _, dot) = editor.curves().unwrap()[3];
+        drag(&mut editor, dot, (dot.0 - 40, dot.1 - 40));
+        assert_eq!((editor.corner_radius(), editor.selection(), editor.shapes.len()), (40, Some(Rect::new(100, 100, 800, 600)), 2));
+        let (_, pixels, rounded) = editor.result().unwrap();
+        assert!(rounded && pixels[0] >> 24 == 0 && pixels[20 * 800 + 20] >> 24 == 255);
+        let (_, _, dot) = editor.curves().unwrap()[0];
+        drag(&mut editor, dot, (dot.0 - 90, dot.1 - 90));
+        assert_eq!(editor.corner_radius(), 0);
 
         editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
         editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });

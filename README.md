@@ -67,7 +67,7 @@ With an area selected, a bar of tools appears beside it:
 | `N` | counter: numbered discs, dragged to point at something |
 | `B` | blur: a mosaic over what should not be read |
 | `C` `I` | the colours, 24 of Radix's; pick a colour off the screen |
-| `K` | round the corners of the picture itself: 8, 16, 28 pixels, none |
+| `K` | round the corners of the picture itself: 8, 16, 28 pixels, none; or drag the dot inside a corner of the selection |
 | `1`-`4`, wheel | width of line, and size of text |
 
 What has just been drawn is picked out, with the move tool in hand, as

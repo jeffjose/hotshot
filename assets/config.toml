@@ -42,8 +42,9 @@
 # dim = 50
 
 # Round the corners of the picture itself by this many pixels (of a
-# screen 1080 high), leaving what is outside them see-through. K, or its
-# button in the bar, changes it for the picture being taken.
+# screen 1080 high), leaving what is outside them see-through. The dot
+# inside a corner of the selection, or K, changes it for the picture
+# being taken.
 # rounded = 0
 
 # A magnifier that follows the pointer while an edge of the selection is
