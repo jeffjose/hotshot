@@ -230,7 +230,7 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// Lays a shape down in a colour, `amount`/256 opaque where the shape
+    /// Lays a shape down in a color, `amount`/256 opaque where the shape
     /// covers a pixel whole. A large one has its rows done each on its
     /// own core.
     pub fn mask(&mut self, mask: &Mask, color: u32, amount: u32) {

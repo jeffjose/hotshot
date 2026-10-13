@@ -1,5 +1,5 @@
 //! What is drawn on a screenshot: arrows, boxes, text and the rest. Each
-//! is a few points and a colour; its outline is worked out once, as how
+//! is a few points and a color; its outline is worked out once, as how
 //! much of every pixel it covers, and laid down from that whenever the
 //! picture is redrawn.
 
@@ -321,7 +321,7 @@ pub fn constrained(tool: Tool, from: Point, to: Point) -> Point {
     }
 }
 
-/// The colour for a number on a disc of `color`: white, or near black
+/// The color for a number on a disc of `color`: white, or near black
 /// on one light enough that white would be lost on it.
 pub fn ink_on(color: u32) -> u32 {
     let channel = |shift: u32| f64::from(color >> shift & 0xFF);

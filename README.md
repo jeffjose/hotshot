@@ -15,7 +15,7 @@ hotshot --again        # the same area as last time, at once
 ```
 
 It is made the way jog is, and looks like it: the same font
-(Geist), the same icons (Solar), the same colours.
+(Geist), the same icons (Solar), the same colors.
 
 ## Speed
 
@@ -76,7 +76,7 @@ With an area selected, a bar of tools appears beside it:
 | `N` | counter: numbered discs, dragged to point at something |
 | `B` | blur: a mosaic over what should not be read |
 | `S` | spotlight: everything but a rectangle of the picture darkened |
-| `C` `I` | the colours, 24 of Radix's; pick a colour off the screen |
+| `C` `I` | the colors, 24 of Radix's; pick a color off the screen |
 | `K` | round the corners of the picture itself: 8, 16, 28 pixels, none; or drag the dot inside a corner of the selection |
 | `1`-`4`, wheel | width of line, and size of text |
 
@@ -85,14 +85,14 @@ in Figma: drag it to move it, drag a handle of its box to resize it, and
 on a rectangle drag the dot inside a corner to round its corners. The
 pointer over any other shape shows that one's box, and a click picks it
 out; Shift or Ctrl with a click picks out several, to be moved,
-recoloured or deleted together, and with a drag from empty space picks
+recolored or deleted together, and with a drag from empty space picks
 out all that a box touches. A line or an arrow picked out has a dot at
 each end, and is reshaped by either. **Ctrl+D** is a copy of what is
 picked out. Only the pen, the marker and the counter stay in hand: the
 first two for the next stroke, the counter for putting down 1, 2, 3 one
 after another.
 
-The colour, width of line, roundness, fill and font in hand when hotshot
+The color, width of line, roundness, fill and font in hand when hotshot
 is closed are the ones in hand when it is next opened; `--no-remember`,
 or `remember = false`, begins with what the config file says every time.
 
@@ -102,7 +102,7 @@ prints the path. **Ctrl+Z** and **Ctrl+Shift+Z** undo and redo. Shift
 while drawing makes squares, circles and lines at 45°. The arrow keys
 nudge the selection or the shape picked out, Shift by ten pixels, and
 Ctrl+arrows resize. Delete removes the shape picked out. A right click
-opens the colours where the pointer is.
+opens the colors where the pointer is.
 
 `hotshot --help` lists the options. `-c`, `-s` and `-o FILE` say what
 Enter does; `--edit` opens the editor on `--full`, `--window` or

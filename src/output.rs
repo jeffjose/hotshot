@@ -14,7 +14,7 @@ use crate::canvas::Rect;
 /// With `alpha`, the top byte of each pixel says how opaque it is, and
 /// goes into the PNG: that is how a picture has rounded corners.
 pub fn encode(width: u32, height: u32, pixels: &[u32], alpha: bool) -> Result<Vec<u8>, String> {
-    // PNG has the colours of a pixel the other way round, and no fourth
+    // PNG has the colors of a pixel the other way round, and no fourth
     // byte unless it means something; turning 8 million of them over is
     // worth every core.
     let each = if alpha { 4 } else { 3 };

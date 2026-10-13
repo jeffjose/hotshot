@@ -37,12 +37,12 @@ What to do with it:
   copy. Taken at once, a picture is saved unless told otherwise.
 
 Look:
-      --accent COLOR         colour of the selection and of what is picked out:
-                             RRGGBB, or one of the Radix colours such as
+      --accent COLOR         color of the selection and of what is picked out:
+                             RRGGBB, or one of the Radix colors such as
                              indigo (the default), blue, crimson or teal
-      --color COLOR          colour to draw in to begin with: red (the
-                             default) or any other of the Radix colours
-                             the colour box has, white, black or RRGGBB
+      --color COLOR          color to draw in to begin with: red (the
+                             default) or any other of the Radix colors
+                             the color box has, white, black or RRGGBB
       --size N               width of line to begin with, 1 to 4
       --corner-radius N      how round a drawn rectangle's corners are; 0 is
                              square
@@ -63,7 +63,7 @@ Look:
                              (sans, the default), instrument-serif (serif),
                              architects-daughter (hand) or fira-code (mono)
       --filled               rectangles and ovals filled to begin with
-      --no-remember          begin with the colour, width, roundness, fill
+      --no-remember          begin with the color, width, roundness, fill
                              and font the config file says, not the ones
                              in hand when hotshot was last used
 
@@ -82,7 +82,7 @@ Keys, once an area is selected:
   Ctrl+C  copy    Ctrl+S  save    Ctrl+Z  undo    Ctrl+Shift+Z  redo
   V move   A arrow   L line   R rectangle   O oval   P pen   H marker
   T text   N counter   B blur   S spotlight   G the next font
-  C colours   I pick a colour off the screen
+  C colors   I pick a color off the screen
   In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends
   it; the arrows, Home, End and a click move the caret; Ctrl+V pastes
   F filled   1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
@@ -95,7 +95,7 @@ Keys, once an area is selected:
   box touches. Ctrl+D is a copy of what is picked out.
   Arrows nudge the selection, or the shape picked out; Shift by ten;
   Ctrl+arrows resize. Delete removes the shape picked out. Ctrl+A is the
-  whole screen. A right click is the colours.
+  whole screen. A right click is the colors.
 
 Config file:
   ~/.config/hotshot/config.toml sets defaults, using the long option names:
@@ -411,14 +411,14 @@ fn parse_color(text: &str) -> Option<u32> {
     u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)
 }
 
-/// A colour to draw in: one of the palette's by name, or `RRGGBB`.
+/// A color to draw in: one of the palette's by name, or `RRGGBB`.
 fn parse_ink(text: &str) -> Result<u32, String> {
     let named = PALETTE.iter().find(|(_, name)| *name == text.to_lowercase()).map(|(color, _)| *color);
-    named.or_else(|| parse_color(text)).ok_or(format!("invalid colour '{text}', expected a name such as red, or RRGGBB"))
+    named.or_else(|| parse_color(text)).ok_or(format!("invalid color '{text}', expected a name such as red, or RRGGBB"))
 }
 
-/// An accent colour: one of the Radix colours by name, at the step meant
-/// for solid backgrounds, or any colour as `RRGGBB`. The same as jog's.
+/// An accent color: one of the Radix colors by name, at the step meant
+/// for solid backgrounds, or any color as `RRGGBB`. The same as jog's.
 fn parse_accent(text: &str) -> Result<u32, String> {
     let named = match text.to_lowercase().as_str() {
         "tomato" => 0xE54D2E,
@@ -441,7 +441,7 @@ fn parse_accent(text: &str) -> Result<u32, String> {
         "brown" => 0xAD7F58,
         "bronze" => 0xA18072,
         "gold" => 0x978365,
-        _ => return parse_color(text).ok_or(format!("invalid accent '{text}', expected a Radix colour name such as indigo, or RRGGBB")),
+        _ => return parse_color(text).ok_or(format!("invalid accent '{text}', expected a Radix color name such as indigo, or RRGGBB")),
     };
     Ok(named)
 }

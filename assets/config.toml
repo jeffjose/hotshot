@@ -16,19 +16,19 @@
 # picture: "copy" it to the clipboard, "save" it to the folder, or "both".
 # enter = "copy"
 
-# The colour of the selection's edge and of what is picked out in the bar.
+# The color of the selection's edge and of what is picked out in the bar.
 # accent = "indigo"
-#   a Radix colour by name:
+#   a Radix color by name:
 #   tomato red ruby crimson pink plum purple violet iris indigo blue cyan
 #   teal jade green grass orange brown bronze gold
-#   or any colour as "RRGGBB", such as "3E63DD"
+#   or any color as "RRGGBB", such as "3E63DD"
 
-# The colour drawn in to begin with.
+# The color drawn in to begin with.
 # color = "red"
-#   any of the colour box's, which are Radix's:
+#   any of the color box's, which are Radix's:
 #   tomato red ruby crimson pink plum purple violet iris indigo blue cyan
 #   teal jade green grass lime yellow amber orange brown gray white black
-#   or any colour as "RRGGBB"
+#   or any color as "RRGGBB"
 
 # The width of line drawn with to begin with, and the size of text that
 # goes with it: 1 (thin) to 4 (heavy).
@@ -66,7 +66,7 @@
 # Rectangles and ovals filled to begin with.
 # filled = false
 
-# The colour, width of line, roundness of corners, fill and font in hand
+# The color, width of line, roundness of corners, fill and font in hand
 # when hotshot is closed are the ones in hand when it is next opened.
 # With false, it begins every time with what this file says.
 # remember = true

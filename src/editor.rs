@@ -10,13 +10,13 @@ use crate::canvas::{self, Canvas, Rect};
 use crate::shapes::{self, Shape, Tool};
 use crate::text::{icons, Text, FACES};
 
-// jog's colours, so that the two look like one family.
+// jog's colors, so that the two look like one family.
 const TEXT_COLOR: u32 = 0xEEEEEE;
 const DIM_TEXT_COLOR: u32 = 0x9A9A9A;
 const MENU_COLOR: u32 = 0x1E1E1E;
 const MENU_EDGE_COLOR: u32 = 0x555555;
 
-/// The colours to draw in: Radix's, at the step meant for solid
+/// The colors to draw in: Radix's, at the step meant for solid
 /// backgrounds, as jog's accents are.
 pub const PALETTE: [(u32, &str); 24] = [
     // The reds round to the violets,
@@ -37,7 +37,7 @@ pub const PALETTE: [(u32, &str); 24] = [
     (0x29A383, "jade"),
     (0x30A46C, "green"),
     (0x46A758, "grass"),
-    // the bright ones, and the ones that are no colour.
+    // the bright ones, and the ones that are no color.
     (0xBDEE63, "lime"),
     (0xFFE629, "yellow"),
     (0xFFC53D, "amber"),
@@ -146,7 +146,7 @@ pub enum Windows {
 #[derive(Clone)]
 pub struct Settings {
     pub accent: u32,
-    /// The colour drawn in to begin with.
+    /// The color drawn in to begin with.
     pub color: u32,
     /// Which of the line widths, counted from 0.
     pub size: usize,
@@ -231,7 +231,7 @@ impl Button {
             Button::Tool(Tool::Counter) => ("Counter", "N"),
             Button::Tool(Tool::Blur) => ("Blur", "B"),
             Button::Tool(Tool::Spotlight) => ("Spotlight", "S"),
-            Button::Color => ("Colour", "C"),
+            Button::Color => ("Color", "C"),
             Button::Size(0) => ("Thin", "1"),
             Button::Size(1) => ("Medium", "2"),
             Button::Size(2) => ("Thick", "3"),
@@ -276,7 +276,7 @@ enum Target {
     Button(Button),
     Swatch(u32),
     Pipette,
-    /// A part of the bar, or of the box of colours, that is not a button.
+    /// A part of the bar, or of the box of colors, that is not a button.
     Panel,
     /// An edge or a corner of the selection: which way it pulls across
     /// and down, each -1, 0 or 1.
@@ -325,7 +325,7 @@ enum Drag {
     Button(Button),
 }
 
-/// Where the box of colours hangs from.
+/// Where the box of colors hangs from.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Anchor {
     Bar,
@@ -383,7 +383,7 @@ pub struct Editor {
     /// Which of the faces text is typed in.
     face: usize,
     popup: Option<Anchor>,
-    /// Picking a colour off the screen.
+    /// Picking a color off the screen.
     pipette: bool,
     hover: Target,
     /// The window the pointer is over, while there is no selection.
@@ -396,7 +396,7 @@ fn ui_px(monitor_height: i32) -> u32 {
     (monitor_height.max(0) as u32 / 90).clamp(13, 30)
 }
 
-/// The colour for an icon on the accent: white, or near black on an
+/// The color for an icon on the accent: white, or near black on an
 /// accent light enough that white would be lost on it.
 fn on(color: u32) -> u32 {
     shapes::ink_on(color)
@@ -591,7 +591,7 @@ impl Editor {
         let place = if clear { outside } else { Rect::new(selection.x + pad, selection.y + pad, size.0, size.1) };
         layout.label = Some((place.kept_within(monitor), words));
 
-        // The box of colours: two rows of them, and under those the
+        // The box of colors: two rows of them, and under those the
         // pipette.
         if let (Some(anchor), false) = (self.popup, hidden) {
             let columns = PALETTE_COLUMNS;
@@ -981,7 +981,7 @@ impl Editor {
             Target::Pipette => (self.pipette, self.popup) = (true, None),
             Target::Panel => {}
             Target::Button(button) => self.drag = Drag::Button(button),
-            // A click anywhere else puts the box of colours away, and
+            // A click anywhere else puts the box of colors away, and
             // does nothing more.
             _ if self.popup.is_some() => self.popup = None,
             Target::End(point) => {
@@ -1153,7 +1153,7 @@ impl Editor {
         outcome
     }
 
-    /// The right button: the colours, where the pointer is; or with
+    /// The right button: the colors, where the pointer is; or with
     /// nothing selected yet, a way out.
     pub fn right_pressed(&mut self) -> Outcome {
         self.dirty = true;
@@ -1533,7 +1533,7 @@ impl Editor {
     // ---- The picture ----
 
     /// Whether the magnifier is up: while an edge is being placed, if it
-    /// is wanted at all, and always while a colour is being picked.
+    /// is wanted at all, and always while a color is being picked.
     fn loupe_shows(&self) -> bool {
         let over_interface = matches!(self.hover, Target::Button(_) | Target::Panel | Target::Swatch(_) | Target::Pipette);
         let placing = match self.drag {
@@ -1721,7 +1721,7 @@ impl Editor {
             };
             let (cx, cy) = rect.center();
             match button {
-                // The colour drawn in, ringed so that a dark one shows.
+                // The color drawn in, ringed so that a dark one shows.
                 Button::Color => {
                     let radius = side * 3 / 10;
                     canvas.disc(cx, cy, radius + (px as i32 / 10).max(1), if chosen { TEXT_COLOR } else { MENU_EDGE_COLOR }, 256);
@@ -1820,7 +1820,7 @@ impl Editor {
     }
 
     /// The pixels about the pointer, enlarged, with where it is or the
-    /// colour it is on.
+    /// color it is on.
     fn draw_loupe(&mut self, canvas: &mut Canvas, px: u32) {
         let monitor = self.monitor_at(self.pointer);
         let pad = px as i32 / 2;
@@ -1864,7 +1864,7 @@ impl Editor {
     /// on it, and nothing of the interface.
     ///
     /// What is in hand now, as settings to begin with next time: the
-    /// colour, the width of line, how round a rectangle's corners and
+    /// color, the width of line, how round a rectangle's corners and
     /// the picture's are, whether shapes are filled, and the face.
     pub fn in_hand(&self) -> Settings {
         Settings { color: self.color, size: self.size, corners: self.corners, filled: self.filled, face: self.face, ..self.settings.clone() }
@@ -1894,7 +1894,7 @@ impl Editor {
     }
 }
 
-/// A lighter tint of a colour, for thin lines that the colour itself
+/// A lighter tint of a color, for thin lines that the color itself
 /// would be hard to see as.
 fn soft(color: u32) -> u32 {
     let toward_white = |shift: u32| {
@@ -1911,7 +1911,7 @@ mod tests {
     const PLAIN: Mods = Mods { shift: false, ctrl: false };
 
     /// A screen with something on it to tell places apart by: bands of
-    /// grey, and two windows.
+    /// gray, and two windows.
     fn editor(width: i32, height: i32) -> Editor {
         let mut pixels = vec![0u32; (width * height) as usize];
         for (at, pixel) in pixels.iter_mut().enumerate() {
@@ -2064,7 +2064,7 @@ mod tests {
     }
 
     #[test]
-    fn text_is_typed_where_clicked_and_a_shape_is_moved_recoloured_and_deleted() {
+    fn text_is_typed_where_clicked_and_a_shape_is_moved_recolored_and_deleted() {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
         editor.key(Key::Char('t'), PLAIN);
@@ -2093,7 +2093,7 @@ mod tests {
         let after = editor.shapes[0].points[0];
         assert_eq!((after.0 - before.0, after.1 - before.1), (40.0, 30.0));
         assert_eq!(editor.selected, [0]);
-        // The colours: opened from the bar, and one of them clicked.
+        // The colors: opened from the bar, and one of them clicked.
         let color = button(&mut editor, Button::Color);
         click(&mut editor, color, 9000);
         let swatch = editor.layout().swatches[4].0.center();
@@ -2171,7 +2171,7 @@ mod tests {
         assert_eq!(editor.hovered, None);
 
         // A click picks one out; with Shift or Ctrl it adds another, or
-        // takes one away; and several picked out are moved, recoloured
+        // takes one away; and several picked out are moved, recolored
         // and deleted together.
         let shift = Mods { shift: true, ctrl: false };
         let (left, top, _, height) = editor.shapes[0].frame();
@@ -2384,7 +2384,7 @@ mod tests {
         editor.key(Key::Char('c'), PLAIN);
         let swatch = editor.layout().swatches[6].0.center();
         editor.pointer_moved(swatch.0, swatch.1, PLAIN);
-        write(&mut editor, "6-colours");
+        write(&mut editor, "6-colors");
         editor.key(Key::Char('i'), PLAIN);
         editor.pointer_moved(110 * unit, 36 * unit, PLAIN);
         write(&mut editor, "7-pipette");

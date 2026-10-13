@@ -19,6 +19,6 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-# Drawing in an unoptimised build is unusably slow.
+# Drawing in an unoptimized build is unusably slow.
 [profile.dev.package."*"]
 opt-level = 3
