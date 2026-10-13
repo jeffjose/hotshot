@@ -792,6 +792,9 @@ impl Editor {
                 let down = if corner.1 < 0 { at.1 as f32 - top } else { top + height - at.1 as f32 };
                 shape.radius = (across.min(down) - slack).clamp(0.0, width.min(height) / 2.0);
                 shape.touch();
+                // And the next rectangle drawn has corners as round.
+                let radius = shape.radius;
+                self.settings.radius = radius / self.scale();
                 self.dirty = true;
             }
             Drag::Select { from, begun, .. } => {
@@ -1865,11 +1868,19 @@ mod tests {
         let (_, _, dot) = editor.rounders(0).unwrap()[0];
         drag(&mut editor, dot, (dot.0 + 30, dot.1 + 30));
         assert_eq!(editor.shapes[0].radius, before + 30.0);
+        // The next rectangle drawn has corners as round as that.
+        editor.key(Key::Char('r'), PLAIN);
+        drag(&mut editor, (150, 500), (350, 650));
+        assert_eq!(editor.shapes[1].radius, before + 30.0);
+        editor.key(Key::Delete, PLAIN);
+        let (left, top, width, _) = editor.shapes[0].frame();
+        click(&mut editor, ((left + width / 2.0) as i32, top as i32), 15_000);
+        assert_eq!(editor.selected, [0]);
         let (_, _, dot) = editor.rounders(0).unwrap()[0];
         drag(&mut editor, dot, (dot.0 + 500, dot.1 + 500));
         assert_eq!(editor.shapes[0].radius, 100.0);
         // Each of those is a step that undo takes back.
-        assert_eq!(editor.undo.len(), 7);
+        assert_eq!(editor.undo.len(), 9);
 
         // The pointer over a shape that is not the one picked out shows
         // that one's box; a pen stroke leaves the pen in hand.
