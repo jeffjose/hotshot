@@ -36,6 +36,9 @@ pub mod icons {
     pub const DOWN: &str = "\u{e01b}";
     pub const DICE: &str = "\u{e01c}";
     pub const POINTER: &str = "\u{e01d}";
+    pub const PIN: &str = "\u{e012}";
+    pub const RECORD: &str = "\u{e01e}";
+    pub const CAMERA: &str = "\u{e01f}";
     pub const CHECK: &str = "\u{e010}";
 }
 

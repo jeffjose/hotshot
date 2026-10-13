@@ -5,9 +5,12 @@ mod editor;
 mod frame;
 mod options;
 mod output;
+mod pin;
+mod record;
 mod shapes;
 mod strips;
 mod text;
+mod tray;
 mod x11;
 
 use std::process::ExitCode;
@@ -62,6 +65,39 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     let font = std::thread::spawn(Text::load);
     if options.delay > 0.0 {
         std::thread::sleep(Duration::from_secs_f64(options.delay));
+    }
+
+    // A recording being made is stopped by being asked for again: one
+    // key starts and stops.
+    if options.record && record::stop_other() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    // What is in a file, to the clipboard; and a picture in a file,
+    // left on the screen: neither takes a picture of anything.
+    if let Some(file) = &options.clip {
+        let png = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+        if options.forget {
+            let _ = std::fs::remove_file(file);
+        }
+        clipboard::offer(Display::open()?, png)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(file) = &options.show {
+        pin::show(file, options.at, &options)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The icon in the tray, which stays; and its list, which does not.
+    if options.tray {
+        tray::run(&options)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if options.menu {
+        tray::menu_once(&options)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if options.record {
+        options.settings.recording = true;
+        options.settings.enter = Finish { record: true, ..Finish::NONE };
     }
 
     // Under Wayland there is still an X server to talk to, but the screen
@@ -148,14 +184,20 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     };
     // Said on the command line, what to do with the picture is also what
     // Enter does.
-    let said = Finish { copy: options.copy, save: options.save || options.output.is_some() };
-    if said.copy || said.save {
+    let said = Finish { copy: options.copy, save: options.save || options.output.is_some(), pin: options.pin, record: false };
+    if said != Finish::NONE {
         options.settings.enter = said;
     }
 
+    // An area named to be recorded is recorded, with no stop on the way
+    // to choose or draw on it.
+    if let (true, Some(area), false) = (options.record, named, options.edit) {
+        drop(display);
+        return recorded(area, &options);
+    }
     let taken = match (named, options.edit) {
         (Some(area), false) => {
-            let how = if said.copy || said.save { said } else { Finish { copy: false, save: true } };
+            let how = if said != Finish::NONE { said } else { Finish { save: true, ..Finish::NONE } };
             // A window chosen is its own picture, if there is one to be
             // had; anything else, and a window with none, is that much
             // of the screen.
@@ -194,14 +236,26 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     trace("picture taken");
     output::remember_area(taken.area);
     let how = taken.how;
+    // Not a picture after all: the area is recorded, once the display
+    // has had a moment to show the screen as it is again.
+    if how.record {
+        drop(display);
+        return recorded(taken.area, &options);
+    }
 
     // A file is of the kind its name says, or the kind asked for; what
     // goes to the clipboard is a PNG whatever the file is.
     let named = options.output.as_ref().and_then(|file| file.extension()).and_then(|ending| output::Format::named(&ending.to_string_lossy()));
     let format = named.unwrap_or(options.format);
     let pack = |format| output::pack(format, options.quality, taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha);
-    let png = if how.copy || format == output::Format::Png { pack(output::Format::Png)? } else { Vec::new() };
+    let png = if how.copy || how.pin || format == output::Format::Png { pack(output::Format::Png)? } else { Vec::new() };
     trace("packed");
+    // Left on the screen where it was taken, its frame round where the
+    // area was: by a hotshot of its own, which outlives this one.
+    if how.pin {
+        pin::leave(&png, (taken.area.x - (taken.width - taken.area.w) / 2, taken.area.y - (taken.height - taken.area.h) / 2))?;
+        trace("left on the screen");
+    }
     if how.save {
         let other = if format == output::Format::Png { None } else { Some(pack(format)?) };
         let file = other.as_ref().unwrap_or(&png);
@@ -221,6 +275,18 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     if how.copy {
         clipboard::offer(display, png)?;
         trace("on the clipboard");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Records an area until it is stopped, says where the recording is,
+/// and puts the file on the clipboard if that was asked.
+fn recorded(area: Rect, options: &Options) -> x11::Result<ExitCode> {
+    std::thread::sleep(Duration::from_millis(120));
+    let file = record::run(area, options, Text::load())?;
+    println!("{}", file.display());
+    if options.copy {
+        clipboard::offer_file(Display::open()?, &file)?;
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -13,7 +13,8 @@
 # filename = "screenshot-%Y-%m-%d-%H%M%S"
 
 # What Enter, and a double click inside the selection, do with the
-# picture: "copy" it to the clipboard, "save" it to the folder, or "both".
+# picture: "copy" it to the clipboard, "save" it to the folder, "both",
+# or "pin" it to the screen.
 # enter = "copy"
 
 # The color of the selection's edge and of what is picked out in the bar.
@@ -117,3 +118,12 @@
 # dragged out, and the shape it has as it is resized.
 # aspect = "free"
 # fixed = "free"
+
+# A recording (hotshot --record, or the button for it): what kind of
+# file it is, "mp4", "gif", "apng" or "webp"; how many frames a second;
+# whether the mouse pointer is in it; and whether the keys pressed are
+# said along its bottom, as subtitles are. It is ffmpeg that records.
+# record-format = "mp4"
+# fps = 60
+# record-pointer = true
+# keys = false

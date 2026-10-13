@@ -112,6 +112,15 @@ pub struct Mods {
 pub struct Finish {
     pub copy: bool,
     pub save: bool,
+    /// Left on the screen, over everything, in a window of its own.
+    pub pin: bool,
+    /// Not a picture at all: the area is what a recording is made of.
+    pub record: bool,
+}
+
+impl Finish {
+    /// Nothing done with it: to be said otherwise a thing at a time.
+    pub const NONE: Finish = Finish { copy: false, save: false, pin: false, record: false };
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -189,11 +198,14 @@ pub struct Settings {
     /// size it is, in pixels. Neither, and it is as it is dragged.
     pub aspect: Option<(i32, i32)>,
     pub fixed: Option<(i32, i32)>,
+    /// An area is being chosen to be recorded, not drawn on: the bar
+    /// has nothing in it but that, and the keys for the tools do nothing.
+    pub recording: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, save: false }, aspect: None, fixed: None }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false }
     }
 }
 
@@ -222,6 +234,9 @@ enum Button {
     Frame,
     /// Whether the mouse pointer is in the picture.
     Pointer,
+    /// The picture left on the screen; and the area recorded.
+    Pin,
+    Record,
     /// Which folder Save saves to.
     Places,
     /// Every emoji there is, to be searched and put on the picture.
@@ -295,8 +310,12 @@ const GROUPS: [&[Button]; 5] = [
     &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill, Button::Face],
     &[Button::Undo, Button::Redo],
     &[Button::Frame, Button::Pointer],
-    &[Button::Cancel, Button::Save, Button::Places, Button::Copy],
+    &[Button::Cancel, Button::Record, Button::Pin, Button::Save, Button::Places, Button::Copy],
 ];
+
+/// The bar as it is when an area is being chosen to be recorded: there
+/// is nothing to draw, and one thing to do.
+const RECORDING: [&[Button]; 1] = [&[Button::Cancel, Button::Record]];
 
 impl Button {
     /// What it is called, and the key that does the same.
@@ -329,6 +348,8 @@ impl Button {
             Button::Save => ("Save", "Ctrl+S"),
             Button::Frame => ("Backdrop, room and shadow", "W"),
             Button::Pointer => ("Mouse pointer in the picture", "M"),
+            Button::Pin => ("Pin to the screen", "Ctrl+P"),
+            Button::Record => ("Record this area", "Ctrl+R"),
             Button::Places => ("Where Save saves to", ""),
             Button::Copy => ("Copy", "Ctrl+C"),
         }
@@ -357,6 +378,8 @@ impl Button {
             Button::Save => icons::SAVE,
             Button::Frame => icons::FRAME,
             Button::Pointer => icons::POINTER,
+            Button::Pin => icons::PIN,
+            Button::Record => icons::RECORD,
             Button::Places => icons::DOWN,
             Button::Copy => icons::COPY,
             Button::Color | Button::Size(_) | Button::Face => "",
@@ -813,8 +836,9 @@ impl Editor {
         // along its bottom edge on the inside.
         let margin = px as i32 / 3;
         let gap = px as i32 * 2 / 3;
-        let count: i32 = GROUPS.iter().map(|group| group.len() as i32).sum();
-        let width = 2 * margin + count * side + (GROUPS.len() as i32 - 1) * gap;
+        let groups: &[&[Button]] = if self.settings.recording { &RECORDING } else { &GROUPS };
+        let count: i32 = groups.iter().map(|group| group.len() as i32).sum();
+        let width = 2 * margin + count * side + (groups.len() as i32 - 1) * gap;
         let height = side + 2 * margin;
         // Clear of the frame the picture is set in, when it is in one.
         let room = self.frame_room().1;
@@ -833,7 +857,7 @@ impl Editor {
         if !hidden {
             layout.bar = Some(bar);
             let mut x = bar.x + margin;
-            for (index, group) in GROUPS.iter().enumerate() {
+            for (index, group) in groups.iter().enumerate() {
                 if index > 0 {
                     layout.dividers.push(x + gap / 2);
                     x += gap;
@@ -1962,8 +1986,10 @@ impl Editor {
                 Some(_) => return self.finish(self.settings.enter),
                 None => self.select(self.monitor_at(self.pointer)),
             },
-            (Key::Char('c'), true) => return self.finish(Finish { copy: true, save: false }),
-            (Key::Char('s'), true) => return self.finish(Finish { copy: false, save: true }),
+            (Key::Char('c'), true) => return self.finish(Finish { copy: true, ..Finish::NONE }),
+            (Key::Char('s'), true) => return self.finish(Finish { save: true, ..Finish::NONE }),
+            (Key::Char('p'), true) => return self.finish(Finish { pin: true, ..Finish::NONE }),
+            (Key::Char('r'), true) => return self.finish(Finish { record: true, ..Finish::NONE }),
             (Key::Char('z'), true) if mods.shift => self.redo(),
             (Key::Char('z'), true) => self.undo(),
             (Key::Char('y'), true) => self.redo(),
@@ -2018,7 +2044,7 @@ impl Editor {
             (Key::Right, ctrl) => self.nudge(1, 0, ctrl),
             (Key::Up, ctrl) => self.nudge(0, -1, ctrl),
             (Key::Down, ctrl) => self.nudge(0, 1, ctrl),
-            (Key::Char(letter), false) if self.selection.is_some() => match letter {
+            (Key::Char(letter), false) if self.selection.is_some() && !self.settings.recording => match letter {
                 'v' => self.set_tool(Tool::Select),
                 'a' => self.set_tool(Tool::Arrow),
                 'l' => self.set_tool(Tool::Line),
@@ -2143,6 +2169,8 @@ impl Editor {
             }
             Button::Size(size) => self.set_size(size),
             Button::Pointer => self.arrow_shows = !self.arrow_shows && self.arrow.is_some(),
+            Button::Pin => return self.finish(Finish { pin: true, ..Finish::NONE }),
+            Button::Record => return self.finish(Finish { record: true, ..Finish::NONE }),
             Button::Fill => {
                 // A zoom picked out is made square, or round again: that
                 // is what there is to fill or not about a zoom, and it
@@ -2187,8 +2215,8 @@ impl Editor {
             Button::Undo => self.undo(),
             Button::Redo => self.redo(),
             Button::Cancel => return Outcome::Cancel,
-            Button::Save => return self.finish(Finish { copy: false, save: true }),
-            Button::Copy => return self.finish(Finish { copy: true, save: false }),
+            Button::Save => return self.finish(Finish { save: true, ..Finish::NONE }),
+            Button::Copy => return self.finish(Finish { copy: true, ..Finish::NONE }),
         }
         Outcome::Continue
     }
@@ -3533,7 +3561,7 @@ mod tests {
         assert!(editor.shapes.is_empty());
         editor.key(Key::Char('Z'), Mods { shift: true, ctrl: true });
         assert_eq!(editor.shapes.len(), 1);
-        assert_eq!(editor.key(Key::Enter, PLAIN), Outcome::Finish(Finish { copy: true, save: false }));
+        assert_eq!(editor.key(Key::Enter, PLAIN), Outcome::Finish(Finish { copy: true, ..Finish::NONE }));
     }
 
     #[test]
@@ -4204,8 +4232,8 @@ mod tests {
         editor.pressed(2000);
         editor.pointer_moved(save.0, save.1 - 300, PLAIN);
         assert_eq!(editor.released(), Outcome::Continue);
-        assert_eq!(click(&mut editor, save, 3000), Outcome::Finish(Finish { copy: false, save: true }));
-        assert_eq!(click(&mut editor, copy, 4000), Outcome::Finish(Finish { copy: true, save: false }));
+        assert_eq!(click(&mut editor, save, 3000), Outcome::Finish(Finish { save: true, ..Finish::NONE }));
+        assert_eq!(click(&mut editor, copy, 4000), Outcome::Finish(Finish { copy: true, ..Finish::NONE }));
         let cancel = button(&mut editor, Button::Cancel);
         assert_eq!(click(&mut editor, cancel, 5000), Outcome::Cancel);
         assert_eq!(editor.key(Key::Escape, PLAIN), Outcome::Cancel);

@@ -22,14 +22,35 @@ struct Handover {
     window: Window,
     property: Atom,
     sent: usize,
+    /// Which of the kinds it can be had as is being handed over.
+    which: usize,
+}
+
+/// Puts a file on the clipboard, as file managers and chat programs
+/// take one: by where it is, for whoever pastes to go and read.
+pub fn offer_file(display: Display, file: &std::path::Path) -> Result<()> {
+    let whole = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    // Where it is, as a link: every byte that is not plainly a letter
+    // of a path said by its number.
+    let link: String = whole.to_string_lossy().bytes().map(|byte| if byte.is_ascii_alphanumeric() || b"/-_.~".contains(&byte) { (byte as char).to_string() } else { format!("%{byte:02X}") }).collect();
+    let link = format!("file://{link}");
+    let kinds = vec![("text/uri-list", format!("{link}\r\n").into_bytes()), ("x-special/gnome-copied-files", format!("copy\n{link}").into_bytes()), ("UTF8_STRING", whole.to_string_lossy().into_owned().into_bytes())];
+    offer_all(display, kinds)
 }
 
 /// Puts a PNG on the clipboard. Returns once the clipboard is hotshot's;
 /// the handing over is done by a process left behind.
 pub fn offer(display: Display, png: Vec<u8>) -> Result<()> {
+    offer_all(display, vec![("image/png", png)])
+}
+
+/// Puts something on the clipboard in each of the kinds it can be had
+/// as: whoever pastes says which it wants.
+fn offer_all(display: Display, kinds: Vec<(&str, Vec<u8>)>) -> Result<()> {
     let conn = &display.conn;
     let atom = |name: &str| -> Result<Atom> { Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom) };
-    let (clipboard, targets, incr, kind) = (atom("CLIPBOARD")?, atom("TARGETS")?, atom("INCR")?, atom("image/png")?);
+    let (clipboard, targets, incr) = (atom("CLIPBOARD")?, atom("TARGETS")?, atom("INCR")?);
+    let kinds: Vec<(Atom, Vec<u8>)> = kinds.into_iter().map(|(name, bytes)| Ok((atom(name)?, bytes))).collect::<Result<_>>()?;
 
     let owner = conn.generate_id()?;
     let look = CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE);
@@ -70,18 +91,20 @@ pub fn offer(display: Display, png: Vec<u8>) -> Result<()> {
             Ok(Event::SelectionRequest(request)) => {
                 // Programs from before properties were named give none.
                 let property = if request.property == NONE { request.target } else { request.property };
+                let wanted = kinds.iter().position(|(kind, _)| *kind == request.target);
                 let answered = if request.target == targets {
-                    conn.change_property32(PropMode::REPLACE, request.requestor, property, AtomEnum::ATOM, &[targets, kind])?;
+                    let all: Vec<Atom> = std::iter::once(targets).chain(kinds.iter().map(|(kind, _)| *kind)).collect();
+                    conn.change_property32(PropMode::REPLACE, request.requestor, property, AtomEnum::ATOM, &all)?;
                     property
-                } else if request.target == kind && png.len() <= most {
-                    conn.change_property8(PropMode::REPLACE, request.requestor, property, kind, &png)?;
+                } else if let Some((kind, bytes)) = wanted.map(|which| &kinds[which]).filter(|(_, bytes)| bytes.len() <= most) {
+                    conn.change_property8(PropMode::REPLACE, request.requestor, property, *kind, bytes)?;
                     property
-                } else if request.target == kind {
+                } else if let Some(which) = wanted {
                     // Too large for one go: the size is said, and each
                     // piece follows as the one before is taken away.
                     conn.change_window_attributes(request.requestor, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE))?;
-                    conn.change_property32(PropMode::REPLACE, request.requestor, property, incr, &[png.len() as u32])?;
-                    handovers.push(Handover { window: request.requestor, property, sent: 0 });
+                    conn.change_property32(PropMode::REPLACE, request.requestor, property, incr, &[kinds[which].1.len() as u32])?;
+                    handovers.push(Handover { window: request.requestor, property, sent: 0, which });
                     property
                 } else {
                     NONE
@@ -101,8 +124,9 @@ pub fn offer(display: Display, png: Vec<u8>) -> Result<()> {
             Ok(Event::PropertyNotify(notice)) if notice.state == Property::DELETE => {
                 let Some(at) = handovers.iter().position(|handover| handover.window == notice.window && handover.property == notice.atom) else { continue };
                 let handover = &mut handovers[at];
-                let piece = &png[handover.sent..(handover.sent + most).min(png.len())];
-                conn.change_property8(PropMode::REPLACE, handover.window, handover.property, kind, piece)?;
+                let (kind, bytes) = &kinds[handover.which];
+                let piece = &bytes[handover.sent..(handover.sent + most).min(bytes.len())];
+                conn.change_property8(PropMode::REPLACE, handover.window, handover.property, *kind, piece)?;
                 conn.flush()?;
                 handover.sent += piece.len();
                 // A piece with nothing in it is how the end is said.

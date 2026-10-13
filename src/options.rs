@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::canvas::Rect;
 use crate::editor::{Finish, Settings, Windows, PALETTE};
 use crate::frame::{self, Backdrop, BACKDROPS, PADS};
-use crate::output::Format;
+use crate::output::{Format, Video};
 
 pub const USAGE: &str = "\
 Usage: hotshot [OPTIONS]
@@ -41,6 +41,13 @@ What to do with it:
   -c, --copy                 copy it to the clipboard
   -s, --save                 save it in the screenshots folder, and print
                              where
+  -p, --pin                  leave it on the screen, over everything, in a
+                             window of its own: drag it about, turn the
+                             wheel to make it larger or smaller, Esc or a
+                             double click to be done with it (Ctrl+C copies
+                             it again, Ctrl+S saves it)
+      --show FILE            leave a PNG from a file on the screen the same
+                             way; --at X,Y says where
   -o, --output FILE          save it as FILE instead; - is standard output
   -d, --dir DIR              the screenshots folder (~/Pictures/Screenshots)
       --filename NAME        what a saved picture is called, less the .png,
@@ -57,6 +64,26 @@ What to do with it:
                              puts it down and a drag moves it
   When dragging an area out, these say what Enter does; the usual is to
   copy. Taken at once, a picture is saved unless told otherwise.
+
+Recording, which needs ffmpeg:
+  -R, --record               record the area, not take a picture of it:
+                             drag it out and press Enter, or name it with
+                             -g, -f, -w or -m. A line shows round it, and
+                             a button beside it stops it; so does --record
+                             again, so that one key starts and stops
+      --record-format KIND   mp4 (the default), gif, apng or webp; a name
+                             given with -o says so itself by how it ends
+      --fps N                frames a second (60; a GIF has 50 at most)
+      --duration SEC         stop by itself after so long
+  -k, --keys                 say the keys pressed along the bottom of it,
+                             as subtitles are
+      --no-record-pointer    leave the mouse pointer out of it
+  -c                         with --record: the file on the clipboard
+
+Staying about:
+      --tray                 an icon in the panel's tray: a click is
+                             hotshot, a right click a list of its ways
+      --menu                 that list by itself, where the pointer is
 
 Look:
       --accent COLOR         color of the selection and of what is picked out:
@@ -112,6 +139,7 @@ Other:
 Keys, once an area is selected:
   Enter           copy (or what -c, -s and -o say)     Esc     cancel
   Ctrl+C  copy    Ctrl+S  save    Ctrl+Z  undo    Ctrl+Shift+Z  redo
+  Ctrl+P  pin to the screen       Ctrl+R  record this area
   V move   A arrow   L line   R rectangle   O oval   P pen   H marker
   T text   N counter   B blur   S spotlight   Z zoom   G the next font
   J badges   E emoji (type to search)   W backdrop, room and shadow
@@ -209,6 +237,29 @@ pub struct Options {
     pub quality: u8,
     /// Whether the mouse pointer is in the picture.
     pub pointer: bool,
+    /// Whether the picture is left on the screen once taken.
+    pub pin: bool,
+    /// A picture in a file to leave on the screen, and where; and
+    /// whether the file is to be done away with afterwards.
+    pub show: Option<PathBuf>,
+    pub at: Option<(i32, i32)>,
+    pub forget: bool,
+    /// A PNG in a file to put on the clipboard.
+    pub clip: Option<PathBuf>,
+    /// A recording made of the area, not a picture taken of it: so
+    /// many frames a second, as a file of some kind, for so long (or
+    /// until it is stopped, at 0), with the mouse pointer in it or not,
+    /// and the keys pressed said along its bottom or not.
+    pub record: bool,
+    pub fps: u32,
+    pub video: Video,
+    pub duration: f64,
+    pub record_pointer: bool,
+    pub keys: bool,
+    /// An icon in the panel's tray, to take pictures from; and the
+    /// list that icon opens, by itself, where the pointer is.
+    pub tray: bool,
+    pub menu: bool,
     pub settings: Settings,
     pub list_monitors: bool,
     pub benchmark: bool,
@@ -254,6 +305,19 @@ fn defaults() -> Options {
         format: Format::Png,
         quality: 90,
         pointer: false,
+        pin: false,
+        show: None,
+        at: None,
+        forget: false,
+        clip: None,
+        record: false,
+        fps: 60,
+        video: Video::Mp4,
+        duration: 0.0,
+        record_pointer: true,
+        keys: false,
+        tray: false,
+        menu: false,
         settings: Settings::default(),
         list_monitors: false,
         benchmark: false,
@@ -275,6 +339,9 @@ fn short_flag(flag: char) -> Option<&'static str> {
         'a' => "again",
         'e' => "edit",
         'D' => "delay",
+        'p' => "pin",
+        'R' => "record",
+        'k' => "keys",
         'c' => "copy",
         's' => "save",
         'o' => "output",
@@ -293,7 +360,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -331,6 +398,36 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         }
         "pointer" => options.pointer = true,
         "no-pointer" => options.pointer = false,
+        "pin" => options.pin = true,
+        // A picture from a file, left on the screen as one just taken
+        // is: where `at` says, or in the middle of the screen. `forget`
+        // is for one hotshot wrote itself, to be done away with after.
+        "show" => options.show = Some(path(&value()?)),
+        "at" => {
+            let text = value()?;
+            let place = text.split_once(',').and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)));
+            options.at = Some(place.ok_or(format!("invalid place '{text}', expected X,Y"))?);
+        }
+        "forget" => options.forget = true,
+        // What is in a file, put on the clipboard: for a picture left
+        // on the screen to be copied from.
+        "clip" => options.clip = Some(path(&value()?)),
+        "record" => options.record = true,
+        "fps" => {
+            let text = value()?;
+            options.fps = text.parse::<u32>().ok().filter(|fps| (1..=120).contains(fps)).ok_or(format!("invalid fps '{text}', expected 1 to 120"))?;
+        }
+        "record-format" => {
+            let text = value()?;
+            options.video = Video::named(&text).ok_or(format!("invalid recording format '{text}', expected mp4, gif, apng or webp"))?;
+        }
+        "duration" => options.duration = number(value()?, "duration")?,
+        "record-pointer" => options.record_pointer = true,
+        "no-record-pointer" => options.record_pointer = false,
+        "keys" => options.keys = true,
+        "no-keys" => options.keys = false,
+        "tray" => options.tray = true,
+        "menu" => options.menu = true,
         // The shape an area is kept to as it is dragged out: so wide to
         // so tall, as 16:9; or so many pixels each way, as 1280x720.
         "aspect" => {
@@ -407,10 +504,11 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "enter" => {
             let text = value()?;
             options.settings.enter = match text.as_str() {
-                "copy" => Finish { copy: true, save: false },
-                "save" => Finish { copy: false, save: true },
-                "both" => Finish { copy: true, save: true },
-                _ => return Err(format!("invalid enter '{text}', expected copy, save or both")),
+                "copy" => Finish { copy: true, ..Finish::NONE },
+                "save" => Finish { save: true, ..Finish::NONE },
+                "both" => Finish { copy: true, save: true, ..Finish::NONE },
+                "pin" => Finish { pin: true, ..Finish::NONE },
+                _ => return Err(format!("invalid enter '{text}', expected copy, save, both or pin")),
             };
         }
         "monitors" => options.list_monitors = true,
@@ -478,7 +576,7 @@ fn read_config(options: &mut Options, text: &str) -> Result<(), String> {
         let name = match (takes_value(name), value) {
             (true, _) => name.to_owned(),
             (false, "true") => name.to_owned(),
-            (false, "false") if ["magnifier", "remember", "filled", "shadow", "pointer"].contains(&name) => format!("no-{name}"),
+            (false, "false") if ["magnifier", "remember", "filled", "shadow", "pointer", "record-pointer", "keys"].contains(&name) => format!("no-{name}"),
             (false, "false") => continue,
             (false, _) => return Err(wrong(format!("{name} is either true or false"))),
         };
@@ -660,6 +758,21 @@ mod tests {
     }
 
     #[test]
+    fn pinning_recording_and_the_tray_are_asked_for() {
+        let options = run(&["-pR", "--keys", "--fps=30", "--record-format", "GIF", "--duration", "2.5", "--no-record-pointer"]).unwrap();
+        assert!(options.pin && options.record && options.keys && !options.record_pointer);
+        assert_eq!((options.fps, options.video, options.duration), (30, Video::Gif, 2.5));
+        let shown = run(&["--show", "pic.png", "--at", "40,-8", "--forget"]).unwrap();
+        assert_eq!((shown.show, shown.at, shown.forget), (Some(PathBuf::from("pic.png")), Some((40, -8)), true));
+        let plain = run(&[]).unwrap();
+        assert_eq!((plain.fps, plain.video, plain.record_pointer, plain.keys, plain.tray, plain.menu), (60, Video::Mp4, true, false, false, false));
+        assert!(run(&["--tray"]).unwrap().tray && run(&["--menu"]).unwrap().menu);
+        for wrong in [&["--fps", "0"][..], &["--record-format", "avi"], &["--at", "here"]] {
+            assert!(run(wrong).is_err(), "{wrong:?}");
+        }
+    }
+
+    #[test]
     fn regions_are_read_both_ways() {
         assert_eq!(run(&["-g", "10,20,300,400"]).unwrap().take, Take::Region(Rect::new(10, 20, 300, 400)));
         assert_eq!(run(&["--region", "300x400+10+20"]).unwrap().take, Take::Region(Rect::new(10, 20, 300, 400)));
@@ -680,7 +793,7 @@ mod tests {
         assert!(options.settings.magnifier && options.settings.corners == 16.0);
         read_config(&mut options, "magnifier = false").unwrap();
         assert_eq!(options.dir, PathBuf::from("/tmp/shots"));
-        assert_eq!(options.settings.enter, Finish { copy: true, save: true });
+        assert_eq!(options.settings.enter, Finish { copy: true, save: true, ..Finish::NONE });
         assert!(!options.settings.magnifier);
         assert_eq!((options.settings.size, options.settings.accent, options.settings.color), (2, 0x12A594, 0x00FF00));
         assert_eq!(options.settings.windows, Windows::Outline);

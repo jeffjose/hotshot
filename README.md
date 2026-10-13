@@ -1,9 +1,9 @@
 # hotshot
 
 A fast screenshot tool for Linux (X11). Run it and the screen freezes;
-drag out an area, draw on it if you like, and copy or save it. It is one
-small native program: no web view, no toolkit, nothing left running in
-between.
+drag out an area, draw on it if you like, and copy, save, pin or record
+it. It is one small native program: no web view, no toolkit, and
+nothing left running in between unless its tray icon is asked for.
 
 ![The editor: an area selected and drawn on, with the bar of tools under it](docs/editor.png)
 
@@ -30,6 +30,9 @@ hotshot -t calculator  # the window with that in its title
 hotshot -D 3 --pointer # after three seconds, with the mouse pointer in it
 hotshot --aspect 16:9  # an area kept to that shape; --fixed 1280x720 to a size
 hotshot -f -o shot.jpg # a JPEG, or .webp; --format says it for Save
+hotshot --pin          # the picture left on the screen, over everything
+hotshot --record       # record an area; again to stop (needs ffmpeg)
+hotshot --tray         # an icon in the panel's tray; --menu is its list
 ```
 
 Drag to select an area, click a window to take it, or press Enter for
@@ -74,6 +77,25 @@ or the frame.
 
 ![A spotlight, and a zoom lens that reaches past the picture](docs/zoom.png)
 
+## Pinning
+
+`Ctrl+P`, the pin button, or `--pin` leaves the picture on the screen in
+a window of its own with nothing round it, over every other. Drag it
+about, turn the wheel to make it larger or smaller, `Ctrl+C` to copy it
+again, `Esc` or a double click to be done with it. `hotshot --show
+pic.png` pins a PNG from a file.
+
+## Recording
+
+`hotshot --record` (or `Ctrl+R`, or the record button) records the area
+instead of taking a picture of it: an MP4 at 60 frames a second, or a
+GIF, APNG or WebP with `--record-format` or by what the `-o` name ends
+in. A red line shows round the area and a button beside it stops it; so
+does running `hotshot --record` again, so one key both starts and stops.
+`--keys` says the keys pressed along the bottom, as subtitles are.
+Recording is done by `ffmpeg`, which has to be installed; a GIF is made
+by `gifski` where that is too.
+
 ## Speed
 
 On a 4K display the frozen screen is showing 3 ms after launch, and
@@ -93,7 +115,7 @@ hotshot --default-config > ~/.config/hotshot/config.toml
 
 ## Not yet
 
-Wayland, a tray icon, and pinning a picture to the screen.
+Wayland, and zooming in on part of a recording.
 
 ## License
 

@@ -94,7 +94,7 @@ pub enum Input {
 
 pub struct Display {
     pub conn: RustConnection,
-    screen: usize,
+    pub screen: usize,
     pub root: Window,
     pub width: i32,
     pub height: i32,
@@ -604,14 +604,14 @@ impl Display {
         Ok(inputs)
     }
 
-    /// The key a key code stands for, with Shift, Caps Lock and the like
-    /// as they are held.
-    fn key(&self, code: u8, state: u16) -> Key {
+    /// The symbol a key code stands for, by the keyboard's own numbering
+    /// of them, with Shift and the like as they are held; 0 for none.
+    pub fn symbol(&self, code: u8, state: u16) -> u32 {
         let (first, per, symbols) = &self.keys;
         let start = usize::from(code.saturating_sub(*first)) * per;
-        let Some(row) = symbols.get(start..start + per) else { return Key::Other };
+        let Some(row) = symbols.get(start..start + per) else { return 0 };
         let at = |column: usize| row.get(column).copied().filter(|&symbol| symbol != 0);
-        let (shift, lock, num_lock) = (state & 0x01 != 0, state & 0x02 != 0, state & 0x10 != 0);
+        let (shift, num_lock) = (state & 0x01 != 0, state & 0x10 != 0);
         // The second layout of the keyboard is in the third and fourth
         // columns; what AltGr gives, in the fifth and sixth.
         let base = if state & 0x80 != 0 && at(4).is_some() {
@@ -623,7 +623,13 @@ impl Display {
         };
         let (plain, shifted) = (at(base).unwrap_or(0), at(base + 1));
         let keypad = shifted.is_some_and(|symbol| (0xFFAA..=0xFFB9).contains(&symbol));
-        let symbol = if shift != (keypad && num_lock) { shifted.unwrap_or(plain) } else { plain };
+        if shift != (keypad && num_lock) { shifted.unwrap_or(plain) } else { plain }
+    }
+
+    /// The key a key code stands for, with Shift, Caps Lock and the like
+    /// as they are held.
+    pub fn key(&self, code: u8, state: u16) -> Key {
+        let (symbol, shift, lock) = (self.symbol(code, state), state & 0x01 != 0, state & 0x02 != 0);
         let letter = match symbol {
             0xFF0D | 0xFF8D => return Key::Enter,
             0xFF1B => return Key::Escape,
@@ -652,6 +658,35 @@ impl Display {
     }
 }
 
-fn mods(state: u16) -> Mods {
+/// Sends a picture to a window, as many rows at a time as the server
+/// will take in one go: for the small windows that are not the frozen
+/// screen, and have no memory shared with the server. With `deep`, the
+/// window keeps how opaque each pixel is, and the colors are sent made
+/// that much fainter, which is how the server wants them.
+pub fn put(conn: &RustConnection, window: Window, gc: Gcontext, deep: bool, width: i32, height: i32, pixels: &[u32]) -> Result<()> {
+    let each = ((conn.maximum_request_bytes().saturating_sub(64) / 4) as i32 / width.max(1)).clamp(1, height.max(1));
+    for top in (0..height).step_by(each as usize) {
+        let rows = each.min(height - top);
+        let mut bytes = Vec::with_capacity((rows * width * 4) as usize);
+        for pixel in &pixels[(top * width) as usize..((top + rows) * width) as usize] {
+            let opaque = pixel >> 24;
+            let part = |shift: u32| if deep { ((pixel >> shift & 0xFF) * opaque / 255) as u8 } else { (pixel >> shift) as u8 };
+            bytes.extend_from_slice(&[part(0), part(8), part(16), if deep { opaque as u8 } else { 0 }]);
+        }
+        conn.put_image(ImageFormat::Z_PIXMAP, window, gc, width as u16, rows as u16, 0, top as i16, 0, if deep { 32 } else { 24 }, &bytes)?;
+    }
+    conn.flush()?;
+    Ok(())
+}
+
+/// A visual that keeps how opaque each pixel is, where the display has
+/// one: what a window has to be made with for what is under it to show
+/// through it.
+pub fn deep_visual(conn: &RustConnection, screen: usize) -> Option<Visualid> {
+    let depth = conn.setup().roots[screen].allowed_depths.iter().find(|depth| depth.depth == 32)?;
+    depth.visuals.iter().find(|visual| visual.class == VisualClass::TRUE_COLOR && visual.red_mask == 0xFF0000).map(|visual| visual.visual_id)
+}
+
+pub fn mods(state: u16) -> Mods {
     Mods { shift: state & 0x01 != 0, ctrl: state & 0x04 != 0 }
 }

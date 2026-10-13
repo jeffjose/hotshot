@@ -65,6 +65,39 @@ impl Format {
     }
 }
 
+/// What kind of file a recording is saved as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Video {
+    #[default]
+    Mp4,
+    Gif,
+    Apng,
+    Webp,
+}
+
+impl Video {
+    /// By its name, or by what a file's name ends in.
+    pub fn named(name: &str) -> Option<Video> {
+        match name.to_ascii_lowercase().as_str() {
+            "mp4" => Some(Video::Mp4),
+            "gif" => Some(Video::Gif),
+            "apng" | "png" => Some(Video::Apng),
+            "webp" => Some(Video::Webp),
+            _ => None,
+        }
+    }
+
+    /// What the name of a file of this kind ends in.
+    pub fn ending(self) -> &'static str {
+        match self {
+            Video::Mp4 => "mp4",
+            Video::Gif => "gif",
+            Video::Apng => "apng",
+            Video::Webp => "webp",
+        }
+    }
+}
+
 /// A picture as a file of one kind or another. A JPEG is as good as
 /// `quality` says, of 100, and has nothing see-through in it: what
 /// would be is white. A WebP loses nothing, as a PNG loses nothing, and
