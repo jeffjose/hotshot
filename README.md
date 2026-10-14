@@ -1,10 +1,10 @@
 # hotshot
 
-A fast screenshot tool for Linux: X11 first, and Wayland by way of the
-desktop's portal. Run it and the screen freezes;
-drag out an area, draw on it if you like, and copy, save, pin or record
-it. It is one small native program: no web view, no toolkit, and
-nothing left running in between unless its tray icon is asked for.
+A fast screenshot tool for Linux. It is built for X11, and also works on
+Wayland through the desktop's portal. Run it and the screen freezes: drag
+out an area, draw on it if you like, then copy, save, pin or record it.
+It is one small native program with no web view and no toolkit, and
+nothing stays running in the background unless you ask for the tray icon.
 
 ![The editor: an area selected and drawn on, with the bar of tools under it](docs/editor.png)
 
@@ -15,8 +15,8 @@ cargo build --release
 cp target/release/hotshot ~/.local/bin/
 ```
 
-Then bind `hotshot` to a key (Print, say) in your desktop's keyboard
-settings. For it to be in the list of programs, with its icon:
+Then bind `hotshot` to a key (Print, for example) in your desktop's
+keyboard settings. To add it to your application menu with its icon:
 
 ```sh
 cp assets/hotshot.desktop ~/.local/share/applications/
@@ -27,21 +27,21 @@ cp assets/hotshot.svg ~/.local/share/icons/hicolor/scalable/apps/
 
 ```sh
 hotshot                # freeze the screen and pick an area
-hotshot -f             # the whole screen, saved at once
-hotshot -w -c          # the active window, to the clipboard
+hotshot -f             # capture the whole screen and save it immediately
+hotshot -w -c          # copy the active window to the clipboard
 hotshot -g 0,0,800,600 -o shot.png
-hotshot --again        # the same area as last time
-hotshot --reopen       # the last picture, its shapes still movable
-hotshot -t calculator  # the window with that in its title
-hotshot -D 3 --pointer # after three seconds, with the mouse pointer in it
-hotshot --aspect 16:9  # an area kept to that shape; --fixed 1280x720 to a size
-hotshot -f -o shot.jpg # a JPEG, or .webp; --format says it for Save
-hotshot --pin          # the picture left on the screen, over everything
-hotshot --record       # record an area; again to stop (needs ffmpeg)
-hotshot --tray         # an icon in the panel's tray; --menu is its list
+hotshot --again        # capture the same area as last time
+hotshot --reopen       # reopen the last screenshot with its shapes still editable
+hotshot -t calculator  # capture the window with "calculator" in its title
+hotshot -D 3 --pointer # wait three seconds, and include the mouse pointer
+hotshot --aspect 16:9  # lock the area to an aspect ratio; --fixed 1280x720 locks the size
+hotshot -f -o shot.jpg # save as JPEG (or .webp); --format sets the format for Save
+hotshot --pin          # pin the screenshot on screen, above other windows
+hotshot --record       # record an area; run again to stop (needs ffmpeg)
+hotshot --tray         # show an icon in the panel's tray; --menu opens its menu
 ```
 
-Drag to select an area, click a window to take it, or press Enter for
+Drag to select an area, click a window to select it, or press Enter for
 the whole screen. Then:
 
 | Key | |
@@ -61,23 +61,23 @@ the whole screen. Then:
 | `A` `L` | arrow, line |
 | `R` `O` | rectangle, oval |
 | `P` `H` | pen, marker |
-| `T` | text, in five fonts, bold, italic, highlighted, bulleted, or on a patch of color |
+| `T` | text: five fonts, bold, italic, highlighted, bulleted, or on a colored background |
 | `N` | numbered counters |
 | `B` | blur |
 | `S` | spotlight |
 | `Z` | zoom lens |
-| `J` `E` | badges in twelve looks and any color, emoji |
-| `W` | frame: one of forty backdrops, padding and a shadow |
-| `M` | the mouse pointer, in the picture or out of it |
+| `J` `E` | badges (twelve styles, any color), emoji |
+| `W` | frame: one of forty backdrops, with padding and a shadow |
+| `M` | show or hide the mouse pointer in the screenshot |
 | `C` `I` | colors, color picker |
 | `1`-`4` | line width and text size |
 
-Shapes stay editable: move them, resize them, recolor them, duplicate
-them with `Ctrl+D`, and put one over or under another with `Ctrl+]` and
-`Ctrl+[`. An arrow or a line bends by the dot in its middle. They snap
-to each other, and the selection snaps to window edges. Shift held
-keeps the shape of whatever is being resized: the selection, a shape,
-or the frame.
+Shapes stay editable: you can move, resize and recolor them, duplicate
+them with `Ctrl+D`, and move one above or below another with `Ctrl+]` and
+`Ctrl+[`. Drag the dot in the middle of an arrow or line to bend it.
+Shapes snap to each other, and the selection snaps to window edges. Hold
+Shift while resizing to keep the proportions of the selection, a shape or
+the frame.
 
 ![A window set in a frame, with a backdrop and a shadow](docs/frame.png)
 
@@ -85,45 +85,46 @@ or the frame.
 
 ## Pinning
 
-`Ctrl+P`, the pin button, or `--pin` leaves the picture on the screen in
-a window of its own with nothing round it, over every other. Drag it
-about, turn the wheel to make it larger or smaller, `Ctrl+C` to copy it
-again, `Esc` or a double click to be done with it. `hotshot --show
-pic.png` pins a PNG from a file.
+`Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a
+borderless window above all others. Drag to move it, scroll to resize
+it, press `Ctrl+C` to copy it again, and press `Esc` or double-click to
+close it. `hotshot --show pic.png` pins a PNG from a file.
 
 ## Recording
 
 `hotshot --record` (or `Ctrl+R`, or the record button) records the area
-instead of taking a picture of it: an MP4 at 60 frames a second, or a
-GIF, APNG or WebP with `--record-format` or by what the `-o` name ends
-in. A red line shows round the area and a button beside it stops it; so
-does running `hotshot --record` again, so one key both starts and stops.
-`--keys` says the keys pressed along the bottom, as subtitles are.
-Recording is done by `ffmpeg`, which has to be installed; a GIF is made
-by `gifski` where that is too.
+instead of taking a screenshot. The output is an MP4 at 60 frames per
+second by default, or a GIF, APNG or WebP if you pass `--record-format`
+or give `-o` a file name with that extension. A red outline marks the
+area, with a stop button beside it. Running `hotshot --record` again
+also stops the recording, so a single key can both start and stop it.
+`--keys` shows the keys you press along the bottom, like subtitles.
+Recording requires `ffmpeg`; GIFs are made with `gifski` when it is
+installed.
 
 ## Tray
 
-`hotshot --tray` keeps an icon in the panel: a click is hotshot, and its
-menu has the other ways of starting it. It speaks the tray every
-desktop has now (StatusNotifierItem, over D-Bus): XFCE's panel, KDE's,
-waybar and the like, and GNOME with the AppIndicator extension; where
-there is none it falls back to the tray X11 has always had. Add it to
-your session's autostart to have it from login. `hotshot --menu` is the
-same menu where the pointer is, with no icon, for a key.
+`hotshot --tray` keeps an icon in the panel. Clicking it starts hotshot,
+and its menu offers the other ways of starting it. It uses the standard
+tray protocol (StatusNotifierItem over D-Bus), which works with the XFCE
+and KDE panels, waybar and similar, and GNOME with the AppIndicator
+extension. Where that isn't available, it falls back to the older X11
+system tray. Add it to your session's autostart to have it from login.
+`hotshot --menu` opens the same menu at the pointer without an icon,
+which is useful for binding to a key.
 
 ## Speed
 
-On a 4K display the frozen screen is showing 3 ms after launch, and
-hotshot answers the pointer and keys within 10 to 45 ms. The X server
-does the freeze itself, without a pixel leaving the graphics card; the
-pixels are then read in strips, those nearest the pointer first.
-`hotshot --benchmark` measures it on your machine.
+On a 4K display, the frozen screen appears 3 ms after launch, and
+hotshot responds to the pointer and keys within 10 to 45 ms. The X
+server performs the freeze itself, so no pixels leave the graphics card
+at that point. The pixels are then read in strips, starting with those
+nearest the pointer. `hotshot --benchmark` measures this on your machine.
 
 ## Settings
 
 `~/.config/hotshot/config.toml` sets the defaults, using the long option
-names. For a commented file with every setting in it:
+names. To generate a commented file with every setting:
 
 ```sh
 hotshot --default-config > ~/.config/hotshot/config.toml
@@ -131,30 +132,30 @@ hotshot --default-config > ~/.config/hotshot/config.toml
 
 ## Wayland
 
-Under Wayland no program may read the screen for itself, so hotshot
-asks the desktop for a picture of it, through the portal desktops keep
-for that (GNOME, KDE, and wlroots compositors with a portal installed),
-and then shows it to be drawn on as it does on X11. Its window is an
-X11 one, so the session has to be running XWayland, as nearly all do.
-What is different there:
+Wayland doesn't let programs read the screen directly, so hotshot asks
+the desktop for a screenshot through its portal (GNOME, KDE, and wlroots
+compositors with a portal installed), then opens it for editing as it
+does on X11. hotshot's own window is an X11 window, so the session needs
+XWayland, which nearly all sessions run. The differences on Wayland are:
 
-- it starts in the time the desktop takes to hand a picture over, not
-  in three milliseconds, and the desktop may ask first;
-- it puts a window on each monitor, where on X11 one covers them all;
-- on a screen the desktop has made larger, the picture is as many
-  pixels as the desktop counts, not as many as the screen has, and
-  monitors made larger by different amounts may not line up;
-- the clipboard is `wl-copy`'s where that is installed
-  (`wl-clipboard`), which is the sure way;
-- a recording is of a monitor the desktop hands over as it changes,
-  which it asks about the first time, and the area is cut out of it
-  afterwards. That takes GStreamer with its PipeWire plugin
-  (`gst-launch-1.0`, `gstreamer1.0-pipewire`) as well as ffmpeg. It is
-  stopped by `hotshot --record` again, or by the desktop's own sign
-  that the screen is being shared: there is no line round the area, no
-  button, and no saying of the keys pressed;
-- no mouse pointer in a picture, no snapping to windows, and `-w` knows
-  of no window.
+- Startup takes as long as the desktop needs to provide the screenshot,
+  rather than three milliseconds, and the desktop may ask for permission
+  first.
+- It opens one window per monitor, whereas on X11 a single window covers
+  them all.
+- On a scaled display, the screenshot has the desktop's logical
+  resolution rather than the screen's physical resolution, and monitors
+  with different scale factors may not line up.
+- The clipboard uses `wl-copy` when it is installed (`wl-clipboard`),
+  which is the most reliable option.
+- A recording captures a whole monitor, which the desktop asks you to
+  choose the first time, and the area is cropped out afterwards. This
+  needs GStreamer with its PipeWire plugin (`gst-launch-1.0`,
+  `gstreamer1.0-pipewire`) as well as ffmpeg. Stop it by running
+  `hotshot --record` again or with the desktop's own screen-sharing
+  indicator. There is no outline, no stop button and no key display.
+- The mouse pointer can't be included in a screenshot, there is no
+  snapping to windows, and `-w` can't find the active window.
 
 ## Does it work here?
 
@@ -162,12 +163,12 @@ What is different there:
 hotshot --check        # add -c to try the clipboard as well
 ```
 
-tries each thing hotshot does on the machine as it is — the screen
-read, the window and its keys, saving, pinning, a second of recording,
-the tray — and says which worked and what went wrong with the rest. It
-puts a window up for a moment and takes it down again; nothing it makes
-is kept. `cargo test` is the other half: what hotshot works out, tried
-with no display at all.
+This tries each thing hotshot does on the current machine: reading the
+screen, opening the window and receiving keys, saving, pinning, a second
+of recording, and the tray. It reports which worked and what went wrong
+with the rest. It briefly opens a window and closes it again, and keeps
+none of the files it creates. `cargo test` covers the rest: the logic
+that can be tested without a display.
 
 ## Not yet
 
@@ -175,8 +176,8 @@ Zooming in on part of a recording.
 
 ## License
 
-MIT; see `LICENSE`. The icons are
-[Solar](https://www.figma.com/community/file/1166831539721848736)'s
+MIT; see `LICENSE`. The icons are from
+[Solar](https://www.figma.com/community/file/1166831539721848736)
 (CC BY 4.0). The fonts are [Geist](https://vercel.com/font),
 [Instrument Serif](https://github.com/Instrument/instrument-serif),
 [Architects Daughter](https://fonts.google.com/specimen/Architects+Daughter),
