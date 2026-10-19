@@ -16,10 +16,13 @@ rayon = "1"
 jpeg-encoder = "0.7.1"
 image-webp = "0.2.4"
 
+# No cross-crate LTO and 16 codegen units, Cargo's own default, as jog
+# has: a rebuild of hotshot takes 4 s rather than 20 s (fat LTO with one
+# unit, a single core for all of it), and the binary is 0.4 MB larger.
+# Measured 2026-10-19, --benchmark five times each way in turn on a
+# 1080p screen: no difference in drawing beyond noise.
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
 panic = "abort"
 strip = true
 
