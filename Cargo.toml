@@ -16,6 +16,9 @@ rayon = "1"
 jpeg-encoder = "0.7.1"
 image-webp = "0.2.4"
 
+[build-dependencies]
+vergen-gitcl = "10.0.3"
+
 # No cross-crate LTO and 16 codegen units, Cargo's own default, as jog
 # has: a rebuild of hotshot takes 4 s rather than 20 s (fat LTO with one
 # unit, a single core for all of it), and the binary is 0.4 MB larger.

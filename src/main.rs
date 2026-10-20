@@ -26,6 +26,17 @@ use strips::Strips;
 use text::Text;
 use x11::{Display, Input};
 
+/// The version and the commit it was built from: `0.2.0-abc1234`, with
+/// `-dirty` if the tree had changes not committed.
+pub fn version() -> String {
+    // Unset where git could not be asked, or vergen's stand-in.
+    let Some(sha) = option_env!("VERGEN_GIT_SHA").filter(|sha| !sha.is_empty() && !sha.contains("VERGEN")) else {
+        return env!("CARGO_PKG_VERSION").to_string();
+    };
+    let dirty = if option_env!("VERGEN_GIT_DIRTY") == Some("true") { "-dirty" } else { "" };
+    format!("{}-{sha}{dirty}", env!("CARGO_PKG_VERSION"))
+}
+
 fn main() -> ExitCode {
     let started = Instant::now();
     let options = match options::parse(std::env::args_os().skip(1)) {
@@ -35,7 +46,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(Parsed::Version) => {
-            println!("hotshot {}", env!("CARGO_PKG_VERSION"));
+            println!("hotshot {}", version());
             return ExitCode::SUCCESS;
         }
         Ok(Parsed::Config) => {

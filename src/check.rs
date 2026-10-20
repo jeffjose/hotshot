@@ -61,7 +61,7 @@ fn said_by(program: &str, told: &[&str]) -> Option<Vec<u8>> {
 }
 
 pub fn run(options: &Options) -> ExitCode {
-    println!("hotshot {}, trying what it does on this machine\n", env!("CARGO_PKG_VERSION"));
+    println!("hotshot {}, trying what it does on this machine\n", crate::version());
     let wayland = wayland::session();
     let scratch = std::env::temp_dir().join(format!("hotshot-check-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&scratch);
