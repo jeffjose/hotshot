@@ -3428,8 +3428,23 @@ impl Editor {
     /// What it takes to take this picture again, as `--again` does: the
     /// area, and how it is set out, but not what is drawn on it.
     pub fn recipe(&self) -> crate::history::Recipe {
-        let frame = Frame { backdrop: if self.frame.backdrop == Backdrop::Photo { Backdrop::None } else { self.frame.backdrop }, ..self.frame };
-        crate::history::Recipe { area: self.selection.unwrap_or_default(), corners: self.corners, frame, pointer: self.arrow_shows && self.arrow.is_some() }
+        // On a photograph only where one came: one asked for that never
+        // did is no backdrop at all.
+        let photo = self.photo().map(crate::history::photo_mark);
+        let backdrop = if self.frame.backdrop == Backdrop::Photo && photo.is_none() { Backdrop::None } else { self.frame.backdrop };
+        crate::history::Recipe { area: self.selection.unwrap_or_default(), corners: self.corners, frame: Frame { backdrop, ..self.frame }, pointer: self.arrow_shows && self.arrow.is_some(), photo }
+    }
+
+    /// Sets the picture on a photograph from before, in the frame it
+    /// already has, the room round it as it is.
+    pub fn set_photo(&mut self, photo: Photo) {
+        (self.photo, self.frame.backdrop, self.look, self.dirty) = (Some(photo), Backdrop::Photo, None, true);
+        self.photos += 1;
+    }
+
+    /// The photograph the picture is set on, if it is set on one.
+    pub fn photo(&self) -> Option<&Photo> {
+        self.photo.as_ref().filter(|_| self.frame.backdrop == Backdrop::Photo)
     }
 
     /// What it takes to come back to this picture and go on with it:

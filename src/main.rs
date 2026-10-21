@@ -119,6 +119,8 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         Take::Again(which) => Some(history::find_in(&history::all(), which.as_deref())?.recipe),
         _ => None,
     };
+    // On a photograph, it is set on the copy kept of the same one.
+    let mut again_photo = None;
     if let Some(again) = again {
         if options.plain_corners == 0.0 {
             options.plain_corners = again.corners;
@@ -126,6 +128,10 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         }
         if options.settings.frame.is_plain() {
             options.settings.frame = again.frame;
+            again_photo = again.photo.and_then(history::kept_photo);
+            if again_photo.is_some() {
+                options.settings.fetch = false;
+            }
         }
         options.pointer |= again.pointer;
     }
@@ -291,11 +297,14 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             if round > 0 || !frame.is_plain() {
                 canvas::round_alpha(&mut pixels, area.w, round);
             }
+            let mut photo = None;
             if !frame.is_plain() {
-                // On a photograph: the user's own, or one nobody chose,
-                // fetched now, about the size it will be.
-                let photo = match (frame.backdrop == frame::Backdrop::Photo, options.settings.fetch) {
+                // On a photograph: the one taken again, the user's own,
+                // or one nobody chose, fetched now, about the size it
+                // will be.
+                photo = match (frame.backdrop == frame::Backdrop::Photo, options.settings.fetch) {
                     (false, _) => None,
+                    (true, _) if again_photo.is_some() => again_photo.take(),
                     (true, true) => {
                         let room = frame.room(scale);
                         frame::random(area.w + 2 * room.0, area.h + 2 * room.1)
@@ -305,10 +314,13 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                 (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, photo.as_ref());
                 alpha = frame.is_clear() || (frame.backdrop == frame::Backdrop::Photo && photo.is_none());
             }
-            let recipe = history::Recipe { area, corners: options.plain_corners, frame, pointer: options.pointer };
-            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None, recipe }
+            // On a photograph only where there was one to be had.
+            let mark = photo.as_ref().map(history::photo_mark);
+            let backdrop = if frame.backdrop == frame::Backdrop::Photo && mark.is_none() { frame::Backdrop::None } else { frame.backdrop };
+            let recipe = history::Recipe { area, corners: options.plain_corners, frame: frame::Frame { backdrop, ..frame }, pointer: options.pointer, photo: mark };
+            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None, recipe, photo }
         }
-        (named, _) => match pick(&mut display, named, reopened, arrow, &options, font, &trace)? {
+        (named, _) => match pick(&mut display, named, reopened, again_photo, arrow, &options, font, &trace)? {
             Some(taken) => taken,
             None => return Ok(ExitCode::from(1)),
         },
@@ -318,7 +330,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // stays where it is in the list, so that `--again @2` is the same
     // picture however many times it is taken.
     if again.is_none_or(|again| again.name() != taken.recipe.name()) {
-        history::remember(&taken.recipe);
+        history::remember(&taken.recipe, taken.photo.as_ref());
     }
     let how = taken.how;
     // Not a picture after all: the area is recorded, once the display
@@ -410,14 +422,17 @@ struct Taken {
     /// before anything was drawn, and the shapes. For one that was
     /// drawn on at all.
     keep: Option<(Rect, Vec<u32>, String)>,
-    /// What it takes to take it again, for `--again`.
+    /// What it takes to take it again, for `--again`, and the
+    /// photograph it is set on, to be kept for that.
     recipe: history::Recipe,
+    photo: Option<frame::Photo>,
 }
 
 /// Freezes the screen and lets an area be dragged out and drawn on.
 /// Gives the area, the picture of it, and what is to be done with it;
 /// or nothing, if it was called off.
-fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, frame::Photo, Vec<shapes::Shape>)>, mut arrow: Option<canvas::Pointer>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<Taken>> {
+#[allow(clippy::too_many_arguments)]
+fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, frame::Photo, Vec<shapes::Shape>)>, photo: Option<frame::Photo>, mut arrow: Option<canvas::Pointer>, options: &Options, font: std::thread::JoinHandle<Text>, trace: &dyn Fn(&str)) -> x11::Result<Option<Taken>> {
     // The first frame is the screen darkened and nothing else: it is
     // what says hotshot has started, and the server makes it of its own
     // copy of the screen, without a pixel having come here. The keyboard
@@ -492,6 +507,10 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     }
     if let Some((_, _, shapes)) = reopened {
         editor.restore(shapes);
+    }
+    // The photograph a picture taken again was set on.
+    if let Some(photo) = photo {
+        editor.set_photo(photo);
     }
     let mut back = vec![0u32; frame.len()];
     trace("editor ready");
@@ -596,6 +615,6 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
         options::remember_tools(&editor.in_hand(), options.places.get(editor.place()).map(|place| place.as_path()));
     }
     let (place, keep) = (editor.place(), editor.keepsake());
-    let recipe = editor.recipe();
-    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, keep, recipe: history::Recipe { area, ..recipe } })))
+    let (recipe, photo) = (editor.recipe(), editor.photo().cloned());
+    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, keep, recipe: history::Recipe { area, ..recipe }, photo })))
 }

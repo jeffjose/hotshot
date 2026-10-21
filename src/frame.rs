@@ -349,6 +349,7 @@ fn erf(x: f32) -> f32 {
 }
 
 /// A picture to stand behind another: its size, and its pixels.
+#[derive(Clone)]
 pub struct Photo {
     pub width: i32,
     pub height: i32,
