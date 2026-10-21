@@ -109,12 +109,244 @@ pub fn shade(which: usize, across: f32, down: f32, noise: f32) -> u32 {
 /// high: none, and three widths of it.
 pub const PADS: [i32; 4] = [0, 32, 64, 112];
 
-/// The shadow under the picture: four of them, each further down, more
-/// spread and a little darker than the last, which together fall off
-/// the way a real one does, close and sharp at the edge and wide and
-/// faint beyond it. How far down, how spread, and how dark out of 1, on
-/// a screen 1080 high.
-const SHADOWS: [(f32, f32, f32); 4] = [(1.0, 3.0, 0.10), (4.0, 12.0, 0.10), (12.0, 32.0, 0.13), (28.0, 72.0, 0.17)];
+/// One shadow of the several a picture may cast, as CSS's box-shadow
+/// says one: so far across and down, so blurred, and grown by so much
+/// all round, in pixels of a screen 1080 high; and its color, with how
+/// opaque it is in the top byte.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Layer {
+    pub x: i16,
+    pub y: i16,
+    pub blur: i16,
+    pub spread: i16,
+    pub color: u32,
+}
+
+/// The shadows a picture casts, the one over the rest first, as CSS
+/// has them: none, or as many as four.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Shadow {
+    pub layers: [Layer; 4],
+    pub count: u8,
+}
+
+/// Black, so opaque out of 1.
+const fn black(alpha: f32) -> u32 {
+    ((alpha * 255.0 + 0.5) as u32) << 24
+}
+
+const fn layer(x: i16, y: i16, blur: i16, spread: i16, alpha: f32) -> Layer {
+    Layer { x, y, blur, spread, color: black(alpha) }
+}
+
+/// Tailwind's shadows, by Tailwind's names for them, smallest first.
+pub const SHADOWS: [(&str, &[Layer]); 7] = [
+    ("2xs", &[layer(0, 1, 0, 0, 0.05)]),
+    ("xs", &[layer(0, 1, 2, 0, 0.05)]),
+    ("sm", &[layer(0, 1, 3, 0, 0.1), layer(0, 1, 2, -1, 0.1)]),
+    ("md", &[layer(0, 4, 6, -1, 0.1), layer(0, 2, 4, -2, 0.1)]),
+    ("lg", &[layer(0, 10, 15, -3, 0.1), layer(0, 4, 6, -4, 0.1)]),
+    ("xl", &[layer(0, 20, 25, -5, 0.1), layer(0, 8, 10, -6, 0.1)]),
+    ("2xl", &[layer(0, 25, 50, -12, 0.25)]),
+];
+
+/// The shadow a picture is given when it is just given one.
+pub const SHADOW: &str = "2xl";
+
+impl Shadow {
+    pub const NONE: Shadow = Shadow { layers: [Layer { x: 0, y: 0, blur: 0, spread: 0, color: 0 }; 4], count: 0 };
+
+    pub fn on(&self) -> bool {
+        self.count > 0
+    }
+
+    fn of(layers: &[Layer]) -> Shadow {
+        let mut shadow = Shadow::NONE;
+        for (at, layer) in layers.iter().take(4).enumerate() {
+            shadow.layers[at] = *layer;
+        }
+        shadow.count = layers.len().min(4) as u8;
+        shadow
+    }
+
+    /// One of Tailwind's, by its name.
+    pub fn named(name: &str) -> Option<Shadow> {
+        let name = name.trim().to_ascii_lowercase();
+        let name = name.strip_prefix("shadow-").unwrap_or(&name);
+        SHADOWS.iter().find(|(known, _)| *known == name).map(|(_, layers)| Shadow::of(layers))
+    }
+
+    /// One of Tailwind's, by where it is among them, smallest first.
+    pub fn of_preset(which: usize) -> Shadow {
+        Shadow::of(SHADOWS[which.min(SHADOWS.len() - 1)].1)
+    }
+
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers[..usize::from(self.count.min(4))]
+    }
+
+    /// What it is called, if it is one of Tailwind's.
+    pub fn name(&self) -> Option<&'static str> {
+        SHADOWS.iter().find(|(_, layers)| *layers == self.layers()).map(|(name, _)| *name)
+    }
+
+    /// As CSS says it, a layer after another.
+    pub fn css(&self) -> String {
+        let said: Vec<String> = self
+            .layers()
+            .iter()
+            .map(|layer| {
+                let (alpha, color) = ((layer.color >> 24) as f32 / 255.0, layer.color & 0xFF_FFFF);
+                let alpha = format!("{alpha:.3}").trim_end_matches('0').trim_end_matches('.').to_owned();
+                format!("{}px {}px {}px {}px rgb({} {} {} / {alpha})", layer.x, layer.y, layer.blur, layer.spread, color >> 16, color >> 8 & 0xFF, color & 0xFF)
+            })
+            .collect();
+        if said.is_empty() { "none".into() } else { said.join(", ") }
+    }
+
+    /// From what it is called, Tailwind's way (`lg`, `shadow-lg`), or
+    /// as CSS's box-shadow says it: `0 10px 15px -3px rgb(0 0 0 / 0.1),
+    /// 0 4px 6px -4px rgb(0 0 0 / 0.1)`. `none` is none.
+    pub fn parse(text: &str) -> Result<Shadow, String> {
+        let text = text.trim();
+        if text.eq_ignore_ascii_case("none") {
+            return Ok(Shadow::NONE);
+        }
+        if let Some(shadow) = Shadow::named(text) {
+            return Ok(shadow);
+        }
+        // The layers, at the commas that are not inside a color.
+        let (mut layers, mut depth, mut begun) = (Vec::new(), 0, 0);
+        for (at, letter) in text.char_indices() {
+            match letter {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    layers.push(&text[begun..at]);
+                    begun = at + 1;
+                }
+                _ => {}
+            }
+        }
+        layers.push(&text[begun..]);
+        if layers.len() > 4 {
+            return Err(format!("too many shadows in '{text}': four at most"));
+        }
+        let mut made = Vec::new();
+        for layer in layers {
+            made.push(read_layer(layer.trim()).ok_or_else(|| {
+                let names: Vec<&str> = SHADOWS.iter().map(|(name, _)| *name).collect();
+                format!("invalid shadow '{}', expected one of {} or none, or a CSS box-shadow such as '0 10px 15px -3px rgb(0 0 0 / 0.1)'", layer.trim(), names.join(", "))
+            })?);
+        }
+        Ok(Shadow::of(&made))
+    }
+
+    /// How far past the picture it reaches, beside it and above and
+    /// below it, in pixels of a screen 1080 high: where it is as good as
+    /// gone, three times its blur's deviation out.
+    fn reach(&self) -> (f32, f32) {
+        self.layers().iter().fold((0.0, 0.0), |(across, down), layer| {
+            let out = f32::from(layer.spread) + 1.5 * f32::from(layer.blur.max(0));
+            (across.max(f32::from(layer.x).abs() + out), down.max(f32::from(layer.y).abs() + out))
+        })
+    }
+}
+
+/// One layer of a CSS box-shadow: two to four lengths and a color, in
+/// any order of the two, but never inset.
+fn read_layer(text: &str) -> Option<Layer> {
+    let (mut lengths, mut color, mut word, mut depth) = (Vec::new(), None, String::new(), 0);
+    // Words, with what is inside a color's brackets kept with it.
+    let mut words = Vec::new();
+    for letter in text.chars() {
+        match letter {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        if letter.is_whitespace() && depth == 0 {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        } else {
+            word.push(letter);
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    for word in words {
+        let lower = word.to_ascii_lowercase();
+        if let Some(length) = read_length(&lower) {
+            lengths.push(length);
+        } else if color.is_none() {
+            color = Some(read_color(&lower)?);
+        } else {
+            return None;
+        }
+    }
+    let [x, y] = lengths[..lengths.len().min(2)] else { return None };
+    let (blur, spread) = (lengths.get(2).copied().unwrap_or(0), lengths.get(3).copied().unwrap_or(0));
+    (lengths.len() <= 4 && blur >= 0).then_some(Layer { x, y, blur, spread, color: color.unwrap_or(black(1.0)) })
+}
+
+/// A length: so many pixels, or of the size text is in CSS, 16 of them.
+fn read_length(word: &str) -> Option<i16> {
+    let (number, times) = if let Some(number) = word.strip_suffix("px") {
+        (number, 1.0)
+    } else if let Some(number) = word.strip_suffix("rem").or_else(|| word.strip_suffix("em")) {
+        (number, 16.0)
+    } else {
+        (word, 1.0)
+    };
+    let value = number.parse::<f32>().ok()?;
+    // A bare number is only a length if it is nought, as CSS has it;
+    // otherwise it is taken as pixels all the same.
+    (value.is_finite() && value.abs() < 2000.0).then(|| (value * times).round() as i16)
+}
+
+/// A color as CSS says one: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`,
+/// `rgb()` or `rgba()` with commas or without and how opaque after a
+/// slash, or black, white or transparent. With how opaque in the top
+/// byte.
+fn read_color(word: &str) -> Option<u32> {
+    match word {
+        "black" => return Some(black(1.0)),
+        "white" => return Some(0xFFFF_FFFF),
+        "transparent" => return Some(0),
+        _ => {}
+    }
+    if let Some(hex) = word.strip_prefix('#') {
+        let digits: Vec<u32> = hex.chars().map(|digit| digit.to_digit(16)).collect::<Option<_>>()?;
+        let [r, g, b, a] = match digits.len() {
+            3 | 4 => [0, 1, 2, 3].map(|at| digits.get(at).map_or(255, |digit| digit * 17)),
+            6 | 8 => [0, 2, 4, 6].map(|at| if at < digits.len() { digits[at] * 16 + digits[at + 1] } else { 255 }),
+            _ => return None,
+        };
+        return Some(a << 24 | r << 16 | g << 8 | b);
+    }
+    let inside = word.strip_prefix("rgba(").or_else(|| word.strip_prefix("rgb("))?.strip_suffix(')')?;
+    let parts: Vec<&str> = inside.split([',', ' ', '/']).filter(|part| !part.is_empty()).collect();
+    let part = |text: &str, whole: f32| -> Option<f32> {
+        match text.strip_suffix('%') {
+            Some(percent) => Some(percent.parse::<f32>().ok()? / 100.0 * whole),
+            None => text.parse::<f32>().ok(),
+        }
+    };
+    let (r, g, b) = (part(parts.first()?, 255.0)?, part(parts.get(1)?, 255.0)?, part(parts.get(2)?, 255.0)?);
+    let a = parts.get(3).map_or(Some(1.0), |alpha| part(alpha, 1.0))?;
+    let byte = |value: f32| value.round().clamp(0.0, 255.0) as u32;
+    (parts.len() <= 4).then(|| byte(a * 255.0) << 24 | byte(r) << 16 | byte(g) << 8 | byte(b))
+}
+
+/// The error function, near enough for a shadow's edge: Abramowitz and
+/// Stegun's, to within a ten-thousandth.
+fn erf(x: f32) -> f32 {
+    let t = 1.0 / (1.0 + 0.3275911 * x.abs());
+    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * (-x * x).exp();
+    y.copysign(x)
+}
 
 /// A picture to stand behind another: its size, and its pixels.
 pub struct Photo {
@@ -145,22 +377,22 @@ pub struct Frame {
     pub pad: (i32, i32),
     /// How round the corners of the whole are, in the same pixels.
     pub radius: i32,
-    pub shadow: bool,
+    pub shadow: Shadow,
 }
 
 impl Frame {
     /// Whether it does anything at all to the picture.
     pub fn is_plain(&self) -> bool {
-        self.backdrop == Backdrop::None && self.pad == (0, 0) && !self.shadow
+        self.backdrop == Backdrop::None && self.pad == (0, 0) && !self.shadow.on()
     }
 
     /// The room beside the picture, and above and below it, in pixels
     /// at a scale. A shadow has to have somewhere to fall, whatever the
     /// room asked for.
     pub fn room(&self, scale: f32) -> (i32, i32) {
-        let least = if self.shadow { (56.0 * scale).round() as i32 } else { 0 };
-        let asked = |pad: i32| ((pad.max(0) as f32 * scale).round() as i32).max(least);
-        (asked(self.pad.0), asked(self.pad.1))
+        let reach = self.shadow.reach();
+        let asked = |pad: i32, least: f32| ((pad.max(0) as f32 * scale).round() as i32).max((least * scale).ceil() as i32);
+        (asked(self.pad.0, reach.0), asked(self.pad.1, reach.1))
     }
 
     /// Whether what it makes is see-through anywhere: with nothing
@@ -206,22 +438,35 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
                     photo.pixels[(sy * photo.width + sx) as usize] & 0xFF_FFFF
                 }),
             };
-            // How dark the shadow is here: each of the four taken off
-            // what light the ones before it left.
-            let mut light = 1.0f32;
-            if frame.shadow {
-                for (down, spread, dark) in SHADOWS {
-                    let (down, spread) = (down * scale, spread * scale);
-                    let away = round_box(x as f32 + 0.5 - room.0 as f32 - half_w, y as f32 + 0.5 - room.1 as f32 - half_h - down, half_w, half_h, radius);
-                    let near = (0.5 - away / spread).clamp(0.0, 1.0);
-                    light *= 1.0 - dark * near * near * (3.0 - 2.0 * near);
+            // The shadows here, as CSS casts them: each the picture's
+            // shape moved, grown, and blurred as by a Gaussian, whose
+            // edge falls off as the error function does; the first of
+            // them over the rest. What comes of them all is a color,
+            // made fainter by how opaque it is, and how opaque.
+            let (mut cast, mut cover) = ([0.0f32; 3], 0.0f32);
+            for layer in frame.shadow.layers().iter().rev() {
+                let (dx, dy, grow) = (f32::from(layer.x) * scale, f32::from(layer.y) * scale, f32::from(layer.spread) * scale);
+                let (wide_half, high_half) = ((half_w + grow).max(0.0), (half_h + grow).max(0.0));
+                let away = round_box(x as f32 + 0.5 - room.0 as f32 - half_w - dx, y as f32 + 0.5 - room.1 as f32 - half_h - dy, wide_half, high_half, (radius + grow).clamp(0.0, wide_half.min(high_half)));
+                let deviation = f32::from(layer.blur.max(0)) * scale / 2.0;
+                let near = if deviation < 0.5 { (0.5 - away).clamp(0.0, 1.0) } else { 0.5 * (1.0 - erf(away / (deviation * std::f32::consts::SQRT_2))) };
+                let alpha = near * (layer.color >> 24) as f32 / 255.0;
+                for (part, shift) in cast.iter_mut().zip([16, 8, 0]) {
+                    *part = (layer.color >> shift & 0xFF) as f32 * alpha + *part * (1.0 - alpha);
                 }
+                cover = alpha + cover * (1.0 - alpha);
             }
-            let shade = ((1.0 - light) * 256.0) as u32;
+            let whole = |parts: [f32; 3]| parts.iter().zip([16, 8, 0]).fold(0, |color, (part, shift)| color | (part.round().clamp(0.0, 255.0) as u32) << shift);
             let (mut color, mut opaque) = match behind {
-                Some(color) => (mix(color, 0, shade), 255),
-                None => (0, shade.min(255)),
+                Some(color) => (color, 255),
+                None => (0, 0),
             };
+            if cover > 0.0 {
+                (color, opaque) = match behind {
+                    Some(color) => (whole([0, 1, 2].map(|at| ((color >> [16, 8, 0][at] & 0xFF) as f32) * (1.0 - cover) + cast[at])), 255),
+                    None => (whole(cast.map(|part| part / cover)), (cover * 255.0).round() as u32),
+                };
+            }
             // And the picture over it, where the pixel is in it.
             let (px, py) = (x - room.0, y - room.1);
             if px >= 0 && py >= 0 && px < width && py < height {
@@ -298,7 +543,7 @@ mod tests {
         assert!(Frame::default().is_plain());
 
         let slate = named("slate").unwrap();
-        let frame = Frame { backdrop: Backdrop::Gradient(slate), pad: (PADS[1], PADS[1]), radius: 0, shadow: false };
+        let frame = Frame { backdrop: Backdrop::Gradient(slate), pad: (PADS[1], PADS[1]), radius: 0, shadow: Shadow::NONE };
         let (wide, high, framed) = set(frame, &picture, 4, 2, 0, 1.0, None);
         assert_eq!((wide, high), (4 + 64, 2 + 64));
         // Opaque everywhere; the picture in the middle of it, and at
@@ -321,19 +566,46 @@ mod tests {
     fn a_shadow_makes_its_own_room_and_is_darkest_under_the_picture() {
         let mut picture = vec![0x00FF_FFFFu32; 200 * 100];
         crate::canvas::round_alpha(&mut picture, 200, 8);
-        let frame = Frame { backdrop: Backdrop::None, pad: (0, 0), radius: 0, shadow: true };
+        // Tailwind's 2xl: 25 down, 50 blurred, 12 drawn in all round,
+        // so that beside the picture it is all but gone, and under it
+        // reaches 25 - 12 + 75 out.
+        let frame = Frame { backdrop: Backdrop::None, pad: (0, 0), radius: 0, shadow: Shadow::named("2xl").unwrap() };
         let (wide, high, framed) = set(frame, &picture, 200, 100, 8, 1.0, None);
-        assert_eq!((wide, high), (200 + 112, 100 + 112));
+        let room = frame.room(1.0);
+        assert_eq!((room, wide, high), ((63, 88), 200 + 2 * 63, 100 + 2 * 88));
         let alpha = |x: i32, y: i32| framed[(y * wide + x) as usize] >> 24;
         // Nothing at the far corner; something just under the bottom
-        // edge, more than at the same distance above the top one; and
-        // the picture itself whole.
+        // edge, more than at the same distance above the top one, and
+        // no more than a quarter of the way to black; and the picture
+        // itself whole.
+        let (under, over) = (alpha(wide / 2, room.1 + 100 + 6), alpha(wide / 2, room.1 - 6));
         assert_eq!(alpha(0, 0), 0);
-        assert!(alpha(wide / 2, 56 + 100 + 6) > alpha(wide / 2, 56 - 6) && alpha(wide / 2, 56 + 100 + 6) > 40);
-        assert_eq!(framed[(100 * wide + 150) as usize], 0xFFFF_FFFF);
+        assert!(under > over && under > 20 && under <= 64, "{under} {over}");
+        assert_eq!(framed[((room.1 + 50) * wide + room.0 + 100) as usize], 0xFFFF_FFFF);
         // Rounded corners of the picture are still see-through to the
-        // shadow, not to nothing.
-        assert!(alpha(56, 56) > 0 && alpha(56, 56) < 255);
+        // shadow, not to nothing; and on a backdrop it darkens it.
+        assert!(alpha(room.0, room.1 + 99) > 0 && alpha(room.0, room.1 + 99) < 255);
+        let on = Frame { backdrop: Backdrop::Gradient(named("white").unwrap()), ..frame };
+        let (wide, _, framed) = set(on, &picture, 200, 100, 8, 1.0, None);
+        let pixel = framed[((room.1 + 100 + 6) * wide + wide / 2) as usize];
+        assert!(pixel >> 24 == 255 && pixel & 0xFF < 0xF8 && framed[0] & 0xFF_FFFF == 0xFF_FFFF);
+    }
+
+    #[test]
+    fn a_shadow_is_one_of_tailwinds_by_its_name_or_as_css_says_it() {
+        let lg = Shadow::named("lg").unwrap();
+        assert_eq!((lg.count, lg.name(), Shadow::named("shadow-LG"), Shadow::named("huge")), (2, Some("lg"), Some(lg), None));
+        // Said as CSS, it is what Tailwind's is, with commas inside its
+        // colors and without.
+        assert_eq!(Shadow::parse("0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1)").unwrap(), lg);
+        assert_eq!(Shadow::parse(&lg.css()).unwrap(), lg);
+        let colored = Shadow::parse("2px -4px 0.5rem #3E63DD80").unwrap();
+        assert_eq!(colored.layers(), [Layer { x: 2, y: -4, blur: 8, spread: 0, color: 0x803E63DD }]);
+        assert_eq!(Shadow::parse("0 0 12px white").unwrap().layers()[0].color, 0xFFFF_FFFF);
+        assert_eq!(Shadow::parse("none").unwrap(), Shadow::NONE);
+        for wrong in ["5px", "0 0 12px inset", "0 0 -3px black", "1 2 3 4 5", "0 0 1px blue", "a, b, c, d, e"] {
+            assert!(Shadow::parse(wrong).is_err(), "{wrong}");
+        }
     }
 
     #[test]

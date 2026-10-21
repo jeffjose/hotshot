@@ -86,6 +86,9 @@
 # backdrop = "none"
 # padding = 0
 # frame-radius = 0
+# The shadow: false, true (which is Tailwind's 2xl), one of Tailwind's
+# sizes ("2xs", "xs", "sm", "md", "lg", "xl", "2xl"), or CSS's
+# box-shadow, in quotes, as "0 10px 15px -3px rgb(0 0 0 / 0.1)".
 # shadow = false
 
 # How things are drawn to begin with: how opaque, in percent; lines and

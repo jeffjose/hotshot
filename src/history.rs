@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::canvas::Rect;
-use crate::frame::{self, Backdrop, Frame, BACKDROPS};
+use crate::frame::{self, Backdrop, Frame, Shadow, BACKDROPS};
 use crate::output;
 
 /// How many are kept.
@@ -51,6 +51,16 @@ fn backdrop_word(backdrop: Backdrop) -> String {
     }
 }
 
+/// What a shadow is called in the file: Tailwind's name for it, or as
+/// CSS says it with no spaces in it, or none.
+fn shadow_word(shadow: Shadow) -> String {
+    match (shadow.on(), shadow.name()) {
+        (false, _) => "none".into(),
+        (true, Some(name)) => name.into(),
+        (true, None) => shadow.css().replace(' ', "_"),
+    }
+}
+
 impl Recipe {
     /// As the words of a line of the file, but for its name and when.
     fn words(&self) -> String {
@@ -66,7 +76,7 @@ impl Recipe {
             frame.pad.0,
             frame.pad.1,
             frame.radius,
-            u8::from(frame.shadow),
+            shadow_word(frame.shadow),
             u8::from(self.pointer)
         )
     }
@@ -100,8 +110,8 @@ impl Recipe {
         if frame.radius > 0 && frame.backdrop != Backdrop::None {
             said.push(format!("frame corners {}", frame.radius));
         }
-        if frame.shadow {
-            said.push("shadow".into());
+        if frame.shadow.on() {
+            said.push(format!("shadow {}", frame.shadow.name().map_or_else(|| frame.shadow.css(), str::to_owned)));
         }
         if self.pointer {
             said.push("pointer".into());
@@ -120,7 +130,13 @@ fn read_line(line: &str) -> Option<Taken> {
         return None;
     }
     let backdrop = frame::named(backdrop).map_or(Backdrop::None, Backdrop::Gradient);
-    let frame = Frame { backdrop, pad: (number(across)?, number(down)?), radius: number(radius)?, shadow: shadow == "1" };
+    // A shadow was once on or off, which is what 1 and 0 still say.
+    let shadow = match shadow {
+        "0" => Shadow::NONE,
+        "1" => Shadow::named(frame::SHADOW)?,
+        said => Shadow::parse(&said.replace('_', " ")).ok()?,
+    };
+    let frame = Frame { backdrop, pad: (number(across)?, number(down)?), radius: number(radius)?, shadow };
     let recipe = Recipe { area, corners: corners.parse().ok()?, frame, pointer: pointer == "1" };
     Some(Taken { name: name.into(), when: when.parse().ok()?, recipe })
 }
@@ -223,7 +239,7 @@ mod tests {
     use super::*;
 
     fn recipe(x: i32, corners: f32) -> Recipe {
-        Recipe { area: Rect::new(x, 20, 300, 200), corners, frame: Frame { backdrop: Backdrop::Gradient(frame::named("dusk").unwrap()), pad: (64, 40), radius: 12, shadow: true }, pointer: true }
+        Recipe { area: Rect::new(x, 20, 300, 200), corners, frame: Frame { backdrop: Backdrop::Gradient(frame::named("dusk").unwrap()), pad: (64, 40), radius: 12, shadow: Shadow::named("lg").unwrap() }, pointer: true }
     }
 
     #[test]
@@ -248,7 +264,14 @@ mod tests {
         // Names differ with what they are, and are of four letters.
         assert_ne!(first.name(), second.name());
         assert_eq!(first.name().len(), 4);
-        assert_eq!(first.said(), "300 x 200 at 10,20, corners 16, on dusk, room 64 by 40, frame corners 12, shadow, pointer");
+        assert_eq!(first.said(), "300 x 200 at 10,20, corners 16, on dusk, room 64 by 40, frame corners 12, shadow lg, pointer");
+        // A shadow of its own, said as CSS, is kept as it was said; and
+        // one from before shadows had sizes is read as the usual one.
+        let own = Recipe { frame: Frame { shadow: Shadow::parse("0 8px 24px -4px rgb(20 30 200 / 0.3)").unwrap(), ..first.frame }, ..first };
+        remember_in(&file, &own, 5000);
+        assert_eq!(all_in(&file)[0].recipe, own);
+        std::fs::write(&file, "abcd 1 0 0 10 10 0 none 0 0 0 1 0\n").unwrap();
+        assert_eq!(all_in(&file)[0].recipe.frame.shadow, Shadow::named(frame::SHADOW).unwrap());
         // No more are kept than the most there are to be.
         for x in 0..60 {
             remember_in(&file, &recipe(x, 0.0), 4000 + x as u64);

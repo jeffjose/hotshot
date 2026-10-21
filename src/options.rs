@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::canvas::Rect;
 use crate::editor::{Finish, Settings, Windows, PALETTE};
-use crate::frame::{self, Backdrop, BACKDROPS, PADS};
+use crate::frame::{self, Backdrop, Shadow, BACKDROPS, PADS};
 use crate::output::{Format, Video};
 
 pub const USAGE: &str = "\
@@ -137,7 +137,11 @@ Look:
                              that so many pixels; or two, beside it and
                              above and below it, as 80x40
       --frame-radius N       how round the corners of the frame are
-      --shadow               and a shadow under it
+      --shadow [WHICH]       and a shadow under it: Tailwind's 2xs, xs, sm,
+                             md, lg, xl or 2xl (the usual), or as CSS's
+                             box-shadow says it, up to four of them, as
+                             --shadow '0 10px 15px -3px rgb(0 0 0 / 0.1)';
+                             CSS that begins with a minus goes after =
       --photo FILE           a PNG or JPEG of your own to set it on, which
                              the box of backdrops then offers
       --filled               rectangles and ovals filled to begin with
@@ -555,8 +559,9 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
                 _ => return Err(format!("invalid zoom '{text}', expected round or square")),
             };
         }
-        "shadow" => options.settings.frame.shadow = true,
-        "no-shadow" => options.settings.frame.shadow = false,
+        "shadow" => options.settings.frame.shadow = Shadow::named(frame::SHADOW).expect("the usual shadow is one of them"),
+        "no-shadow" => options.settings.frame.shadow = Shadow::NONE,
+        "shadow-is" => options.settings.frame.shadow = Shadow::parse(&value()?)?,
         "photo" => options.settings.photo = Some(path(&value()?)),
         "filename" => options.filename = value()?,
         "accent" => options.settings.accent = parse_accent(&value()?)?,
@@ -666,6 +671,8 @@ fn read_config(options: &mut Options, text: &str) -> Result<(), String> {
             (false, "true") => name.to_owned(),
             (false, "false") if ["magnifier", "remember", "filled", "shadow", "pointer", "record-pointer", "keys", "dashed"].contains(&name) => format!("no-{name}"),
             (false, "false") => continue,
+            // A shadow is on or off, or which: Tailwind's name, or CSS.
+            (false, _) if name == "shadow" => "shadow-is".to_owned(),
             (false, _) => return Err(wrong(format!("{name} is either true or false"))),
         };
         apply(options, &name, &mut || Ok(value.to_owned())).map_err(wrong)?;
@@ -736,6 +743,21 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
                     _ => None,
                 });
                 options.take = Take::Again(which);
+                continue;
+            }
+            // So may which shadow: what comes after is that if it is one
+            // of Tailwind's names, or CSS, which begins with a number.
+            // CSS that begins with a minus is said with `--shadow=`.
+            if name == "shadow" {
+                let like = |word: &str| Shadow::named(word).is_some() || word.eq_ignore_ascii_case("none") || word.starts_with(|letter: char| letter.is_ascii_digit());
+                let which = attached.clone().or_else(|| match args.peek().and_then(|next| next.to_str()) {
+                    Some(next) if like(next) => args.next().and_then(|next| next.into_string().ok()),
+                    _ => None,
+                });
+                match which {
+                    Some(which) => apply(&mut options, "shadow-is", &mut || Ok(which.clone()))?,
+                    None => apply(&mut options, "shadow", &mut || Err(String::new()))?,
+                }
                 continue;
             }
             let mut value = || -> Result<String, String> {
@@ -887,7 +909,7 @@ mod tests {
     fn how_the_picture_is_set_out_and_drawn_on_is_said_on_the_command_line() {
         let options = run(&["--backdrop", "dusk", "--padding", "80x30", "--frame-radius", "24", "--shadow", "--opacity", "50", "--dashed", "--arrow-heads", "both", "--zoom", "square", "--tool", "arrow"]).unwrap();
         let (settings, frame) = (&options.settings, options.settings.frame);
-        assert_eq!((frame.backdrop, frame.pad, frame.radius, frame.shadow), (Backdrop::Gradient(frame::named("dusk").unwrap()), (80, 30), 24, true));
+        assert_eq!((frame.backdrop, frame.pad, frame.radius, frame.shadow), (Backdrop::Gradient(frame::named("dusk").unwrap()), (80, 30), 24, Shadow::named(frame::SHADOW).unwrap()));
         assert_eq!((settings.opacity, settings.dashed, settings.heads, settings.square, settings.tool), (128, true, [true, true], true, crate::shapes::Tool::Arrow));
         // Padding by its steps, or the same all round.
         assert_eq!((run(&["--padding", "2"]).unwrap().settings.frame.pad, run(&["--padding", "40"]).unwrap().settings.frame.pad), ((PADS[2], PADS[2]), (40, 40)));
@@ -899,7 +921,24 @@ mod tests {
         assert!(!own.settings.fetch && own.settings.frame.backdrop == Backdrop::Photo);
         // And a shadow on nothing at all.
         let shadow = run(&["--shadow"]).unwrap().settings.frame;
-        assert!(shadow.backdrop == Backdrop::None && shadow.shadow && shadow.is_clear());
+        assert!(shadow.backdrop == Backdrop::None && shadow.shadow.on() && shadow.is_clear());
+        // Which shadow, by Tailwind's name or as CSS, said either way;
+        // and `--shadow` before another option is the usual one.
+        let lg = Shadow::named("lg").unwrap();
+        assert_eq!(run(&["--shadow", "lg"]).unwrap().settings.frame.shadow, lg);
+        assert_eq!(run(&["--shadow=shadow-lg"]).unwrap().settings.frame.shadow, lg);
+        assert_eq!(run(&["--shadow", "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)"]).unwrap().settings.frame.shadow, lg);
+        assert_eq!(run(&["--shadow=-4px 8px 0 #000"]).unwrap().settings.frame.shadow.layers()[0].x, -4);
+        let before = run(&["--shadow", "-c"]).unwrap();
+        assert!(before.copy && before.settings.frame.shadow == Shadow::named(frame::SHADOW).unwrap());
+        assert!(!run(&["--shadow", "lg", "--no-shadow"]).unwrap().settings.frame.shadow.on());
+        assert!(run(&["--shadow=0 0 1px blue"]).is_err());
+        // And in the config file: on, off, a name, or CSS in quotes.
+        for (said, wanted) in [("true", Shadow::named(frame::SHADOW).unwrap()), ("false", Shadow::NONE), ("\"md\"", Shadow::named("md").unwrap()), ("\"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"", Shadow::named("md").unwrap())] {
+            let mut options = defaults();
+            read_config(&mut options, &format!("shadow = {said}")).unwrap();
+            assert_eq!(options.settings.frame.shadow, wanted, "{said}");
+        }
         for wrong in [&["--padding", "80x"][..], &["--opacity", "0"], &["--tool", "hammer"], &["--zoom", "oval"], &["--arrow-heads", "many"], &["--backdrop", "plaid"]] {
             assert!(run(wrong).is_err(), "{wrong:?}");
         }

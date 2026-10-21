@@ -8,7 +8,7 @@ use std::ops::DerefMut;
 
 use crate::canvas::{self, Canvas, Rect};
 use crate::shapes::{self, Shape, Tool};
-use crate::frame::{self, Backdrop, Frame, Photo, BACKDROPS, FIRST, PADS};
+use crate::frame::{self, Backdrop, Frame, Photo, Shadow, BACKDROPS, FIRST, PADS};
 use crate::text::{icons, Text, FACES};
 
 // jog's colors, so that the two look like one family.
@@ -296,6 +296,8 @@ enum Cell {
     /// A photograph nobody chose, and a different one each time.
     Dice,
     Shadow,
+    /// One of Tailwind's shadows, by where it is among them.
+    Shade(usize),
     /// One of the folders Save can save to.
     Place(usize),
 }
@@ -637,6 +639,38 @@ fn variants(tool: Tool) -> &'static [&'static str] {
         Tool::Zoom => &["Round", "Square"],
         _ => &[],
     }
+}
+
+/// Where near a place along the screen what is on it changes: the
+/// edge of a panel, a border, where one color gives way to another,
+/// for an edge of the selection to go to. `across` says the edge runs
+/// down the screen, between two columns, and is looked for in the rows
+/// `span` covers; otherwise it runs across, between two rows, looked
+/// for in the columns. The edge is the one where most of those rows or
+/// columns change, of those within reach, if enough of them do; the
+/// nearest, of those that are nearly as good.
+pub fn content_edge(pixels: &[u32], width: i32, height: i32, across: bool, near: i32, span: (i32, i32), reach: i32) -> Option<i32> {
+    let (along, most) = if across { (height, width) } else { (width, height) };
+    let (start, end) = (span.0.clamp(0, along), span.1.clamp(0, along));
+    if end - start < 8 {
+        return None;
+    }
+    // No more than a few hundred of them looked at, evenly: it is done
+    // as the pointer moves.
+    let step = ((end - start) / 400).max(1);
+    let looked = ((end - start) / step) as u32;
+    let at = |line: i32, along: i32| if across { pixels[(along * width + line) as usize] } else { pixels[(line * width + along) as usize] };
+    let apart = |a: u32, b: u32| [16, 8, 0].iter().map(|shift| (a >> shift & 0xFF).abs_diff(b >> shift & 0xFF)).sum::<u32>();
+    let mut found: Vec<(i32, u32)> = Vec::new();
+    for edge in (near - reach).max(1)..=(near + reach).min(most - 1) {
+        let changes = (start..end).step_by(step as usize).filter(|&along| apart(at(edge - 1, along), at(edge, along)) > 40).count() as u32;
+        found.push((edge, changes));
+    }
+    let best = found.iter().map(|&(_, changes)| changes).max()?;
+    if best < (looked * 3 / 10).max(6) {
+        return None;
+    }
+    found.into_iter().filter(|&(_, changes)| changes * 4 >= best * 3).min_by_key(|&(edge, _)| (edge - near).abs()).map(|(edge, _)| edge)
 }
 
 /// A place along the screen, moved to the nearest of some edges if one
@@ -994,6 +1028,12 @@ impl Editor {
                     }
                     for (index, cell) in row.into_iter().enumerate() {
                         cells.push((Rect::new(index as i32 * side, down, side, side), cell));
+                    }
+                    // How large the shadow is, Tailwind's sizes of it,
+                    // from xs to 2xl: one chosen is the shadow, on.
+                    let down = down + side;
+                    for index in 1..frame::SHADOWS.len() {
+                        cells.push((Rect::new((index as i32 - 1) * side, down, side, side), Cell::Shade(index)));
                     }
                     (across, down + side)
                 }
@@ -1446,8 +1486,42 @@ impl Editor {
                     // The pixel under the pointer is taken too. The
                     // edge being placed goes to the edge of a window,
                     // when it comes near one, unless Ctrl says not.
-                    let at = if mods.ctrl { at } else { (snapped(&self.edges.0, at.0, self.reach), snapped(&self.edges.1, at.1, self.reach)) };
-                    let (from, area) = (*from, Rect::spanning(*from, at));
+                    let mut at = if mods.ctrl { at } else { (snapped(&self.edges.0, at.0, self.reach), snapped(&self.edges.1, at.1, self.reach)) };
+                    // Or, away from any window's edge, to where what is
+                    // on the screen changes, near the pointer: the edge
+                    // there is between the pixel the pointer is on and
+                    // the next one out.
+                    // And the corner the drag began at goes to its edges
+                    // in the same way: it was put down by eye too.
+                    let mut start = *from;
+                    if !mods.ctrl {
+                        let (width, height) = (self.shot.width, self.shot.height);
+                        let edge = |at: i32, start: i32| if at >= start { at + 1 } else { at };
+                        let back = |edge: i32, start: i32, at: i32| if at >= start { edge - 1 } else { edge };
+                        let (rows, columns) = ((start.1.min(at.1), start.1.max(at.1) + 1), (start.0.min(at.0), start.0.max(at.0) + 1));
+                        if at.0 == self.pointer.0 {
+                            if let Some(found) = content_edge(&self.shot.pixels, width, height, true, edge(at.0, start.0), rows, self.reach) {
+                                at.0 = back(found, start.0, at.0);
+                            }
+                        }
+                        if at.1 == self.pointer.1 {
+                            if let Some(found) = content_edge(&self.shot.pixels, width, height, false, edge(at.1, start.1), columns, self.reach) {
+                                at.1 = back(found, start.1, at.1);
+                            }
+                        }
+                        // The start's edges are on its far side from the
+                        // pointer, where the pixel it is on is the first
+                        // in: the other way round to the pointer's.
+                        let (across, down) = (at.0 >= start.0, at.1 >= start.1);
+                        let first = |start: i32, onward: bool| if onward { start } else { start + 1 };
+                        if let Some(found) = content_edge(&self.shot.pixels, width, height, true, first(start.0, across), rows, self.reach) {
+                            start.0 = if across { found } else { found - 1 };
+                        }
+                        if let Some(found) = content_edge(&self.shot.pixels, width, height, false, first(start.1, down), columns, self.reach) {
+                            start.1 = if down { found } else { found - 1 };
+                        }
+                    }
+                    let (from, area) = (start, Rect::spanning(start, at));
                     let mut area = Rect::new(area.x, area.y, area.w + 1, area.h + 1);
                     // Kept to the shape that was asked for; or, with
                     // Shift, square.
@@ -1471,11 +1545,23 @@ impl Editor {
                 let (dx, dy) = (at.0 - from.0, at.1 - from.1);
                 // An edge being pulled goes to the edge of a window, when
                 // it comes near one, unless Ctrl says not.
-                let near = |edges: &[i32], value: i32, pulled: bool| if pulled && !mods.ctrl { snapped(edges, value, self.reach) } else { value };
-                let left = near(&self.edges.0, origin.x + if pull.0 < 0 { dx } else { 0 }, pull.0 < 0);
-                let right = near(&self.edges.0, origin.right() + if pull.0 > 0 { dx } else { 0 }, pull.0 > 0);
-                let top = near(&self.edges.1, origin.y + if pull.1 < 0 { dy } else { 0 }, pull.1 < 0);
-                let bottom = near(&self.edges.1, origin.bottom() + if pull.1 > 0 { dy } else { 0 }, pull.1 > 0);
+                // Or, away from any, to where what is on the screen
+                // changes, along as much of the edge as the selection has.
+                let (shot, (width, height)) = (&self.shot.pixels, (self.shot.width, self.shot.height));
+                let near = |edges: &[i32], value: i32, pulled: bool, across: bool, span: (i32, i32)| {
+                    if !pulled || mods.ctrl {
+                        return value;
+                    }
+                    match snapped(edges, value, self.reach) {
+                        same if same == value => content_edge(shot, width, height, across, value, span, self.reach).unwrap_or(value),
+                        moved => moved,
+                    }
+                };
+                let (rows, columns) = ((origin.y, origin.bottom()), (origin.x, origin.right()));
+                let left = near(&self.edges.0, origin.x + if pull.0 < 0 { dx } else { 0 }, pull.0 < 0, true, rows);
+                let right = near(&self.edges.0, origin.right() + if pull.0 > 0 { dx } else { 0 }, pull.0 > 0, true, rows);
+                let top = near(&self.edges.1, origin.y + if pull.1 < 0 { dy } else { 0 }, pull.1 < 0, false, columns);
+                let bottom = near(&self.edges.1, origin.bottom() + if pull.1 > 0 { dy } else { 0 }, pull.1 > 0, false, columns);
                 // Pulled past the far side, it turns inside out.
                 let mut area = Rect::new(left.min(right), top.min(bottom), (right - left).abs().max(1), (bottom - top).abs().max(1));
                 // Kept to the shape that was asked for; or, with Shift,
@@ -2344,7 +2430,8 @@ impl Editor {
                 // A backdrop with no room round the picture is not seen.
                 self.frame.pad = (self.frame.pad.0.max(PADS[2]), self.frame.pad.1.max(PADS[2]));
             }
-            Cell::Shadow => self.frame.shadow = !self.frame.shadow,
+            Cell::Shadow => self.frame.shadow = if self.frame.shadow.on() { Shadow::NONE } else { Shadow::named(frame::SHADOW).expect("the usual shadow is one of them") },
+            Cell::Shade(which) => self.frame.shadow = Shadow::of_preset(which),
             Cell::More => self.more = !self.more,
             // Asked for here, fetched by whoever has the network, and
             // set behind the picture when it comes.
@@ -2627,12 +2714,12 @@ impl Editor {
     /// is wanted at all, and always while a color is being picked.
     fn loupe_shows(&self) -> bool {
         let over_interface = matches!(self.hover, Target::Button(_) | Target::Panel | Target::Swatch(_) | Target::Pipette | Target::Cell(_));
-        let placing = match self.drag {
-            Drag::None => self.selection.is_none(),
-            Drag::Select { .. } | Drag::Resize { .. } => true,
-            _ => false,
-        };
-        !over_interface && (self.pipette || (self.settings.magnifier && placing))
+        // Up by itself while an edge of the selection is being put in
+        // place, which is when the pixel it goes to matters; and before
+        // anything is selected as well, if it is wanted then too.
+        let placing = matches!(self.drag, Drag::Select { begun: true, .. } | Drag::Resize { .. });
+        let waiting = self.drag == Drag::None && self.selection.is_none();
+        !over_interface && (self.pipette || placing || (self.settings.magnifier && (waiting || matches!(self.drag, Drag::Select { .. }))))
     }
 
     /// Paints the screen as it now stands into a buffer of its size.
@@ -2969,6 +3056,11 @@ impl Editor {
                         canvas.round_fill(square.x + 2, square.y + 4, square.w, square.h, 3, 0x000000, 150);
                         canvas.round_fill(square.x, square.y, square.w, square.h, 3, TEXT_COLOR, 256);
                     }
+                    // Its size by Tailwind's name for it.
+                    Cell::Shade(which) => {
+                        let ink = if self.frame.shadow == Shadow::of_preset(which) { TEXT_COLOR } else { DIM_TEXT_COLOR };
+                        self.text.draw_centered(&mut canvas, cx, cy, px * 7 / 8, ink, frame::SHADOWS[which].0);
+                    }
                     Cell::Place(place) => {
                         let line = cy - Text::line_height(px) / 2;
                         if place == self.place {
@@ -2997,7 +3089,8 @@ impl Editor {
                     Cell::Backdrop(0) => self.frame.backdrop == Backdrop::None,
                     Cell::Backdrop(which) => self.frame.backdrop == Backdrop::Gradient(which - 1),
                     Cell::Dice | Cell::Own => false,
-                    Cell::Shadow => self.frame.shadow,
+                    Cell::Shadow => self.frame.shadow.on(),
+                    Cell::Shade(which) => self.frame.shadow == Shadow::of_preset(which),
                     _ => false,
                 };
                 if on {
@@ -3296,6 +3389,26 @@ impl Editor {
         canvas.round_outline(outer.x, outer.y, outer.w, outer.h, 0, frame, 0x000000);
         let inner = middle.inflate(frame);
         canvas.round_outline(inner.x, inner.y, inner.w, inner.h, 0, frame, 0xFFFFFF);
+        // The selection's edges where they are in it, between the
+        // pixels they are between: what is in and what is out, to the
+        // pixel.
+        if let (Some(area), false) = (self.selection, self.pipette) {
+            let (half, thick) = (LOUPE_CELLS / 2, (cell / 6).max(2));
+            canvas.set_clip(Rect::new(ix, iy, image, image));
+            for edge in [area.x, area.right()] {
+                let column = edge - (x - half);
+                if (0..=LOUPE_CELLS).contains(&column) {
+                    canvas.fill(ix + column * cell - thick / 2, iy, thick, image, self.settings.accent);
+                }
+            }
+            for edge in [area.y, area.bottom()] {
+                let row = edge - (y - half);
+                if (0..=LOUPE_CELLS).contains(&row) {
+                    canvas.fill(ix, iy + row * cell - thick / 2, image, thick, self.settings.accent);
+                }
+            }
+            canvas.reset_clip();
+        }
 
         let under = self.shot.pixels[(y * self.shot.width + x) as usize] & 0xFFFFFF;
         let row = iy + image + pad / 4;
@@ -3312,9 +3425,6 @@ impl Editor {
         }
     }
 
-    /// The picture that is taken: what is selected, with what was drawn
-    /// on it, and nothing of the interface.
-    ///
     /// What it takes to take this picture again, as `--again` does: the
     /// area, and how it is set out, but not what is drawn on it.
     pub fn recipe(&self) -> crate::history::Recipe {
@@ -3497,6 +3607,64 @@ mod tests {
     }
 
     #[test]
+    fn an_edge_of_the_selection_goes_to_where_what_is_on_the_screen_changes() {
+        // A light panel on a dark screen, from 300 to 700 across and
+        // 200 to 500 down; and a faint speck that is no edge.
+        let (width, height) = (1000, 800);
+        let mut pixels = vec![0x202020u32; (width * height) as usize];
+        for y in 200..500 {
+            for x in 300..700 {
+                pixels[(y * width + x) as usize] = 0xE0E0E0;
+            }
+        }
+        pixels[(350 * width + 310) as usize] = 0x262626;
+        // Down the screen, near 296 or 704: the panel's sides; across,
+        // near 503: its bottom. Not where nothing changes, nor beyond
+        // reach, nor where the rows looked at are mostly not the panel's.
+        assert_eq!(content_edge(&pixels, width, height, true, 296, (220, 480), 8), Some(300));
+        assert_eq!(content_edge(&pixels, width, height, true, 704, (220, 480), 8), Some(700));
+        assert_eq!(content_edge(&pixels, width, height, false, 503, (320, 680), 8), Some(500));
+        assert_eq!(content_edge(&pixels, width, height, true, 150, (220, 480), 8), None);
+        assert_eq!(content_edge(&pixels, width, height, true, 285, (220, 480), 8), None);
+        assert_eq!(content_edge(&pixels, width, height, true, 296, (100, 790), 8), Some(300));
+        assert_eq!(content_edge(&pixels, width, height, true, 296, (0, 210), 8), None);
+
+        // Dragged out by hand to a few pixels off the panel, it is the
+        // panel; with Ctrl, it is where it was put.
+        let fresh = || {
+            let shot = Shot { width, height, pixels: Box::new(pixels.clone()) };
+            Editor::new(shot, pixels.clone(), vec![Rect::new(0, 0, width, height)], Vec::new(), Settings::default(), Text::load())
+        };
+        let mut editor = fresh();
+        drag(&mut editor, (303, 204), (696, 497));
+        assert_eq!(editor.selection(), Some(Rect::new(300, 200, 400, 300)));
+        // The other way about, from the bottom-right corner.
+        let mut editor = fresh();
+        drag(&mut editor, (697, 496), (304, 203));
+        assert_eq!(editor.selection(), Some(Rect::new(300, 200, 400, 300)));
+        let mut editor = fresh();
+        let ctrl = Mods { shift: false, ctrl: true };
+        editor.pointer_moved(303, 204, ctrl);
+        editor.pressed(5000);
+        editor.pointer_moved(500, 300, ctrl);
+        editor.pointer_moved(696, 497, ctrl);
+        editor.released();
+        assert_eq!(editor.selection(), Some(Rect::new(303, 204, 394, 294)));
+        // A side pulled out from the panel comes back to it, and the
+        // loupe is up while it is pulled, and not after.
+        let mut editor = fresh();
+        drag(&mut editor, (303, 204), (696, 497));
+        editor.pointer_moved(700, 350, PLAIN);
+        editor.pressed(9000);
+        editor.pointer_moved(705, 350, PLAIN);
+        editor.pointer_moved(706, 350, PLAIN);
+        assert!(editor.loupe_shows());
+        editor.released();
+        assert!(!editor.loupe_shows());
+        assert_eq!(editor.selection().map(|area| area.right()), Some(700));
+    }
+
+    #[test]
     fn the_selection_and_the_frame_keep_their_shape_with_shift_or_when_told_to() {
         let shift = Mods { shift: true, ctrl: false };
         let pull = |editor: &mut Editor, from: (i32, i32), to: (i32, i32)| {
@@ -3524,7 +3692,14 @@ mod tests {
         editor.settings.aspect = Some((16, 9));
         drag(&mut editor, (100, 100), (419, 150));
         assert_eq!(editor.selection(), Some(Rect::new(100, 100, 320, 180)));
-        drag(&mut editor, (800, 700), (481, 690));
+        // With Ctrl, which leaves the edges where they are put: the
+        // bands of the screen here are edges to go to otherwise.
+        let ctrl = Mods { shift: false, ctrl: true };
+        editor.pointer_moved(800, 700, ctrl);
+        editor.pressed(5000);
+        editor.pointer_moved(600, 695, ctrl);
+        editor.pointer_moved(481, 690, ctrl);
+        editor.released();
         assert_eq!(editor.selection(), Some(Rect::new(481, 521, 320, 180)));
         drag(&mut editor, (1500, 100), (1599, 899));
         assert_eq!(editor.selection(), Some(Rect::new(1500, 100, 100, 56)));
