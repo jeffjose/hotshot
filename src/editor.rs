@@ -5071,4 +5071,107 @@ mod tests {
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
         write("zoom.png", wide, high, &pixels, alpha);
     }
+
+    /// Not a test: pictures of hotshot at work, to show it with, out of
+    /// a capture of a made-up desktop that `$HOTSHOT_DESK` names, into
+    /// `$HOTSHOT_SNAPSHOTS`. The desktop is 1920 by 1080, with a code
+    /// window at 170,120 to 983,842 and a terminal at 1080,520 to
+    /// 1753,978.
+    ///
+    ///     HOTSHOT_DESK=desk.png HOTSHOT_SNAPSHOTS=/tmp/shots cargo test showing -- --ignored
+    #[test]
+    #[ignore]
+    fn showing() {
+        let (Some(desk), Some(dir)) = (std::env::var_os("HOTSHOT_DESK"), std::env::var_os("HOTSHOT_SNAPSHOTS")) else { return };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let desk = frame::open(&std::fs::read(desk).unwrap()).unwrap();
+        let (width, height) = (desk.width, desk.height);
+        let (code, shell) = (Rect::new(170, 120, 814, 723), Rect::new(1080, 520, 674, 459));
+        let fresh = || {
+            let pixels: Vec<u32> = desk.pixels.iter().map(|pixel| pixel & 0xFF_FFFF).collect();
+            let mut dim = pixels.clone();
+            canvas::darken_into(&mut dim, &pixels, 128);
+            let shot = Shot { width, height, pixels: Box::new(pixels) };
+            Editor::new(shot, dim, vec![Rect::new(0, 0, width, height)], vec![shell, code], Settings::default(), Text::load())
+        };
+        let stroke = |editor: &mut Editor, key: char, from: (i32, i32), to: (i32, i32)| {
+            editor.key(Key::Char(key), PLAIN);
+            drag(editor, from, to);
+        };
+        let type_in = |editor: &mut Editor, at: (i32, i32), words: &str| {
+            editor.key(Key::Char('t'), PLAIN);
+            click(editor, at, 40_000);
+            for letter in words.chars() {
+                editor.key(Key::Char(letter), PLAIN);
+            }
+            editor.key(Key::Enter, Mods { ctrl: true, ..PLAIN });
+        };
+        let screen = |editor: &mut Editor, name: &str| {
+            let mut out = vec![0u32; (width * height) as usize];
+            editor.draw(&mut out);
+            std::fs::write(dir.join(name), crate::output::encode(width as u32, height as u32, &out, false).unwrap()).unwrap();
+        };
+        let annotated = |editor: &mut Editor| {
+            // Round the failing test, an arrow to it, and a word on a
+            // patch; the count gone over with the marker.
+            // The color in hand is set as it is, not by the box of
+            // colors, which would change what was just drawn as well.
+            editor.color = PALETTE[1].0;
+            stroke(editor, 'r', (1124, 670), (1430, 698));
+            editor.color = 0xFFC53D;
+            stroke(editor, 'h', (1116, 726), (1324, 726));
+            editor.color = PALETTE[1].0;
+            stroke(editor, 'a', (1610, 820), (1440, 690));
+            editor.style = shapes::BOXED | shapes::BOLD;
+            type_in(editor, (1540, 836), "fix this one");
+            editor.style = 0;
+        };
+
+        // 1. The screen frozen and dimmed, the terminal taken with a
+        // click, and the bar of tools under it.
+        let mut editor = fresh();
+        click(&mut editor, (1400, 800), 0);
+        editor.pointer_moved(1500, 640, PLAIN);
+        screen(&mut editor, "1-select.png");
+
+        // 2. Drawn on.
+        annotated(&mut editor);
+        editor.key(Key::Char('v'), PLAIN);
+        click(&mut editor, (1700, 600), 60_000);
+        editor.pointer_moved(1700, 440, PLAIN);
+        screen(&mut editor, "2-annotate.png");
+
+        // 3. What comes of it: set on a backdrop, the corners rounded,
+        // with Tailwind's 2xl for a shadow.
+        editor.corners = 12.0;
+        editor.frame = Frame { backdrop: Backdrop::Gradient(frame::named("sorbet").unwrap()), pad: (72, 56), radius: 18, shadow: Shadow::named("2xl").unwrap() };
+        let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
+        std::fs::write(dir.join("3-framed.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
+
+        // 4. Code: what is wrong lit and the rest dimmed, a lens on it,
+        // and a badge, on the window's own area as it comes out.
+        let mut editor = fresh();
+        click(&mut editor, (500, 400), 0);
+        stroke(&mut editor, 's', (180, 538), (760, 712));
+        // A badge in the empty space under the code, and an arrow from
+        // it, bent, to the line it is about.
+        editor.color = PALETTE[1].0;
+        editor.choose(Cell::Badge(6));
+        for letter in "returns before members load".chars() {
+            editor.key(Key::Char(letter), PLAIN);
+        }
+        editor.key(Key::Enter, PLAIN);
+        let last = editor.shapes.len() - 1;
+        let at = editor.shapes[last].points[0];
+        editor.shapes[last].translate(560.0 - at.0, 772.0 - at.1);
+        stroke(&mut editor, 'a', (580, 768), (646, 662));
+        let arrow = editor.shapes.len() - 1;
+        editor.shapes[arrow].bend_to((680.0, 730.0));
+        click(&mut editor, (900, 200), 70_000);
+        editor.corners = 10.0;
+        editor.frame = Frame { backdrop: Backdrop::Gradient(frame::named("midnight").unwrap()), pad: (64, 48), radius: 16, shadow: Shadow::named("xl").unwrap() };
+        let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
+        std::fs::write(dir.join("4-explain.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
+    }
 }
