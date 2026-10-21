@@ -274,6 +274,10 @@ fn emoji() -> &'static [(&'static str, &'static str)] {
 const EMOJI_ACROSS: i32 = 10;
 const EMOJI_DOWN: i32 = 7;
 
+/// What the lines are drawn in that say where the selection lines up
+/// with something: Figma's red for them.
+const GUIDE_COLOR: u32 = 0xF24822;
+
 /// How many backdrops the box of them has to a row; and the kinds of
 /// them, in the order `BACKDROPS` has them, with how many of each.
 const BACKDROP_ACROSS: i32 = 8;
@@ -595,6 +599,11 @@ pub struct Editor {
     /// lines they have gone to, across and down, to be shown.
     moving: Vec<(usize, Shape)>,
     guides: Vec<(bool, i32)>,
+    /// Where the selection being put in place lines up with something
+    /// elsewhere on the screen: whether the line runs down it, where it
+    /// is, and from where to where along it, to be shown as Figma shows
+    /// such things.
+    lines: Vec<(bool, i32, i32, i32)>,
     /// What has been typed to look for emoji by, and how many rows
     /// down them the box is.
     query: String,
@@ -673,6 +682,48 @@ pub fn content_edge(pixels: &[u32], width: i32, height: i32, across: bool, near:
         return None;
     }
     found.into_iter().filter(|&(_, changes)| changes * 4 >= best * 3).min_by_key(|&(edge, _)| (edge - near).abs()).map(|(edge, _)| edge)
+}
+
+/// An edge of something elsewhere along the line an edge of the
+/// selection is on: above or below it, for one that runs down the
+/// screen; beside it, for one that runs across. Found as a stretch
+/// along which what is on the screen changes at the same place, a
+/// little gap or two in it allowed, at least `least` long, and clear of
+/// `span`, which is where the selection's own edge is. The nearest of
+/// them within reach, and the longest of the nearest: where it is, and
+/// where along the line the stretch begins and ends.
+pub fn aligned_edge(pixels: &[u32], width: i32, height: i32, across: bool, near: i32, span: (i32, i32), reach: i32, least: i32) -> Option<(i32, i32, i32)> {
+    let (along, most) = if across { (height, width) } else { (width, height) };
+    let at = |line: i32, along: i32| if across { pixels[(along * width + line) as usize] } else { pixels[(line * width + along) as usize] };
+    let apart = |a: u32, b: u32| [16, 8, 0].iter().map(|shift| (a >> shift & 0xFF).abs_diff(b >> shift & 0xFF)).sum::<u32>();
+    let mut best: Option<(i32, i32, i32, i32)> = None;
+    for edge in (near - reach).max(1)..=(near + reach).min(most - 1) {
+        let (mut begun, mut last, mut gaps) = (None::<i32>, 0, 0);
+        let mut runs = Vec::new();
+        for spot in 0..along {
+            if apart(at(edge - 1, spot), at(edge, spot)) > 40 {
+                begun.get_or_insert(spot);
+                (last, gaps) = (spot, 0);
+            } else if let Some(first) = begun {
+                gaps += 1;
+                if gaps > 2 {
+                    runs.push((first, last + 1));
+                    begun = None;
+                }
+            }
+        }
+        if let Some(first) = begun {
+            runs.push((first, last + 1));
+        }
+        for (start, end) in runs.into_iter().filter(|&(start, end)| end - start >= least && (end <= span.0 || start >= span.1)) {
+            let candidate = ((edge - near).abs(), -(end - start), edge, start);
+            if best.is_none_or(|kept| (candidate.0, candidate.1) < (kept.0, kept.1)) {
+                best = Some((candidate.0, candidate.1, edge, start));
+                let _ = end;
+            }
+        }
+    }
+    best.map(|(_, length, edge, start)| (edge, start, start - length))
 }
 
 /// A place along the screen, moved to the nearest of some edges if one
@@ -767,6 +818,7 @@ impl Editor {
             square,
             moving: Vec::new(),
             guides: Vec::new(),
+            lines: Vec::new(),
             query: String::new(),
             scroll: 0,
             size: settings.size.min(STROKES.len() - 1),
@@ -1690,6 +1742,81 @@ impl Editor {
                 self.dirty = true;
             }
         }
+        // The selection, being put in place, lined up with what else is
+        // on the screen along its edges: the sides that are moving, of
+        // all of it when all of it is.
+        let sides = match self.drag {
+            // Dragged out, every side is being put in place: the ones the
+            // drag began at, by eye, as much as the ones at the pointer.
+            Drag::Select { begun: true, .. } => Some(([true; 4], false)),
+            Drag::Resize { pull, .. } => Some(([pull.0 < 0, pull.0 > 0, pull.1 < 0, pull.1 > 0], false)),
+            Drag::Move { .. } => Some(([true; 4], true)),
+            _ => None,
+        };
+        self.lines.clear();
+        if let (Some((moving, whole)), false) = (sides, mods.ctrl) {
+            // Kept to a shape, it is only said where it lines up: going
+            // to the line would take it out of its shape.
+            let kept = self.settings.aspect.is_some() || (mods.shift && !whole);
+            self.align(moving, whole, kept);
+        }
+    }
+
+    /// Takes the sides of the selection that are moving to the edges of
+    /// things elsewhere on the screen they come near, along the lines
+    /// they are on, and says where they now line up. A side that is on
+    /// an edge of its own already stays on it; all of the selection,
+    /// when all of it is moving, goes by whichever side is nearer.
+    /// `kept` goes nowhere, and says where it lines up as it stands.
+    fn align(&mut self, moving: [bool; 4], whole: bool, kept: bool) {
+        let Some(mut area) = self.selection else { return };
+        let (pixels, (width, height)) = (&self.shot.pixels, (self.shot.width, self.shot.height));
+        let least = (ui_px(self.monitor().h) as i32 * 2).max(16);
+        for across in [true, false] {
+            let (sides, edges, span) = match across {
+                true => ([(0, area.x), (1, area.right())], &self.edges.0, (area.y, area.bottom())),
+                false => ([(2, area.y), (3, area.bottom())], &self.edges.1, (area.x, area.right())),
+            };
+            // Each moving side, and where it would go: on an edge of
+            // its own already, or kept, only where it is.
+            let found: Vec<(usize, i32, i32, i32)> = sides
+                .into_iter()
+                .filter(|&(index, _)| moving[index])
+                .filter_map(|(index, side)| {
+                    // A window's edge is counted by the pixel either side
+                    // of it, as the selection is put on one: by the last
+                    // pixel taken, at its right and its bottom.
+                    let sitting = kept || edges.contains(&side) || edges.contains(&(side - 1)) || content_edge(pixels, width, height, across, side, span, 0) == Some(side);
+                    let reach = if sitting { 0 } else { self.reach };
+                    aligned_edge(pixels, width, height, across, side, span, reach, least).map(|(edge, start, end)| (index, edge - side, start, end))
+                })
+                .collect();
+            let Some(&(_, by, _, _)) = found.iter().min_by_key(|(_, by, _, _)| by.abs()) else { continue };
+            for &(index, moved, start, end) in &found {
+                // All of it moves by the nearer side's, and lines up by
+                // that side; a side alone moves by its own.
+                if whole && moved != by {
+                    continue;
+                }
+                match index {
+                    0 if !whole => area = Rect::new(area.x + moved, area.y, area.w - moved, area.h),
+                    1 if !whole => area.w += moved,
+                    2 if !whole => area = Rect::new(area.x, area.y + moved, area.w, area.h - moved),
+                    3 if !whole => area.h += moved,
+                    _ => {}
+                }
+                let at = if index % 2 == 0 { if across { area.x } else { area.y } } else if across { area.right() } else { area.bottom() };
+                let at = if whole { at + by } else { at };
+                let (along_start, along_end) = if across { (area.y, area.bottom()) } else { (area.x, area.right()) };
+                self.lines.push((across, at, start.min(along_start), end.max(along_end)));
+            }
+            if whole {
+                area = if across { area.moved(by, 0) } else { area.moved(0, by) };
+            }
+        }
+        if area.w > 0 && area.h > 0 {
+            self.selection = Some(area.intersect(self.screen()));
+        }
     }
 
     /// A press of the left button, at the time the display gives it.
@@ -1886,6 +2013,7 @@ impl Editor {
     /// The left button let go.
     pub fn released(&mut self) -> Outcome {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
+        self.lines.clear();
         self.dirty = true;
         let mut outcome = Outcome::Continue;
         match drag {
@@ -3190,6 +3318,15 @@ impl Editor {
                 self.draw_look(&mut canvas, room);
             }
         }
+        // Where the selection lines up with something elsewhere: a thin
+        // red line along both, as Figma shows it.
+        let thick = (self.scale().round() as i32).max(1);
+        for &(upright, at, from, to) in &self.lines {
+            match upright {
+                true => canvas.fill(at - thick / 2, from, thick, to - from, GUIDE_COLOR),
+                false => canvas.fill(from, at - thick / 2, to - from, thick, GUIDE_COLOR),
+            }
+        }
         if self.loupe_shows() {
             self.draw_loupe(&mut canvas, px);
         }
@@ -3721,6 +3858,49 @@ mod tests {
         editor.pointer_moved(404, 253, ctrl);
         editor.released();
         assert_eq!(editor.selection(), Some(Rect::new(304, 203, 200, 100)));
+    }
+
+    #[test]
+    fn the_selection_lines_up_with_something_above_it_and_says_so() {
+        // A light panel at the top, from 300 to 700 across; nothing
+        // under it but the dark.
+        let (width, height) = (1000, 800);
+        let mut pixels = vec![0x202020u32; (width * height) as usize];
+        for y in 100..200 {
+            for x in 300..700 {
+                pixels[(y * width + x) as usize] = 0xE0E0E0;
+            }
+        }
+        let fresh = || {
+            let shot = Shot { width, height, pixels: Box::new(pixels.clone()) };
+            Editor::new(shot, pixels.clone(), vec![Rect::new(0, 0, width, height)], Vec::new(), Settings::default(), Text::load())
+        };
+        // Dragged out below it, a few pixels in from where its sides
+        // are: the left goes to the panel's left, and a red line runs
+        // from the panel down to the selection's bottom, while it is
+        // being dragged; the right, by the pointer, nowhere near the
+        // panel's, stays.
+        let mut editor = fresh();
+        editor.pointer_moved(304, 400, PLAIN);
+        editor.pressed(0);
+        editor.pointer_moved(400, 450, PLAIN);
+        editor.pointer_moved(600, 500, PLAIN);
+        assert_eq!(editor.selection(), Some(Rect::new(300, 400, 301, 101)));
+        assert_eq!(editor.lines, [(true, 300, 100, 501)]);
+        editor.released();
+        assert!(editor.lines.is_empty());
+        // Moved about, all of it goes to the line, by its right side.
+        let mut editor = fresh();
+        drag(&mut editor, (100, 400), (199, 499));
+        editor.pointer_moved(150, 450, PLAIN);
+        editor.pressed(5000);
+        editor.pointer_moved(400, 450, PLAIN);
+        editor.pointer_moved(647, 450, PLAIN);
+        assert_eq!((editor.selection(), editor.lines.clone()), (Some(Rect::new(600, 400, 100, 100)), vec![(true, 700, 100, 500)]));
+        // With Ctrl, it is left where it is, and nothing is said.
+        editor.pointer_moved(645, 450, Mods { ctrl: true, ..PLAIN });
+        assert!(editor.lines.is_empty() && editor.selection() == Some(Rect::new(595, 400, 100, 100)));
+        editor.released();
     }
 
     #[test]
