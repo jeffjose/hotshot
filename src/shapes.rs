@@ -444,7 +444,10 @@ impl Shape {
     /// A bent line as the short straight ones it is drawn as: a curve
     /// from one end to the other, through its bend half way.
     fn curve(&self) -> Option<[Point; BENDS + 1]> {
-        let (a, b, through) = (self.points[0], self.points[1], self.bend()?);
+        // Asked of every shape, which may have but one point: a pen's
+        // as it is begun. Only a line or an arrow that bends has one.
+        let through = self.bend()?;
+        let (a, b) = (self.points[0], self.points[1]);
         // What the curve is pulled towards, which is twice as far from
         // the straight line as the curve gets.
         let pull = (2.0 * through.0 - (a.0 + b.0) / 2.0, 2.0 * through.1 - (a.1 + b.1) / 2.0);
@@ -1032,6 +1035,20 @@ mod tests {
         assert!(ellipse(0.0, 0.0, 10.0, 5.0) < 0.0);
         assert!(ellipse(10.0, 0.0, 10.0, 5.0).abs() < 1e-4);
         assert!((ellipse(12.0, 0.0, 10.0, 5.0) - 2.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn every_shape_as_it_is_begun_is_drawn_and_hit_and_bounded() {
+        // As each is when the pointer has only just been pressed: a pen
+        // and a marker with one point, the rest with their points all in
+        // one place. None of them is to fall over.
+        let mut text = Text::load();
+        let mut pixels = vec![0u32; 200 * 200];
+        for (tool, _) in TOOL_NAMES {
+            let shape = Shape::new(tool, 0xFF0000, 4.0, (100.0, 100.0));
+            shape.draw(&mut Canvas::new(&mut pixels, 200, 200), &mut text);
+            let _ = (shape.bounds(&mut text), shape.hit(100, 100, &mut text), shape.is_slight());
+        }
     }
 
     #[test]
