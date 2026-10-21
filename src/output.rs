@@ -175,6 +175,8 @@ pub fn save(dir: &Path, template: &str, ending: &str, png: &[u8]) -> Result<Path
 
 /// Where the area last taken is kept: `$HOTSHOT_STATE`, or `hotshot`
 /// under `$XDG_STATE_HOME` or `~/.local/state`.
+/// It is read where there is nothing in the history yet, which is
+/// where hotshot keeps them now.
 fn last_file() -> Option<PathBuf> {
     state_file("last")
 }
@@ -201,15 +203,6 @@ pub fn last_area() -> Option<Rect> {
         [x, y, w, h] if w > 0 && h > 0 => Some(Rect::new(x, y, w, h)),
         _ => None,
     }
-}
-
-/// Keeps the area a picture was of, to be taken again.
-pub fn remember_area(area: Rect) {
-    let Some(file) = last_file() else { return };
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(file, format!("{} {} {} {}\n", area.x, area.y, area.w, area.h));
 }
 
 /// Keeps what it takes to come back to a picture and go on with it:
@@ -286,11 +279,12 @@ mod tests {
     }
 
     #[test]
-    fn the_area_last_taken_is_kept_for_next_time() {
+    fn the_area_last_taken_as_it_was_kept_before_is_still_read() {
         let dir = std::env::temp_dir().join(format!("hotshot-state-{}", std::process::id()));
         std::env::set_var("HOTSHOT_STATE", &dir);
         assert_eq!(last_area(), None);
-        remember_area(Rect::new(10, -20, 300, 400));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("last"), "10 -20 300 400\n").unwrap();
         assert_eq!(last_area(), Some(Rect::new(10, -20, 300, 400)));
         std::fs::remove_dir_all(dir).unwrap();
     }

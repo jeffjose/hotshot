@@ -5,6 +5,7 @@ mod clipboard;
 mod dbus;
 mod editor;
 mod frame;
+mod history;
 mod options;
 mod output;
 mod pin;
@@ -84,6 +85,49 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // Each thing hotshot does, tried, and said to have worked or not.
     if options.check {
         return Ok(check::run(&options));
+    }
+    // The pictures taken before, listed; and where there is someone at
+    // a terminal to choose, the one chosen taken again, as --again
+    // would, with whatever else the command line says.
+    if options.history {
+        let all = history::all();
+        if all.is_empty() {
+            println!("No pictures taken yet.");
+            return Ok(ExitCode::SUCCESS);
+        }
+        print!("{}", history::listed(&all));
+        // SAFETY: asks whether a descriptor is a terminal, and no more.
+        if unsafe { libc::isatty(0) } != 1 {
+            return Ok(ExitCode::SUCCESS);
+        }
+        eprint!("\nWhich, to take again (its @number or name; nothing to leave it)? ");
+        let mut typed = String::new();
+        std::io::stdin().read_line(&mut typed)?;
+        let typed = typed.trim();
+        if typed.is_empty() {
+            return Ok(ExitCode::SUCCESS);
+        }
+        // A bare number is the one with that @number.
+        let which = if typed.chars().all(|letter| letter.is_ascii_digit()) { format!("@{typed}") } else { typed.to_owned() };
+        history::find_in(&all, Some(&which))?;
+        options.take = Take::Again(Some(which));
+    }
+    // A picture taken before, to be taken again as it was set out: its
+    // corners, frame and pointer are what this one has, but for what
+    // the command line or the config file says otherwise.
+    let again = match &options.take {
+        Take::Again(which) => Some(history::find_in(&history::all(), which.as_deref())?.recipe),
+        _ => None,
+    };
+    if let Some(again) = again {
+        if options.plain_corners == 0.0 {
+            options.plain_corners = again.corners;
+            options.settings.corners = again.corners;
+        }
+        if options.settings.frame.is_plain() {
+            options.settings.frame = again.frame;
+        }
+        options.pointer |= again.pointer;
     }
     // A recording being made is stopped by being asked for again: one
     // key starts and stops.
@@ -192,9 +236,9 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             reopened = Some(kept);
             Some(area)
         }
-        Take::Again => {
-            let last = output::last_area().ok_or("there is no picture from before to take the area of again")?;
-            Some(Some(last.intersect(screen)).filter(|area| !area.is_empty()).ok_or("the area of the last picture is no longer on the screen")?)
+        Take::Again(_) => {
+            let last = again.map(|again| again.area).ok_or("there is no picture from before to take again")?;
+            Some(Some(last.intersect(screen)).filter(|area| !area.is_empty()).ok_or("the area of that picture is no longer on the screen")?)
         }
         Take::Choose | Take::Titled(_) => chosen.map(|(_, place)| place).filter(|place| !place.is_empty()),
         Take::Window => Some(display.active_window().map(|window| window.intersect(screen)).filter(|window| !window.is_empty()).ok_or("no window has the keyboard")?),
@@ -251,7 +295,8 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                 (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, None);
                 alpha = frame.is_clear() || frame.backdrop == frame::Backdrop::Photo;
             }
-            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None }
+            let recipe = history::Recipe { area, corners: options.plain_corners, frame, pointer: options.pointer };
+            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None, recipe }
         }
         (named, _) => match pick(&mut display, named, reopened, arrow, &options, font, &trace)? {
             Some(taken) => taken,
@@ -259,7 +304,12 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         },
     };
     trace("picture taken");
-    output::remember_area(taken.area);
+    // Written down, but for one taken again just as it was: that one
+    // stays where it is in the list, so that `--again @2` is the same
+    // picture however many times it is taken.
+    if again.is_none_or(|again| again.name() != taken.recipe.name()) {
+        history::remember(&taken.recipe);
+    }
     let how = taken.how;
     // Not a picture after all: the area is recorded, once the display
     // has had a moment to show the screen as it is again.
@@ -350,6 +400,8 @@ struct Taken {
     /// before anything was drawn, and the shapes. For one that was
     /// drawn on at all.
     keep: Option<(Rect, Vec<u32>, String)>,
+    /// What it takes to take it again, for `--again`.
+    recipe: history::Recipe,
 }
 
 /// Freezes the screen and lets an area be dragged out and drawn on.
@@ -534,5 +586,6 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
         options::remember_tools(&editor.in_hand(), options.places.get(editor.place()).map(|place| place.as_path()));
     }
     let (place, keep) = (editor.place(), editor.keepsake());
-    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, keep })))
+    let recipe = editor.recipe();
+    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, keep, recipe: history::Recipe { area, ..recipe } })))
 }

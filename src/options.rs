@@ -28,9 +28,16 @@ What to take:
                              Taken at once, as the window's own picture,
                              whatever is in front of it
   -g, --region X,Y,W,H       this rectangle of the screen (also WxH+X+Y)
-  -a, --again                the same area as the last picture was of,
-                             however that one was taken; --last and
-                             --repeat say the same
+  -a, --again [WHICH]        the last picture again: the same area, and
+                             set out the same way, with the same corners,
+                             frame, backdrop, room, shadow and pointer.
+                             WHICH is another taken before: @2 for the
+                             one before the last, and so on, or the name
+                             --history gives it, which is its own for
+                             good. --last and --repeat say the same
+      --history              list the pictures taken before, to take one
+                             again; where there is a terminal, its number
+                             or name typed takes it
   -r, --reopen               the last picture again, where it was, with what
                              was drawn on it still to be moved and changed
   -e, --edit                 with any of those: open with that area selected,
@@ -217,8 +224,9 @@ pub enum Take {
     /// The window whose title has this in it.
     Titled(String),
     Region(Rect),
-    /// The area the last picture was of.
-    Again,
+    /// A picture taken before, taken again as it was set out: the last,
+    /// or one by how long ago (`@2`) or by its name.
+    Again(Option<String>),
     /// The last picture itself, with what was drawn on it, to go on with.
     Reopen,
 }
@@ -273,6 +281,8 @@ pub struct Options {
     /// Each thing hotshot does tried on this machine, and said to have
     /// worked or not.
     pub check: bool,
+    /// The pictures taken before listed, to take one again.
+    pub history: bool,
     pub settings: Settings,
     pub list_monitors: bool,
     pub benchmark: bool,
@@ -332,6 +342,7 @@ fn defaults() -> Options {
         tray: false,
         menu: false,
         check: false,
+        history: false,
         settings: Settings::default(),
         list_monitors: false,
         benchmark: false,
@@ -394,7 +405,8 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
             });
         }
         "region" => options.take = Take::Region(parse_region(&value()?)?),
-        "again" | "last" | "repeat" => options.take = Take::Again,
+        "again" | "last" | "repeat" => options.take = Take::Again(None),
+        "history" => options.history = true,
         "reopen" => (options.take, options.edit) = (Take::Reopen, true),
         "edit" => options.edit = true,
         "delay" => options.delay = number(value()?, "delay")?,
@@ -628,7 +640,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     }
     let kept_corners = options.settings.corners;
 
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         let text = arg.into_string().map_err(|_| "an argument is not text".to_string())?;
         // Each entry is a flag name and any value attached to it.
@@ -653,6 +665,18 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
         }
 
         for (name, attached) in flags {
+            // Which picture to take again may be said, and need not be:
+            // what comes after is that only if it is like one, `@2` or
+            // a name of four letters, and is not another option.
+            if matches!(name.as_str(), "again" | "last" | "repeat") {
+                let like = |word: &str| word.starts_with('@') || (word.len() == 4 && word.chars().all(|letter| letter.is_ascii_alphanumeric()));
+                let which = attached.clone().or_else(|| match args.peek().and_then(|next| next.to_str()) {
+                    Some(next) if like(next) => args.next().and_then(|next| next.into_string().ok()),
+                    _ => None,
+                });
+                options.take = Take::Again(which);
+                continue;
+            }
             let mut value = || -> Result<String, String> {
                 let next = attached.clone().or_else(|| args.next().and_then(|arg| arg.into_string().ok()));
                 next.ok_or_else(|| format!("option --{name} needs a value"))
@@ -793,8 +817,17 @@ mod tests {
         assert_eq!(run(&["--region", "300x400+10+20"]).unwrap().take, Take::Region(Rect::new(10, 20, 300, 400)));
         assert!(run(&["-g", "10,20,0,400"]).is_err());
         for again in ["-a", "--again", "--last", "--repeat"] {
-            assert_eq!(run(&[again]).unwrap().take, Take::Again);
+            assert_eq!(run(&[again]).unwrap().take, Take::Again(None));
         }
+        // Which, said or not: what comes after is taken for it only if
+        // it is like one.
+        assert_eq!(run(&["-a", "@2", "-c"]).unwrap().take, Take::Again(Some("@2".into())));
+        assert_eq!(run(&["--again", "k3fq"]).unwrap().take, Take::Again(Some("k3fq".into())));
+        assert_eq!(run(&["--again=@5"]).unwrap().take, Take::Again(Some("@5".into())));
+        let plain = run(&["-ac"]).unwrap();
+        assert!(plain.take == Take::Again(None) && plain.copy);
+        assert!(run(&["-a", "toolong"]).is_err());
+        assert!(run(&["--history"]).unwrap().history);
         assert_eq!(run(&["-m", "pointer"]).unwrap().take, Take::Monitor(None));
         assert_eq!(run(&["-m1"]).unwrap().take, Take::Monitor(Some(1)));
     }

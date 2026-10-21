@@ -30,7 +30,9 @@ hotshot                # freeze the screen and pick an area
 hotshot -f             # capture the whole screen and save it immediately
 hotshot -w -c          # copy the active window to the clipboard
 hotshot -g 0,0,800,600 -o shot.png
-hotshot --again        # capture the same area as last time
+hotshot --again        # capture the last screenshot again, with the same corners, frame and backdrop
+hotshot --history      # list earlier screenshots and pick one to capture again
+hotshot -a @2          # capture the one before last again; -a 4djc picks one by its name
 hotshot --reopen       # reopen the last screenshot with its shapes still editable
 hotshot -t calculator  # capture the window with "calculator" in its title
 hotshot -D 3 --pointer # wait three seconds, and include the mouse pointer

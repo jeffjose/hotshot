@@ -3283,6 +3283,13 @@ impl Editor {
     /// The picture that is taken: what is selected, with what was drawn
     /// on it, and nothing of the interface.
     ///
+    /// What it takes to take this picture again, as `--again` does: the
+    /// area, and how it is set out, but not what is drawn on it.
+    pub fn recipe(&self) -> crate::history::Recipe {
+        let frame = Frame { backdrop: if self.frame.backdrop == Backdrop::Photo { Backdrop::None } else { self.frame.backdrop }, ..self.frame };
+        crate::history::Recipe { area: self.selection.unwrap_or_default(), corners: self.corners, frame, pointer: self.arrow_shows && self.arrow.is_some() }
+    }
+
     /// What it takes to come back to this picture and go on with it:
     /// the area, what was there before anything was drawn on it, and
     /// the shapes, a line of text each.
