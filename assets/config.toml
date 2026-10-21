@@ -45,7 +45,7 @@
 # Round the corners of the picture itself by this many pixels (of a
 # screen 1080 high), leaving what is outside them see-through. The dot
 # inside a corner of the selection, or K, changes it for the picture
-# being taken.
+# being taken. (border-radius is another name for it.)
 # rounded = 0
 
 # Before anything is selected, the whole screen is dark, and the window
@@ -80,9 +80,24 @@
 #   lines:  dusk ocean sunset mint peach violet iris arctic grape
 #           flamingo lime rose sky steel slate paper
 #   plain:  white fog sand blush navy forest graphite ink
+#   or "photo" (the one photo = names), "random" (a photograph nobody
+#   chose), or "none", which with a shadow is a shadow on nothing.
+#   Padding is the same all round, or beside and above/below as "80x40".
 # backdrop = "none"
 # padding = 0
+# frame-radius = 0
 # shadow = false
+
+# How things are drawn to begin with: how opaque, in percent; lines and
+# arrows in dashes; which ends of an arrow have heads ("end", "start",
+# "both"); a zoom "round" or "square"; and the tool in hand ("move",
+# "arrow", "line", "rect", "oval", "pen", "marker", "text", "counter",
+# "blur", "spotlight", "zoom").
+# opacity = 100
+# dashed = false
+# arrow-heads = "end"
+# zoom = "round"
+# tool = "move"
 
 # A picture of your own to set pictures on, a PNG or a JPEG: the box of
 # backdrops has a button for it when this is set.

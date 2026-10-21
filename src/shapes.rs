@@ -109,6 +109,16 @@ const HIGHLIGHT_COLOR: (u32, u32) = (0xFFE629, 150);
 /// How many times larger a zoom shows what it is of.
 const ZOOM: i32 = 2;
 
+/// A tool by the name it is kept under, or the move tool's own.
+pub fn tool_named(name: &str) -> Option<Tool> {
+    match name.to_ascii_lowercase().as_str() {
+        "move" | "select" => Some(Tool::Select),
+        "rectangle" => Some(Tool::Rect),
+        "ellipse" => Some(Tool::Ellipse),
+        name => TOOL_NAMES.iter().find(|(_, known)| *known == name).map(|(tool, _)| *tool),
+    }
+}
+
 /// The names the tools are kept under, in a file of shapes.
 const TOOL_NAMES: [(Tool, &str); 12] = [
     (Tool::Arrow, "arrow"),

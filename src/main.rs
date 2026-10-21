@@ -292,8 +292,18 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                 canvas::round_alpha(&mut pixels, area.w, round);
             }
             if !frame.is_plain() {
-                (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, None);
-                alpha = frame.is_clear() || frame.backdrop == frame::Backdrop::Photo;
+                // On a photograph: the user's own, or one nobody chose,
+                // fetched now, about the size it will be.
+                let photo = match (frame.backdrop == frame::Backdrop::Photo, options.settings.fetch) {
+                    (false, _) => None,
+                    (true, true) => {
+                        let room = frame.room(scale);
+                        frame::random(area.w + 2 * room.0, area.h + 2 * room.1)
+                    }
+                    (true, false) => options.settings.photo.as_ref().and_then(|file| std::fs::read(file).ok()).and_then(|bytes| frame::open(&bytes)),
+                };
+                (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, photo.as_ref());
+                alpha = frame.is_clear() || (frame.backdrop == frame::Backdrop::Photo && photo.is_none());
             }
             let recipe = history::Recipe { area, corners: options.plain_corners, frame, pointer: options.pointer };
             Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None, recipe }

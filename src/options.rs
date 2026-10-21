@@ -106,10 +106,13 @@ Look:
       --size N               width of line to begin with, 1 to 4
       --corner-radius N      how round a drawn rectangle's corners are; 0 is
                              square
-      --rounded N            round the corners of the picture itself by N
-                             pixels, leaving what is outside them see-through
-                             (the dot inside a corner of the selection does
-                             it by hand; K goes through 8, 16 and 28)
+      --border-radius N      round the corners of the picture itself by N
+                             pixels (of a screen 1080 high, so that it looks
+                             the same on any), leaving what is outside them
+                             see-through: taken at once, and to begin with
+                             in the editor, where the dot inside a corner of
+                             the selection changes it and K goes through 8,
+                             16 and 28. --rounded says the same
       --dim PERCENT          how much darker what is not selected is made
       --magnifier            a magnifier beside the pointer while an edge is
                              being placed (config: magnifier = true)
@@ -126,13 +129,27 @@ Look:
       --backdrop NAME        set the picture on a backdrop: aurora, orchid,
                              sorbet, glacier, dusk, graphite or any other
                              of the forty the box of them names (W, then
-                             the dots; a wrong name here lists them all)
+                             the dots; a wrong name here lists them all);
+                             photo, the one --photo names; random, a
+                             photograph nobody chose; none, nothing, which
+                             with --shadow is a shadow on nothing at all
       --padding N            with this much room round it: 0 to 3, or past
-                             that so many pixels
+                             that so many pixels; or two, beside it and
+                             above and below it, as 80x40
+      --frame-radius N       how round the corners of the frame are
       --shadow               and a shadow under it
       --photo FILE           a PNG or JPEG of your own to set it on, which
                              the box of backdrops then offers
       --filled               rectangles and ovals filled to begin with
+      --opacity PERCENT      how opaque what is drawn is to begin with
+      --dashed               lines and arrows in dashes to begin with
+      --arrow-heads WHICH    end (the usual), start or both
+      --zoom round|square    the shape a zoom is drawn in
+      --tool NAME            the tool in hand to begin with: move, arrow,
+                             line, rect, oval, pen, marker, text, counter,
+                             blur, spotlight or zoom
+  Any of these, and of all the long options, can go in the config file
+  instead, as name = value: hotshot --default-config shows how.
       --no-remember          begin with the color, width, roundness, fill
                              and font the config file says, not the ones
                              in hand when hotshot was last used
@@ -385,7 +402,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -478,21 +495,65 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "save-to" => options.save_to = Some(path(&value()?)),
         "backdrop" => {
             let text = value()?;
+            // A photograph: the user's own, which --photo names, or
+            // one nobody chose, a new one each time.
+            options.settings.fetch = text.eq_ignore_ascii_case("random");
             options.settings.frame.backdrop = match frame::named(&text) {
                 Some(which) => Backdrop::Gradient(which),
                 None if text.eq_ignore_ascii_case("none") => Backdrop::None,
+                None if text.eq_ignore_ascii_case("photo") || text.eq_ignore_ascii_case("random") => Backdrop::Photo,
                 None => {
                     let names: Vec<String> = BACKDROPS.iter().map(|(name, _)| name.to_lowercase()).collect();
-                    return Err(format!("invalid backdrop '{text}', expected none or one of: {}", names.join(", ")));
+                    return Err(format!("invalid backdrop '{text}', expected none, photo, random or one of: {}", names.join(", ")));
                 }
             };
         }
         "padding" => {
             let text = value()?;
-            // A step of it, 0 to 3, or past that so many pixels.
-            let asked = text.parse::<i32>().ok().filter(|pad| (0..=600).contains(pad)).ok_or(format!("invalid padding '{text}', expected 0 to 3, or a number of pixels"))?;
-            let room = PADS.get(asked as usize).copied().unwrap_or(asked);
-            options.settings.frame.pad = (room, room);
+            // A step of it, 0 to 3, or past that so many pixels: one
+            // for every side, or beside and then above and below, as
+            // 64x40.
+            let one = |text: &str| {
+                let asked = text.trim().parse::<i32>().ok().filter(|pad| (0..=800).contains(pad))?;
+                Some(PADS.get(asked as usize).copied().unwrap_or(asked))
+            };
+            let wrong = || format!("invalid padding '{text}', expected 0 to 3, a number of pixels, or two of them as 64x40");
+            options.settings.frame.pad = match text.split_once(['x', ',']) {
+                Some((across, down)) => (one(across).ok_or_else(wrong)?, one(down).ok_or_else(wrong)?),
+                None => {
+                    let room = one(&text).ok_or_else(wrong)?;
+                    (room, room)
+                }
+            };
+        }
+        "frame-radius" => options.settings.frame.radius = number(value()?, "frame radius")?.round() as i32,
+        "opacity" => {
+            let text = value()?;
+            let percent = text.trim_end_matches('%').parse::<u32>().ok().filter(|percent| (1..=100).contains(percent)).ok_or(format!("invalid opacity '{text}', expected 1 to 100"))?;
+            options.settings.opacity = (percent * 256).div_ceil(100);
+        }
+        "dashed" => options.settings.dashed = true,
+        "no-dashed" => options.settings.dashed = false,
+        "tool" => {
+            let text = value()?;
+            options.settings.tool = crate::shapes::tool_named(&text).ok_or(format!("invalid tool '{text}', expected move, arrow, line, rect, oval, pen, marker, text, counter, blur, spotlight or zoom"))?;
+        }
+        "arrow-heads" => {
+            let text = value()?;
+            options.settings.heads = match text.to_ascii_lowercase().as_str() {
+                "end" | "one" => [false, true],
+                "start" => [true, false],
+                "both" => [true, true],
+                _ => return Err(format!("invalid arrow heads '{text}', expected end, start or both")),
+            };
+        }
+        "zoom" => {
+            let text = value()?;
+            options.settings.square = match text.to_ascii_lowercase().as_str() {
+                "round" => false,
+                "square" => true,
+                _ => return Err(format!("invalid zoom '{text}', expected round or square")),
+            };
         }
         "shadow" => options.settings.frame.shadow = true,
         "no-shadow" => options.settings.frame.shadow = false,
@@ -506,7 +567,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
             options.settings.size = size - 1;
         }
         "corner-radius" => options.settings.radius = number(value()?, "corner radius")? as f32,
-        "rounded" => options.settings.corners = number(value()?, "rounding")? as f32,
+        "rounded" | "border-radius" => options.settings.corners = number(value()?, "rounding")? as f32,
         "dim" => options.settings.dim = (number(value()?, "dim")? as u32).min(100),
         "magnifier" => options.settings.magnifier = true,
         "no-magnifier" => options.settings.magnifier = false,
@@ -603,7 +664,7 @@ fn read_config(options: &mut Options, text: &str) -> Result<(), String> {
         let name = match (takes_value(name), value) {
             (true, _) => name.to_owned(),
             (false, "true") => name.to_owned(),
-            (false, "false") if ["magnifier", "remember", "filled", "shadow", "pointer", "record-pointer", "keys"].contains(&name) => format!("no-{name}"),
+            (false, "false") if ["magnifier", "remember", "filled", "shadow", "pointer", "record-pointer", "keys", "dashed"].contains(&name) => format!("no-{name}"),
             (false, "false") => continue,
             (false, _) => return Err(wrong(format!("{name} is either true or false"))),
         };
@@ -692,6 +753,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     if options.settings.corners != kept_corners {
         options.plain_corners = options.settings.corners;
     }
+    // A backdrop with no room round the picture is not seen: it has
+    // the room the box of backdrops gives it, unless some is said.
+    if options.settings.frame.backdrop != Backdrop::None && options.settings.frame.pad == (0, 0) {
+        options.settings.frame.pad = (PADS[2], PADS[2]);
+    }
     // The folders Save can save to: the usual one first, then the
     // others; and of them, the one it was last pointed at.
     options.places.insert(0, options.dir.clone());
@@ -774,6 +840,12 @@ mod tests {
 
     #[test]
     fn flags_cluster_and_take_values_either_way() {
+        // How round the picture's corners are, by either name: in the
+        // editor to begin with, and for a picture taken at once.
+        for name in ["--border-radius", "--rounded"] {
+            let rounded = run(&[name, "5"]).unwrap();
+            assert_eq!((rounded.settings.corners, rounded.plain_corners), (5.0, 5.0));
+        }
         let options = run(&["-fc", "-o", "out.png", "--delay=2", "-D0.5"]).unwrap();
         assert_eq!(options.take, Take::Full);
         assert!(options.copy && !options.save);
@@ -807,6 +879,28 @@ mod tests {
         assert_eq!((plain.fps, plain.video, plain.record_pointer, plain.keys, plain.tray, plain.menu), (60, Video::Mp4, true, false, false, false));
         assert!(run(&["--tray"]).unwrap().tray && run(&["--menu"]).unwrap().menu);
         for wrong in [&["--fps", "0"][..], &["--record-format", "avi"], &["--at", "here"]] {
+            assert!(run(wrong).is_err(), "{wrong:?}");
+        }
+    }
+
+    #[test]
+    fn how_the_picture_is_set_out_and_drawn_on_is_said_on_the_command_line() {
+        let options = run(&["--backdrop", "dusk", "--padding", "80x30", "--frame-radius", "24", "--shadow", "--opacity", "50", "--dashed", "--arrow-heads", "both", "--zoom", "square", "--tool", "arrow"]).unwrap();
+        let (settings, frame) = (&options.settings, options.settings.frame);
+        assert_eq!((frame.backdrop, frame.pad, frame.radius, frame.shadow), (Backdrop::Gradient(frame::named("dusk").unwrap()), (80, 30), 24, true));
+        assert_eq!((settings.opacity, settings.dashed, settings.heads, settings.square, settings.tool), (128, true, [true, true], true, crate::shapes::Tool::Arrow));
+        // Padding by its steps, or the same all round.
+        assert_eq!((run(&["--padding", "2"]).unwrap().settings.frame.pad, run(&["--padding", "40"]).unwrap().settings.frame.pad), ((PADS[2], PADS[2]), (40, 40)));
+        // A backdrop said with no room round it is given some, to be seen.
+        assert_eq!(run(&["--backdrop", "ink"]).unwrap().settings.frame.pad, (PADS[2], PADS[2]));
+        let random = run(&["--backdrop", "random"]).unwrap();
+        assert!(random.settings.fetch && random.settings.frame.backdrop == Backdrop::Photo);
+        let own = run(&["--backdrop", "photo", "--photo", "/tmp/x.jpg"]).unwrap();
+        assert!(!own.settings.fetch && own.settings.frame.backdrop == Backdrop::Photo);
+        // And a shadow on nothing at all.
+        let shadow = run(&["--shadow"]).unwrap().settings.frame;
+        assert!(shadow.backdrop == Backdrop::None && shadow.shadow && shadow.is_clear());
+        for wrong in [&["--padding", "80x"][..], &["--opacity", "0"], &["--tool", "hammer"], &["--zoom", "oval"], &["--arrow-heads", "many"], &["--backdrop", "plaid"]] {
             assert!(run(wrong).is_err(), "{wrong:?}");
         }
     }

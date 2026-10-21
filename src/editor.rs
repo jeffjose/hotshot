@@ -201,11 +201,22 @@ pub struct Settings {
     /// An area is being chosen to be recorded, not drawn on: the bar
     /// has nothing in it but that, and the keys for the tools do nothing.
     pub recording: bool,
+    /// With a photograph for a backdrop: one nobody chose, fetched,
+    /// rather than the user's own.
+    pub fetch: bool,
+    /// How opaque what is drawn is to begin with, out of 256; whether
+    /// lines and arrows are in dashes; the tool in hand; which ends of
+    /// an arrow have heads; and whether a zoom is square.
+    pub opacity: u32,
+    pub dashed: bool,
+    pub tool: Tool,
+    pub heads: [bool; 2],
+    pub square: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false }
     }
 }
 
@@ -676,6 +687,14 @@ impl Editor {
         let screen = Rect::new(0, 0, shot.width, shot.height);
         let monitors: Vec<Rect> = monitors.into_iter().map(|monitor| monitor.intersect(screen)).filter(|monitor| !monitor.is_empty()).collect();
         let wanted = settings.windows != Windows::Off;
+        // How things are drawn to begin with, as the settings say.
+        let (opacity, square, tool, heads, dashed) = (settings.opacity.clamp(1, 256), settings.square, settings.tool, settings.heads, settings.dashed);
+        // Set on a photograph to begin with: the user's own, read now,
+        // or one nobody chose, asked for now and set behind the picture
+        // when it comes.
+        let on_photo = settings.frame.backdrop == Backdrop::Photo;
+        let photo = settings.photo.as_ref().filter(|_| on_photo && !settings.fetch).and_then(|file| std::fs::read(file).ok()).and_then(|bytes| frame::open(&bytes));
+        let wish = (on_photo && settings.fetch).then_some((shot.width, shot.height));
         // Every window's edges are something for the selection's to go
         // to, whether or not the windows themselves are shown; and
         // every monitor's, less the edges of the screen itself, which
@@ -699,17 +718,17 @@ impl Editor {
             face: settings.face.min(FACES.len() - 1),
             frame: settings.frame,
             place: settings.place.min(settings.places.len().saturating_sub(1)),
-            photo: None,
-            wish: None,
-            photos: 0,
+            photos: u32::from(photo.is_some()),
+            photo,
+            wish,
             look: None,
             more: false,
             arrow: None,
             arrow_shows: false,
             surround: None,
-            opacity: 256,
+            opacity,
             style: 0,
-            square: false,
+            square,
             moving: Vec::new(),
             guides: Vec::new(),
             query: String::new(),
@@ -722,7 +741,7 @@ impl Editor {
             mods: Mods::default(),
             selection: None,
             drag: Drag::None,
-            tool: Tool::Select,
+            tool,
             shapes: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -731,10 +750,10 @@ impl Editor {
             scaling: None,
             editing: None,
             caret: 0,
-            heads: [false, true],
+            heads,
             popup: None,
             flyout: None,
-            dashed: false,
+            dashed,
             all: false,
             pipette: false,
             hover: Target::Outside,
@@ -2642,6 +2661,19 @@ impl Editor {
             if let Some((_, wide, pixels)) = &self.surround {
                 let (left, top) = (area.x - room.0, area.y - room.1);
                 let part = Rect::new(left, top, *wide, pixels.len() as i32 / wide.max(&1)).intersect(Rect::new(0, 0, width, height));
+                // With nothing behind the picture, what will be see-
+                // through is shown as see-through things are, in light
+                // squares: and a shadow falls on them where it would be
+                // lost on the darkened screen.
+                if self.frame.backdrop == Backdrop::None || (self.frame.backdrop == Backdrop::Photo && self.photo.is_none()) {
+                    let square = (ui_px(self.monitor().h) as i32 * 3 / 4).max(6);
+                    for y in part.y..part.bottom() {
+                        for x in part.x..part.right() {
+                            let light = ((x - left) / square + (y - top) / square) % 2 == 0;
+                            out[(y * width + x) as usize] = if light { 0xD6D6D6 } else { 0xC2C2C2 };
+                        }
+                    }
+                }
                 for y in part.y..part.bottom() {
                     let from = &pixels[((y - top) * wide + part.x - left) as usize..][..part.w as usize];
                     for (pixel, over) in out[(y * width + part.x) as usize..][..part.w as usize].iter_mut().zip(from) {
