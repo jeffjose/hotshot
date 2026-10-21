@@ -260,7 +260,7 @@ impl Display {
     /// Makes the window, as large as the screen and over everything,
     /// with a picture the server holds for its background.
     fn raise(&mut self, background: Pixmap) -> Result<()> {
-        let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::KEY_PRESS;
+        let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::KEY_PRESS | EventMask::KEY_RELEASE;
         // One window over all of the screen, that nobody manages; or,
         // where it has to be managed to be given the keys, one to each
         // monitor, each all of its monitor: a managed window is on one.
@@ -689,10 +689,20 @@ impl Display {
                     self.time = release.time;
                     Some(Input::Release(release.detail, i32::from(release.root_x), i32::from(release.root_y), mods(release.state.into())))
                 }
+                // Alt going down or up is said as soon as it is: it is
+                // held for the loupe, and what the display says is held
+                // with a key is what was held before it.
                 Event::KeyPress(press) => {
                     self.time = press.time;
                     let state: u16 = press.state.into();
-                    Some(Input::Key(self.key(press.detail, state), mods(state)))
+                    let mut held = mods(state);
+                    held.alt |= is_alt(self.symbol(press.detail, 0));
+                    Some(Input::Key(self.key(press.detail, state), held))
+                }
+                Event::KeyRelease(release) if is_alt(self.symbol(release.detail, 0)) => {
+                    let mut held = mods(release.state.into());
+                    held.alt = false;
+                    Some(Input::Key(Key::Other, held))
                 }
                 Event::Expose(expose) if expose.count == 0 => Some(Input::Expose),
                 // A managed window moved or made another size by
@@ -799,6 +809,12 @@ pub fn deep_visual(conn: &RustConnection, screen: usize) -> Option<Visualid> {
     depth.visuals.iter().find(|visual| visual.class == VisualClass::TRUE_COLOR && visual.red_mask == 0xFF0000).map(|visual| visual.visual_id)
 }
 
+/// Whether a key's symbol is an Alt key's, or Meta's, which some
+/// keyboards have where Alt is.
+fn is_alt(symbol: u32) -> bool {
+    matches!(symbol, 0xFFE7..=0xFFEA)
+}
+
 pub fn mods(state: u16) -> Mods {
-    Mods { shift: state & 0x01 != 0, ctrl: state & 0x04 != 0 }
+    Mods { shift: state & 0x01 != 0, ctrl: state & 0x04 != 0, alt: state & 0x08 != 0 }
 }

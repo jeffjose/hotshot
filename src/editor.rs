@@ -105,6 +105,8 @@ pub enum Key {
 pub struct Mods {
     pub shift: bool,
     pub ctrl: bool,
+    /// Held for the loupe: up while it is, wherever the pointer is.
+    pub alt: bool,
 }
 
 /// What is done with the picture once it is taken.
@@ -1538,7 +1540,27 @@ impl Editor {
                 }
             }
             Drag::Move { from, origin } => {
-                self.selection = Some(origin.moved(at.0 - from.0, at.1 - from.1).kept_within(screen));
+                let mut moved = origin.moved(at.0 - from.0, at.1 - from.1).kept_within(screen);
+                // Each of its sides goes to an edge it comes near, a
+                // window's or one in what is on the screen, taking the
+                // rest with it: by whichever of the two sides is nearer
+                // one, across and down. Ctrl says not.
+                if !mods.ctrl {
+                    let (shot, (width, height), reach) = (&self.shot.pixels, (self.shot.width, self.shot.height), self.reach);
+                    let nearest = |sides: [i32; 2], edges: &[i32], across: bool, span: (i32, i32)| {
+                        sides
+                            .into_iter()
+                            .filter_map(|side| match snapped(edges, side, reach) {
+                                same if same == side => content_edge(shot, width, height, across, side, span, reach).map(|edge| edge - side),
+                                moved => Some(moved - side),
+                            })
+                            .min_by_key(|by: &i32| by.abs())
+                    };
+                    let by_x = nearest([moved.x, moved.right()], &self.edges.0, true, (moved.y, moved.bottom()));
+                    let by_y = nearest([moved.y, moved.bottom()], &self.edges.1, false, (moved.x, moved.right()));
+                    moved = moved.moved(by_x.unwrap_or(0), by_y.unwrap_or(0)).kept_within(screen);
+                }
+                self.selection = Some(moved);
                 self.dirty = true;
             }
             Drag::Resize { pull, from, origin } => {
@@ -2714,12 +2736,12 @@ impl Editor {
     /// is wanted at all, and always while a color is being picked.
     fn loupe_shows(&self) -> bool {
         let over_interface = matches!(self.hover, Target::Button(_) | Target::Panel | Target::Swatch(_) | Target::Pipette | Target::Cell(_));
-        // Up by itself while an edge of the selection is being put in
-        // place, which is when the pixel it goes to matters; and before
-        // anything is selected as well, if it is wanted then too.
-        let placing = matches!(self.drag, Drag::Select { begun: true, .. } | Drag::Resize { .. });
+        // Up while Alt is held, for putting an edge in place to the
+        // pixel; and with --magnifier, by itself while an edge is put in
+        // place, and before anything is selected.
+        let placing = matches!(self.drag, Drag::Select { .. } | Drag::Resize { .. });
         let waiting = self.drag == Drag::None && self.selection.is_none();
-        !over_interface && (self.pipette || placing || (self.settings.magnifier && (waiting || matches!(self.drag, Drag::Select { .. }))))
+        !over_interface && (self.pipette || self.mods.alt || (self.settings.magnifier && (waiting || placing)))
     }
 
     /// Paints the screen as it now stands into a buffer of its size.
@@ -3519,7 +3541,7 @@ fn soft(color: u32) -> u32 {
 mod tests {
     use super::*;
 
-    const PLAIN: Mods = Mods { shift: false, ctrl: false };
+    const PLAIN: Mods = Mods { shift: false, ctrl: false, alt: false };
 
     /// A screen with something on it to tell places apart by: bands of
     /// gray, and two windows.
@@ -3612,9 +3634,9 @@ mod tests {
         drag(&mut editor, (250, 300), (230, 320));
         assert_eq!(editor.selection(), Some(Rect::new(230, 210, 370, 290)));
         editor.key(Key::Right, PLAIN);
-        editor.key(Key::Down, Mods { shift: true, ctrl: false });
+        editor.key(Key::Down, Mods { shift: true, ctrl: false, alt: false });
         assert_eq!(editor.selection(), Some(Rect::new(231, 220, 370, 290)));
-        editor.key(Key::Left, Mods { shift: false, ctrl: true });
+        editor.key(Key::Left, Mods { shift: false, ctrl: true, alt: false });
         assert_eq!(editor.selection(), Some(Rect::new(231, 220, 369, 290)));
         // It cannot be moved off the screen.
         drag(&mut editor, (400, 300), (-500, -500));
@@ -3658,7 +3680,7 @@ mod tests {
         drag(&mut editor, (697, 496), (304, 203));
         assert_eq!(editor.selection(), Some(Rect::new(300, 200, 400, 300)));
         let mut editor = fresh();
-        let ctrl = Mods { shift: false, ctrl: true };
+        let ctrl = Mods { shift: false, ctrl: true, alt: false };
         editor.pointer_moved(303, 204, ctrl);
         editor.pressed(5000);
         editor.pointer_moved(500, 300, ctrl);
@@ -3673,15 +3695,37 @@ mod tests {
         editor.pressed(9000);
         editor.pointer_moved(705, 350, PLAIN);
         editor.pointer_moved(706, 350, PLAIN);
-        assert!(editor.loupe_shows());
-        editor.released();
+        // Up only while Alt is held: pressed, it is up at once, and let
+        // go, it is gone.
         assert!(!editor.loupe_shows());
+        let alt = Mods { alt: true, ..PLAIN };
+        editor.key(Key::Other, alt);
+        assert!(editor.loupe_shows());
+        editor.key(Key::Other, PLAIN);
+        assert!(!editor.loupe_shows());
+        editor.released();
         assert_eq!(editor.selection().map(|area| area.right()), Some(700));
+        // And a selection moved goes to the panel's edges as its own
+        // come near them, all of it with them.
+        let mut editor = fresh();
+        drag(&mut editor, (100, 100), (299, 199));
+        assert_eq!(editor.selection(), Some(Rect::new(100, 100, 200, 100)));
+        drag(&mut editor, (150, 150), (353, 256));
+        assert_eq!(editor.selection(), Some(Rect::new(300, 200, 200, 100)));
+        // Ctrl held as it moves leaves it where it is put. (Held as it
+        // is pressed, it would be a box to pick shapes out with.)
+        let ctrl = Mods { ctrl: true, ..PLAIN };
+        editor.pointer_moved(400, 250, PLAIN);
+        editor.pressed(20_000);
+        editor.pointer_moved(401, 251, ctrl);
+        editor.pointer_moved(404, 253, ctrl);
+        editor.released();
+        assert_eq!(editor.selection(), Some(Rect::new(304, 203, 200, 100)));
     }
 
     #[test]
     fn the_selection_and_the_frame_keep_their_shape_with_shift_or_when_told_to() {
-        let shift = Mods { shift: true, ctrl: false };
+        let shift = Mods { shift: true, ctrl: false, alt: false };
         let pull = |editor: &mut Editor, from: (i32, i32), to: (i32, i32)| {
             editor.pointer_moved(from.0, from.1, PLAIN);
             editor.pressed(0);
@@ -3709,7 +3753,7 @@ mod tests {
         assert_eq!(editor.selection(), Some(Rect::new(100, 100, 320, 180)));
         // With Ctrl, which leaves the edges where they are put: the
         // bands of the screen here are edges to go to otherwise.
-        let ctrl = Mods { shift: false, ctrl: true };
+        let ctrl = Mods { shift: false, ctrl: true, alt: false };
         editor.pointer_moved(800, 700, ctrl);
         editor.pressed(5000);
         editor.pointer_moved(600, 695, ctrl);
@@ -3785,10 +3829,10 @@ mod tests {
         drag(&mut editor, dot, (dot.0 - 90, dot.1 - 90));
         assert_eq!(editor.corner_radius(), 0);
 
-        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
-        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
         assert!(editor.shapes.is_empty());
-        editor.key(Key::Char('Z'), Mods { shift: true, ctrl: true });
+        editor.key(Key::Char('Z'), Mods { shift: true, ctrl: true, alt: false });
         assert_eq!(editor.shapes.len(), 1);
         assert_eq!(editor.key(Key::Enter, PLAIN), Outcome::Finish(Finish { copy: true, ..Finish::NONE }));
     }
@@ -3808,7 +3852,7 @@ mod tests {
         // takes no picture.
         assert_eq!(editor.key(Key::Enter, PLAIN), Outcome::Continue);
         editor.key(Key::Char('x'), PLAIN);
-        assert_eq!(editor.key(Key::Enter, Mods { shift: false, ctrl: true }), Outcome::Continue);
+        assert_eq!(editor.key(Key::Enter, Mods { shift: false, ctrl: true, alt: false }), Outcome::Continue);
         // Done, it is picked out, and the tool in hand is the move tool.
         assert_eq!((editor.shapes.len(), editor.shapes[0].text.as_str(), editor.tool, editor.selected.clone()), (1, "Hi \nx", Tool::Select, vec![0]));
         // Begun and left with nothing typed, it is as if it never was.
@@ -3891,9 +3935,9 @@ mod tests {
         }
         let numbers: Vec<u32> = editor.shapes.iter().filter(|shape| shape.tool == Tool::Counter).map(|shape| shape.number).collect();
         assert_eq!((editor.tool, numbers), (Tool::Counter, vec![1, 2, 3]));
-        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
-        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
-        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
         editor.key(Key::Char('v'), PLAIN);
         editor.pointer_moved(730, 620, PLAIN);
         assert_eq!(editor.hovered, Some(1));
@@ -3903,7 +3947,7 @@ mod tests {
         // A click picks one out; with Shift or Ctrl it adds another, or
         // takes one away; and several picked out are moved, recolored
         // and deleted together.
-        let shift = Mods { shift: true, ctrl: false };
+        let shift = Mods { shift: true, ctrl: false, alt: false };
         let (left, top, _, height) = editor.shapes[0].frame();
         let edge = (left as i32, (top + height / 2.0) as i32);
         click(&mut editor, edge, 50_000);
@@ -3915,7 +3959,7 @@ mod tests {
         let before = (editor.shapes[0].points[0], editor.shapes[1].points[0]);
         // (With Ctrl held, so that they go where they are put and not to
         // the edge of something a pixel off.)
-        let ctrl = Mods { shift: false, ctrl: true };
+        let ctrl = Mods { shift: false, ctrl: true, alt: false };
         editor.pointer_moved(730, 620, PLAIN);
         editor.pressed(65_000);
         editor.pointer_moved(735, 610, ctrl);
@@ -3925,7 +3969,7 @@ mod tests {
         assert_eq!((after.0 .0 - before.0 .0, after.0 .1 - before.0 .1, after.1 .0 - before.1 .0, after.1 .1 - before.1 .1), (10.0, -20.0, 10.0, -20.0));
         editor.set_color(PALETTE[10].0);
         assert_eq!((editor.shapes[0].color, editor.shapes[1].color), (PALETTE[10].0, PALETTE[10].0));
-        editor.pointer_moved(740, 600, Mods { shift: false, ctrl: true });
+        editor.pointer_moved(740, 600, Mods { shift: false, ctrl: true, alt: false });
         editor.pressed(70_000);
         editor.released();
         assert_eq!(editor.selected, [0]);
@@ -3938,7 +3982,7 @@ mod tests {
 
     #[test]
     fn lines_are_reshaped_by_their_ends_and_shapes_copied_and_picked_out_by_a_box() {
-        let ctrl = Mods { shift: false, ctrl: true };
+        let ctrl = Mods { shift: false, ctrl: true, alt: false };
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
         editor.key(Key::Char('a'), PLAIN);
@@ -3965,7 +4009,7 @@ mod tests {
         editor.key(Key::Char('a'), PLAIN);
         drag(&mut editor, (300, 500), (500, 600));
         assert_eq!(editor.shapes[1].heads, [true, true]);
-        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
         // Back to one head, at its last end, as arrows have to begin with.
         click(&mut editor, (200, 200), 45_000);
         click(&mut editor, (200, 200), 50_000);
@@ -3981,9 +4025,9 @@ mod tests {
         editor.key(Key::Escape, PLAIN);
         click(&mut editor, (800, 650), 9000);
         assert!(editor.selected.is_empty());
-        editor.pointer_moved(150, 150, Mods { shift: true, ctrl: false });
+        editor.pointer_moved(150, 150, Mods { shift: true, ctrl: false, alt: false });
         editor.pressed(20_000);
-        editor.pointer_moved(600, 400, Mods { shift: true, ctrl: false });
+        editor.pointer_moved(600, 400, Mods { shift: true, ctrl: false, alt: false });
         editor.released();
         assert_eq!((editor.selected.clone(), editor.selection()), (vec![0, 1], Some(Rect::new(100, 100, 800, 600))));
     }
@@ -4037,7 +4081,7 @@ mod tests {
         drag(&mut editor, (400, 400), (400, 300));
         drag(&mut editor, (400, 300), (402, 401));
         assert_eq!(editor.shapes[0].bend(), None);
-        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
         assert!(editor.shapes[0].bend().is_some());
     }
 
@@ -4064,7 +4108,7 @@ mod tests {
         editor.key(Key::Char('f'), PLAIN);
         drag(&mut editor, (880, 290), (899, 330));
         assert_eq!(green(&mut editor), 0);
-        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true });
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
         editor.key(Key::Char('m'), PLAIN);
         assert_eq!((editor.arrow_shows, green(&mut editor)), (false, 0));
     }
@@ -4085,7 +4129,7 @@ mod tests {
         assert_eq!((editor.shapes[0].tool, editor.shapes[0].number, editor.shapes[0].color, editor.shapes[0].text.as_str()), (Tool::Badge, 6, 0x0090FF, BADGE_SAYS));
         assert!(editor.editing.is_some() && editor.flyout.is_none());
         // Shift on its way down is a key as well, and changes nothing.
-        editor.key(Key::Other, Mods { shift: true, ctrl: false });
+        editor.key(Key::Other, Mods { shift: true, ctrl: false, alt: false });
         for letter in "Ship it".chars() {
             editor.key(Key::Char(letter), PLAIN);
         }
@@ -4117,7 +4161,7 @@ mod tests {
 
     #[test]
     fn what_is_picked_out_goes_over_and_under_the_other_shapes() {
-        let ctrl = Mods { shift: false, ctrl: true };
+        let ctrl = Mods { shift: false, ctrl: true, alt: false };
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
         for (at, color) in [(200, 0x111111), (300, 0x222222), (400, 0x333333)] {
@@ -4197,7 +4241,7 @@ mod tests {
 
     #[test]
     fn text_is_typed_into_anywhere_in_it_and_pasted_into() {
-        let ctrl = Mods { shift: false, ctrl: true };
+        let ctrl = Mods { shift: false, ctrl: true, alt: false };
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
         editor.key(Key::Char('t'), PLAIN);
@@ -4248,7 +4292,7 @@ mod tests {
         let mut editor = self::editor(1600, 900);
         editor.pointer_moved(300, 200, PLAIN);
         editor.pressed(0);
-        editor.pointer_moved(696, 477, Mods { shift: false, ctrl: true });
+        editor.pointer_moved(696, 477, Mods { shift: false, ctrl: true, alt: false });
         editor.released();
         assert_eq!(editor.selection(), Some(Rect::new(300, 200, 397, 278)));
 
@@ -4371,7 +4415,7 @@ mod tests {
 
     #[test]
     fn text_is_set_heavy_slanted_and_after_dots_and_shapes_are_made_faint() {
-        let ctrl = Mods { shift: false, ctrl: true };
+        let ctrl = Mods { shift: false, ctrl: true, alt: false };
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
         editor.key(Key::Char('t'), PLAIN);
@@ -4437,7 +4481,7 @@ mod tests {
         assert_eq!(editor.shapes[1].bounds(&mut editor.text).x, first.x);
         assert_eq!(editor.guides, [(true, first.x)]);
         // With Ctrl held it stays where it is put.
-        editor.pointer_moved(400 + by, 421, Mods { shift: false, ctrl: true });
+        editor.pointer_moved(400 + by, 421, Mods { shift: false, ctrl: true, alt: false });
         assert_eq!(editor.shapes[1].bounds(&mut editor.text).x, first.x + 4);
         editor.released();
         assert!(editor.guides.is_empty());
@@ -4536,7 +4580,7 @@ mod tests {
             editor.key(Key::Char(letter), PLAIN);
         }
         write(&mut editor, "4-drawn");
-        editor.key(Key::Enter, Mods { shift: false, ctrl: true });
+        editor.key(Key::Enter, Mods { shift: false, ctrl: true, alt: false });
         let arrow = button(&mut editor, Button::Tool(Tool::Arrow));
         editor.pointer_moved(arrow.0, arrow.1, PLAIN);
         write(&mut editor, "5-tooltip");
@@ -4578,7 +4622,7 @@ mod tests {
             for letter in format!("{} 0123 fi -> ok", FACES[face as usize]).chars() {
                 editor.key(Key::Char(letter), PLAIN);
             }
-            editor.key(Key::Enter, Mods { shift: false, ctrl: true });
+            editor.key(Key::Enter, Mods { shift: false, ctrl: true, alt: false });
             editor.key(Key::Char('g'), PLAIN);
         }
         editor.key(Key::Char('a'), PLAIN);
@@ -4688,11 +4732,11 @@ mod tests {
                     styled.key(Key::Char(letter), PLAIN);
                 }
             } else {
-                styled.key(Key::Enter, Mods { shift: false, ctrl: true });
+                styled.key(Key::Enter, Mods { shift: false, ctrl: true, alt: false });
             }
         }
         write(&mut styled, "16-text-set");
-        styled.key(Key::Enter, Mods { shift: false, ctrl: true });
+        styled.key(Key::Enter, Mods { shift: false, ctrl: true, alt: false });
         styled.opacity = 128;
         styled.key(Key::Char('r'), PLAIN);
         styled.key(Key::Char('f'), PLAIN);
@@ -4804,7 +4848,7 @@ mod tests {
         for letter in "nearest the pointer first".chars() {
             editor.key(Key::Char(letter), PLAIN);
         }
-        editor.key(Key::Enter, Mods { shift: false, ctrl: true });
+        editor.key(Key::Enter, Mods { shift: false, ctrl: true, alt: false });
         editor.set_color(0xFFFFFF);
         editor.key(Key::Char('v'), PLAIN);
         click(&mut editor, (1000, 700), 30_000);
