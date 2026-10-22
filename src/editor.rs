@@ -585,6 +585,8 @@ pub struct Editor {
     /// the display would say; and whether it is in the picture.
     arrow: Option<canvas::Pointer>,
     arrow_shows: bool,
+    /// Whether the loupe is up, X having been pressed for it.
+    loupe: bool,
     /// Which of the folders Save saves to.
     place: usize,
     /// The frame as it shows round the selection: what it was made
@@ -812,6 +814,7 @@ impl Editor {
             more: false,
             arrow: None,
             arrow_shows: false,
+            loupe: false,
             surround: None,
             opacity,
             style: 0,
@@ -1433,16 +1436,32 @@ impl Editor {
                     let times = if pull == 0 { 1.0 } else { (size + (pull * by) as f32) / size };
                     if times.abs() < 0.02 { 0.02f32.copysign(times) } else { times }
                 };
+                // With Alt, as in Figma, about its middle, which stays
+                // where it is: the drag pulls both sides, so it counts
+                // twice.
+                let by = if mods.alt { (by.0 * 2, by.1 * 2) } else { by };
                 let (mut across, mut down) = (times(pull.0, by.0, origin.w), times(pull.1, by.1, origin.h));
-                // Text keeps its shape, and anything does with Shift.
+                let middle = (origin.x as f32 + origin.w as f32 / 2.0, origin.y as f32 + origin.h as f32 / 2.0);
+                // The corner opposite the one held stays where it is; or
+                // with Alt, the middle.
+                let mut still = match mods.alt {
+                    true => middle,
+                    false => (if pull.0 < 0 { origin.right() } else { origin.x } as f32, if pull.1 < 0 { origin.bottom() } else { origin.y } as f32),
+                };
+                // Text keeps its shape, and anything does with Shift: by
+                // a side, the other way grows alike about its middle.
                 if before.tool == Tool::Text {
                     (across, down) = (across.abs().max(down.abs()), across.abs().max(down.abs()));
                 } else if mods.shift {
-                    let both = across.abs().max(down.abs());
-                    (across, down) = (both.copysign(across), both.copysign(down));
+                    match pull {
+                        (0, _) => (across, still.0) = (down.abs(), middle.0),
+                        (_, 0) => (down, still.1) = (across.abs(), middle.1),
+                        _ => {
+                            let both = across.abs().max(down.abs());
+                            (across, down) = (both.copysign(across), both.copysign(down));
+                        }
+                    }
                 }
-                // The corner opposite the one held stays where it is.
-                let still = (if pull.0 < 0 { origin.right() } else { origin.x } as f32, if pull.1 < 0 { origin.bottom() } else { origin.y } as f32);
                 let mut shape = before.clone();
                 for point in &mut shape.points {
                     *point = (still.0 + (point.0 - still.0) * across, still.1 + (point.1 - still.1) * down);
@@ -1547,7 +1566,7 @@ impl Editor {
                     // the next one out.
                     // And the corner the drag began at goes to its edges
                     // in the same way: it was put down by eye too.
-                    let mut start = *from;
+                    let (mut start, began) = (*from, *from);
                     if !mods.ctrl {
                         let (width, height) = (self.shot.width, self.shot.height);
                         let edge = |at: i32, start: i32| if at >= start { at + 1 } else { at };
@@ -1577,9 +1596,15 @@ impl Editor {
                     }
                     let (from, area) = (start, Rect::spanning(start, at));
                     let mut area = Rect::new(area.x, area.y, area.w + 1, area.h + 1);
+                    // With Alt, as in Figma: about where the drag began,
+                    // as far one way of it as the pointer is the other.
+                    if mods.alt {
+                        let (dx, dy) = ((at.0 - began.0).abs(), (at.1 - began.1).abs());
+                        area = Rect::new(began.0 - dx, began.1 - dy, 2 * dx + 1, 2 * dy + 1).intersect(screen);
+                    }
                     // Kept to the shape that was asked for; or, with
                     // Shift, square.
-                    if let Some(ratio) = self.settings.aspect.or(mods.shift.then_some((1, 1))) {
+                    if let (Some(ratio), false) = (self.settings.aspect.or(mods.shift.then_some((1, 1))), mods.alt) {
                         let (left, up) = (at.0 < from.0, at.1 < from.1);
                         let room = (if left { from.0 + 1 - screen.x } else { screen.right() - from.0 }, if up { from.1 + 1 - screen.y } else { screen.bottom() - from.1 });
                         let (wide, high) = shaped(ratio, (area.w, area.h), (true, true), room);
@@ -1592,7 +1617,11 @@ impl Editor {
                 }
             }
             Drag::Move { from, origin } => {
-                let mut moved = origin.moved(at.0 - from.0, at.1 - from.1).kept_within(screen);
+                // Shift keeps it to across or down, whichever it has gone
+                // further.
+                let by = (at.0 - from.0, at.1 - from.1);
+                let by = if mods.shift { if by.0.abs() >= by.1.abs() { (by.0, 0) } else { (0, by.1) } } else { by };
+                let mut moved = origin.moved(by.0, by.1).kept_within(screen);
                 // Each of its sides goes to an edge it comes near, a
                 // window's or one in what is on the screen, taking the
                 // rest with it: by whichever of the two sides is nearer
@@ -1608,8 +1637,10 @@ impl Editor {
                             })
                             .min_by_key(|by: &i32| by.abs())
                     };
-                    let by_x = nearest([moved.x, moved.right()], &self.edges.0, true, (moved.y, moved.bottom()));
-                    let by_y = nearest([moved.y, moved.bottom()], &self.edges.1, false, (moved.x, moved.right()));
+                    // Kept to one way by Shift, it is not taken the other.
+                    let locked = (mods.shift && by.0 == 0, mods.shift && by.1 == 0);
+                    let by_x = nearest([moved.x, moved.right()], &self.edges.0, true, (moved.y, moved.bottom())).filter(|_| !locked.0);
+                    let by_y = nearest([moved.y, moved.bottom()], &self.edges.1, false, (moved.x, moved.right())).filter(|_| !locked.1);
                     moved = moved.moved(by_x.unwrap_or(0), by_y.unwrap_or(0)).kept_within(screen);
                 }
                 self.selection = Some(moved);
@@ -1636,6 +1667,17 @@ impl Editor {
                 let right = near(&self.edges.0, origin.right() + if pull.0 > 0 { dx } else { 0 }, pull.0 > 0, true, rows);
                 let top = near(&self.edges.1, origin.y + if pull.1 < 0 { dy } else { 0 }, pull.1 < 0, false, columns);
                 let bottom = near(&self.edges.1, origin.bottom() + if pull.1 > 0 { dy } else { 0 }, pull.1 > 0, false, columns);
+                // With Alt, as in Figma: the side across from the one
+                // pulled goes as far the other way, about the middle.
+                let (left, right, top, bottom) = match mods.alt {
+                    false => (left, right, top, bottom),
+                    true => (
+                        if pull.0 > 0 { origin.x - (right - origin.right()) } else { left },
+                        if pull.0 < 0 { origin.right() - (left - origin.x) } else { right },
+                        if pull.1 > 0 { origin.y - (bottom - origin.bottom()) } else { top },
+                        if pull.1 < 0 { origin.bottom() - (top - origin.y) } else { bottom },
+                    ),
+                };
                 // Pulled past the far side, it turns inside out.
                 let mut area = Rect::new(left.min(right), top.min(bottom), (right - left).abs().max(1), (bottom - top).abs().max(1));
                 // Kept to the shape that was asked for; or, with Shift,
@@ -1643,7 +1685,7 @@ impl Editor {
                 // stays where it is, and an edge pulled leaves the
                 // middle of the two beside it where that was.
                 let (pull, origin) = (*pull, *origin);
-                if let Some(ratio) = self.settings.aspect.or(mods.shift.then_some((origin.w, origin.h))) {
+                if let (Some(ratio), false) = (self.settings.aspect.or(mods.shift.then_some((origin.w, origin.h))), mods.alt) {
                     // Along one way of the screen: which side of what
                     // stays still it is on, and the room there is.
                     let along = |pull: i32, moving: i32, near: i32, far: i32, least: i32, most: i32| {
@@ -1681,8 +1723,13 @@ impl Editor {
                                 shape.points.push(to);
                             }
                         }
+                        // Shift: a square, a circle, a line at one of
+                        // eight angles. Alt, as in Figma: about where
+                        // the drag began, rather than from it.
                         tool => {
-                            shape.points[1] = if mods.shift { shapes::constrained(tool, from, to) } else { to };
+                            let end = if mods.shift { shapes::constrained(tool, from, to) } else { to };
+                            let start = if mods.alt && tool != Tool::Counter { (2.0 * from.0 - end.0, 2.0 * from.1 - end.1) } else { from };
+                            (shape.points[0], shape.points[1]) = (start, end);
                             if tool == Tool::Zoom {
                                 shape.place_zoom();
                             }
@@ -1707,6 +1754,9 @@ impl Editor {
                     }
                     self.moving = going.into_iter().map(|index| (index, self.shapes[index].clone())).collect();
                 }
+                // Shift keeps it to across or down, whichever it has gone
+                // further, as Figma does.
+                let by = if mods.shift { if by.0.abs() >= by.1.abs() { (by.0, 0) } else { (0, by.1) } } else { by };
                 let (mut by, mut guides) = (by, Vec::new());
                 if !mods.ctrl {
                     // The box round what is moving, where it would be;
@@ -1750,9 +1800,12 @@ impl Editor {
             // drag began at, by eye, as much as the ones at the pointer.
             Drag::Select { begun: true, .. } => Some(([true; 4], false)),
             Drag::Resize { pull, .. } => Some(([pull.0 < 0, pull.0 > 0, pull.1 < 0, pull.1 > 0], false)),
-            Drag::Move { .. } => Some(([true; 4], true)),
+            // Kept to one way by Shift, or drawn about its middle by Alt,
+            // it is not taken anywhere else.
+            Drag::Move { .. } if !mods.shift => Some(([true; 4], true)),
             _ => None,
         };
+        let sides = sides.filter(|_| !mods.alt);
         self.lines.clear();
         if let (Some((moving, whole)), false) = (sides, mods.ctrl) {
             // Kept to a shape, it is only said where it lines up: going
@@ -2299,6 +2352,8 @@ impl Editor {
             (Key::Right, ctrl) => self.nudge(1, 0, ctrl),
             (Key::Up, ctrl) => self.nudge(0, -1, ctrl),
             (Key::Down, ctrl) => self.nudge(0, 1, ctrl),
+            // The loupe, up or down, whether or not anything is selected.
+            (Key::Char('x'), false) => self.loupe = !self.loupe,
             (Key::Char(letter), false) if self.selection.is_some() && !self.settings.recording => match letter {
                 'v' => self.set_tool(Tool::Select),
                 'a' => self.set_tool(Tool::Arrow),
@@ -2864,12 +2919,13 @@ impl Editor {
     /// is wanted at all, and always while a color is being picked.
     fn loupe_shows(&self) -> bool {
         let over_interface = matches!(self.hover, Target::Button(_) | Target::Panel | Target::Swatch(_) | Target::Pipette | Target::Cell(_));
-        // Up while Alt is held, for putting an edge in place to the
-        // pixel; and with --magnifier, by itself while an edge is put in
-        // place, and before anything is selected.
+        // Up when X has been pressed for it, for putting an edge in
+        // place to the pixel, until X is pressed again; and with
+        // --magnifier, by itself while an edge is put in place, and
+        // before anything is selected.
         let placing = matches!(self.drag, Drag::Select { .. } | Drag::Resize { .. });
         let waiting = self.drag == Drag::None && self.selection.is_none();
-        !over_interface && (self.pipette || self.mods.alt || (self.settings.magnifier && (waiting || placing)))
+        !over_interface && (self.pipette || self.loupe || (self.settings.magnifier && (waiting || placing)))
     }
 
     /// Paints the screen as it now stands into a buffer of its size.
@@ -3832,13 +3888,11 @@ mod tests {
         editor.pressed(9000);
         editor.pointer_moved(705, 350, PLAIN);
         editor.pointer_moved(706, 350, PLAIN);
-        // Up only while Alt is held: pressed, it is up at once, and let
-        // go, it is gone.
+        // Up only when X has been pressed for it, until it is again.
         assert!(!editor.loupe_shows());
-        let alt = Mods { alt: true, ..PLAIN };
-        editor.key(Key::Other, alt);
+        editor.key(Key::Char('x'), PLAIN);
         assert!(editor.loupe_shows());
-        editor.key(Key::Other, PLAIN);
+        editor.key(Key::Char('x'), PLAIN);
         assert!(!editor.loupe_shows());
         editor.released();
         assert_eq!(editor.selection().map(|area| area.right()), Some(700));
@@ -3858,6 +3912,66 @@ mod tests {
         editor.pointer_moved(404, 253, ctrl);
         editor.released();
         assert_eq!(editor.selection(), Some(Rect::new(304, 203, 200, 100)));
+    }
+
+    #[test]
+    fn alt_draws_and_resizes_about_the_middle_and_shift_keeps_to_one_way() {
+        let (alt, shift) = (Mods { alt: true, ..PLAIN }, Mods { shift: true, ..PLAIN });
+        // Pressed as it is, and held as it moves: Shift as it is pressed
+        // is something else, a box to pick shapes out with, or a shape
+        // added to those picked out.
+        let held = |editor: &mut Editor, from: (i32, i32), to: (i32, i32), mods: Mods| {
+            let pressed = if mods.shift { PLAIN } else { mods };
+            editor.pointer_moved(from.0, from.1, pressed);
+            editor.pressed(0);
+            editor.pointer_moved((from.0 + to.0) / 2, (from.1 + to.1) / 2, mods);
+            editor.pointer_moved(to.0, to.1, mods);
+            editor.released();
+        };
+        let mut editor = editor(1600, 900);
+        editor.edges = (Vec::new(), Vec::new());
+        // The selection, dragged out with Alt, is about where it began.
+        // (Over the plain left of the screen, where nothing is to snap to.)
+        let mut plain = vec![0x303030u32; 1600 * 900];
+        let shot = Shot { width: 1600, height: 900, pixels: Box::new(plain.clone()) };
+        plain.iter_mut().for_each(|pixel| *pixel = 0x181818);
+        let mut editor2 = Editor::new(shot, plain, vec![Rect::new(0, 0, 1600, 900)], Vec::new(), Settings::default(), Text::load());
+        held(&mut editor2, (500, 400), (600, 450), alt);
+        assert_eq!(editor2.selection(), Some(Rect::new(400, 350, 201, 101)));
+        // A side pulled with Alt takes the other with it, the other way.
+        held(&mut editor2, (601, 400), (621, 400), alt);
+        assert_eq!(editor2.selection(), Some(Rect::new(380, 350, 241, 101)));
+        // Moved with Shift, it goes only the way it has gone further.
+        held(&mut editor2, (500, 400), (560, 410), shift);
+        assert_eq!(editor2.selection(), Some(Rect::new(440, 350, 241, 101)));
+
+        // A rectangle drawn with Alt is about where the drag began.
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('r'), PLAIN);
+        held(&mut editor, (400, 400), (450, 430), alt);
+        assert_eq!(editor.shapes[0].frame(), (350.5, 370.5, 100.0, 60.0));
+        // Taken by a corner with Alt, it grows about its middle; by a
+        // side with Shift, the other way grows alike about its middle.
+        let frame = editor.frame_of(0);
+        let corner = grip_at(frame, 1, 1);
+        held(&mut editor, corner, (corner.0 + 10, corner.1 + 10), alt);
+        let (left, top, width, height) = editor.shapes[0].frame();
+        assert!((left + width / 2.0 - 400.5).abs() < 0.6 && (top + height / 2.0 - 400.5).abs() < 0.6, "{left} {top} {width} {height}");
+        assert!(width > 100.0 && height > 60.0);
+        let before = editor.shapes[0].frame();
+        let frame = editor.frame_of(0);
+        let side = grip_at(frame, 1, 0);
+        held(&mut editor, side, (side.0 + 30, side.1), shift);
+        let (left, top, width, height) = editor.shapes[0].frame();
+        assert!(width > before.2 && height > before.3, "{:?}", editor.shapes[0].frame());
+        assert!((width / height - before.2 / before.3).abs() < 0.02 && (top + height / 2.0 - (before.1 + before.3 / 2.0)).abs() < 0.6, "{left} {top} {width} {height}");
+        // A shape moved with Shift goes only one way.
+        let (left, top, _, _) = editor.shapes[0].frame();
+        let inside = (left as i32 + 5, top as i32 + 5);
+        editor.key(Key::Char('v'), PLAIN);
+        held(&mut editor, inside, (inside.0 + 40, inside.1 + 7), shift);
+        let moved = editor.shapes[0].frame();
+        assert_eq!((moved.0, moved.1), (left + 40.0, top));
     }
 
     #[test]

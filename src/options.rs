@@ -211,10 +211,13 @@ Keys, once an area is selected:
   slanted (Ctrl+I), gone over with a marker, and each line after a dot.
   The box of colors also says how opaque. A shape being moved goes to
   the edges and middles of the others; Ctrl held leaves it be.
-  An edge of the selection goes to the edge of a window near it; Ctrl
-  held leaves it where it is put. Shift held keeps an area square as it
-  is dragged out, and the selection, a shape or the frame the shape it
-  has as it is made larger or smaller.
+  An edge of the selection goes to the edge of a window, or of what is
+  on the screen, near it or along its line; Ctrl held leaves it where it
+  is put. As in Figma: Shift held keeps an area square as it is dragged
+  out, the selection, a shape or the frame the shape it has as it is
+  made larger or smaller, and what is moved to across or down; Alt held
+  draws, or makes larger or smaller, about the middle. X puts up the
+  loupe, and puts it away again.
   Ctrl+] puts what is picked out over the shape above it, Ctrl+[ under
   the one below; with Shift, over or under them all.
   A line or an arrow picked out has a dot half way along it: dragged, it
