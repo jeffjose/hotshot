@@ -416,6 +416,10 @@ enum Target {
     /// One of the ways text is set: heavy, slanted and the rest.
     Style(u8),
     Pipette,
+    /// The square of the box of colors, saturation across and value
+    /// down; and the strip of hues under it.
+    Square,
+    Hues,
     /// A part of the bar, or of the box of colors, that is not a button.
     Panel,
     /// Something to be chosen in a box hung from the bar.
@@ -449,6 +453,9 @@ enum Target {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Drag {
     None,
+    /// A color being picked in the square of the box of colors, or its
+    /// hue in the strip under it.
+    Pick { hue: bool },
     /// Dragging out an area. It replaces the one there was only once the
     /// pointer has gone far enough to mean it.
     Select { from: (i32, i32), begun: bool, before: Option<Rect> },
@@ -510,6 +517,11 @@ struct Layout {
     styles: Vec<(Rect, u8)>,
     styles_bar: Option<Rect>,
     pipette: Rect,
+    /// In the box of colors: the square of saturation and value, the
+    /// strip of hues, and where the color in hand is said in hex.
+    square: Rect,
+    hues: Rect,
+    hex: Rect,
     /// The box hung from one of the bar's buttons, and what is in it.
     flyout: Option<Rect>,
     cells: Vec<(Rect, Cell)>,
@@ -587,6 +599,10 @@ pub struct Editor {
     arrow_shows: bool,
     /// Whether the loupe is up, X having been pressed for it.
     loupe: bool,
+    /// The color in hand as hue, saturation and value; and the colors
+    /// taken lately that are not among the box's own, latest first.
+    hsv: (f32, f32, f32),
+    lately: Vec<u32>,
     /// Which of the folders Save saves to.
     place: usize,
     /// The frame as it shows round the selection: what it was made
@@ -815,6 +831,13 @@ impl Editor {
             arrow: None,
             arrow_shows: false,
             loupe: false,
+            hsv: to_hsv(settings.color),
+            // Tests keep to themselves, and do not read what was taken.
+            lately: crate::output::state_file("colors")
+                .filter(|_| !cfg!(test))
+                .and_then(|file| std::fs::read_to_string(file).ok())
+                .map(|text| text.split_whitespace().filter_map(|word| u32::from_str_radix(word, 16).ok()).take(5).collect())
+                .unwrap_or_default(),
             surround: None,
             opacity,
             style: 0,
@@ -1011,8 +1034,14 @@ impl Editor {
             let rows = (PALETTE.len() as i32 + columns - 1) / columns;
             let words = self.text.width("Pick from the screen", px) + self.text.width("I", px) + side + 3 * pad;
             let width = (columns * side).max(words) + 2 * margin;
+            // Over the colors, every other: a square of saturation and
+            // value at a hue, the hues under it, and the color in hand
+            // in hex beside the colors taken lately.
+            let inner = width - 2 * margin;
+            let (square_h, strip_h) = (inner * 3 / 5, side / 2);
+            let picker = square_h + pad / 2 + strip_h + pad / 2 + side;
             // A row more than the colors and the pipette: how opaque.
-            let height = rows * side + 2 * side + 2 * margin + pad / 2;
+            let height = picker + rows * side + 2 * side + 2 * margin + pad / 2;
             let at = match anchor {
                 Anchor::At(x, y) => (x + pad / 2, y + pad / 2),
                 Anchor::Bar => {
@@ -1023,16 +1052,25 @@ impl Editor {
             };
             let popup = Rect::new(at.0, at.1, width, height).kept_within(monitor.inflate(-pad));
             let across = (width - 2 * margin) / columns;
+            let (left, top) = (popup.x + margin, popup.y + margin);
+            layout.square = Rect::new(left, top, inner, square_h);
+            layout.hues = Rect::new(left, top + square_h + pad / 2, inner, strip_h);
+            let lately_top = layout.hues.bottom() + pad / 2;
+            layout.hex = Rect::new(left, lately_top, across * 3, side);
+            for (index, &color) in self.lately.iter().take(columns as usize - 3).enumerate() {
+                layout.swatches.push((Rect::new(left + (3 + index as i32) * across, lately_top, across, side), color));
+            }
+            let top = top + picker;
             for (index, &(color, _)) in PALETTE.iter().enumerate() {
                 let (column, row) = (index as i32 % columns, index as i32 / columns);
-                layout.swatches.push((Rect::new(popup.x + margin + column * across, popup.y + margin + row * side, across, side), color));
+                layout.swatches.push((Rect::new(left + column * across, top + row * side, across, side), color));
             }
             // How opaque: four steps of it, under the colors.
             let each = (width - 2 * margin) / OPACITIES.len() as i32;
             for (index, &opacity) in OPACITIES.iter().enumerate() {
-                layout.opacities.push((Rect::new(popup.x + margin + index as i32 * each, popup.y + margin + rows * side, each, side), opacity));
+                layout.opacities.push((Rect::new(left + index as i32 * each, top + rows * side, each, side), opacity));
             }
-            layout.pipette = Rect::new(popup.x + margin, popup.y + margin + (rows + 1) * side + pad / 2, width - 2 * margin, side);
+            layout.pipette = Rect::new(left, top + (rows + 1) * side + pad / 2, width - 2 * margin, side);
             layout.popup = Some(popup);
         }
 
@@ -1191,6 +1229,12 @@ impl Editor {
             }
             if layout.pipette.contains(x, y) {
                 return Target::Pipette;
+            }
+            if layout.square.contains(x, y) {
+                return Target::Square;
+            }
+            if layout.hues.inflate(3).contains(x, y) {
+                return Target::Hues;
             }
             if popup.contains(x, y) {
                 return Target::Panel;
@@ -1497,6 +1541,10 @@ impl Editor {
                 self.dirty = true;
             }
             Drag::Marquee { .. } => self.dirty = true,
+            Drag::Pick { hue } => {
+                let hue = *hue;
+                self.pick(hue, at);
+            }
             Drag::Room { from, slack, sides, moved, shape, .. } => {
                 *moved |= (at.0 - from.0).abs().max((at.1 - from.1).abs()) >= DRAG_AFTER;
                 let (slack, sides, moved, shape) = (*slack, *sides, *moved, *shape);
@@ -1902,6 +1950,15 @@ impl Editor {
             }
             Target::Style(style) => self.toggle_style(style),
             Target::Pipette => (self.pipette, self.popup) = (true, None),
+            // Any color at all: by the square and the strip, the color
+            // following the pointer as it is dragged. One step to undo.
+            Target::Square | Target::Hues => {
+                if !self.chosen().is_empty() {
+                    self.checkpoint();
+                }
+                self.drag = Drag::Pick { hue: target == Target::Hues };
+                self.pick(target == Target::Hues, at);
+            }
             Target::Panel => {}
             Target::Cell(cell) => self.choose(cell),
             Target::Button(button) => self.drag = Drag::Button(button),
@@ -2120,6 +2177,8 @@ impl Editor {
                     self.undo.pop();
                 }
             }
+            // A color picked is one taken lately, once let go of.
+            Drag::Pick { .. } => self.taken_lately(self.color),
             Drag::Marquee { from } => {
                 let reach = Rect::spanning(from, self.pointer);
                 for index in 0..self.shapes.len() {
@@ -2567,7 +2626,54 @@ impl Editor {
         self.dirty = true;
     }
 
+    /// A color picked in the square, or a hue in the strip, at a point:
+    /// the color in hand becomes it, and so do the shapes picked out.
+    /// The hue, saturation and value are kept apart from the color, so
+    /// that a gray keeps the hue it was made at.
+    fn pick(&mut self, hue: bool, (x, y): (i32, i32)) {
+        let layout = self.layout();
+        let place = if hue { layout.hues } else { layout.square };
+        let across = ((x - place.x) as f32 / place.w.max(1) as f32).clamp(0.0, 1.0);
+        let (mut h, mut s, mut v) = self.hsv;
+        if hue {
+            h = across * 360.0;
+        } else {
+            s = across;
+            v = 1.0 - ((y - place.y) as f32 / place.h.max(1) as f32).clamp(0.0, 1.0);
+        }
+        self.hsv = (h, s, v);
+        let color = from_hsv(self.hsv);
+        self.color = color;
+        if let Some((index, _)) = self.editing {
+            self.shapes[index].color = color;
+        }
+        for index in self.chosen() {
+            self.shapes[index].color = color;
+            self.shapes[index].touch();
+        }
+        self.dirty = true;
+    }
+
+    /// A color taken lately, to the front of those that are kept, and
+    /// kept for next time too.
+    fn taken_lately(&mut self, color: u32) {
+        if PALETTE.iter().any(|&(known, _)| known == color) {
+            return;
+        }
+        self.lately.retain(|&had| had != color);
+        self.lately.insert(0, color);
+        self.lately.truncate(5);
+        if let Some(file) = crate::output::state_file("colors").filter(|_| !cfg!(test)) {
+            let words: Vec<String> = self.lately.iter().map(|color| format!("{color:06X}")).collect();
+            if let Some(dir) = file.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(file, words.join(" ") + "\n");
+        }
+    }
+
     fn set_color(&mut self, color: u32) {
+        self.hsv = to_hsv(color);
         self.color = color;
         let chosen = self.chosen();
         if let Some((index, _)) = self.editing {
@@ -3487,6 +3593,30 @@ impl Editor {
     fn draw_popup(&mut self, canvas: &mut Canvas, layout: &Layout, popup: Rect) {
         let (px, pad, side) = (layout.px, layout.px as i32 / 2, layout.side);
         panel(canvas, popup, pad);
+        // The square: saturation across, value down, at the hue in hand;
+        // and a ring where the color in hand is in it.
+        let (hue, saturation, value) = self.hsv;
+        let square = layout.square;
+        for y in 0..square.h {
+            let v = 1.0 - y as f32 / square.h.max(1) as f32;
+            for x in 0..square.w {
+                canvas.blend(square.x + x, square.y + y, from_hsv((hue, x as f32 / square.w.max(1) as f32, v)), 255);
+            }
+        }
+        let (mx, my) = (square.x + (saturation * square.w as f32) as i32, square.y + ((1.0 - value) * square.h as f32) as i32);
+        canvas.round_outline(mx - 7, my - 7, 14, 14, 7, 2, 0x000000);
+        canvas.round_outline(mx - 6, my - 6, 12, 12, 6, 2, 0xFFFFFF);
+        // The hues, end to end, and a mark at the one in hand.
+        let strip = layout.hues;
+        for x in 0..strip.w {
+            canvas.fill(strip.x + x, strip.y, 1, strip.h, from_hsv((x as f32 / strip.w.max(1) as f32 * 360.0, 1.0, 1.0)));
+        }
+        let hx = strip.x + (hue / 360.0 * strip.w as f32) as i32;
+        canvas.round_outline(hx - 4, strip.y - 3, 8, strip.h + 6, 3, 2, 0xFFFFFF);
+        // The color in hand, in hex, on a patch of itself.
+        let hex = layout.hex.inflate(-(px as i32 / 6).max(2));
+        canvas.round_fill(hex.x, hex.y, hex.h, hex.h, pad / 2, self.color, 256);
+        self.text.draw(canvas, hex.x + hex.h + pad / 2, hex.y + (hex.h - Text::line_height(px)) / 2, px, TEXT_COLOR, &format!("#{:06X}", self.color));
         for &(rect, color) in &layout.swatches {
             let (cx, cy) = rect.center();
             let radius = side * 3 / 10;
@@ -3718,6 +3848,33 @@ impl Editor {
         }
         Some((selection, pixels, round > 0))
     }
+}
+
+/// A color as its hue, of 360, and its saturation and value, of 1.
+fn to_hsv(color: u32) -> (f32, f32, f32) {
+    let [r, g, b] = [16, 8, 0].map(|shift| (color >> shift & 0xFF) as f32 / 255.0);
+    let (most, least) = (r.max(g).max(b), r.min(g).min(b));
+    let spread = most - least;
+    let hue = if spread == 0.0 {
+        0.0
+    } else if most == r {
+        60.0 * ((g - b) / spread).rem_euclid(6.0)
+    } else if most == g {
+        60.0 * ((b - r) / spread + 2.0)
+    } else {
+        60.0 * ((r - g) / spread + 4.0)
+    };
+    (hue, if most == 0.0 { 0.0 } else { spread / most }, most)
+}
+
+/// The color of a hue, saturation and value.
+fn from_hsv((hue, saturation, value): (f32, f32, f32)) -> u32 {
+    let part = |n: f32| {
+        let k = (n + hue / 60.0).rem_euclid(6.0);
+        let v = value - value * saturation * k.min(4.0 - k).clamp(0.0, 1.0);
+        (v.clamp(0.0, 1.0) * 255.0).round() as u32
+    };
+    part(5.0) << 16 | part(3.0) << 8 | part(1.0)
 }
 
 /// A lighter tint of a color, for thin lines that the color itself
@@ -5287,5 +5444,39 @@ mod tests {
         editor.frame = Frame { backdrop: Backdrop::Gradient(frame::named("midnight").unwrap()), pad: (64, 48), radius: 16, shadow: Shadow::named("xl").unwrap() };
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
         std::fs::write(dir.join("4-explain.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn any_color_is_picked_in_the_square_and_the_strip_and_kept_as_taken_lately() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('r'), PLAIN);
+        drag(&mut editor, (200, 200), (400, 300));
+        let color = button(&mut editor, Button::Color);
+        click(&mut editor, color, 9000);
+        let (square, hues) = (editor.layout().square, editor.layout().hues);
+        assert!(!square.is_empty() && !hues.is_empty());
+        let undone = editor.undo.len();
+
+        // A pure red, from the hue strip's start and the square's top right.
+        drag(&mut editor, (hues.x + 1, hues.center().1), (hues.x, hues.center().1));
+        drag(&mut editor, (square.x + square.w / 2, square.y + square.h / 2), (square.right() + 20, square.y - 20));
+        assert_eq!((editor.color, editor.shapes[0].color), (0xFF0000, 0xFF0000));
+        // A third of the way along the strip is green, kept as saturated.
+        drag(&mut editor, (hues.x + hues.w / 2, hues.center().1), (hues.x + hues.w / 3, hues.center().1));
+        let (r, g, b) = (editor.color >> 16, (editor.color >> 8) & 0xFF, editor.color & 0xFF);
+        assert!(g == 0xFF && r < 0x10 && b < 0x10, "{:06X}", editor.color);
+        assert_eq!(editor.shapes[0].color, editor.color);
+        // Each drag is a step to undo, and the box stays open for more.
+        assert_eq!((editor.undo.len(), editor.popup.is_some()), (undone + 3, true));
+
+        // What was picked is first among those taken lately, beside the hex.
+        assert_eq!(editor.lately.first(), Some(&editor.color));
+        let lately = editor.layout().swatches[0];
+        assert_eq!((lately.1, lately.0.y), (editor.color, editor.layout().hex.y));
+        // A gray keeps the hue it was made at.
+        drag(&mut editor, (square.x + 5, square.y + 5), (square.x - 10, square.center().1));
+        assert!((editor.hsv.0 - 120.0).abs() < 2.0, "{:?}", editor.hsv);
+        assert_eq!(editor.color & 0xFF, editor.color >> 16);
     }
 }
