@@ -141,6 +141,143 @@ const EMOJI: usize = usize::MAX - 16;
 /// Where the system's emoji usually are.
 const EMOJI_PATHS: &[&str] = &["/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", "/usr/share/fonts/noto/NotoColorEmoji.ttf", "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf", "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf"];
 
+/// Twemoji, as Discord and X have them, in Mozilla's font of them, whose
+/// emoji are outlines filled with flat colors, one over another: drawn
+/// at any size, sharp. jog's.
+const TWEMOJI: &[u8] = include_bytes!("../assets/Twemoji.Mozilla.ttf");
+
+/// The layers of an emoji as the font has them: which outline, in which
+/// color, the first lowest.
+#[derive(Default)]
+struct Layers {
+    outline: Option<ttf_parser::GlyphId>,
+    layers: Vec<(ttf_parser::GlyphId, ttf_parser::RgbaColor)>,
+}
+
+impl<'a> ttf_parser::colr::Painter<'a> for Layers {
+    fn outline_glyph(&mut self, glyph: ttf_parser::GlyphId) {
+        self.outline = Some(glyph);
+    }
+
+    fn paint(&mut self, paint: ttf_parser::colr::Paint<'a>) {
+        // The font is of flat colors only.
+        if let (Some(glyph), ttf_parser::colr::Paint::Solid(color)) = (self.outline, paint) {
+            self.layers.push((glyph, color));
+        }
+    }
+
+    fn push_clip(&mut self) {}
+    fn push_clip_box(&mut self, _: ttf_parser::colr::ClipBox) {}
+    fn pop_clip(&mut self) {}
+    fn push_layer(&mut self, _: ttf_parser::colr::CompositeMode) {}
+    fn pop_layer(&mut self) {}
+    fn push_transform(&mut self, _: ttf_parser::Transform) {}
+    fn pop_transform(&mut self) {}
+}
+
+/// An outline of the font laid onto a rasterizer: its points taken from
+/// the font's units, up being up, to the square's pixels, down being down.
+struct Trace<'a> {
+    fill: &'a mut ab_glyph_rasterizer::Rasterizer,
+    at: (f32, f32),
+    start: (f32, f32),
+    fit: f32,
+    left: f32,
+    base: f32,
+}
+
+impl Trace<'_> {
+    fn point(&self, x: f32, y: f32) -> ab_glyph_rasterizer::Point {
+        ab_glyph_rasterizer::point(self.left + x * self.fit, self.base - y * self.fit)
+    }
+}
+
+impl ttf_parser::OutlineBuilder for Trace<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        (self.at, self.start) = ((x, y), (x, y));
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        let (from, to) = (self.point(self.at.0, self.at.1), self.point(x, y));
+        self.fill.draw_line(from, to);
+        self.at = (x, y);
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let (from, via, to) = (self.point(self.at.0, self.at.1), self.point(x1, y1), self.point(x, y));
+        self.fill.draw_quad(from, via, to);
+        self.at = (x, y);
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let (from, a, b, to) = (self.point(self.at.0, self.at.1), self.point(x1, y1), self.point(x2, y2), self.point(x, y));
+        self.fill.draw_cubic(from, a, b, to);
+        self.at = (x, y);
+    }
+
+    fn close(&mut self) {
+        let (x, y) = self.start;
+        self.line_to(x, y);
+    }
+}
+
+/// An emoji `side` pixels square from Twemoji, each layer's outline filled
+/// at that size and laid over the ones before; its alpha in the top byte,
+/// its colors as they are. `None` for one the font has no colors for.
+fn twemoji(c: char, side: u32) -> Option<(i32, i32, Vec<u32>)> {
+    let face = ttf_parser::Face::parse(TWEMOJI, 0).ok()?;
+    let glyph = face.glyph_index(c)?;
+    let mut painted = Layers::default();
+    face.paint_color_glyph(glyph, 0, ttf_parser::RgbaColor::new(0, 0, 0, 255), &mut painted)?;
+    if painted.layers.is_empty() {
+        return None;
+    }
+    // All the layers together, in the font's units: the square is fitted
+    // to that, so that every emoji fills it the same.
+    let mut around = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+    for (layer, _) in &painted.layers {
+        if let Some(rect) = face.glyph_bounding_box(*layer) {
+            around = [around[0].min(rect.x_min.into()), around[1].min(rect.y_min.into()), around[2].max(rect.x_max.into()), around[3].max(rect.y_max.into())];
+        }
+    }
+    let (wide, high) = ((around[2] - around[0]).max(1) as f32, (around[3] - around[1]).max(1) as f32);
+    let fit = side as f32 / wide.max(high);
+    // Where the font's origin falls in the square, the emoji in the middle.
+    let left = (side as f32 - wide * fit) / 2.0 - around[0] as f32 * fit;
+    let base = (side as f32 - high * fit) / 2.0 + around[3] as f32 * fit;
+    let side = side as usize;
+    // Colors kept weighed by how much of each pixel they cover, as layers
+    // are laid one over another; weighed back out at the end.
+    let mut sum = vec![[0f32; 4]; side * side];
+    for (layer, color) in &painted.layers {
+        let mut fill = ab_glyph_rasterizer::Rasterizer::new(side, side);
+        face.outline_glyph(*layer, &mut Trace { fill: &mut fill, at: (0.0, 0.0), start: (0.0, 0.0), fit, left, base })?;
+        let opacity = f32::from(color.alpha) / 255.0;
+        fill.for_each_pixel(|at, cover| {
+            let a = cover.min(1.0) * opacity;
+            if a <= 0.0 {
+                return;
+            }
+            let pixel = &mut sum[at];
+            for (channel, value) in [color.red, color.green, color.blue].into_iter().enumerate() {
+                pixel[channel] = pixel[channel] * (1.0 - a) + f32::from(value) * a;
+            }
+            pixel[3] = pixel[3] * (1.0 - a) + a;
+        });
+    }
+    let pixels = sum
+        .iter()
+        .map(|[r, g, b, a]| {
+            if *a <= 0.0 {
+                return 0;
+            }
+            let channel = |v: f32| (v / a).round().clamp(0.0, 255.0) as u32;
+            ((a * 255.0).round() as u32) << 24 | channel(*r) << 16 | channel(*g) << 8 | channel(*b)
+        })
+        .collect();
+    Some((side as i32, side as i32, pixels))
+}
+
 impl Text {
     pub fn load() -> Self {
         // The interface font is carried along, so that hotshot looks the
@@ -158,15 +295,15 @@ impl Text {
         Text { font, icons, faces: [None, None, None, None], cuts: Default::default(), cuts_read: [false; CUTS.len()], others: Vec::new(), sought: HashSet::new(), glyphs: HashMap::new(), emoji: None, emoji_sought: false, pictures: HashMap::new(), look: Look::default() }
     }
 
-    /// An emoji as a picture `px` high, from the system's emoji, which
-    /// keeps each as a small PNG. Nothing where there are none, or none
-    /// of that one.
+    /// An emoji as a picture `px` high: from Twemoji, sharp at any size,
+    /// or for one it lacks from the system's emoji, which keeps each as a
+    /// small PNG. Nothing where there are none, or none of that one.
     fn picture(&mut self, c: char, px: u32) -> Option<&(i32, i32, Vec<u32>)> {
         if !self.pictures.contains_key(&(c, px)) {
             if !std::mem::replace(&mut self.emoji_sought, true) {
                 self.emoji = EMOJI_PATHS.iter().find_map(|path| std::fs::read(path).ok());
             }
-            let made = (|| {
+            let made = twemoji(c, (px as f32 * 1.2).round().max(1.0) as u32).or_else(|| {
                 let face = ttf_parser::Face::parse(self.emoji.as_deref()?, 0).ok()?;
                 let image = face.glyph_raster_image(face.glyph_index(c)?, u16::MAX)?;
                 if image.format != ttf_parser::RasterImageFormat::PNG {
@@ -205,7 +342,7 @@ impl Text {
                     }
                 }
                 Some((w, h, pixels))
-            })();
+            });
             self.pictures.insert((c, px), made.unwrap_or((0, 0, Vec::new())));
         }
         self.pictures.get(&(c, px)).filter(|picture| picture.0 > 0)
@@ -265,6 +402,16 @@ impl Text {
         0
     }
 
+    /// The same of a letter with the one after it: one that a font of
+    /// letters has too, ☺ or ❤, is an emoji when what comes after it says
+    /// it is to be drawn as one.
+    fn font_before(&mut self, c: char, next: Option<char>, face: usize) -> usize {
+        if next == Some('\u{fe0f}') && self.picture(c, 16).is_some() {
+            return EMOJI;
+        }
+        self.font_with(c, face)
+    }
+
     /// The cut of a face that does the most of what the look in hand
     /// asks, heavy and slanted, and nothing it does not ask.
     fn cut(&self, face: usize) -> Option<usize> {
@@ -308,8 +455,9 @@ impl Text {
     pub fn width_in(&mut self, face: usize, text: &str, px: u32) -> i32 {
         let mut width = 0.0;
         let heavy = self.made(face).0;
-        for c in text.chars() {
-            let which = self.font_with(c, face);
+        let mut letters = text.chars().peekable();
+        while let Some(c) = letters.next() {
+            let which = self.font_before(c, letters.peek().copied(), face);
             if which == EMOJI {
                 width += self.picture(c, px).map_or(0.0, |picture| picture.0 as f32 * 1.08);
                 continue;
@@ -337,10 +485,11 @@ impl Text {
 
         let mut pen = x as f32;
         let (heavy, slant) = self.made(face);
-        for c in text.chars() {
+        let mut letters = text.chars().peekable();
+        while let Some(c) = letters.next() {
             // An emoji is laid down as the picture it is, in the middle
             // of the line, whatever color the words are in.
-            let which = self.font_with(c, face);
+            let which = self.font_before(c, letters.peek().copied(), face);
             if which == EMOJI {
                 if let Some((wide, high, pixels)) = self.picture(c, px) {
                     let (left, top) = (pen.round() as i32, y + (Self::line_height(px) - high) / 2);
@@ -401,4 +550,28 @@ fn font_for(c: char) -> Option<fontdue::Font> {
     let settings = fontdue::FontSettings { collection_index: index.trim().parse().unwrap_or(0), ..Default::default() };
     let font = fontdue::Font::from_bytes(std::fs::read(PathBuf::from(file)).ok()?, settings).ok()?;
     (font.lookup_glyph_index(c) != 0).then_some(font)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn twemoji_are_drawn_in_their_colors_and_sharp_when_large() {
+        // A red heart: red in the middle, clear in the corners.
+        let (w, h, pixels) = twemoji('\u{2764}', 64).expect("drawn");
+        assert_eq!((w, h), (64, 64));
+        let middle = pixels[32 * 64 + 32];
+        assert_eq!(middle >> 24, 255);
+        assert!((middle >> 16 & 255) > 180 && (middle >> 8 & 255) < 90);
+        assert_eq!(pixels[0] >> 24, 0);
+        // Large, its edge is a pixel or two of part cover, not a blur.
+        let (_, _, big) = twemoji('\u{1f600}', 512).expect("drawn");
+        let partly = big.iter().filter(|p| (1..255).contains(&(**p >> 24))).count();
+        assert!(partly < 512 * 8, "{partly}");
+        // Every emoji there is to choose has its picture.
+        let list = include_str!("../assets/emoji.txt").lines().filter(|line| !line.starts_with('#'));
+        let missing: Vec<&str> = list.filter(|line| twemoji(line.chars().next().unwrap_or(' '), 16).is_none()).collect();
+        assert!(missing.is_empty(), "{missing:?}");
+    }
 }

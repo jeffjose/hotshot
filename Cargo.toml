@@ -10,6 +10,8 @@ x11rb = { version = "0.14", features = ["shm", "randr", "cursor", "composite", "
 fontdue = "0.9"
 png = "0.18"
 ttf-parser = "0.25"
+# Fills the outlines of the layers Twemoji is made of.
+ab_glyph_rasterizer = "0.1"
 zune-jpeg = "0.4"
 libc = "0.2"
 rayon = "1"
