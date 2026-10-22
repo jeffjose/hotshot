@@ -433,6 +433,8 @@ enum Target {
     Grip(i32, i32),
     /// Just outside a corner of the shape picked out, by which it turns.
     Turn,
+    /// The color in hand in hex, which a click lets be typed.
+    Hex,
     /// The dot inside a corner of the rectangle picked out, by which its
     /// corners are made rounder.
     Rounder(i32, i32),
@@ -608,6 +610,8 @@ pub struct Editor {
     loupe: bool,
     /// How far what is being turned has gone, in radians.
     turned: f32,
+    /// The digits of a color being typed in hex, while one is.
+    hex: Option<String>,
     /// The color in hand as hue, saturation and value; and the colors
     /// taken lately that are not among the box's own, latest first.
     hsv: (f32, f32, f32),
@@ -841,6 +845,7 @@ impl Editor {
             arrow_shows: false,
             loupe: false,
             turned: 0.0,
+            hex: None,
             hsv: to_hsv(settings.color),
             // Tests keep to themselves, and do not read what was taken.
             lately: crate::output::state_file("colors")
@@ -1246,6 +1251,9 @@ impl Editor {
             if layout.hues.inflate(3).contains(x, y) {
                 return Target::Hues;
             }
+            if layout.hex.contains(x, y) {
+                return Target::Hex;
+            }
             if popup.contains(x, y) {
                 return Target::Panel;
             }
@@ -1476,6 +1484,7 @@ impl Editor {
             (Drag::Resize { pull, .. } | Drag::Scale { pull, .. }, _) => Some(pull),
             (Drag::None, Target::Handle(across, down) | Target::Grip(across, down) | Target::FrameGrip(across, down)) => Some((across, down)),
             (Drag::Turn { .. }, _) | (Drag::None, Target::Turn) => return Cursor::Turn,
+            (Drag::None, Target::Hex) => return Cursor::Text,
             (Drag::Round { .. } | Drag::Curve { .. } | Drag::End { .. } | Drag::FrameCorner { .. }, _) | (Drag::None, Target::Rounder(..) | Target::Curve(..) | Target::End(_) | Target::FrameCorner) => return Cursor::Arrow,
             (Drag::Marquee { .. }, _) => return Cursor::Crosshair,
             _ => None,
@@ -2018,6 +2027,10 @@ impl Editor {
         self.dirty = true;
         let target = self.target_at(at);
         self.hover = target;
+        // A click anywhere but on it leaves a color being typed.
+        if target != Target::Hex {
+            self.hex = None;
+        }
 
         if self.pipette && matches!(target, Target::Inside | Target::Outside | Target::Handle(..) | Target::Grip(..) | Target::Rounder(..) | Target::Curve(..) | Target::End(_)) {
             self.pipette = false;
@@ -2040,6 +2053,7 @@ impl Editor {
             }
             Target::Style(style) => self.toggle_style(style),
             Target::Pipette => (self.pipette, self.popup) = (true, None),
+            Target::Hex => self.hex = Some(String::new()),
             // Any color at all: by the square and the strip, the color
             // following the pointer as it is dragged. One step to undo.
             Target::Square | Target::Hues => {
@@ -2355,6 +2369,35 @@ impl Editor {
                 Key::Down => self.scrolled(false),
                 Key::Enter => self.choose(Cell::Emoji(0)),
                 Key::Escape => self.flyout = None,
+                _ => {}
+            }
+            return Outcome::Continue;
+        }
+        // With the colors open, # or a click on the hex begins a color
+        // typed: three or six of its digits, and Enter takes it.
+        if self.popup.is_none() {
+            self.hex = None;
+        } else if self.hex.is_none() && key == Key::Char('#') && !mods.ctrl {
+            self.hex = Some(String::new());
+            return Outcome::Continue;
+        }
+        if let (Some(typed), false) = (&mut self.hex, mods.ctrl) {
+            match key {
+                Key::Char(digit) if digit.is_ascii_hexdigit() && typed.len() < 6 => typed.push(digit.to_ascii_uppercase()),
+                Key::Backspace => _ = typed.pop(),
+                Key::Escape => self.hex = None,
+                Key::Enter => {
+                    // Three digits are each said twice: F80 is FF8800.
+                    let digits: String = match typed.len() {
+                        3 => typed.chars().flat_map(|digit| [digit, digit]).collect(),
+                        _ => typed.clone(),
+                    };
+                    if let (6, Ok(color)) = (digits.len(), u32::from_str_radix(&digits, 16)) {
+                        self.set_color(color);
+                        self.taken_lately(color);
+                        self.hex = None;
+                    }
+                }
                 _ => {}
             }
             return Outcome::Continue;
@@ -3731,7 +3774,20 @@ impl Editor {
         // The color in hand, in hex, on a patch of itself.
         let hex = layout.hex.inflate(-(px as i32 / 6).max(2));
         canvas.round_fill(hex.x, hex.y, hex.h, hex.h, pad / 2, self.color, 256);
-        self.text.draw(canvas, hex.x + hex.h + pad / 2, hex.y + (hex.h - Text::line_height(px)) / 2, px, TEXT_COLOR, &format!("#{:06X}", self.color));
+        let (x, y) = (hex.x + hex.h + pad / 2, hex.y + (hex.h - Text::line_height(px)) / 2);
+        // Being typed: in a field of its own, with the caret after it.
+        match &self.hex {
+            Some(typed) => {
+                let says = format!("#{typed}");
+                let field = Rect::new(x - pad / 3, hex.y, hex.right() - x + pad / 3, hex.h);
+                canvas.round_fill(field.x, field.y, field.w, field.h, pad / 3, 0x000000, 140);
+                canvas.round_outline(field.x, field.y, field.w, field.h, pad / 3, 1, self.settings.accent);
+                self.text.draw(canvas, x, y, px, TEXT_COLOR, &says);
+                let caret = x + self.text.width(&says, px) + 1;
+                canvas.fill(caret, y + 2, 1, Text::line_height(px) - 4, TEXT_COLOR);
+            }
+            None => self.text.draw(canvas, x, y, px, TEXT_COLOR, &format!("#{:06X}", self.color)),
+        }
         for &(rect, color) in &layout.swatches {
             let (cx, cy) = rect.center();
             let radius = side * 3 / 10;
@@ -5154,6 +5210,11 @@ mod tests {
         let swatch = editor.layout().swatches[6].0.center();
         editor.pointer_moved(swatch.0, swatch.1, PLAIN);
         write(&mut editor, "6-colors");
+        for digit in "#3E6".chars() {
+            editor.key(Key::Char(digit), PLAIN);
+        }
+        write(&mut editor, "6b-hex");
+        editor.key(Key::Escape, PLAIN);
         editor.key(Key::Char('i'), PLAIN);
         editor.pointer_moved(110 * unit, 36 * unit, PLAIN);
         write(&mut editor, "7-pipette");
@@ -5658,5 +5719,25 @@ mod tests {
         drag(&mut editor, (square.x + 5, square.y + 5), (square.x - 10, square.center().1));
         assert!((editor.hsv.0 - 120.0).abs() < 2.0, "{:?}", editor.hsv);
         assert_eq!(editor.color & 0xFF, editor.color >> 16);
+
+        // Typed in hex: a click on it, or #; what is no digit is passed
+        // over, and three digits are each said twice.
+        let hex = editor.layout().hex.center();
+        click(&mut editor, hex, 30_000);
+        for key in [Key::Char('1'), Key::Char('g'), Key::Char('2'), Key::Backspace, Key::Char('a'), Key::Char('b'), Key::Char('c'), Key::Char('d'), Key::Char('e')] {
+            editor.key(key, PLAIN);
+        }
+        assert_eq!((editor.hex.as_deref(), editor.tool), (Some("1ABCDE"), Tool::Select));
+        editor.key(Key::Enter, PLAIN);
+        assert_eq!((editor.color, editor.shapes[0].color, editor.hex.clone(), editor.lately[0]), (0x1ABCDE, 0x1ABCDE, None, 0x1ABCDE));
+        for key in [Key::Char('#'), Key::Char('f'), Key::Char('8'), Key::Char('0'), Key::Enter] {
+            editor.key(key, PLAIN);
+        }
+        assert_eq!((editor.shapes[0].color, editor.popup.is_some()), (0xFF8800, true));
+        // Esc leaves it as it was.
+        for key in [Key::Char('#'), Key::Char('0'), Key::Escape] {
+            editor.key(key, PLAIN);
+        }
+        assert_eq!((editor.shapes[0].color, editor.hex.clone()), (0xFF8800, None));
     }
 }
