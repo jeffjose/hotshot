@@ -147,6 +147,8 @@ pub enum Cursor {
     Rising,
     Across,
     Upright,
+    /// Turning what is picked out.
+    Turn,
 }
 
 /// How the window under the pointer shows, while nothing is selected
@@ -429,6 +431,8 @@ enum Target {
     Handle(i32, i32),
     /// A corner of the box round the shape picked out, the same way.
     Grip(i32, i32),
+    /// Just outside a corner of the shape picked out, by which it turns.
+    Turn,
     /// The dot inside a corner of the rectangle picked out, by which its
     /// corners are made rounder.
     Rounder(i32, i32),
@@ -468,6 +472,9 @@ enum Drag {
     /// Making a shape larger or smaller by a corner of its box, which
     /// was `origin` when the corner was taken hold of.
     Scale { index: usize, pull: (i32, i32), from: (i32, i32), origin: Rect },
+    /// Turning a shape about `about`, from the angle the pointer was at
+    /// round it when it was taken hold of.
+    Turn { index: usize, about: (f32, f32), began: f32 },
     /// Making a rectangle's corners rounder by the dot in one of them,
     /// which was taken hold of `slack` further in than the radius.
     Round { index: usize, corner: (i32, i32), slack: f32 },
@@ -599,6 +606,8 @@ pub struct Editor {
     arrow_shows: bool,
     /// Whether the loupe is up, X having been pressed for it.
     loupe: bool,
+    /// How far what is being turned has gone, in radians.
+    turned: f32,
     /// The color in hand as hue, saturation and value; and the colors
     /// taken lately that are not among the box's own, latest first.
     hsv: (f32, f32, f32),
@@ -831,6 +840,7 @@ impl Editor {
             arrow: None,
             arrow_shows: false,
             loupe: false,
+            turned: 0.0,
             hsv: to_hsv(settings.color),
             // Tests keep to themselves, and do not read what was taken.
             lately: crate::output::state_file("colors")
@@ -1262,10 +1272,14 @@ impl Editor {
             }
             // A line has its ends to be reshaped by, and no box.
             if boxed(self.shapes[index].tool) {
-                let frame = self.frame_of(index);
-                if let Some((across, down)) = GRIPS.into_iter().find(|&(across, down)| near(grip_at(frame, across, down))) {
+                if let Some((across, down)) = GRIPS.into_iter().find(|&(across, down)| near(self.grip_of(index, across, down))) {
                     return Target::Grip(across, down);
                 }
+            }
+            // Just outside a corner, as in Figma: it turns.
+            let far = |(px, py): (i32, i32)| (x - px).abs() <= reach * 3 / 2 && (y - py).abs() <= reach * 3 / 2;
+            if self.turners(index).into_iter().any(far) {
+                return Target::Turn;
             }
         }
         if !self.pipette {
@@ -1337,6 +1351,49 @@ impl Editor {
         self.shapes[index].bounds(&mut self.text).inflate(room)
     }
 
+    /// The same of a shape as if it were not turned: what it is sized by,
+    /// along its own sides.
+    fn local_frame_of(&mut self, index: usize) -> Rect {
+        let room = (ui_px(self.monitor().h) as i32 / 4).max(3);
+        self.shapes[index].local_bounds(&mut self.text).inflate(room)
+    }
+
+    /// Where one of the handles of a shape's box is, turned with it.
+    fn grip_of(&mut self, index: usize, across: i32, down: i32) -> (i32, i32) {
+        let (x, y) = grip_at(self.local_frame_of(index), across, down);
+        let (x, y) = self.shapes[index].returned((x as f32, y as f32), &mut self.text);
+        (x.round() as i32, y.round() as i32)
+    }
+
+    /// Where, just outside each corner of the shape picked out, it is
+    /// taken hold of to be turned; the corners of its box, turned with
+    /// it, or of what holds a line.
+    fn turners(&mut self, index: usize) -> Vec<(i32, i32)> {
+        if !self.shapes[index].turns() {
+            return Vec::new();
+        }
+        let out = (ui_px(self.monitor().h) as f32 * 0.6).max(8.0);
+        let angle = self.shapes[index].angle;
+        [(-1, -1), (1, -1), (-1, 1), (1, 1)]
+            .into_iter()
+            .map(|(across, down)| {
+                let (x, y) = self.grip_of(index, across, down);
+                let (dx, dy) = shapes::turn_point((across as f32 * out, down as f32 * out), (0.0, 0.0), angle);
+                ((x as f32 + dx).round() as i32, (y as f32 + dy).round() as i32)
+            })
+            .collect()
+    }
+
+    /// What a shape turns about: its own middle, or the middle of what
+    /// holds a line or a stroke.
+    fn pivot_of(&mut self, index: usize) -> (f32, f32) {
+        if self.shapes[index].turnable() {
+            return self.shapes[index].centre(&mut self.text);
+        }
+        let place = self.shapes[index].bounds(&mut self.text);
+        (place.x as f32 + place.w as f32 / 2.0, place.y as f32 + place.h as f32 / 2.0)
+    }
+
     /// The ends a shape is reshaped by, each with which of its points it
     /// is: both of a line or an arrow, and of a counter the tip it
     /// points with, when it points.
@@ -1399,7 +1456,7 @@ impl Editor {
         let shape = &self.shapes[index];
         let (left, top, width, height) = shape.frame();
         let least = ui_px(self.monitor().h) as f32;
-        if !matches!(shape.tool, Tool::Rect | Tool::Spotlight) || width.min(height) < least * 3.0 {
+        if !matches!(shape.tool, Tool::Rect | Tool::Spotlight) || shape.angle != 0.0 || width.min(height) < least * 3.0 {
             return None;
         }
         let inset = shape.radius.max(least).min(width / 2.0).min(height / 2.0);
@@ -1418,6 +1475,7 @@ impl Editor {
         let pull = match (self.drag, self.hover) {
             (Drag::Resize { pull, .. } | Drag::Scale { pull, .. }, _) => Some(pull),
             (Drag::None, Target::Handle(across, down) | Target::Grip(across, down) | Target::FrameGrip(across, down)) => Some((across, down)),
+            (Drag::Turn { .. }, _) | (Drag::None, Target::Turn) => return Cursor::Turn,
             (Drag::Round { .. } | Drag::Curve { .. } | Drag::End { .. } | Drag::FrameCorner { .. }, _) | (Drag::None, Target::Rounder(..) | Target::Curve(..) | Target::End(_) | Target::FrameCorner) => return Cursor::Arrow,
             (Drag::Marquee { .. }, _) => return Cursor::Crosshair,
             _ => None,
@@ -1470,8 +1528,15 @@ impl Editor {
                 self.dirty |= hover != self.hover || window != self.window || hovered != self.hovered || self.loupe_shows();
             }
             Drag::Scale { index, pull, from, origin } => {
-                let (index, pull, origin, by) = (*index, *pull, *origin, (at.0 - from.0, at.1 - from.1));
+                let (index, pull, origin, from) = (*index, *pull, *origin, *from);
                 let Some(before) = self.scaling.clone() else { return };
+                // Turned, the drag is taken as along its own sides.
+                let mut local = |(x, y): (i32, i32)| {
+                    let (x, y) = before.unturn((x as f32, y as f32), &mut self.text);
+                    (x.round() as i32, y.round() as i32)
+                };
+                let (now, then) = (local(at), local(from));
+                let by = (now.0 - then.0, now.1 - then.1);
                 // How many times as wide and as tall its box now is; less
                 // than nought when the corner has been pulled past the
                 // one opposite, which turns the shape over.
@@ -1514,7 +1579,32 @@ impl Editor {
                     shape.font_px = ((before.font_px as f32 * down).round() as u32).max(6);
                 }
                 shape.touch();
+                // Its middle moves as it is sized, and it turns about
+                // that: put back so that what stays still does on screen.
+                if before.angle != 0.0 {
+                    let (want, now) = (before.returned(still, &mut self.text), shape.returned(still, &mut self.text));
+                    shape.translate(want.0 - now.0, want.1 - now.1);
+                }
                 self.shapes[index] = shape;
+                self.dirty = true;
+            }
+            Drag::Turn { index, about, began } => {
+                let (index, about, began) = (*index, *about, *began);
+                let Some(before) = self.scaling.clone() else { return };
+                let mut by = (at.1 as f32 - about.1).atan2(at.0 as f32 - about.0) - began;
+                // With Shift, to whole fifteen degrees: of its angle, or
+                // of the turn for what turns by its points.
+                if mods.shift {
+                    let step = 15f32.to_radians();
+                    by = match before.turnable() {
+                        true => ((before.angle + by) / step).round() * step - before.angle,
+                        false => (by / step).round() * step,
+                    };
+                }
+                let mut shape = before.clone();
+                shape.turn(by, about, &mut self.text);
+                self.shapes[index] = shape;
+                self.turned = by;
                 self.dirty = true;
             }
             Drag::End { index, point, from, moved } => {
@@ -1976,7 +2066,15 @@ impl Editor {
                 if let Some(index) = self.picked() {
                     self.checkpoint();
                     self.scaling = Some(self.shapes[index].clone());
-                    self.drag = Drag::Scale { index, pull: (across, down), from: at, origin: self.frame_of(index) };
+                    self.drag = Drag::Scale { index, pull: (across, down), from: at, origin: self.local_frame_of(index) };
+                }
+            }
+            Target::Turn => {
+                if let Some(index) = self.picked() {
+                    self.checkpoint();
+                    self.scaling = Some(self.shapes[index].clone());
+                    let about = self.pivot_of(index);
+                    self.drag = Drag::Turn { index, about, began: (at.1 as f32 - about.1).atan2(at.0 as f32 - about.0) };
                 }
             }
             // As with a rectangle's: moved by how far it goes.
@@ -2151,7 +2249,7 @@ impl Editor {
                     self.made(self.shapes.len() - 1);
                 }
             }
-            Drag::Scale { .. } => self.scaling = None,
+            Drag::Scale { .. } | Drag::Turn { .. } => self.scaling = None,
             Drag::Shape { .. } => (self.moving, self.guides) = (Vec::new(), Vec::new()),
             // A click on the frame, not a drag of it, opens what there
             // is to choose about it.
@@ -3181,10 +3279,22 @@ impl Editor {
             // Each of several picked out has its box, and no more. A
             // line picked out by itself has only its two ends.
             let alone = self.picked().filter(|&index| !boxed(self.shapes[index].tool) && !self.ends(index).is_empty());
+            // One turned has its box turned with it.
             if self.tool == Tool::Select {
                 for index in self.chosen().into_iter().filter(|&index| alone != Some(index)) {
-                    let frame = self.frame_of(index);
-                    canvas.round_outline(frame.x, frame.y, frame.w, frame.h, 0, thick, accent);
+                    match self.shapes[index].angle {
+                        0.0 => {
+                            let frame = self.frame_of(index);
+                            canvas.round_outline(frame.x, frame.y, frame.w, frame.h, 0, thick, accent);
+                        }
+                        angle => {
+                            let frame = self.local_frame_of(index);
+                            let mut outline = Shape::new(Tool::Rect, accent, thick as f32, (frame.x as f32 + 0.5, frame.y as f32 + 0.5));
+                            outline.points[1] = (frame.right() as f32 - 0.5, frame.bottom() as f32 - 0.5);
+                            outline.angle = angle;
+                            outline.draw(&mut canvas, &mut self.text);
+                        }
+                    }
                 }
             }
             // The lines a shape being moved has gone to: the edge or
@@ -3203,6 +3313,11 @@ impl Editor {
                 Drag::FrameCorner { .. } => Some(format!("{} px", (self.frame.radius as f32 * self.scale()).round() as i32)),
                 // And how many times larger, while a zoom is made so.
                 Drag::End { index, point: 3, .. } => self.shapes.get(index).filter(|shape| shape.tool == Tool::Zoom).map(|shape| format!("{:.1}\u{d7}", shape.zoom_times())),
+                // And how far it is turned, either way of none.
+                Drag::Turn { index, .. } => self.shapes.get(index).map(|shape| {
+                    let degrees = if shape.turnable() { shape.angle } else { self.turned }.to_degrees().round().rem_euclid(360.0);
+                    format!("{}\u{b0}", if degrees > 180.0 { degrees - 360.0 } else { degrees })
+                }),
                 _ => None,
             };
             if let Some(says) = rounding {
@@ -3219,9 +3334,9 @@ impl Editor {
                 canvas.round_outline(reach.x, reach.y, reach.w, reach.h, 0, thick, accent);
             }
             if let Some(index) = self.picked() {
-                let frame = self.frame_of(index);
-                for (across, down) in GRIPS.into_iter().filter(|_| boxed(self.shapes[index].tool)) {
-                    let (x, y) = grip_at(frame, across, down);
+                let gripped = boxed(self.shapes[index].tool);
+                for (across, down) in GRIPS.into_iter().filter(|_| gripped) {
+                    let (x, y) = self.grip_of(index, across, down);
                     canvas.fill(x - grip - thick, y - grip - thick, 2 * (grip + thick), 2 * (grip + thick), accent);
                     canvas.fill(x - grip, y - grip, 2 * grip, 2 * grip, 0xFFFFFF);
                 }
@@ -5132,6 +5247,22 @@ mod tests {
         write(&mut editor, "12c-emoji-search");
         editor.key(Key::Escape, PLAIN);
         editor.key(Key::Char('j'), PLAIN);
+        // Some of them turned, the one picked out with its box turned too.
+        editor.key(Key::Char('v'), PLAIN);
+        for (index, degrees) in [(1, -12.0f32), (6, 20.0), (9, 90.0)] {
+            let about = editor.shapes[index].centre(&mut editor.text);
+            editor.shapes[index].turn(degrees.to_radians(), about, &mut editor.text);
+        }
+        editor.selected = vec![6];
+        let turner = editor.turners(6)[1];
+        editor.pointer_moved(turner.0, turner.1, PLAIN);
+        write(&mut editor, "12d-turned");
+        for index in [1, 6, 9] {
+            let about = editor.shapes[index].centre(&mut editor.text);
+            let angle = editor.shapes[index].angle;
+            editor.shapes[index].turn(-angle, about, &mut editor.text);
+        }
+        editor.selected.clear();
 
         // The picture set on a backdrop, with room and a shadow, as the
         // box it is chosen in shows it and as it comes out.
@@ -5444,6 +5575,55 @@ mod tests {
         editor.frame = Frame { backdrop: Backdrop::Gradient(frame::named("midnight").unwrap()), pad: (64, 48), radius: 16, shadow: Shadow::named("xl").unwrap() };
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
         std::fs::write(dir.join("4-explain.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_shape_turns_by_just_outside_a_corner_and_is_sized_along_its_own_sides() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('r'), PLAIN);
+        drag(&mut editor, (300, 300), (500, 400));
+        let middle = editor.shapes[0].centre(&mut editor.text);
+        let corner = editor.turners(0)[3];
+        editor.pointer_moved(corner.0, corner.1, PLAIN);
+        assert_eq!((editor.hover, editor.cursor()), (Target::Turn, Cursor::Turn));
+        let undone = editor.undo.len();
+
+        // Round a quarter about its middle, and a little more: with
+        // Shift, to the nearest fifteen degrees, which is the quarter.
+        let shift = Mods { shift: true, ..PLAIN };
+        let (dx, dy) = (corner.0 as f32 - middle.0, corner.1 as f32 - middle.1);
+        let a_quarter_on = |by: f32| {
+            let (sin, cos) = (std::f32::consts::FRAC_PI_2 + by).sin_cos();
+            ((middle.0 + dx * cos - dy * sin).round() as i32, (middle.1 + dx * sin + dy * cos).round() as i32)
+        };
+        editor.pressed(5000);
+        let (half, far) = (a_quarter_on(-0.8), a_quarter_on(0.05));
+        editor.pointer_moved(half.0, half.1, shift);
+        editor.pointer_moved(far.0, far.1, shift);
+        editor.released();
+        let shape = &editor.shapes[0];
+        assert!((shape.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "{}", shape.angle);
+        assert_eq!(editor.undo.len(), undone + 1);
+        // Turned a quarter, it stands as tall as it was wide, about the
+        // same middle.
+        let place = editor.shapes[0].bounds(&mut editor.text);
+        assert!((place.w - 100).abs() <= 12 && (place.h - 200).abs() <= 12, "{place:?}");
+        assert_eq!(editor.shapes[0].centre(&mut editor.text), middle);
+
+        // Its own right side is now at the bottom: pulled down by that
+        // grip, it grows long, its left side, at the top, staying put.
+        let top = editor.grip_of(0, -1, 0);
+        let side = editor.grip_of(0, 1, 0);
+        assert!(side.1 > top.1 + 150 && (side.0 - top.0).abs() <= 1, "{side:?} {top:?}");
+        drag(&mut editor, side, (side.0, side.1 + 60));
+        let shape = &editor.shapes[0];
+        let ((_, _, w, h), place) = (shape.frame(), editor.shapes[0].bounds(&mut editor.text));
+        assert!(w > 250.0 && w < 262.0 && (h - 100.0).abs() < 1.0, "{w} {h}");
+        assert!((place.y - top.1).abs() <= 8 && (place.h - 265).abs() <= 12, "{place:?} {top:?}");
+        editor.key(Key::Char('z'), Mods { ctrl: true, ..PLAIN });
+        editor.key(Key::Char('z'), Mods { ctrl: true, ..PLAIN });
+        assert_eq!(editor.shapes[0].angle, 0.0);
     }
 
     #[test]

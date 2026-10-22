@@ -76,10 +76,11 @@ the whole screen. Then:
 
 Shapes stay editable: you can move, resize and recolor them, duplicate
 them with `Ctrl+D`, and move one above or below another with `Ctrl+]` and
-`Ctrl+[`. Drag the dot in the middle of an arrow or line to bend it.
-Shapes snap to each other, and the selection snaps to window edges. Hold
-Shift while resizing to keep the proportions of the selection, a shape or
-the frame.
+`Ctrl+[`. Drag the dot in the middle of an arrow or line to bend it, and
+just outside a corner of a shape to rotate it. Shapes snap to each other,
+and the selection snaps to window edges. As in Figma, hold Shift to keep
+proportions (or rotate in 15° steps) and Alt to draw or resize from the
+center.
 
 ![A window set in a frame, with a backdrop and a shadow](docs/frame.png)
 

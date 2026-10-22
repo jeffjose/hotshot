@@ -435,6 +435,7 @@ impl Display {
             (Cursor::Rising, "bottom_left_corner"),
             (Cursor::Across, "sb_h_double_arrow"),
             (Cursor::Upright, "sb_v_double_arrow"),
+            (Cursor::Turn, "exchange"),
         ];
         for (cursor, name) in names {
             if let Ok(id) = handle.load_cursor(&self.conn, name) {

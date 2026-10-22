@@ -218,6 +218,9 @@ Keys, once an area is selected:
   made larger or smaller, and what is moved to across or down; Alt held
   draws, or makes larger or smaller, about the middle. X puts up the
   loupe, and puts it away again.
+  Just outside a corner of the shape picked out, a drag turns it about
+  its middle; Shift turns it by fifteen degrees at a time.
+  The box of colors has every color, in its square and strip of hues.
   Ctrl+] puts what is picked out over the shape above it, Ctrl+[ under
   the one below; with Shift, over or under them all.
   A line or an arrow picked out has a dot half way along it: dragged, it

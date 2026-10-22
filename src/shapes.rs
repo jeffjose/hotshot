@@ -89,6 +89,10 @@ pub struct Shape {
     /// and `BULLETS` together.
     pub style: u8,
     pub number: u32,
+    /// How far it is turned about its middle, clockwise, in radians:
+    /// boxes, ovals, text and badges. Lines and strokes are turned by
+    /// their points instead.
+    pub angle: f32,
     mask: RefCell<Option<Rc<Mask>>>,
 }
 
@@ -142,7 +146,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, opacity: 256, style: 0, number: 0, mask: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, opacity: 256, style: 0, number: 0, angle: 0.0, mask: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -161,7 +165,7 @@ impl Shape {
             self.face,
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
-            format_args!("{},{},{}", u8::from(self.dashed), self.opacity, self.style),
+            format_args!("{},{},{},{}", u8::from(self.dashed), self.opacity, self.style, self.angle),
             self.fill,
             self.number,
             points.join(" ")
@@ -188,6 +192,7 @@ impl Shape {
         (shape.heads, shape.dashed) = ([heads.starts_with('1'), heads.ends_with('1')], more.next() == Some("1"));
         shape.opacity = more.next().and_then(|opacity| opacity.parse().ok()).unwrap_or(256).min(256);
         shape.style = more.next().and_then(|style| style.parse().ok()).unwrap_or(0);
+        shape.angle = more.next().and_then(|angle| angle.parse().ok()).filter(|angle: &f32| angle.is_finite()).unwrap_or(0.0);
         (shape.fill, shape.number) = (u32::from_str_radix(fill, 16).ok()?, number.parse().ok()?);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
@@ -334,8 +339,80 @@ impl Shape {
         Rect::new(x.round() as i32, y.round() as i32, w.round() as i32, h.round() as i32)
     }
 
-    /// The rectangle that holds all of it.
+    /// Whether it turns by an angle of its own, rather than by its points.
+    pub fn turnable(&self) -> bool {
+        matches!(self.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge)
+    }
+
+    /// Whether it can be turned at all: not a mosaic, a spotlight, a zoom
+    /// or a counter, which are square to the picture or round.
+    pub fn turns(&self) -> bool {
+        self.turnable() || matches!(self.tool, Tool::Pen | Tool::Marker | Tool::Arrow | Tool::Line)
+    }
+
+    /// What it turns about: the middle of it as it is unturned.
+    pub fn centre(&self, text: &mut Text) -> Point {
+        match self.tool {
+            Tool::Text | Tool::Badge => {
+                let place = self.local_bounds(text);
+                (place.x as f32 + place.w as f32 / 2.0, place.y as f32 + place.h as f32 / 2.0)
+            }
+            _ => self.centre_of_frame(),
+        }
+    }
+
+    fn centre_of_frame(&self) -> Point {
+        let (x, y, w, h) = self.frame();
+        (x + w / 2.0, y + h / 2.0)
+    }
+
+    /// A point of the picture as it would be if it were not turned.
+    pub fn unturn(&self, p: Point, text: &mut Text) -> Point {
+        if self.angle == 0.0 {
+            return p;
+        }
+        turn_point(p, self.centre(text), -self.angle)
+    }
+
+    /// A point of it as unturned, where it is with it turned.
+    pub fn returned(&self, p: Point, text: &mut Text) -> Point {
+        if self.angle == 0.0 {
+            return p;
+        }
+        turn_point(p, self.centre(text), self.angle)
+    }
+
+    /// Turned by `by` about `about`: by its angle, its middle taken round
+    /// with it; or by its points.
+    pub fn turn(&mut self, by: f32, about: Point, text: &mut Text) {
+        if self.turnable() {
+            let from = self.centre(text);
+            let to = turn_point(from, about, by);
+            self.translate(to.0 - from.0, to.1 - from.1);
+            self.angle = (self.angle + by).rem_euclid(std::f32::consts::TAU);
+            // Near enough square is square, after a turn round and back.
+            if self.angle.min(std::f32::consts::TAU - self.angle) < 1e-4 {
+                self.angle = 0.0;
+            }
+        } else {
+            for point in &mut self.points {
+                *point = turn_point(*point, about, by);
+            }
+        }
+        self.touch();
+    }
+
+    /// The rectangle that holds all of it, turned as it is.
     pub fn bounds(&self, text: &mut Text) -> Rect {
+        let place = self.local_bounds(text);
+        if self.angle == 0.0 || !self.turnable() {
+            return place;
+        }
+        turned_around(place, self.centre(text), self.angle)
+    }
+
+    /// The rectangle that holds all of it as if it were not turned.
+    pub fn local_bounds(&self, text: &mut Text) -> Rect {
         match self.tool {
             Tool::Text => {
                 let line = Text::line_height(self.font_px);
@@ -407,7 +484,9 @@ impl Shape {
             last.unwrap_or(a)
         };
         let backs = curve.map_or([b, a], |curve| [back(&mut curve.into_iter()), back(&mut curve.into_iter().rev())]);
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head, heads: self.heads, dashed: self.dashed, disc: self.disc(), curve, backs }
+        let (x, y, w, h) = self.frame();
+        let angle = if matches!(self.tool, Tool::Rect | Tool::Ellipse) { self.angle } else { 0.0 };
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head, heads: self.heads, dashed: self.dashed, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0) }
     }
 
     /// Which of its points is the far one of the two it is between: the
@@ -460,6 +539,24 @@ impl Shape {
     }
 }
 
+/// `p` turned by `by` radians, clockwise on the screen, about `about`.
+pub fn turn_point(p: Point, about: Point, by: f32) -> Point {
+    let (sin, cos) = by.sin_cos();
+    let (dx, dy) = (p.0 - about.0, p.1 - about.1);
+    (about.0 + dx * cos - dy * sin, about.1 + dx * sin + dy * cos)
+}
+
+/// The rectangle that holds another turned by `by` about `about`.
+pub fn turned_around(place: Rect, about: Point, by: f32) -> Rect {
+    let corners = [(place.x, place.y), (place.right(), place.y), (place.right(), place.bottom()), (place.x, place.bottom())].map(|(x, y)| turn_point((x as f32, y as f32), about, by));
+    let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (x, y) in corners {
+        (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x), bottom.max(y));
+    }
+    let (x, y) = (left.floor() as i32, top.floor() as i32);
+    Rect::new(x, y, right.ceil() as i32 - x, bottom.ceil() as i32 - y)
+}
+
 /// How many straight lines a bent one is drawn as.
 const BENDS: usize = 24;
 
@@ -481,6 +578,9 @@ struct Outline {
     /// Where a bent line is a head's length back from either end: the
     /// way it is going there is the way the head at that end points.
     backs: [Point; 2],
+    /// How far a box or an oval is turned, and about where.
+    angle: f32,
+    about: Point,
 }
 
 impl Outline {
@@ -539,6 +639,8 @@ impl Outline {
     /// on the edge. Not for pen strokes, which are too many lines to ask
     /// of every pixel.
     fn distance(&self, x: f32, y: f32) -> f32 {
+        // Turned, the point is taken round the other way, onto it unturned.
+        let (x, y) = if self.angle != 0.0 { turn_point((x, y), self.about, -self.angle) } else { (x, y) };
         let (a, b) = (self.a, self.b);
         let half = self.stroke / 2.0;
         match self.tool {
@@ -618,7 +720,11 @@ impl Shape {
         if let Some(mask) = self.mask.borrow().as_ref() {
             return mask.clone();
         }
-        let bounds = self.extent();
+        // A box or an oval turned covers what its corners turned do.
+        let bounds = match self.tool {
+            Tool::Rect | Tool::Ellipse if self.angle != 0.0 => turned_around(self.extent(), self.centre_of_frame(), self.angle),
+            _ => self.extent(),
+        };
         let mask = match self.tool {
             Tool::Pen | Tool::Marker => {
                 let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
@@ -643,6 +749,9 @@ impl Shape {
 
     pub fn draw(&self, canvas: &mut Canvas, text: &mut Text) {
         match self.tool {
+            // Words turned: drawn straight on a sheet of their own, and
+            // the sheet laid down turned.
+            Tool::Text | Tool::Badge if self.angle != 0.0 => self.draw_turned(canvas, text),
             // A spotlight is no mark of its own: `paint` sees to it.
             Tool::Select | Tool::Spotlight => {}
             Tool::Blur => canvas.pixelate(self.frame_rect(), (self.stroke * 3.0 + 4.0).round() as i32),
@@ -653,7 +762,7 @@ impl Shape {
                 // with a little room, and the letters in what reads on it.
                 let mut ink = self.color;
                 if self.style & BOXED != 0 && !self.text.is_empty() {
-                    let (place, room) = (self.bounds(text), high / 4);
+                    let (place, room) = (self.local_bounds(text), high / 4);
                     canvas.round_fill(place.x - room * 3 / 2, place.y - room / 2, place.w + room * 3, place.h + room, room, self.color, self.opacity);
                     ink = ink_on(self.color);
                 }
@@ -674,7 +783,7 @@ impl Shape {
             // A pill of the badge's own pale color, a dot and its words
             // in the strong one, and an edge between the two.
             Tool::Badge => {
-                let place = self.bounds(text);
+                let place = self.local_bounds(text);
                 draw_badge(canvas, text, place, self.number as usize, self.color, self.face, self.font_px, &self.text);
             }
             // What it is of, ringed; lines from that to the larger
@@ -730,8 +839,71 @@ impl Shape {
         }
     }
 
+    /// Words that cannot be drawn turned where they are: drawn unturned on
+    /// a sheet twice, over black and over white, which between them say
+    /// how much of each pixel is covered and in what; and the sheet laid
+    /// over the picture turned about their middle, each pixel a blend of
+    /// the four under it.
+    fn draw_turned(&self, canvas: &mut Canvas, text: &mut Text) {
+        let mut flat = self.clone();
+        flat.angle = 0.0;
+        // Room for a patch, a highlight and slanted letters, which go a
+        // little past the box the words are in.
+        let room = Text::line_height(self.font_px) / 2 + 2;
+        let sheet = flat.local_bounds(text).inflate(room);
+        if sheet.is_empty() || i64::from(sheet.w) * i64::from(sheet.h) > 16_000_000 {
+            return;
+        }
+        flat.translate(-sheet.x as f32, -sheet.y as f32);
+        let (w, h) = (sheet.w, sheet.h);
+        let (mut dark, mut light) = (vec![0u32; (w * h) as usize], vec![0xFFFFFFu32; (w * h) as usize]);
+        flat.draw(&mut Canvas::new(&mut dark, w, h), text);
+        flat.draw(&mut Canvas::new(&mut light, w, h), text);
+        // Each pixel of the sheet as its color times how much is covered,
+        // which is what is over black, and how much.
+        let sample = |x: i32, y: i32| -> ([u32; 3], u32) {
+            if x < 0 || y < 0 || x >= w || y >= h {
+                return ([0; 3], 0);
+            }
+            let at = (y * w + x) as usize;
+            let (over, under) = (dark[at], light[at]);
+            let shown: u32 = [16, 8, 0].iter().map(|shift| 255 - ((under >> shift & 255) - (over >> shift & 255).min(under >> shift & 255))).sum::<u32>() / 3;
+            ([16, 8, 0].map(|shift| over >> shift & 255), shown)
+        };
+        let centre = self.centre(text);
+        let (sin, cos) = (-self.angle).sin_cos();
+        let area = turned_around(sheet, centre, self.angle).intersect(Rect::new(0, 0, canvas.width, canvas.height));
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                // Where on the sheet this pixel's middle comes from.
+                let (dx, dy) = (x as f32 + 0.5 - centre.0, y as f32 + 0.5 - centre.1);
+                let (fx, fy) = (centre.0 + dx * cos - dy * sin - sheet.x as f32 - 0.5, centre.1 + dx * sin + dy * cos - sheet.y as f32 - 0.5);
+                let (ax, ay) = (fx.floor() as i32, fy.floor() as i32);
+                let (tx, ty) = (fx - ax as f32, fy - ay as f32);
+                let corners = [(sample(ax, ay), (1.0 - tx) * (1.0 - ty)), (sample(ax + 1, ay), tx * (1.0 - ty)), (sample(ax, ay + 1), (1.0 - tx) * ty), (sample(ax + 1, ay + 1), tx * ty)];
+                let (mut sum, mut shown) = ([0.0f32; 3], 0.0f32);
+                for ((color, cover), weight) in corners {
+                    (0..3).for_each(|channel| sum[channel] += color[channel] as f32 * weight);
+                    shown += cover as f32 * weight;
+                }
+                if shown < 0.5 {
+                    continue;
+                }
+                // The color as it is where it covers all of a pixel.
+                let channel = |at: usize| ((sum[at] * 255.0 / shown).round() as u32).min(255);
+                canvas.blend(x, y, channel(0) << 16 | channel(1) << 8 | channel(2), shown.round().min(255.0) as u8);
+            }
+        }
+    }
+
     /// Whether a click at a point is on it.
     pub fn hit(&self, x: i32, y: i32, text: &mut Text) -> bool {
+        // Words turned are hit where they are turned to: the point taken
+        // round the other way, onto them unturned.
+        if self.angle != 0.0 && matches!(self.tool, Tool::Text | Tool::Badge) {
+            let (ux, uy) = self.unturn((x as f32, y as f32), text);
+            return self.local_bounds(text).inflate(REACH).contains(ux.round() as i32, uy.round() as i32);
+        }
         match self.tool {
             Tool::Text | Tool::Blur | Tool::Spotlight | Tool::Badge => self.bounds(text).inflate(REACH).contains(x, y),
             Tool::Zoom => {
@@ -1075,14 +1247,58 @@ mod tests {
         let mut arrow = Shape::new(Tool::Arrow, 0x0090FF, 3.5, (10.5, 20.0));
         (arrow.points[1], arrow.heads, arrow.dashed) = ((-4.0, 99.25), [true, true], true);
         let mut badge = Shape::new(Tool::Badge, 0xE54D2E, 2.0, (5.0, 6.0));
-        (badge.text, badge.fill, badge.number, badge.face, badge.font_px) = ("two\nlines \\ and a slash".to_owned(), 0xFEEBE7, 4, 2, 26);
+        (badge.text, badge.fill, badge.number, badge.face, badge.font_px, badge.angle) = ("two\nlines \\ and a slash".to_owned(), 0xFEEBE7, 4, 2, 26, 0.75);
         for shape in [arrow, badge] {
             let back = Shape::read(&shape.write()).expect("read back");
-            assert_eq!((back.tool, back.color, back.points.clone(), back.text.as_str()), (shape.tool, shape.color, shape.points.clone(), shape.text.as_str()));
+            assert_eq!((back.tool, back.color, back.points.clone(), back.text.as_str(), back.angle), (shape.tool, shape.color, shape.points.clone(), shape.text.as_str(), shape.angle));
             assert_eq!((back.heads, back.dashed, back.fill, back.number, back.face, back.font_px, back.stroke), (shape.heads, shape.dashed, shape.fill, shape.number, shape.face, shape.font_px, shape.stroke));
         }
         assert!(Shape::read("nonsense").is_none());
         assert!(Shape::read("arrow\tzz\t1\t0\t0\t16\t0\t01\t0\tFFFFFF\t0\t1,2 3,4\t").is_none());
+    }
+
+    #[test]
+    fn a_turned_box_is_drawn_and_hit_where_it_is_turned_to() {
+        // A wide, low bar about (60, 50), turned a quarter: tall and narrow.
+        let mut text = Text::load();
+        let mut bar = Shape::new(Tool::Rect, 0xFF0000, 2.0, (20.0, 45.0));
+        (bar.points[1], bar.filled, bar.angle) = ((100.0, 55.0), true, std::f32::consts::FRAC_PI_2);
+        assert!(bar.hit(60, 20, &mut text));
+        assert!(!bar.hit(25, 50, &mut text));
+        let mut pixels = vec![0u32; 120 * 100];
+        bar.draw(&mut Canvas::new(&mut pixels, 120, 100), &mut text);
+        assert_eq!((pixels[20 * 120 + 60], pixels[50 * 120 + 25]), (0xFF0000, 0));
+        let place = bar.bounds(&mut text);
+        assert!(place.w < 20 && place.h > 70, "{place:?}");
+    }
+
+    #[test]
+    fn turned_words_are_drawn_turned_and_a_line_turns_by_its_points() {
+        let mut text = Text::load();
+        let mut words = Shape::new(Tool::Text, 0xFFFFFF, 2.0, (40.0, 110.0));
+        (words.text, words.font_px) = ("Hello world".to_owned(), 20);
+        let extent = |words: &Shape, text: &mut Text| {
+            let mut pixels = vec![0u32; 240 * 240];
+            words.draw(&mut Canvas::new(&mut pixels, 240, 240), text);
+            let lit: Vec<(usize, usize)> = pixels.iter().enumerate().filter(|(_, p)| **p != 0).map(|(at, _)| (at % 240, at / 240)).collect();
+            let span = |pick: fn(&(usize, usize)) -> usize| lit.iter().map(pick).max().unwrap_or(0) - lit.iter().map(pick).min().unwrap_or(0);
+            (span(|p| p.0), span(|p| p.1))
+        };
+        let (wide, high) = extent(&words, &mut text);
+        assert!(wide > high * 2);
+        let middle = words.centre(&mut text);
+        words.turn(std::f32::consts::FRAC_PI_2, middle, &mut text);
+        let (wide, high) = extent(&words, &mut text);
+        assert!(high > wide * 2, "{wide} \u{d7} {high}");
+        // Hit where the turned words are, and not where they were.
+        let (x, y) = (middle.0.round() as i32, middle.1.round() as i32);
+        assert!(words.hit(x, y - 40, &mut text) && !words.hit(x - 50, y, &mut text));
+
+        let mut line = Shape::new(Tool::Line, 0, 2.0, (0.0, 0.0));
+        line.points[1] = (100.0, 0.0);
+        line.turn(std::f32::consts::FRAC_PI_2, (50.0, 0.0), &mut text);
+        assert_eq!(line.angle, 0.0);
+        assert!((line.points[0].0 - 50.0).abs() < 0.01 && (line.points[0].1 + 50.0).abs() < 0.01);
     }
 
     #[test]
