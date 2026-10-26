@@ -7,9 +7,8 @@ use std::process::Command;
 
 use crate::canvas::Canvas;
 
-/// The icons, by the letter the icon font has each at. They are Solar's,
-/// as jog's are, with a few plain shapes drawn to match; see
-/// `tools/icon_font.py`.
+/// The icons, by the letter the icon font has each at. They are drawn
+/// for hotshot, as plain lines; see `tools/icon_font.py`.
 pub mod icons {
     pub const SELECT: &str = "\u{e000}";
     pub const ARROW: &str = "\u{e001}";
