@@ -183,8 +183,12 @@ pub struct Settings {
     /// The radius of the corners of the picture itself, in the same
     /// pixels; 0 for the square corners a screen has.
     pub corners: f32,
-    /// Whether rectangles and ovals are drawn filled to begin with.
+    /// Whether rectangles and ovals are drawn filled to begin with; in
+    /// what, if not the color drawn in; and whether with a border, which
+    /// unless it is said they have only when they are not filled.
     pub filled: bool,
+    pub fill: Option<u32>,
+    pub border: Option<bool>,
     /// Which of the faces text is typed in to begin with, counted from 0.
     pub face: usize,
     /// What the picture is set on, with how much room and whether with
@@ -220,7 +224,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, fill: None, border: None, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false }
     }
 }
 
@@ -233,11 +237,28 @@ pub fn scale_for(height: i32) -> f32 {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Button {
     Tool(Tool),
+    /// The color of a line, of text, or of anything but a box or an
+    /// oval, which have a border and a fill to color apart.
     Color,
-    Size(usize),
+    Border,
     Fill,
+    /// How wide a line is, or how large text is: a list of the four.
+    Width,
     /// The face text is in: each press, the next of them.
     Face,
+    /// One of the ways text is set: heavy, slanted and the rest.
+    Style(u8),
+    /// An arrow's head at each end, or one; lines in dashes, or whole;
+    /// and a zoom square, or round.
+    Heads,
+    Dashed,
+    Lens,
+    /// What is picked out, over the shape above it, or under the one
+    /// below; a copy of it; and away with it.
+    Forward,
+    Backward,
+    Duplicate,
+    Delete,
     Undo,
     Redo,
     Cancel,
@@ -292,8 +313,8 @@ enum Cell {
     Badge(usize),
     /// An emoji: which of those the search has found.
     Emoji(usize),
-    /// One of the ways a tool can draw: a tool's own short list.
-    Variant(usize),
+    /// One of the widths of line, or sizes of text.
+    Width(usize),
     /// What the picture is set on: nothing, or one of the backdrops
     /// counted from 1.
     Backdrop(usize),
@@ -310,8 +331,10 @@ enum Cell {
     Place(usize),
 }
 
-/// The bar of tools, in the groups it is divided into.
-const GROUPS: [&[Button]; 5] = [
+/// The bar of tools, in the groups it is divided into. How what is drawn
+/// looks is not on it: that is on the bar over what is picked out, or
+/// over this one while a tool is in hand.
+const GROUPS: [&[Button]; 4] = [
     &[
         Button::Tool(Tool::Select),
         Button::Tool(Tool::Arrow),
@@ -328,7 +351,6 @@ const GROUPS: [&[Button]; 5] = [
         Button::Badges,
         Button::Emoji,
     ],
-    &[Button::Color, Button::Size(0), Button::Size(1), Button::Size(2), Button::Size(3), Button::Fill, Button::Face],
     &[Button::Undo, Button::Redo],
     &[Button::Frame, Button::Pointer],
     &[Button::Cancel, Button::Record, Button::Pin, Button::Save, Button::Places, Button::Copy],
@@ -357,12 +379,22 @@ impl Button {
             Button::Tool(Tool::Badge) | Button::Badges => ("Badges", "J"),
             Button::Emoji => ("Emoji", "E"),
             Button::Color => ("Color", "C"),
-            Button::Size(0) => ("Thin", "1"),
-            Button::Size(1) => ("Medium", "2"),
-            Button::Size(2) => ("Thick", "3"),
-            Button::Size(_) => ("Heavy", "4"),
-            Button::Fill => ("Filled", "F"),
+            Button::Border => ("Border", "C"),
+            Button::Fill => ("Fill", "F"),
+            Button::Width => ("Width", "1\u{2013}4"),
             Button::Face => ("Font", "G"),
+            Button::Style(shapes::BOLD) => ("Bold", "Ctrl+B"),
+            Button::Style(shapes::ITALIC) => ("Italic", "Ctrl+I"),
+            Button::Style(shapes::HIGHLIGHT) => ("Highlighted", ""),
+            Button::Style(shapes::BOXED) => ("On a patch", ""),
+            Button::Style(_) => ("Bulleted", ""),
+            Button::Heads => ("A head at each end", ""),
+            Button::Dashed => ("Dashed", "D"),
+            Button::Lens => ("Square or round", ""),
+            Button::Forward => ("Bring forward, with Shift to the front", "Ctrl+]"),
+            Button::Backward => ("Send backward, with Shift to the back", "Ctrl+["),
+            Button::Duplicate => ("Duplicate", "Ctrl+D"),
+            Button::Delete => ("Delete", "Del"),
             Button::Undo => ("Undo", "Ctrl+Z"),
             Button::Redo => ("Redo", "Ctrl+Shift+Z"),
             Button::Cancel => ("Cancel", "Esc"),
@@ -392,7 +424,12 @@ impl Button {
             Button::Tool(Tool::Zoom) => icons::ZOOM,
             Button::Tool(Tool::Badge) | Button::Badges => icons::BADGE,
             Button::Emoji => icons::STICKER,
-            Button::Fill => icons::FILLED,
+            Button::Heads => icons::HEADS,
+            Button::Dashed => icons::DASHED,
+            Button::Forward => icons::FORWARD,
+            Button::Backward => icons::BACKWARD,
+            Button::Duplicate => icons::DUPLICATE,
+            Button::Delete => icons::TRASH,
             Button::Undo => icons::UNDO,
             Button::Redo => icons::REDO,
             Button::Cancel => icons::CLOSE,
@@ -403,7 +440,9 @@ impl Button {
             Button::Record => icons::RECORD,
             Button::Places => icons::DOWN,
             Button::Copy => icons::COPY,
-            Button::Color | Button::Size(_) | Button::Face => "",
+            // Drawn as what they stand for: a color, a width, a font,
+            // a letter set the way it says, a box or a ring.
+            Button::Color | Button::Border | Button::Fill | Button::Width | Button::Face | Button::Style(_) | Button::Lens => "",
         }
     }
 }
@@ -415,8 +454,10 @@ enum Target {
     Swatch(u32),
     /// A step of how opaque what is drawn is, out of 256.
     Opacity(u32),
-    /// One of the ways text is set: heavy, slanted and the rest.
-    Style(u8),
+    /// Over the colors of a box or an oval: which of its border and its
+    /// fill they are for; and among them, neither color at all.
+    Paint(Paint),
+    NoPaint,
     Pipette,
     /// The square of the box of colors, saturation across and value
     /// down; and the strip of hues under it.
@@ -502,11 +543,20 @@ enum Drag {
     Button(Button),
 }
 
-/// Where the box of colors hangs from.
+/// Where the box of colors hangs from: the button that opened it, or
+/// where the pointer was.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Anchor {
     Bar,
     At(i32, i32),
+}
+
+/// What the box of colors colors, of a box or an oval: its border, which
+/// is what everything else has, or what is inside it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Paint {
+    Line,
+    Fill,
 }
 
 /// Where everything of the interface is, for one frame.
@@ -522,10 +572,19 @@ struct Layout {
     swatches: Vec<(Rect, u32)>,
     /// The steps of how opaque, in the same box.
     opacities: Vec<(Rect, u32)>,
-    /// The small bar over text being typed or picked out: how it is set.
-    styles: Vec<(Rect, u8)>,
-    styles_bar: Option<Rect>,
+    /// Over its colors, for a box or an oval, the border and the fill;
+    /// and among the colors, none.
+    paints: Vec<(Rect, Paint)>,
+    none: Option<Rect>,
     pipette: Rect,
+    /// The bar over what is picked out, or over the other while a tool
+    /// is in hand: how what is drawn looks, and for what is picked out
+    /// what can be done with it. Where it is, its buttons, the lines
+    /// between their groups, and whether it is above what it is for.
+    tray: Option<Rect>,
+    tray_buttons: Vec<(Rect, Button)>,
+    tray_dividers: Vec<i32>,
+    tray_above: bool,
     /// In the box of colors: the square of saturation and value, the
     /// strip of hues, and where the color in hand is said in hex.
     square: Rect,
@@ -560,7 +619,13 @@ pub struct Editor {
     tool: Tool,
     color: u32,
     size: usize,
+    /// Whether the next box or oval has a fill, and in what; and whether
+    /// it has a border, which is in `color`.
     filled: bool,
+    fill: u32,
+    bordered: bool,
+    /// Which of those the box of colors is for.
+    paint: Paint,
     /// The radius of the picture's corners, in pixels of a screen 1080 high.
     corners: f32,
     shapes: Vec<Shape>,
@@ -671,15 +736,28 @@ fn on(color: u32) -> u32 {
 /// Each as which way it pulls across and down.
 const GRIPS: [(i32, i32); 8] = [(-1, -1), (1, -1), (-1, 1), (1, 1), (0, -1), (0, 1), (-1, 0), (1, 0)];
 
-/// The ways a tool can draw, for the tools that have more than one:
-/// what is behind the small mark in the corner of its button.
-fn variants(tool: Tool) -> &'static [&'static str] {
-    match tool {
-        Tool::Arrow => &["One head", "A head at each end", "Dashed"],
-        Tool::Line => &["Solid", "Dashed"],
-        Tool::Rect | Tool::Ellipse => &["Outlined", "Filled"],
-        Tool::Zoom => &["Round", "Square"],
-        _ => &[],
+/// Whether a tool draws what has a border and a fill, each in a color of
+/// its own.
+fn paintable(tool: Tool) -> bool {
+    matches!(tool, Tool::Rect | Tool::Ellipse)
+}
+
+/// What the bar over what is picked out has for how a kind of shape
+/// looks; or, for shapes of more than one kind, what they all have.
+/// `border` says whether a box or an oval has one, which only then has a
+/// width; `styled`, whether there is the one text to set the ways of.
+fn looks(kind: Option<Tool>, border: bool, styled: bool) -> Vec<Button> {
+    let styles = STYLES.iter().map(|&(style, _)| Button::Style(style)).filter(|_| styled);
+    match kind {
+        Some(Tool::Rect | Tool::Ellipse) => [Button::Fill, Button::Border].into_iter().chain(border.then_some(Button::Width)).collect(),
+        Some(Tool::Arrow) => vec![Button::Color, Button::Width, Button::Heads, Button::Dashed],
+        Some(Tool::Line) => vec![Button::Color, Button::Width, Button::Dashed],
+        Some(Tool::Text) => [Button::Color, Button::Width, Button::Face].into_iter().chain(styles).collect(),
+        Some(Tool::Badge) => vec![Button::Color, Button::Face],
+        Some(Tool::Zoom) => vec![Button::Color, Button::Width, Button::Lens],
+        Some(Tool::Blur) => vec![Button::Width],
+        Some(Tool::Spotlight | Tool::Select) => Vec::new(),
+        Some(Tool::Pen | Tool::Marker | Tool::Counter) | None => vec![Button::Color, Button::Width],
     }
 }
 
@@ -793,6 +871,16 @@ fn grip_at(frame: Rect, across: i32, down: i32) -> (i32, i32) {
     (frame.x + frame.w * (across + 1) / 2, frame.y + frame.h * (down + 1) / 2)
 }
 
+/// Where a box `size` large goes that hangs from a button on a bar: its
+/// middle under the button's, under the bar; or over the bar, where it
+/// would not fit under or `over` would rather have it there and it fits.
+fn hung(button: Rect, bar: Rect, over: bool, size: (i32, i32), monitor: Rect, pad: i32) -> (i32, i32) {
+    let (above, below) = (bar.y - pad / 2 - size.1, bar.bottom() + pad / 2);
+    let (room_above, room_below) = (above >= monitor.y + pad, below + size.1 <= monitor.bottom() - pad);
+    let top = if (over && room_above) || !room_below { above } else { below };
+    (button.x + button.w / 2 - size.0 / 2, top)
+}
+
 fn panel(canvas: &mut Canvas, rect: Rect, radius: i32) {
     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, radius, MENU_COLOR, 256);
     canvas.round_outline(rect.x, rect.y, rect.w, rect.h, radius, 1, MENU_EDGE_COLOR);
@@ -832,7 +920,13 @@ impl Editor {
             windows,
             color: settings.color,
             corners: settings.corners,
+            // Filled to begin with, as the config file may say: unless it
+            // says otherwise, in the color drawn in and with no border, as
+            // was always so.
             filled: settings.filled,
+            fill: settings.fill.unwrap_or(settings.color),
+            bordered: settings.border.unwrap_or(!settings.filled),
+            paint: Paint::Line,
             face: settings.face.min(FACES.len() - 1),
             frame: settings.frame,
             place: settings.place.min(settings.places.len().saturating_sub(1)),
@@ -1017,19 +1111,48 @@ impl Editor {
             }
         }
 
-        // Over the text being typed, or picked out by itself, a small
-        // bar of the ways it can be set: heavy, slanted, gone over
-        // with a marker, and each line after a dot. Under it, where
-        // there is no room over.
-        if let (Some(index), false) = (self.styled(), reshaping) {
-            let around = self.shapes[index].bounds(&mut self.text);
-            let (wide, high) = (STYLES.len() as i32 * side + 2 * margin, side + 2 * margin);
-            let top = if around.y - high - pad >= monitor.y { around.y - high - pad } else { around.bottom() + pad };
-            let place = Rect::new(around.x, top, wide, high).kept_within(monitor.inflate(-pad));
-            for (index, (style, _)) in STYLES.iter().enumerate() {
-                layout.styles.push((Rect::new(place.x + margin + index as i32 * side, place.y + margin, side, side), *style));
+        // The bar over what is picked out, or the text being typed: over
+        // it, clear of the handles round it, or under it where there is
+        // no room over or the other bar is in the way. With nothing
+        // picked out and a tool in hand, over the other bar; or under
+        // it, where that is up over the selection. Not while anything is
+        // being drawn, moved or reshaped, which it would be in the way of.
+        let busy = matches!(self.drag, Drag::Draw { .. } | Drag::Shape { moved: true, .. } | Drag::Scale { .. } | Drag::Turn { .. } | Drag::End { moved: true, .. } | Drag::Round { .. } | Drag::Marquee { .. });
+        let tray = self.tray_contents();
+        if !tray.is_empty() && !hidden && !busy {
+            let count = tray.iter().flatten().count() as i32;
+            let parts = tray.len() as i32 - count;
+            let (wide, high) = (2 * margin + count * side + parts * gap, side + 2 * margin);
+            let (place, above) = match self.tray_around() {
+                Some(around) => {
+                    let out = px as i32;
+                    let over = Rect::new(around.x + around.w / 2 - wide / 2, around.y - out - high, wide, high);
+                    let under = Rect::new(over.x, around.bottom() + out, wide, high);
+                    let fits = |rect: Rect| rect.y >= monitor.y + pad && rect.bottom() <= monitor.bottom() - pad && !layout.bar.is_some_and(|bar| bar.intersects(rect));
+                    let above = fits(over) || !fits(under);
+                    (if above { over } else { under }, above)
+                }
+                None => {
+                    let above = bar.y >= selection.y + selection.h / 2;
+                    let top = if above { bar.y - pad / 2 - high } else { bar.bottom() + pad / 2 };
+                    (Rect::new(bar.x + bar.w / 2 - wide / 2, top, wide, high), above)
+                }
+            };
+            let place = place.kept_within(monitor.inflate(-pad));
+            let mut x = place.x + margin;
+            for slot in tray {
+                match slot {
+                    Some(button) => {
+                        layout.tray_buttons.push((Rect::new(x, place.y + margin, side, side), button));
+                        x += side;
+                    }
+                    None => {
+                        layout.tray_dividers.push(x + gap / 2);
+                        x += gap;
+                    }
+                }
             }
-            layout.styles_bar = Some(place);
+            (layout.tray, layout.tray_above) = (Some(place), above);
         }
 
         // The size of the selection, over its top-left corner, or inside
@@ -1054,28 +1177,49 @@ impl Editor {
             // in hex beside the colors taken lately.
             let inner = width - 2 * margin;
             let (square_h, strip_h) = (inner * 3 / 5, side / 2);
-            let picker = square_h + pad / 2 + strip_h + pad / 2 + side;
+            // For a box or an oval, over all of it, which of its border
+            // and its fill the colors are for.
+            let apart = self.paints_apart();
+            let tabs = if apart { side + pad / 2 } else { 0 };
+            let picker = tabs + square_h + pad / 2 + strip_h + pad / 2 + side;
             // A row more than the colors and the pipette: how opaque.
             let height = picker + rows * side + 2 * side + 2 * margin + pad / 2;
             let at = match anchor {
                 Anchor::At(x, y) => (x + pad / 2, y + pad / 2),
+                // From the button for what it colors, on whichever bar
+                // that is on.
                 Anchor::Bar => {
-                    let button = layout.buttons.iter().find(|(_, button)| *button == Button::Color).map_or(bar, |(rect, _)| *rect);
-                    let under = bar.bottom() + pad / 2;
-                    (button.x + button.w / 2 - width / 2, if under + height <= monitor.bottom() - pad { under } else { bar.y - pad / 2 - height })
+                    let wanted = |button: Button| match self.paint {
+                        Paint::Fill => button == Button::Fill,
+                        Paint::Line => matches!(button, Button::Color | Button::Border),
+                    };
+                    match layout.tray_buttons.iter().find(|(_, button)| wanted(*button)) {
+                        Some(&(button, _)) => hung(button, layout.tray.unwrap_or(bar), layout.tray_above, (width, height), monitor, pad),
+                        None => hung(Rect::new(bar.x + bar.w / 2, bar.y, 0, bar.h), bar, false, (width, height), monitor, pad),
+                    }
                 }
             };
             let popup = Rect::new(at.0, at.1, width, height).kept_within(monitor.inflate(-pad));
             let across = (width - 2 * margin) / columns;
             let (left, top) = (popup.x + margin, popup.y + margin);
+            if apart {
+                let half = inner / 2;
+                layout.paints = vec![(Rect::new(left, top, half, side), Paint::Line), (Rect::new(left + half, top, inner - half, side), Paint::Fill)];
+            }
+            let top = top + tabs;
             layout.square = Rect::new(left, top, inner, square_h);
             layout.hues = Rect::new(left, top + square_h + pad / 2, inner, strip_h);
             let lately_top = layout.hues.bottom() + pad / 2;
             layout.hex = Rect::new(left, lately_top, across * 3, side);
-            for (index, &color) in self.lately.iter().take(columns as usize - 3).enumerate() {
-                layout.swatches.push((Rect::new(left + (3 + index as i32) * across, lately_top, across, side), color));
+            // None, beside the hex, before the colors taken lately.
+            let first = if apart { 4 } else { 3 };
+            if apart {
+                layout.none = Some(Rect::new(left + 3 * across, lately_top, across, side));
             }
-            let top = top + picker;
+            for (index, &color) in self.lately.iter().take(columns as usize - first).enumerate() {
+                layout.swatches.push((Rect::new(left + (first as i32 + index as i32) * across, lately_top, across, side), color));
+            }
+            let top = popup.y + margin + picker;
             for (index, &(color, _)) in PALETTE.iter().enumerate() {
                 let (column, row) = (index as i32 % columns, index as i32 / columns);
                 layout.swatches.push((Rect::new(left + column * across, top + row * side, across, side), color));
@@ -1166,15 +1310,16 @@ impl Editor {
                     layout.caption = Some(Rect::new(0, top + EMOJI_DOWN * side + pad / 4, across, line));
                     (across, top + EMOJI_DOWN * side + pad / 4 + line)
                 }
-                // The ways a tool can draw, one to a row.
-                Button::Tool(tool) => {
-                    let ways = variants(tool);
-                    let widest = ways.iter().map(|way| self.text.width(way, px)).max().unwrap_or(0);
-                    let across = widest + side + 2 * pad;
-                    for index in 0..ways.len() {
-                        cells.push((Rect::new(0, index as i32 * side, across, side), Cell::Variant(index)));
+                // The widths of line, or sizes of text, one to a row:
+                // each drawn as it is, what it is called, and its key.
+                Button::Width => {
+                    let names = self.width_names();
+                    let widest = names.iter().map(|name| self.text.width(name, px)).max().unwrap_or(0);
+                    let across = 2 * side + widest + self.text.width("4", px) + 3 * pad;
+                    for index in 0..names.len() {
+                        cells.push((Rect::new(0, index as i32 * side, across, side), Cell::Width(index)));
                     }
-                    (across, ways.len() as i32 * side)
+                    (across, names.len() as i32 * side)
                 }
                 // Where Save saves to: the folders the config file
                 // names, one to a row.
@@ -1203,10 +1348,15 @@ impl Editor {
                 }
             };
             let (width, height) = (across + 2 * margin, down + 2 * margin);
-            let button = layout.buttons.iter().find(|(_, button)| *button == from).map_or(bar, |(rect, _)| *rect);
-            let under = bar.bottom() + pad / 2;
-            let top = if under + height <= monitor.bottom() - pad { under } else { bar.y - pad / 2 - height };
-            let flyout = Rect::new(button.x + button.w / 2 - width / 2, top, width, height).kept_within(monitor.inflate(-pad));
+            // From its button, on whichever bar that is on.
+            let at = match layout.tray_buttons.iter().find(|(_, button)| *button == from) {
+                Some(&(button, _)) => hung(button, layout.tray.unwrap_or(bar), layout.tray_above, (width, height), monitor, pad),
+                None => {
+                    let button = layout.buttons.iter().find(|(_, button)| *button == from).map_or(bar, |(rect, _)| *rect);
+                    hung(button, bar, false, (width, height), monitor, pad)
+                }
+            };
+            let flyout = Rect::new(at.0, at.1, width, height).kept_within(monitor.inflate(-pad));
             layout.cells = cells.into_iter().map(|(rect, cell)| (rect.moved(flyout.x + margin, flyout.y + margin), cell)).collect();
             layout.look = layout.look.map(|look| look.moved(flyout.x + margin, flyout.y + margin));
             layout.field = layout.field.map(|field| field.moved(flyout.x + margin, flyout.y + margin));
@@ -1219,14 +1369,6 @@ impl Editor {
 
     fn target_at(&mut self, (x, y): (i32, i32)) -> Target {
         let layout = self.layout();
-        if let Some(bar) = layout.styles_bar {
-            if let Some((_, style)) = layout.styles.iter().find(|(rect, _)| rect.contains(x, y)) {
-                return Target::Style(*style);
-            }
-            if bar.contains(x, y) {
-                return Target::Panel;
-            }
-        }
         if let Some(flyout) = layout.flyout {
             if let Some((_, cell)) = layout.cells.iter().find(|(rect, _)| rect.contains(x, y)) {
                 return Target::Cell(*cell);
@@ -1242,6 +1384,12 @@ impl Editor {
             if let Some((_, opacity)) = layout.opacities.iter().find(|(rect, _)| rect.contains(x, y)) {
                 return Target::Opacity(*opacity);
             }
+            if let Some((_, paint)) = layout.paints.iter().find(|(rect, _)| rect.contains(x, y)) {
+                return Target::Paint(*paint);
+            }
+            if layout.none.is_some_and(|none| none.contains(x, y)) {
+                return Target::NoPaint;
+            }
             if layout.pipette.contains(x, y) {
                 return Target::Pipette;
             }
@@ -1255,6 +1403,14 @@ impl Editor {
                 return Target::Hex;
             }
             if popup.contains(x, y) {
+                return Target::Panel;
+            }
+        }
+        if let Some(tray) = layout.tray {
+            if let Some((_, button)) = layout.tray_buttons.iter().find(|(rect, _)| rect.contains(x, y)) {
+                return Target::Button(*button);
+            }
+            if tray.contains(x, y) {
                 return Target::Panel;
             }
         }
@@ -1501,7 +1657,7 @@ impl Editor {
             (Drag::Move { .. } | Drag::Shape { .. }, _) => Cursor::Move,
             (Drag::Select { .. } | Drag::Draw { .. }, _) => Cursor::Crosshair,
             (Drag::Room { .. }, _) => Cursor::Move,
-            (_, Target::Button(_) | Target::Swatch(_) | Target::Pipette | Target::Panel | Target::Cell(_) | Target::Backdrop | Target::Style(_) | Target::Opacity(_)) => Cursor::Arrow,
+            (_, Target::Button(_) | Target::Swatch(_) | Target::Pipette | Target::Panel | Target::Cell(_) | Target::Backdrop | Target::Paint(_) | Target::NoPaint | Target::Opacity(_)) => Cursor::Arrow,
             (_, Target::Inside) => match self.tool {
                 Tool::Select => Cursor::Move,
                 Tool::Text => Cursor::Text,
@@ -2051,7 +2207,13 @@ impl Editor {
                     chosen.iter().for_each(|&index| self.shapes[index].opacity = opacity);
                 }
             }
-            Target::Style(style) => self.toggle_style(style),
+            // The colors for the border of a box, or its fill: the square
+            // and the strip start at the one it has.
+            Target::Paint(paint) => {
+                self.paint = paint;
+                self.hsv = to_hsv(self.paint_now().unwrap_or(self.color));
+            }
+            Target::NoPaint => self.no_paint(),
             Target::Pipette => (self.pipette, self.popup) = (true, None),
             Target::Hex => self.hex = Some(String::new()),
             // Any color at all: by the square and the strip, the color
@@ -2216,6 +2378,9 @@ impl Editor {
                 self.checkpoint();
                 let mut shape = Shape::new(tool, self.color, self.stroke(), point);
                 shape.filled = if tool == Tool::Zoom { self.square } else { self.filled };
+                if paintable(tool) {
+                    (shape.fill, shape.border) = (self.fill, self.bordered);
+                }
                 shape.opacity = self.opacity;
                 shape.radius = self.settings.radius * self.scale();
                 shape.font_px = self.font_px();
@@ -2290,7 +2455,7 @@ impl Editor {
                 }
             }
             // A color picked is one taken lately, once let go of.
-            Drag::Pick { .. } => self.taken_lately(self.color),
+            Drag::Pick { .. } => self.taken_lately(self.paint_now().unwrap_or(self.color)),
             Drag::Marquee { from } => {
                 let reach = Rect::spanning(from, self.pointer);
                 for index in 0..self.shapes.len() {
@@ -2299,21 +2464,7 @@ impl Editor {
                     }
                 }
             }
-            Drag::Button(button) => {
-                if self.target_at(self.pointer) == Target::Button(button) {
-                    // A press on the mark in the corner of a tool's
-                    // button is for the list of its ways, whichever
-                    // tool is in hand: it is taken in hand first.
-                    let place = self.layout().buttons.iter().find(|(_, other)| *other == button).map(|(rect, _)| *rect);
-                    let corner = place.is_some_and(|rect| self.pointer.0 > rect.x + rect.w * 3 / 5 && self.pointer.1 > rect.y + rect.h * 3 / 5);
-                    if let (Button::Tool(tool), true) = (button, corner) {
-                        if !variants(tool).is_empty() && self.tool != tool {
-                            self.set_tool(tool);
-                        }
-                    }
-                    outcome = self.activate(button);
-                }
-            }
+            Drag::Button(button) if self.target_at(self.pointer) == Target::Button(button) => outcome = self.activate(button),
             _ => {}
         }
         self.hover = self.target_at(self.pointer);
@@ -2502,52 +2653,17 @@ impl Editor {
             (Key::Char('z'), true) => self.undo(),
             (Key::Char('y'), true) => self.redo(),
             (Key::Char('a'), true) => self.select(self.screen()),
-            // A copy of each shape picked out, a little down and to the
-            // right of it, and picked out in its place.
             // Heavy and slanted, for the text picked out.
             (Key::Char('b'), true) => self.toggle_style(shapes::BOLD),
             (Key::Char('i'), true) => self.toggle_style(shapes::ITALIC),
-            (Key::Char('d'), true) => {
-                let chosen = self.chosen();
-                if !chosen.is_empty() {
-                    self.checkpoint();
-                    let by = ui_px(self.monitor().h) as f32;
-                    let mut counters = self.shapes.iter().filter(|shape| shape.tool == Tool::Counter).count() as u32;
-                    self.selected.clear();
-                    for index in chosen {
-                        let mut copy = self.shapes[index].clone();
-                        copy.translate(by, by);
-                        // A counter copied counts on.
-                        if copy.tool == Tool::Counter {
-                            counters += 1;
-                            copy.number = counters;
-                        }
-                        self.shapes.push(copy);
-                        self.selected.push(self.shapes.len() - 1);
-                    }
-                    self.tool = Tool::Select;
-                }
-            }
+            (Key::Char('d'), true) => self.duplicate(),
             // What is picked out, over the shape above it or under the
             // one below; with Shift, over or under them all.
             (Key::Char(']'), true) => self.restack(true, mods.shift),
             (Key::Char('['), true) => self.restack(false, mods.shift),
             (Key::Char('}'), true) => self.restack(true, true),
             (Key::Char('{'), true) => self.restack(false, true),
-            (Key::Delete | Key::Backspace, _) => {
-                let mut going = self.chosen();
-                if !going.is_empty() {
-                    self.checkpoint();
-                    // From the last, so that the places of the rest hold.
-                    going.sort_unstable();
-                    going.iter().rev().for_each(|&index| drop(self.shapes.remove(index)));
-                    self.selected.clear();
-                    // The counters left count from one again, in order.
-                    for (number, shape) in self.shapes.iter_mut().filter(|shape| shape.tool == Tool::Counter).enumerate() {
-                        shape.number = number as u32 + 1;
-                    }
-                }
-            }
+            (Key::Delete | Key::Backspace, _) => self.delete(),
             (Key::Left, ctrl) => self.nudge(-1, 0, ctrl),
             (Key::Right, ctrl) => self.nudge(1, 0, ctrl),
             (Key::Up, ctrl) => self.nudge(0, -1, ctrl),
@@ -2568,25 +2684,13 @@ impl Editor {
                 'b' => self.set_tool(Tool::Blur),
                 's' => self.set_tool(Tool::Spotlight),
                 'c' => drop(self.activate(Button::Color)),
-                'f' => drop(self.activate(Button::Fill)),
+                'f' => self.toggle_fill(),
                 'g' => drop(self.activate(Button::Face)),
                 'z' => self.set_tool(Tool::Zoom),
                 'j' => drop(self.activate(Button::Badges)),
                 'w' => drop(self.activate(Button::Frame)),
                 'm' => drop(self.activate(Button::Pointer)),
-                // Dashes, for the lines and arrows picked out and for
-                // those drawn after.
-                'd' => {
-                    self.dashed = !self.dashed;
-                    let lines: Vec<usize> = self.chosen().into_iter().filter(|&index| matches!(self.shapes[index].tool, Tool::Line | Tool::Arrow)).collect();
-                    if !lines.is_empty() {
-                        self.checkpoint();
-                    }
-                    for index in lines {
-                        self.shapes[index].dashed = self.dashed;
-                        self.shapes[index].touch();
-                    }
-                }
+                'd' => self.toggle_dashed(),
                 // From each roundness of the picture's corners to the
                 // next, and round again to square; one that is none of
                 // them, set by hand, goes to square first.
@@ -2663,50 +2767,39 @@ impl Editor {
     fn activate(&mut self, button: Button) -> Outcome {
         self.dirty = true;
         match button {
-            // A tool with more than one way of drawing, pressed when it
-            // is already the one in hand, opens the list of them.
-            Button::Tool(tool) if self.tool == tool && !variants(tool).is_empty() => {
-                self.commit_text();
+            Button::Tool(tool) => self.set_tool(tool),
+            // The colors, for a line or a border, or for a fill: opened
+            // at the color there is now; and the same button again, or
+            // the button of the one they are open for, puts them away.
+            Button::Color | Button::Border | Button::Fill => {
+                let paint = if button == Button::Fill { Paint::Fill } else { Paint::Line };
+                match (self.popup, paint == self.paint) {
+                    (Some(_), true) => self.popup = None,
+                    _ => {
+                        (self.paint, self.flyout, self.popup) = (paint, None, Some(Anchor::Bar));
+                        self.hsv = to_hsv(self.paint_now().unwrap_or(self.color));
+                    }
+                }
+            }
+            Button::Width => {
                 self.popup = None;
                 self.flyout = if self.flyout == Some(button) { None } else { Some(button) };
             }
-            Button::Tool(tool) => self.set_tool(tool),
-            Button::Color => {
-                self.popup = match self.popup {
-                    Some(_) => None,
-                    None => Some(Anchor::Bar),
-                }
-            }
-            Button::Size(size) => self.set_size(size),
+            Button::Style(style) => self.toggle_style(style),
+            Button::Heads => self.toggle_heads(),
+            Button::Dashed => self.toggle_dashed(),
+            Button::Lens => self.toggle_lens(),
+            Button::Forward => self.restack(true, self.mods.shift),
+            Button::Backward => self.restack(false, self.mods.shift),
+            Button::Duplicate => self.duplicate(),
+            Button::Delete => self.delete(),
             Button::Pointer => self.arrow_shows = !self.arrow_shows && self.arrow.is_some(),
             Button::Pin => return self.finish(Finish { pin: true, ..Finish::NONE }),
             Button::Record => return self.finish(Finish { record: true, ..Finish::NONE }),
-            Button::Fill => {
-                // A zoom picked out is made square, or round again: that
-                // is what there is to fill or not about a zoom, and it
-                // is nothing to do with how the next rectangle is drawn.
-                let zooms: Vec<usize> = self.chosen().into_iter().filter(|&index| self.shapes[index].tool == Tool::Zoom).collect();
-                if !zooms.is_empty() {
-                    self.checkpoint();
-                    for index in zooms {
-                        self.shapes[index].filled = !self.shapes[index].filled;
-                    }
-                    return Outcome::Continue;
-                }
-                self.filled = !self.filled;
-                let chosen: Vec<usize> = self.chosen().into_iter().filter(|&index| matches!(self.shapes[index].tool, Tool::Rect | Tool::Ellipse)).collect();
-                if !chosen.is_empty() {
-                    self.checkpoint();
-                    for index in chosen {
-                        self.shapes[index].filled = self.filled;
-                        self.shapes[index].touch();
-                    }
-                }
-            }
             // The next face, for the text being typed or picked out, and
             // for what is typed after.
             Button::Face => {
-                self.face = (self.face + 1) % FACES.len();
+                self.face = (self.shown().map_or(self.face, |shape| shape.face) + 1) % FACES.len();
                 let texts: Vec<usize> = match self.editing {
                     Some((index, _)) => vec![index],
                     None => self.chosen().into_iter().filter(|&index| matches!(self.shapes[index].tool, Tool::Text | Tool::Badge)).collect(),
@@ -2756,15 +2849,21 @@ impl Editor {
     }
 
     /// Sets that text one of the ways, or sets it back; and what is
-    /// typed after is set as it then is.
+    /// typed after is set as it then is. With no text to set, with the
+    /// text tool in hand, only what is typed next.
     fn toggle_style(&mut self, style: u8) {
-        let Some(index) = self.styled() else { return };
+        self.dirty = true;
+        let Some(index) = self.styled() else {
+            if self.tool == Tool::Text && self.chosen().is_empty() {
+                self.style ^= style;
+            }
+            return;
+        };
         if self.editing.is_none() {
             self.checkpoint();
         }
         self.shapes[index].style ^= style;
         self.style = self.shapes[index].style;
-        self.dirty = true;
     }
 
     /// A color picked in the square, or a hue in the strip, at a point:
@@ -2783,16 +2882,7 @@ impl Editor {
             v = 1.0 - ((y - place.y) as f32 / place.h.max(1) as f32).clamp(0.0, 1.0);
         }
         self.hsv = (h, s, v);
-        let color = from_hsv(self.hsv);
-        self.color = color;
-        if let Some((index, _)) = self.editing {
-            self.shapes[index].color = color;
-        }
-        for index in self.chosen() {
-            self.shapes[index].color = color;
-            self.shapes[index].touch();
-        }
-        self.dirty = true;
+        self.paint_with(from_hsv(self.hsv));
     }
 
     /// A color taken lately, to the front of those that are kept, and
@@ -2815,15 +2905,292 @@ impl Editor {
 
     fn set_color(&mut self, color: u32) {
         self.hsv = to_hsv(color);
-        self.color = color;
-        let chosen = self.chosen();
+        if self.editing.is_none() && !self.chosen().is_empty() {
+            self.checkpoint();
+        }
+        self.paint_with(color);
+    }
+
+    /// A color, for what the box of colors is for: the line of what is
+    /// drawn, or of the text being typed; or the border of a box or an
+    /// oval, which it then has, or its fill. Given to what is picked
+    /// out, and to what is drawn after.
+    fn paint_with(&mut self, color: u32) {
+        let fill = self.paint == Paint::Fill && self.paints_apart();
+        match fill {
+            true => (self.fill, self.filled) = (color, true),
+            false => {
+                self.color = color;
+                self.bordered |= self.paints_apart();
+            }
+        }
         if let Some((index, _)) = self.editing {
             self.shapes[index].color = color;
-        } else if !chosen.is_empty() {
-            self.checkpoint();
-            chosen.iter().for_each(|&index| self.shapes[index].color = color);
+        }
+        let apart = self.paints_apart();
+        for index in self.chosen() {
+            let shape = &mut self.shapes[index];
+            // A box or an oval with only a fill, given a color among
+            // shapes of other kinds, is filled with it, as it always was.
+            let fills = paintable(shape.tool) && (fill || (!apart && !shape.border));
+            match fills {
+                true => (shape.fill, shape.filled) = (color, true),
+                false if paintable(shape.tool) => (shape.color, shape.border) = (color, true),
+                false => shape.color = color,
+            }
+            shape.touch();
         }
         self.dirty = true;
+    }
+
+    /// None, in the box of colors of a box or an oval: no border, or no
+    /// fill. One left with neither has the other instead, in the color
+    /// it had: there would be nothing of it.
+    fn no_paint(&mut self) {
+        let fill = self.paint == Paint::Fill;
+        let chosen: Vec<usize> = self.chosen().into_iter().filter(|&index| paintable(self.shapes[index].tool)).collect();
+        if !chosen.is_empty() {
+            self.checkpoint();
+        }
+        for index in chosen {
+            let shape = &mut self.shapes[index];
+            match fill {
+                true => (shape.filled, shape.border) = (false, true),
+                false if shape.filled => shape.border = false,
+                false => (shape.border, shape.filled, shape.fill) = (false, true, shape.color),
+            }
+            shape.touch();
+        }
+        match fill {
+            true => (self.filled, self.bordered) = (false, true),
+            false if self.filled => self.bordered = false,
+            false => (self.bordered, self.filled, self.fill) = (false, true, self.color),
+        }
+        self.dirty = true;
+    }
+
+    /// F: a fill for the boxes and ovals picked out, or none, and for
+    /// those drawn after; in the fill color there was. A zoom picked out
+    /// is made square, or round again, which is what there is to fill or
+    /// not about a zoom.
+    fn toggle_fill(&mut self) {
+        if self.chosen().iter().any(|&index| self.shapes[index].tool == Tool::Zoom) {
+            return self.toggle_lens();
+        }
+        let filled = self.shown_fill().is_none();
+        let chosen: Vec<usize> = self.chosen().into_iter().filter(|&index| paintable(self.shapes[index].tool)).collect();
+        if !chosen.is_empty() {
+            self.checkpoint();
+        }
+        let fill = self.fill;
+        for index in chosen {
+            let shape = &mut self.shapes[index];
+            match filled {
+                true => (shape.filled, shape.fill) = (true, fill),
+                false => (shape.filled, shape.border) = (false, true),
+            }
+            shape.touch();
+        }
+        self.filled = filled;
+        self.bordered |= !filled;
+        self.dirty = true;
+    }
+
+    /// A head at each end of the arrows picked out, or one at the last;
+    /// and so for the arrows drawn after.
+    fn toggle_heads(&mut self) {
+        self.heads = if self.shown().map_or(self.heads, |shape| shape.heads) == [true, true] { [false, true] } else { [true, true] };
+        let arrows: Vec<usize> = self.chosen().into_iter().filter(|&index| self.shapes[index].tool == Tool::Arrow).collect();
+        if !arrows.is_empty() {
+            self.checkpoint();
+        }
+        for index in arrows {
+            self.shapes[index].heads = self.heads;
+            self.shapes[index].touch();
+        }
+        self.dirty = true;
+    }
+
+    /// Dashes, for the lines and arrows picked out and for those drawn
+    /// after; or whole lines again.
+    fn toggle_dashed(&mut self) {
+        self.dashed = !self.shown().map_or(self.dashed, |shape| shape.dashed);
+        let lines: Vec<usize> = self.chosen().into_iter().filter(|&index| matches!(self.shapes[index].tool, Tool::Line | Tool::Arrow)).collect();
+        if !lines.is_empty() {
+            self.checkpoint();
+        }
+        for index in lines {
+            self.shapes[index].dashed = self.dashed;
+            self.shapes[index].touch();
+        }
+        self.dirty = true;
+    }
+
+    /// The zooms picked out made square, or round again; and the next.
+    fn toggle_lens(&mut self) {
+        self.square = !self.shown().map_or(self.square, |shape| shape.filled);
+        let zooms: Vec<usize> = self.chosen().into_iter().filter(|&index| self.shapes[index].tool == Tool::Zoom).collect();
+        if !zooms.is_empty() {
+            self.checkpoint();
+        }
+        for index in zooms {
+            self.shapes[index].filled = self.square;
+            self.shapes[index].touch();
+        }
+        self.dirty = true;
+    }
+
+    /// A copy of each shape picked out, a little down and to the right of
+    /// it, and picked out in its place.
+    fn duplicate(&mut self) {
+        let chosen = self.chosen();
+        if chosen.is_empty() {
+            return;
+        }
+        self.checkpoint();
+        let by = ui_px(self.monitor().h) as f32;
+        let mut counters = self.shapes.iter().filter(|shape| shape.tool == Tool::Counter).count() as u32;
+        self.selected.clear();
+        for index in chosen {
+            let mut copy = self.shapes[index].clone();
+            copy.translate(by, by);
+            // A counter copied counts on.
+            if copy.tool == Tool::Counter {
+                counters += 1;
+                copy.number = counters;
+            }
+            self.shapes.push(copy);
+            self.selected.push(self.shapes.len() - 1);
+        }
+        self.tool = Tool::Select;
+        self.dirty = true;
+    }
+
+    /// Away with the shapes picked out.
+    fn delete(&mut self) {
+        let mut going = self.chosen();
+        if going.is_empty() {
+            return;
+        }
+        self.checkpoint();
+        // From the last, so that the places of the rest hold.
+        going.sort_unstable();
+        going.iter().rev().for_each(|&index| drop(self.shapes.remove(index)));
+        self.selected.clear();
+        // The counters left count from one again, in order.
+        for (number, shape) in self.shapes.iter_mut().filter(|shape| shape.tool == Tool::Counter).enumerate() {
+            shape.number = number as u32 + 1;
+        }
+        self.dirty = true;
+    }
+
+    // ---- How what is picked out looks ----
+
+    /// The shape whose looks the bar over it shows: the text being
+    /// typed, or the first of those picked out. With none, the bar shows
+    /// how the next is drawn.
+    fn shown(&self) -> Option<&Shape> {
+        let index = self.editing.map(|(index, _)| index).or_else(|| self.chosen().first().copied().filter(|_| self.tool == Tool::Select))?;
+        self.shapes.get(index)
+    }
+
+    /// Whether what the colors are for is a box or an oval, or are boxes
+    /// and ovals, with a border and a fill to color apart: those picked
+    /// out, or the next drawn.
+    fn paints_apart(&self) -> bool {
+        let chosen = self.chosen();
+        match (self.editing, chosen.is_empty()) {
+            (Some(_), _) => false,
+            (None, false) => chosen.iter().all(|&index| paintable(self.shapes[index].tool)),
+            (None, true) => paintable(self.tool),
+        }
+    }
+
+    /// The fill there is, and the border: for what is shown, or the next
+    /// box or oval drawn.
+    fn shown_fill(&self) -> Option<u32> {
+        match self.shown() {
+            Some(shape) => (paintable(shape.tool) && shape.filled).then_some(shape.fill),
+            None => self.filled.then_some(self.fill),
+        }
+    }
+
+    fn shown_border(&self) -> Option<u32> {
+        match self.shown() {
+            Some(shape) => (!paintable(shape.tool) || shape.border).then_some(shape.color),
+            None => self.bordered.then_some(self.color),
+        }
+    }
+
+    /// The color the box of colors is at: that of what it is for, or
+    /// none, for a border or a fill there is not.
+    fn paint_now(&self) -> Option<u32> {
+        match (self.paint, self.paints_apart()) {
+            (Paint::Fill, true) => self.shown_fill(),
+            (Paint::Line, true) => self.shown_border(),
+            _ => Some(self.shown().map_or(self.color, |shape| shape.color)),
+        }
+    }
+
+    /// Which of the four widths, or sizes of text, what is shown is
+    /// nearest; or the one the next is drawn at.
+    fn shown_size(&self) -> usize {
+        let Some(shape) = self.shown() else { return self.size };
+        let scale = self.scale();
+        let (sizes, now): (&[f32], f32) = match shape.tool {
+            Tool::Text | Tool::Badge => (&FONT_SIZES, shape.font_px as f32),
+            _ => (&STROKES, shape.stroke),
+        };
+        (0..sizes.len()).min_by(|&a, &b| (sizes[a] * scale - now).abs().total_cmp(&(sizes[b] * scale - now).abs())).unwrap_or(self.size)
+    }
+
+    /// What the four are called, for lines or for text.
+    fn width_names(&self) -> [&'static str; 4] {
+        match self.shown().map_or(self.tool, |shape| shape.tool) {
+            Tool::Text | Tool::Badge => ["Small", "Medium", "Large", "Largest"],
+            _ => ["Thin", "Medium", "Thick", "Heavy"],
+        }
+    }
+
+    /// What the bar over what is picked out has, in order: None is a line
+    /// between groups. How it looks, for the kind of shape it is, or what
+    /// shapes of more than one kind all have; and, picked out, over and
+    /// under the rest, a copy, and away. With nothing picked out, how the
+    /// next is drawn with the tool in hand; and nothing with the move tool.
+    fn tray_contents(&self) -> Vec<Option<Button>> {
+        if self.settings.recording || self.selection.is_none() {
+            return Vec::new();
+        }
+        let chosen = if self.tool == Tool::Select { self.chosen() } else { Vec::new() };
+        let editing = self.editing.map(|(index, _)| index);
+        let kinds: Vec<Tool> = match editing {
+            Some(index) => vec![self.shapes[index].tool],
+            None if !chosen.is_empty() => chosen.iter().map(|&index| self.shapes[index].tool).collect(),
+            None => vec![self.tool],
+        };
+        // Boxes and ovals together are colored alike.
+        let kinds: Vec<Tool> = kinds.into_iter().map(|tool| if tool == Tool::Ellipse { Tool::Rect } else { tool }).collect();
+        let kind = kinds.iter().all(|&tool| tool == kinds[0]).then_some(kinds[0]);
+        let styled = self.styled().is_some() || (editing.is_none() && chosen.is_empty());
+        let mut tray: Vec<Option<Button>> = looks(kind, self.shown_border().is_some(), styled).into_iter().map(Some).collect();
+        if editing.is_none() && !chosen.is_empty() {
+            if !tray.is_empty() {
+                tray.push(None);
+            }
+            tray.extend([Some(Button::Forward), Some(Button::Backward), None, Some(Button::Duplicate), Some(Button::Delete)]);
+        }
+        tray
+    }
+
+    /// What the bar over what is picked out is for: all that is picked
+    /// out, with its handles, or the text being typed; or nothing, when it
+    /// is for the next drawn, and is over the other bar.
+    fn tray_around(&mut self) -> Option<Rect> {
+        if let Some((index, _)) = self.editing {
+            return Some(self.shapes[index].bounds(&mut self.text));
+        }
+        let chosen = if self.tool == Tool::Select { self.chosen() } else { Vec::new() };
+        chosen.into_iter().map(|index| self.frame_of(index)).reduce(|all, frame| Rect::spanning((all.x.min(frame.x), all.y.min(frame.y)), (all.right().max(frame.right()), all.bottom().max(frame.bottom()))))
     }
 
     fn set_size(&mut self, size: usize) {
@@ -2896,20 +3263,9 @@ impl Editor {
                 self.photo_arrived(read);
             }
             Cell::Place(place) => (self.place, self.flyout) = (place, None),
-            // The way the tool whose list this is draws from now on;
-            // and that tool is the one in hand.
-            Cell::Variant(way) => {
-                if let Some(Button::Tool(tool)) = self.flyout {
-                    match tool {
-                        Tool::Arrow => (self.heads, self.dashed) = ([way == 1, true], way == 2),
-                        Tool::Line => self.dashed = way == 1,
-                        Tool::Rect | Tool::Ellipse => self.filled = way == 1,
-                        Tool::Zoom => self.square = way == 1,
-                        _ => {}
-                    }
-                    self.set_tool(tool);
-                    self.flyout = None;
-                }
+            Cell::Width(size) => {
+                self.set_size(size);
+                self.flyout = None;
             }
             Cell::Badge(_) | Cell::Emoji(_) => {}
         }
@@ -3433,40 +3789,10 @@ impl Editor {
             self.text.draw(&mut canvas, place.x + pad, place.y + pad / 4, px, TEXT_COLOR, words);
         }
         if let Some(bar) = layout.bar {
-            self.draw_bar(&mut canvas, &layout, bar);
+            self.draw_bar(&mut canvas, &layout, bar, &layout.buttons, &layout.dividers, false);
         }
-        // The bar over text: each way it can be set, by a letter set
-        // that way, on the accent when the text is.
-        if let (Some(place), Some(index)) = (layout.styles_bar, self.styled()) {
-            let pad = px as i32 / 2;
-            panel(&mut canvas, place, pad);
-            let set = self.shapes[index].style;
-            for (&(rect, style), (_, letter)) in layout.styles.iter().zip(STYLES) {
-                let inner = rect.inflate(-(px as i32 / 8).max(1));
-                let ink = if set & style != 0 {
-                    canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, accent, 256);
-                    on(accent)
-                } else {
-                    if self.hover == Target::Style(style) {
-                        canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0xFFFFFF, 30);
-                    }
-                    TEXT_COLOR
-                };
-                let (cx, cy) = rect.center();
-                if style == shapes::HIGHLIGHT {
-                    canvas.round_fill(cx - px as i32 * 2 / 3, cy - px as i32 / 2, px as i32 * 4 / 3, px as i32, 2, 0xFFE629, 150);
-                }
-                // On a patch: the letter dark on a patch of the light.
-                let ink = if style == shapes::BOXED {
-                    canvas.round_fill(cx - px as i32 * 3 / 4, cy - px as i32 * 3 / 4, px as i32 * 3 / 2, px as i32 * 3 / 2, px as i32 / 4, ink, 256);
-                    on(ink)
-                } else {
-                    ink
-                };
-                self.text.look = crate::text::Look { heavy: i32::from(style == shapes::BOLD), slant: if style == shapes::ITALIC { 0.2 } else { 0.0 }, opacity: 256 };
-                self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, ink, letter);
-                self.text.look = crate::text::Look::default();
-            }
+        if let Some(tray) = layout.tray {
+            self.draw_bar(&mut canvas, &layout, tray, &layout.tray_buttons, &layout.tray_dividers, layout.tray_above);
         }
         if let Some(popup) = layout.popup {
             self.draw_popup(&mut canvas, &layout, popup);
@@ -3539,19 +3865,30 @@ impl Editor {
                         let name = self.settings.places[place].clone();
                         self.text.draw(&mut canvas, rect.x + rect.h, line, px, TEXT_COLOR, &name);
                     }
-                    // A way a tool draws, with a tick by the one in hand.
-                    Cell::Variant(way) => {
-                        let Some(Button::Tool(tool)) = self.flyout else { continue };
-                        let now = match tool {
-                            Tool::Arrow => if self.dashed { 2 } else { usize::from(self.heads == [true, true]) },
-                            Tool::Line => usize::from(self.dashed),
-                            Tool::Zoom => usize::from(self.square),
-                            _ => usize::from(self.filled),
-                        };
-                        if way == now {
+                    // A width, or a size of text: a tick by the one there
+                    // is, a line that wide or letters that large, what it
+                    // is called, and its key.
+                    Cell::Width(size) => {
+                        let side = layout.side;
+                        if size == self.shown_size() {
                             self.text.draw_centered(&mut canvas, rect.x + rect.h / 2, cy, px, TEXT_COLOR, icons::CHECK);
                         }
-                        self.text.draw(&mut canvas, rect.x + rect.h, cy - Text::line_height(px) / 2, px, TEXT_COLOR, variants(tool)[way]);
+                        let text = self.width_names()[0] == "Small";
+                        match text {
+                            true => {
+                                let large = ((FONT_SIZES[size] * px as f32 / 13.0) as u32).min(side as u32);
+                                self.text.draw_centered(&mut canvas, rect.x + side * 3 / 2, cy, large, TEXT_COLOR, "Aa");
+                            }
+                            false => {
+                                let thick = ((STROKES[size] * px as f32 / 13.0).round() as i32).max(1);
+                                canvas.round_fill(rect.x + side, cy - thick / 2, side, thick, thick / 2, TEXT_COLOR, 256);
+                            }
+                        }
+                        let line = cy - Text::line_height(px) / 2;
+                        self.text.draw(&mut canvas, rect.x + 2 * side + pad, line, px, TEXT_COLOR, self.width_names()[size]);
+                        let key = (size + 1).to_string();
+                        let wide = self.text.width(&key, px);
+                        self.text.draw(&mut canvas, rect.right() - pad - wide, line, px, DIM_TEXT_COLOR, &key);
                     }
                 }
                 // What is chosen now has a line of the accent round it.
@@ -3652,25 +3989,43 @@ impl Editor {
         }
     }
 
-    fn draw_bar(&mut self, canvas: &mut Canvas, layout: &Layout, bar: Rect) {
+    /// A bar of buttons: the one of tools, or the one over what is picked
+    /// out. What the button under the pointer is goes under the bar, or
+    /// over it where there is no room under or `over` would rather.
+    fn draw_bar(&mut self, canvas: &mut Canvas, layout: &Layout, bar: Rect, buttons: &[(Rect, Button)], dividers: &[i32], over: bool) {
         let (px, pad, side) = (layout.px, layout.px as i32 / 2, layout.side);
         let accent = self.settings.accent;
         panel(canvas, bar, pad);
-        for &x in &layout.dividers {
+        for &x in dividers {
             canvas.fill(x, bar.y + pad, 1, bar.h - 2 * pad, MENU_EDGE_COLOR);
         }
         let pressed = match self.drag {
             Drag::Button(button) => Some(button),
             _ => None,
         };
-        for &(rect, button) in &layout.buttons {
+        // How what is shown looks, and whether what is picked out can go
+        // further up or down among the rest.
+        let shown = self.shown().cloned();
+        let color = shown.as_ref().map_or(self.color, |shape| shape.color);
+        let (fill, border, size) = (self.shown_fill(), self.shown_border(), self.shown_size());
+        let face = shown.as_ref().map_or(self.face, |shape| shape.face);
+        let style = shown.as_ref().filter(|shape| shape.tool == Tool::Text).map_or(self.style, |shape| shape.style);
+        let heads = shown.as_ref().map_or(self.heads, |shape| shape.heads) == [true, true];
+        let dashed = shown.as_ref().map_or(self.dashed, |shape| shape.dashed);
+        let square = shown.as_ref().map_or(self.square, |shape| shape.filled);
+        let chosen = self.chosen();
+        let up = (0..self.shapes.len()).any(|index| chosen.contains(&index) && (index + 1..self.shapes.len()).any(|above| !chosen.contains(&above)));
+        let down = (0..self.shapes.len()).any(|index| chosen.contains(&index) && (0..index).any(|below| !chosen.contains(&below)));
+        let open = |paint: Paint| self.popup.is_some() && self.paint == paint;
+        for &(rect, button) in buttons {
             let hovered = self.hover == Target::Button(button) && (pressed.is_none() || pressed == Some(button));
-            let chosen = match button {
+            let on_accent = match button {
                 Button::Tool(tool) => tool == self.tool && !self.pipette,
-                Button::Size(size) => size == self.size,
-                Button::Fill => self.filled,
                 Button::Pointer => self.arrow_shows && self.arrow.is_some(),
-                Button::Color => self.popup.is_some() || self.pipette,
+                Button::Style(one) => style & one != 0,
+                Button::Heads => heads,
+                Button::Dashed => dashed,
+                Button::Width => self.flyout == Some(Button::Width),
                 _ => false,
             };
             let able = match button {
@@ -3679,15 +4034,27 @@ impl Editor {
                 // Where the display would not say what the pointer
                 // looked like, there is none to put in.
                 Button::Pointer => self.arrow.is_some(),
+                Button::Forward => up,
+                Button::Backward => down,
                 _ => true,
             };
             let inner = rect.inflate(-(px as i32 / 8).max(1));
-            if chosen && button != Button::Color {
+            if on_accent {
                 canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, accent, 256);
             } else if hovered && able {
                 canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0xFFFFFF, if pressed.is_some() { 56 } else { 30 });
             }
-            let ink = if chosen && button != Button::Color {
+            // The color, the border or the fill the box of colors is open
+            // for has a ring of the accent round its button.
+            let open_for = match button {
+                Button::Color | Button::Border => open(Paint::Line) || (button == Button::Color && self.pipette),
+                Button::Fill => open(Paint::Fill),
+                _ => false,
+            };
+            if open_for {
+                canvas.round_outline(inner.x, inner.y, inner.w, inner.h, pad / 2, 2, accent);
+            }
+            let ink = if on_accent {
                 on(accent)
             } else if !able {
                 MENU_EDGE_COLOR
@@ -3695,53 +4062,86 @@ impl Editor {
                 TEXT_COLOR
             };
             let (cx, cy) = rect.center();
+            let radius = side * 3 / 10;
+            // None: a line across, of the red that says no.
+            let crossed = |canvas: &mut Canvas| {
+                for step in -radius..radius {
+                    canvas.fill(cx + step, cy - step - 1, 2, 2, RED);
+                }
+            };
             match button {
                 // The color drawn in, ringed so that a dark one shows.
                 Button::Color => {
-                    let radius = side * 3 / 10;
-                    canvas.disc(cx, cy, radius + (px as i32 / 10).max(1), if chosen { TEXT_COLOR } else { MENU_EDGE_COLOR }, 256);
-                    canvas.disc(cx, cy, radius, self.color, 256);
+                    canvas.disc(cx, cy, radius + (px as i32 / 10).max(1), MENU_EDGE_COLOR, 256);
+                    canvas.disc(cx, cy, radius, color, 256);
                 }
+                // A border: a hollow square of its color; and a fill, a
+                // solid one. One there is not is crossed out.
+                Button::Border => match border {
+                    Some(color) => {
+                        let thick = (px as i32 / 5).max(3);
+                        canvas.round_outline(cx - radius - 1, cy - radius - 1, 2 * radius + 2, 2 * radius + 2, radius / 2 + 1, 1, MENU_EDGE_COLOR);
+                        canvas.round_outline(cx - radius, cy - radius, 2 * radius, 2 * radius, radius / 2, thick, color);
+                    }
+                    None => {
+                        canvas.round_outline(cx - radius, cy - radius, 2 * radius, 2 * radius, radius / 2, 1, DIM_TEXT_COLOR);
+                        crossed(canvas);
+                    }
+                },
+                Button::Fill => match fill {
+                    Some(color) => {
+                        canvas.round_fill(cx - radius - 1, cy - radius - 1, 2 * radius + 2, 2 * radius + 2, radius / 2 + 1, MENU_EDGE_COLOR, 256);
+                        canvas.round_fill(cx - radius, cy - radius, 2 * radius, 2 * radius, radius / 2, color, 256);
+                    }
+                    None => {
+                        canvas.round_outline(cx - radius, cy - radius, 2 * radius, 2 * radius, radius / 2, 1, DIM_TEXT_COLOR);
+                        crossed(canvas);
+                    }
+                },
                 // Two letters in the face text is typed in.
                 Button::Face => {
-                    let across = self.text.width_in(self.face, "Aa", px);
-                    self.text.draw_in(self.face, canvas, cx - across / 2, cy - Text::line_height(px) / 2, px, ink, "Aa");
+                    let across = self.text.width_in(face, "Aa", px);
+                    self.text.draw_in(face, canvas, cx - across / 2, cy - Text::line_height(px) / 2, px, ink, "Aa");
                 }
-                // A dot as wide as the line it stands for, near enough.
-                Button::Size(size) => {
+                // A dot as wide as the line is, near enough.
+                Button::Width => {
                     let radius = ((STROKES[size] * px as f32 / 13.0 * 0.62).round() as i32 + 1).min(side * 3 / 10);
                     canvas.disc(cx, cy, radius, ink, 256);
                 }
-                _ => {
-                    self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, button.icon());
-                    // A small mark in the corner of a tool that has
-                    // more than one way of drawing: press it, or the
-                    // tool again, for the list of them.
-                    if let Button::Tool(tool) = button {
-                        if !variants(tool).is_empty() {
-                            let mark = (px as i32 / 4).max(3);
-                            for row in 0..mark {
-                                canvas.fill(rect.right() - mark - 3 + (mark - 1 - row), rect.bottom() - mark - 3 + row, row + 1, 1, ink);
-                            }
-                        }
+                // A letter set the way it stands for.
+                Button::Style(one) => {
+                    if one == shapes::HIGHLIGHT {
+                        canvas.round_fill(cx - px as i32 * 2 / 3, cy - px as i32 / 2, px as i32 * 4 / 3, px as i32, 2, 0xFFE629, 150);
                     }
+                    // On a patch: the letter dark on a patch of the light.
+                    let ink = if one == shapes::BOXED {
+                        canvas.round_fill(cx - px as i32 * 3 / 4, cy - px as i32 * 3 / 4, px as i32 * 3 / 2, px as i32 * 3 / 2, px as i32 / 4, ink, 256);
+                        on(ink)
+                    } else {
+                        ink
+                    };
+                    let letter = STYLES.iter().find(|(style, _)| *style == one).map_or("", |(_, letter)| letter);
+                    self.text.look = crate::text::Look { heavy: i32::from(one == shapes::BOLD), slant: if one == shapes::ITALIC { 0.2 } else { 0.0 }, opacity: 256 };
+                    self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, letter);
+                    self.text.look = crate::text::Look::default();
                 }
+                // A zoom's lens as it is: square, or round.
+                Button::Lens => self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, if square { icons::RECT } else { icons::ELLIPSE }),
+                _ => self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, button.icon()),
             }
         }
 
         // What the button under the pointer is, and its key.
-        if let (Target::Button(button), None, Drag::None) = (self.hover, layout.popup, self.drag) {
-            let Some((rect, _)) = layout.buttons.iter().find(|(_, other)| *other == button) else { return };
+        if let (Target::Button(button), None, None, Drag::None) = (self.hover, layout.popup, layout.flyout, self.drag) {
+            let Some((rect, _)) = buttons.iter().find(|(_, other)| *other == button) else { return };
             let (name, key) = button.says();
             // The face says which it is, where the rest say what they are.
-            let name = if button == Button::Face { FACES[self.face] } else { name };
+            let name = if button == Button::Face { FACES[face] } else { name };
             let line = Text::line_height(px);
             let (name_width, key_width) = (self.text.width(name, px), self.text.width(key, px));
             let width = name_width + key_width + 3 * pad;
-            let monitor = self.monitor();
-            let under = bar.bottom() + pad / 2;
-            let y = if under + line + pad <= monitor.bottom() { under } else { bar.y - pad / 2 - line - pad / 2 };
-            let tip = Rect::new(rect.x + rect.w / 2 - width / 2, y, width, line + pad / 2).kept_within(monitor);
+            let (x, y) = hung(*rect, bar, over, (width, line + pad / 2), self.monitor(), pad);
+            let tip = Rect::new(x, y, width, line + pad / 2).kept_within(self.monitor());
             canvas.round_fill(tip.x, tip.y, tip.w, tip.h, pad / 2, 0x000000, 210);
             self.text.draw(canvas, tip.x + pad, tip.y + pad / 4, px, TEXT_COLOR, name);
             self.text.draw(canvas, tip.x + 2 * pad + name_width, tip.y + pad / 4, px, DIM_TEXT_COLOR, key);
@@ -3751,6 +4151,27 @@ impl Editor {
     fn draw_popup(&mut self, canvas: &mut Canvas, layout: &Layout, popup: Rect) {
         let (px, pad, side) = (layout.px, layout.px as i32 / 2, layout.side);
         panel(canvas, popup, pad);
+        // The color it is at: of the line, the border or the fill it is
+        // for, or none.
+        let hand = self.paint_now();
+        let color = hand.unwrap_or(self.color);
+        // For a box or an oval: which of its border and its fill the
+        // colors are for, the one they are for lit.
+        if let (Some(&(first, _)), Some(&(last, _))) = (layout.paints.first(), layout.paints.last()) {
+            let whole = Rect::new(first.x, first.y, last.right() - first.x, first.h);
+            canvas.round_fill(whole.x, whole.y, whole.w, whole.h, pad / 2, 0x141414, 256);
+            for &(rect, paint) in &layout.paints {
+                let inner = rect.inflate(-(px as i32 / 8).max(2));
+                let lit = paint == self.paint;
+                if lit {
+                    canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0x3A3A3A, 256);
+                } else if self.hover == Target::Paint(paint) {
+                    canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0xFFFFFF, 20);
+                }
+                let (cx, cy) = rect.center();
+                self.text.draw_centered(canvas, cx, cy, px, if lit { TEXT_COLOR } else { DIM_TEXT_COLOR }, if paint == Paint::Line { "Border" } else { "Fill" });
+            }
+        }
         // The square: saturation across, value down, at the hue in hand;
         // and a ring where the color in hand is in it.
         let (hue, saturation, value) = self.hsv;
@@ -3773,7 +4194,13 @@ impl Editor {
         canvas.round_outline(hx - 4, strip.y - 3, 8, strip.h + 6, 3, 2, 0xFFFFFF);
         // The color in hand, in hex, on a patch of itself.
         let hex = layout.hex.inflate(-(px as i32 / 6).max(2));
-        canvas.round_fill(hex.x, hex.y, hex.h, hex.h, pad / 2, self.color, 256);
+        // None: a light patch crossed out in red.
+        canvas.round_fill(hex.x, hex.y, hex.h, hex.h, pad / 2, if hand.is_some() { color } else { 0xF2F2F2 }, 256);
+        if hand.is_none() {
+            for step in 2..hex.h - 3 {
+                canvas.fill(hex.x + step, hex.y + hex.h - 2 - step, 2, 2, RED);
+            }
+        }
         let (x, y) = (hex.x + hex.h + pad / 2, hex.y + (hex.h - Text::line_height(px)) / 2);
         // Being typed: in a field of its own, with the caret after it.
         match &self.hex {
@@ -3786,18 +4213,37 @@ impl Editor {
                 let caret = x + self.text.width(&says, px) + 1;
                 canvas.fill(caret, y + 2, 1, Text::line_height(px) - 4, TEXT_COLOR);
             }
-            None => self.text.draw(canvas, x, y, px, TEXT_COLOR, &format!("#{:06X}", self.color)),
+            None => {
+                let says = hand.map_or("None".to_owned(), |color| format!("#{color:06X}"));
+                self.text.draw(canvas, x, y, px, TEXT_COLOR, &says);
+            }
         }
-        for &(rect, color) in &layout.swatches {
+        for &(rect, swatch) in &layout.swatches {
             let (cx, cy) = rect.center();
             let radius = side * 3 / 10;
-            if self.hover == Target::Swatch(color) {
+            if self.hover == Target::Swatch(swatch) {
                 let inner = rect.inflate(-(px as i32 / 8).max(1));
                 canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0xFFFFFF, 30);
             }
-            let ring = if color == self.color { TEXT_COLOR } else { MENU_EDGE_COLOR };
-            canvas.disc(cx, cy, radius + (px as i32 / 10).max(1) + i32::from(color == self.color), ring, 256);
-            canvas.disc(cx, cy, radius, color, 256);
+            let now = hand == Some(swatch);
+            let ring = if now { TEXT_COLOR } else { MENU_EDGE_COLOR };
+            canvas.disc(cx, cy, radius + (px as i32 / 10).max(1) + i32::from(now), ring, 256);
+            canvas.disc(cx, cy, radius, swatch, 256);
+        }
+        // None: a white disc crossed out in red, ringed when there is none.
+        if let Some(rect) = layout.none {
+            let (cx, cy) = rect.center();
+            let radius = side * 3 / 10;
+            if self.hover == Target::NoPaint {
+                let inner = rect.inflate(-(px as i32 / 8).max(1));
+                canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0xFFFFFF, 30);
+            }
+            let ring = if hand.is_none() { TEXT_COLOR } else { MENU_EDGE_COLOR };
+            canvas.disc(cx, cy, radius + (px as i32 / 10).max(1) + i32::from(hand.is_none()), ring, 256);
+            canvas.disc(cx, cy, radius, 0xF2F2F2, 256);
+            for step in -radius * 7 / 10..radius * 7 / 10 {
+                canvas.fill(cx + step - 1, cy - step - 1, 3, 3, RED);
+            }
         }
         // How opaque: the color in hand at each step, over a square
         // half light and half dark, to show what comes through.
@@ -3810,7 +4256,7 @@ impl Editor {
             }
             canvas.fill(cx - radius, cy - radius, radius, 2 * radius, 0xE0E0E0);
             canvas.fill(cx, cy - radius, radius, 2 * radius, 0x404040);
-            canvas.disc(cx, cy, radius, self.color, opacity);
+            canvas.disc(cx, cy, radius, color, opacity);
             if opacity == self.opacity {
                 canvas.round_outline(cx - radius - 3, cy - radius - 3, 2 * radius + 6, 2 * radius + 6, pad / 2, 2, TEXT_COLOR);
             }
@@ -3980,12 +4426,13 @@ impl Editor {
 
     /// What is in hand now, as settings to begin with next time: the
     /// color, the width of line, how round a rectangle's corners and
-    /// the picture's are, whether shapes are filled, and the face.
+    /// the picture's are, whether shapes are filled and in what and with
+    /// a border, and the face.
     pub fn in_hand(&self) -> Settings {
         // A photograph is not kept: it was one nobody chose, or is the
         // user's own to choose again.
         let frame = Frame { backdrop: if self.frame.backdrop == Backdrop::Photo { Backdrop::None } else { self.frame.backdrop }, ..self.frame };
-        Settings { color: self.color, size: self.size, corners: self.corners, filled: self.filled, face: self.face, frame, place: self.place, ..self.settings.clone() }
+        Settings { color: self.color, size: self.size, corners: self.corners, filled: self.filled, fill: Some(self.fill), border: Some(self.bordered), face: self.face, frame, place: self.place, ..self.settings.clone() }
     }
 
     /// The last of the three says whether its corners are rounded: then
@@ -4101,9 +4548,15 @@ mod tests {
         editor.released()
     }
 
-    /// Where a button of the bar is.
+    /// Where a button of the bar is, or of the bar over what is picked out.
     fn button(editor: &mut Editor, button: Button) -> (i32, i32) {
-        editor.layout().buttons.iter().find(|(_, other)| *other == button).map(|(rect, _)| rect.center()).expect("the bar is up")
+        let layout = editor.layout();
+        layout.buttons.iter().chain(&layout.tray_buttons).find(|(_, other)| *other == button).map(|(rect, _)| rect.center()).expect("the bar is up")
+    }
+
+    /// What the bar over what is picked out has, in order.
+    fn tray(editor: &mut Editor) -> Vec<Button> {
+        editor.layout().tray_buttons.iter().map(|(_, button)| *button).collect()
     }
 
     #[test]
@@ -5048,7 +5501,7 @@ mod tests {
         // The bar over the text sets it: heavy is wider, and each line
         // after a dot wider still. The text is still being typed.
         let plain = editor.shapes[0].bounds(&mut editor.text).w;
-        let bold = editor.layout().styles[0].0.center();
+        let bold = button(&mut editor, Button::Style(shapes::BOLD));
         click(&mut editor, bold, 5000);
         assert_eq!((editor.shapes[0].style, editor.editing.is_some()), (shapes::BOLD, true));
         let heavy = editor.shapes[0].bounds(&mut editor.text).w;
@@ -5076,17 +5529,20 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_with_more_ways_than_one_has_a_list_of_them_and_shapes_go_to_lines() {
+    fn a_tool_in_hand_has_its_ways_over_the_bar_and_shapes_go_to_lines() {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
-        // The arrow, pressed again when it is in hand, opens its list;
-        // the second of it is a head at each end, from then on.
+        // With the move tool and nothing picked out, there is no bar over
+        // the other; with the arrow in hand, its ways are there, and a
+        // head at each end is so from then on.
+        assert!(tray(&mut editor).is_empty());
         editor.key(Key::Char('a'), PLAIN);
-        let arrow = button(&mut editor, Button::Tool(Tool::Arrow));
-        click(&mut editor, arrow, 0);
-        assert_eq!(editor.flyout, Some(Button::Tool(Tool::Arrow)));
-        editor.choose(Cell::Variant(1));
-        assert_eq!((editor.flyout, editor.tool, editor.heads), (None, Tool::Arrow, [true, true]));
+        assert_eq!(tray(&mut editor), [Button::Color, Button::Width, Button::Heads, Button::Dashed]);
+        let (bar, over) = (editor.layout().bar.expect("the bar is up"), editor.layout().tray.expect("and the one over it"));
+        assert!(over.bottom() <= bar.y);
+        let heads = button(&mut editor, Button::Heads);
+        click(&mut editor, heads, 0);
+        assert_eq!((editor.tool, editor.heads), (Tool::Arrow, [true, true]));
         drag(&mut editor, (200, 200), (400, 200));
         assert_eq!(editor.shapes[0].heads, [true, true]);
 
@@ -5118,9 +5574,13 @@ mod tests {
         let pen = button(&mut editor, Button::Tool(Tool::Pen));
         click(&mut editor, pen, 0);
         assert_eq!(editor.tool, Tool::Pen);
-        let heavy = button(&mut editor, Button::Size(3));
-        click(&mut editor, heavy, 1000);
-        assert_eq!(editor.size, 3);
+        // The width, from the list of them over the bar.
+        let width = button(&mut editor, Button::Width);
+        click(&mut editor, width, 1000);
+        assert_eq!(editor.flyout, Some(Button::Width));
+        let heavy = editor.layout().cells.iter().find(|(_, cell)| *cell == Cell::Width(3)).map(|(rect, _)| rect.center()).expect("the widths are up");
+        click(&mut editor, heavy, 1500);
+        assert_eq!((editor.size, editor.flyout), (3, None));
         // Pressed on one button and let go off it, nothing is done.
         let (save, copy) = (button(&mut editor, Button::Save), button(&mut editor, Button::Copy));
         editor.pointer_moved(save.0, save.1, PLAIN);
@@ -5224,6 +5684,18 @@ mod tests {
         editor.pressed(200_000);
         editor.released();
         write(&mut editor, "8-shape-picked");
+        // Its fill, from the bar over it: which of border and fill, and
+        // none among the colors.
+        let fill = button(&mut editor, Button::Fill);
+        editor.pointer_moved(fill.0, fill.1, PLAIN);
+        editor.pressed(210_000);
+        editor.released();
+        write(&mut editor, "8b-fill");
+        editor.key(Key::Escape, PLAIN);
+        // A tool in hand and nothing picked out: how it draws, over the bar.
+        editor.key(Key::Char('r'), PLAIN);
+        write(&mut editor, "8c-tool");
+        editor.key(Key::Char('v'), PLAIN);
         editor.key(Key::Char('k'), PLAIN);
         editor.key(Key::Char('k'), PLAIN);
         write(&mut editor, "9-rounded");
@@ -5257,8 +5729,8 @@ mod tests {
         editor.pressed(20_000);
         editor.pointer_moved(70 * unit, 30 * unit, PLAIN);
         editor.released();
-        let face = button(&mut editor, Button::Face);
-        editor.pointer_moved(face.0, face.1, PLAIN);
+        let forward = button(&mut editor, Button::Forward);
+        editor.pointer_moved(forward.0, forward.1, PLAIN);
         write(&mut editor, "11-spotlight-faces");
 
         // Badges, a sticker, a zoom, a dashed arrow, and the box they
@@ -5503,6 +5975,8 @@ mod tests {
         stroke(&mut editor, 'b', (850, 520), (1170, 582));
         editor.key(Key::Char('v'), PLAIN);
         click(&mut editor, (1000, 700), 60_000);
+        // The box round the code picked out, with the bar over it.
+        click(&mut editor, (196, 270), 70_000);
         editor.pointer_moved(1300, 250, PLAIN);
         let mut out = vec![0u32; (width * height) as usize];
         editor.draw(&mut out);
@@ -5688,12 +6162,96 @@ mod tests {
     }
 
     #[test]
+    fn a_box_has_a_border_and_a_fill_each_colored_or_none_from_the_bar_over_it() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('r'), PLAIN);
+        drag(&mut editor, (300, 300), (500, 400));
+        // Picked out, the bar over it has its fill, its border and its
+        // width, and what can be done with it; and is over it.
+        assert_eq!(tray(&mut editor), [Button::Fill, Button::Border, Button::Width, Button::Forward, Button::Backward, Button::Duplicate, Button::Delete]);
+        let over = editor.layout().tray.expect("the bar over it");
+        assert!(over.bottom() < 300);
+        // The fill: the colors for it, and yellow; the border keeps its red.
+        let fill = button(&mut editor, Button::Fill);
+        click(&mut editor, fill, 1000);
+        assert_eq!((editor.popup.is_some(), editor.paint, editor.layout().paints.len()), (true, Paint::Fill, 2));
+        let yellow = editor.layout().swatches.iter().find(|(_, color)| *color == 0xFFE629).map(|(rect, _)| rect.center()).expect("yellow");
+        click(&mut editor, yellow, 2000);
+        let shape = &editor.shapes[0];
+        assert_eq!((shape.filled, shape.fill, shape.border, shape.color), (true, 0xFFE629, true, RED));
+        // No border: only the fill is left, and there is no width to have.
+        let border = button(&mut editor, Button::Border);
+        click(&mut editor, border, 3000);
+        let none = editor.layout().none.expect("none").center();
+        click(&mut editor, none, 4000);
+        assert_eq!((editor.shapes[0].border, editor.shapes[0].filled), (false, true));
+        assert!(!tray(&mut editor).contains(&Button::Width));
+        // And no fill either: it is not left with nothing, but gets its
+        // border back.
+        let fills = editor.layout().paints[1].0.center();
+        click(&mut editor, fills, 5000);
+        let none = editor.layout().none.expect("none").center();
+        click(&mut editor, none, 6000);
+        assert_eq!((editor.shapes[0].border, editor.shapes[0].filled), (true, false));
+        // The next is drawn as this one was left.
+        editor.key(Key::Escape, PLAIN);
+        editor.key(Key::Char('r'), PLAIN);
+        drag(&mut editor, (600, 300), (700, 400));
+        assert_eq!((editor.shapes[1].border, editor.shapes[1].filled), (true, false));
+    }
+
+    #[test]
+    fn what_is_picked_out_goes_up_and_down_from_the_bar_over_it_and_is_copied_and_deleted() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        for (from, to) in [((200, 200), (400, 300)), ((250, 250), (450, 350)), ((300, 300), (500, 400))] {
+            editor.key(Key::Char('r'), PLAIN);
+            drag(&mut editor, from, to);
+        }
+        let colors = |editor: &Editor| editor.shapes.iter().map(|shape| shape.stroke as u32).collect::<Vec<_>>();
+        for (index, shape) in editor.shapes.iter_mut().enumerate() {
+            shape.stroke = index as f32 + 1.0;
+        }
+        // The first, picked out: forward a step, then with Shift to the top.
+        editor.selected = vec![0];
+        let forward = button(&mut editor, Button::Forward);
+        click(&mut editor, forward, 0);
+        assert_eq!((colors(&editor), editor.selected.clone()), (vec![2, 1, 3], vec![1]));
+        editor.pointer_moved(forward.0, forward.1, Mods { shift: true, ..PLAIN });
+        editor.pressed(1000);
+        editor.released();
+        assert_eq!((colors(&editor), editor.selected.clone()), (vec![2, 3, 1], vec![2]));
+        let backward = button(&mut editor, Button::Backward);
+        editor.pointer_moved(backward.0, backward.1, PLAIN);
+        editor.pressed(2000);
+        editor.released();
+        assert_eq!(colors(&editor), [2, 1, 3]);
+        // A copy, picked out in its place; and away with it.
+        let duplicate = button(&mut editor, Button::Duplicate);
+        click(&mut editor, duplicate, 3000);
+        assert_eq!((editor.shapes.len(), editor.selected.clone()), (4, vec![3]));
+        let delete = button(&mut editor, Button::Delete);
+        click(&mut editor, delete, 4000);
+        assert_eq!((editor.shapes.len(), editor.selected.is_empty()), (3, true));
+        // Out of the way while a shape is moved, and back after.
+        editor.selected = vec![0];
+        assert!(editor.layout().tray.is_some());
+        editor.pointer_moved(250, 330, PLAIN);
+        editor.pressed(10_000);
+        editor.pointer_moved(270, 350, PLAIN);
+        assert!(editor.layout().tray.is_none());
+        editor.released();
+        assert!(editor.layout().tray.is_some());
+    }
+
+    #[test]
     fn any_color_is_picked_in_the_square_and_the_strip_and_kept_as_taken_lately() {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
         editor.key(Key::Char('r'), PLAIN);
         drag(&mut editor, (200, 200), (400, 300));
-        let color = button(&mut editor, Button::Color);
+        let color = button(&mut editor, Button::Border);
         click(&mut editor, color, 9000);
         let (square, hues) = (editor.layout().square, editor.layout().hues);
         assert!(!square.is_empty() && !hues.is_empty());

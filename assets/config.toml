@@ -106,8 +106,12 @@
 # backdrops has a button for it when this is set.
 # photo = "~/Pictures/backdrop.jpg"
 
-# Rectangles and ovals filled to begin with.
+# Rectangles and ovals filled to begin with; what with, if not the color
+# above; and whether with a border too, which unless this says otherwise
+# they have only when they are not filled.
 # filled = false
+# fill-color = "yellow"
+# border = true
 
 # The color, width of line, roundness of corners, fill and font in hand
 # when hotshot is closed are the ones in hand when it is next opened.

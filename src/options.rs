@@ -145,6 +145,8 @@ Look:
       --photo FILE           a PNG or JPEG of your own to set it on, which
                              the box of backdrops then offers
       --filled               rectangles and ovals filled to begin with
+      --fill-color COLOR     what they are filled with (the usual: --color)
+      --no-border            and with no border, only a fill
       --opacity PERCENT      how opaque what is drawn is to begin with
       --dashed               lines and arrows in dashes to begin with
       --arrow-heads WHICH    end (the usual), start or both
@@ -186,7 +188,7 @@ Keys, once an area is selected:
   In text, Enter is a new line; Ctrl+Enter, Esc or a click elsewhere ends
   it; the arrows, Home, End and a click move the caret; Ctrl+V pastes;
   Ctrl+A picks all of it out, to be typed over
-  F filled   1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
+  F fill     1-4 or the wheel: width of line   Shift: square, circle, 45\u{b0}
   The dot inside each corner of the selection rounds the corners of the
   picture as it is dragged in; K does it by steps, and then not at all
   What is drawn is picked out, with the move tool in hand: drag it, or a
@@ -413,7 +415,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -587,6 +589,9 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "no-remember" => options.remember = false,
         "filled" => options.settings.filled = true,
         "no-filled" => options.settings.filled = false,
+        "fill-color" => options.settings.fill = Some(parse_ink(&value()?)?),
+        "border" => options.settings.border = Some(true),
+        "no-border" => options.settings.border = Some(false),
         "font" => {
             let text = value()?;
             let wanted = text.to_lowercase().replace(' ', "-");
@@ -644,6 +649,12 @@ pub fn remember_tools(settings: &Settings, save_to: Option<&std::path::Path>) {
         settings.filled,
         FACE_NAMES[settings.face.min(FACE_NAMES.len() - 1)][0]
     );
+    if let Some(fill) = settings.fill {
+        text += &format!("fill-color = \"{fill:06X}\"\n");
+    }
+    if let Some(border) = settings.border {
+        text += &format!("border = {border}\n");
+    }
     if let Some(folder) = save_to {
         text += &format!("save-to = \"{}\"\n", folder.display());
     }
@@ -676,7 +687,7 @@ fn read_config(options: &mut Options, text: &str) -> Result<(), String> {
         let name = match (takes_value(name), value) {
             (true, _) => name.to_owned(),
             (false, "true") => name.to_owned(),
-            (false, "false") if ["magnifier", "remember", "filled", "shadow", "pointer", "record-pointer", "keys", "dashed"].contains(&name) => format!("no-{name}"),
+            (false, "false") if ["magnifier", "remember", "filled", "border", "shadow", "pointer", "record-pointer", "keys", "dashed"].contains(&name) => format!("no-{name}"),
             (false, "false") => continue,
             // A shadow is on or off, or which: Tailwind's name, or CSS.
             (false, _) if name == "shadow" => "shadow-is".to_owned(),
@@ -705,6 +716,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
                 options.save_to = kept.save_to.take().or(options.save_to.take());
                 let (now, kept) = (&mut options.settings, kept.settings);
                 (now.color, now.size, now.radius, now.filled, now.face) = (kept.color, kept.size, kept.radius, kept.filled, kept.face);
+                (now.fill, now.border) = (kept.fill.or(now.fill), kept.border.or(now.border));
                 // How round the picture's corners were is kept too, for
                 // the next one that is opened to be drawn on; a picture
                 // taken at once has the corners the config file and the
@@ -990,6 +1002,9 @@ mod tests {
         assert!(read_config(&mut options, "windows = \"dim\"").is_err());
         read_config(&mut options, "color = \"jade\"").unwrap();
         assert_eq!(options.settings.color, 0x29A383);
+        assert_eq!((options.settings.fill, options.settings.border), (None, None));
+        read_config(&mut options, "fill-color = \"yellow\"\nborder = false").unwrap();
+        assert_eq!((options.settings.fill, options.settings.border), (Some(0xFFE629), Some(false)));
         assert!(read_config(&mut options, "size = 9").unwrap_err().starts_with("line 1"));
         assert!(read_config(&mut options, "nothing").is_err());
     }

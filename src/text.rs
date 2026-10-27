@@ -27,7 +27,6 @@ pub mod icons {
     pub const COPY: &str = "\u{e00d}";
     pub const SAVE: &str = "\u{e00e}";
     pub const CLOSE: &str = "\u{e00f}";
-    pub const FILLED: &str = "\u{e015}";
     pub const SPOTLIGHT: &str = "\u{e016}";
     pub const ZOOM: &str = "\u{e017}";
     pub const BADGE: &str = "\u{e018}";
@@ -39,6 +38,12 @@ pub mod icons {
     pub const PIN: &str = "\u{e012}";
     pub const RECORD: &str = "\u{e01e}";
     pub const CHECK: &str = "\u{e010}";
+    pub const TRASH: &str = "\u{e011}";
+    pub const FORWARD: &str = "\u{e01f}";
+    pub const BACKWARD: &str = "\u{e020}";
+    pub const HEADS: &str = "\u{e021}";
+    pub const DASHED: &str = "\u{e022}";
+    pub const DUPLICATE: &str = "\u{e023}";
 }
 
 const FONT_PATHS: &[&str] = &[

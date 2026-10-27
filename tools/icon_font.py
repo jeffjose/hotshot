@@ -37,7 +37,7 @@ PICKS = {
     "PIN": "pin", "MARKER": "paint-roller", "MONITOR": "monitor", "FOLDER": "folder",
     "SPOTLIGHT": "flashlight-on", "ZOOM": "magnifier-zoom-in", "BADGE": "tag-horizontal",
     "FRAME": "gallery-wide", "STICKER": "smile-circle", "DOWN": "alt-arrow-down",
-    "POINTER": "cursor-square", "RECORD": "videocamera-record",
+    "POINTER": "cursor-square", "RECORD": "videocamera-record", "DUPLICATE": "copy-add",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
@@ -58,7 +58,14 @@ OWN = {
         '<rect x="7" y="13.6" width="3.4" height="3.4" rx="0.6" fill="currentColor"/>'
         '<rect x="13.6" y="13.6" width="3.4" height="3.4" rx="0.6" fill="currentColor"/>'
     ),
-    "FILLED": '<rect x="3" y="5" width="18" height="14" rx="4" fill="currentColor"/>',
+    # Two squares, one over the other: the solid one is the one picked
+    # out, in front of the other, or behind it, where only as much of
+    # it shows as the one in front leaves.
+    "FORWARD": f'<rect x="9" y="9" width="12" height="12" rx="3" {LINE}/><rect x="3" y="3" width="12" height="12" rx="3" fill="currentColor"/>',
+    "BACKWARD": f'<rect x="3" y="3" width="12" height="12" rx="3" {LINE}/><path d="M17 9h1a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-6a3 3 0 0 1-3-3v-1h5a3 3 0 0 0 3-3z" fill="currentColor"/>',
+    # A line with a head at each end, and one in dashes.
+    "HEADS": f'<path d="M4 12h16M7.5 8.5L4 12l3.5 3.5M16.5 8.5L20 12l-3.5 3.5" {LINE}/>',
+    "DASHED": f'<path d="M5 19l2.5-2.5M10.75 13.25l2.5-2.5M16.5 7.5L19 5" {LINE}/>',
     # A die showing five.
     "DICE": (
         f'<rect x="3" y="3" width="18" height="18" rx="5" {LINE}/>'

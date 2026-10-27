@@ -81,8 +81,12 @@ pub struct Shape {
     pub heads: [bool; 2],
     /// Whether a line or an arrow is drawn in dashes.
     pub dashed: bool,
-    /// What a badge is filled with, its `color` being that of its words.
+    /// What a rectangle or an oval is filled with, when it is `filled`;
+    /// its `color` is then that of its border, if it has one.
     pub fill: u32,
+    /// Whether a rectangle or an oval has a border. One that has none is
+    /// filled, or there would be nothing of it.
+    pub border: bool,
     /// How opaque it is, out of 256.
     pub opacity: u32,
     /// How its text is set, as some of `BOLD`, `ITALIC`, `HIGHLIGHT`
@@ -94,6 +98,9 @@ pub struct Shape {
     /// their points instead.
     pub angle: f32,
     mask: RefCell<Option<Rc<Mask>>>,
+    /// The same of what is inside the border of a rectangle or an oval
+    /// that has both, which is drawn in its fill.
+    inside: RefCell<Option<Rc<Mask>>>,
 }
 
 /// The ways text can be set, any of them together: heavier, slanted,
@@ -146,7 +153,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, opacity: 256, style: 0, number: 0, angle: 0.0, mask: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -165,7 +172,7 @@ impl Shape {
             self.face,
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
-            format_args!("{},{},{},{}", u8::from(self.dashed), self.opacity, self.style, self.angle),
+            format_args!("{},{},{},{},{}", u8::from(self.dashed), self.opacity, self.style, self.angle, u8::from(self.border)),
             self.fill,
             self.number,
             points.join(" ")
@@ -194,6 +201,14 @@ impl Shape {
         shape.style = more.next().and_then(|style| style.parse().ok()).unwrap_or(0);
         shape.angle = more.next().and_then(|angle| angle.parse().ok()).filter(|angle: &f32| angle.is_finite()).unwrap_or(0.0);
         (shape.fill, shape.number) = (u32::from_str_radix(fill, 16).ok()?, number.parse().ok()?);
+        // Whether it has a border, which a file from before borders and
+        // fills had their own colors has not: a shape filled then was
+        // filled in its one color, and had no border.
+        match more.next() {
+            Some(border) => shape.border = border == "1",
+            None if shape.filled && matches!(tool, Tool::Rect | Tool::Ellipse) => (shape.fill, shape.border) = (shape.color, false),
+            None => {}
+        }
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -293,6 +308,13 @@ impl Shape {
     /// To be called when anything about its outline has changed.
     pub fn touch(&mut self) {
         *self.mask.borrow_mut() = None;
+        *self.inside.borrow_mut() = None;
+    }
+
+    /// Whether it is a rectangle or an oval with both a border and a
+    /// fill, which are drawn one over the other in their own colors.
+    fn bordered_fill(&self) -> bool {
+        matches!(self.tool, Tool::Rect | Tool::Ellipse) && self.filled && self.border
     }
 
     pub fn translate(&mut self, dx: f32, dy: f32) {
@@ -486,7 +508,10 @@ impl Shape {
         let backs = curve.map_or([b, a], |curve| [back(&mut curve.into_iter()), back(&mut curve.into_iter().rev())]);
         let (x, y, w, h) = self.frame();
         let angle = if matches!(self.tool, Tool::Rect | Tool::Ellipse) { self.angle } else { 0.0 };
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled: self.filled, radius: self.radius, head, heads: self.heads, dashed: self.dashed, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0) }
+        // With a border as well as a fill, the outline is the border's:
+        // what is inside it has a mask of its own.
+        let filled = self.filled && !self.bordered_fill();
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radius: self.radius, head, heads: self.heads, dashed: self.dashed, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0) }
     }
 
     /// Which of its points is the far one of the two it is between: the
@@ -747,6 +772,23 @@ impl Shape {
         mask
     }
 
+    /// What is inside the border of a rectangle or an oval, as far as the
+    /// middle of its line, which the border is drawn over: kept as its
+    /// mask is.
+    fn inside_mask(&self) -> Rc<Mask> {
+        if let Some(mask) = self.inside.borrow().as_ref() {
+            return mask.clone();
+        }
+        let bounds = match self.angle {
+            0.0 => self.extent(),
+            angle => turned_around(self.extent(), self.centre_of_frame(), angle),
+        };
+        let outline = Outline { filled: true, stroke: 0.0, ..self.outline() };
+        let mask = Rc::new(covered(bounds, move |x, y| outline.distance(x, y)));
+        *self.inside.borrow_mut() = Some(mask.clone());
+        mask
+    }
+
     pub fn draw(&self, canvas: &mut Canvas, text: &mut Text) {
         match self.tool {
             // Words turned: drawn straight on a sheet of their own, and
@@ -828,6 +870,13 @@ impl Shape {
                 }
             }
             Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY * self.opacity / 256),
+            // Its fill, and its border over that; or the one it has.
+            Tool::Rect | Tool::Ellipse => {
+                if self.bordered_fill() {
+                    canvas.mask(&self.inside_mask(), self.fill, self.opacity);
+                }
+                canvas.mask(&self.mask(), if self.border { self.color } else { self.fill }, self.opacity);
+            }
             Tool::Counter => {
                 canvas.mask(&self.mask(), self.color, self.opacity);
                 let (cx, cy) = (self.points[0].0.round() as i32, self.points[0].1.round() as i32);
@@ -910,12 +959,16 @@ impl Shape {
                 let (of, shown) = self.zoomed();
                 of.inflate(REACH).contains(x, y) || shown.inflate(REACH).contains(x, y)
             }
+            // On its line, or with a fill inside its border, there too.
             _ => {
-                let mask = self.mask();
-                let near = Rect::new(x - REACH, y - REACH, 2 * REACH + 1, 2 * REACH + 1).intersect(mask.bounds);
-                !near.is_empty() && (near.y..near.bottom()).any(|py| {
-                    let row = &mask.alpha[((py - mask.bounds.y) * mask.bounds.w + near.x - mask.bounds.x) as usize..][..near.w as usize];
-                    row.iter().any(|&cover| cover > 64)
+                let mut masks = vec![self.mask()];
+                masks.extend(self.bordered_fill().then(|| self.inside_mask()));
+                masks.iter().any(|mask| {
+                    let near = Rect::new(x - REACH, y - REACH, 2 * REACH + 1, 2 * REACH + 1).intersect(mask.bounds);
+                    !near.is_empty() && (near.y..near.bottom()).any(|py| {
+                        let row = &mask.alpha[((py - mask.bounds.y) * mask.bounds.w + near.x - mask.bounds.x) as usize..][..near.w as usize];
+                        row.iter().any(|&cover| cover > 64)
+                    })
                 })
             }
         }
@@ -1253,8 +1306,35 @@ mod tests {
             assert_eq!((back.tool, back.color, back.points.clone(), back.text.as_str(), back.angle), (shape.tool, shape.color, shape.points.clone(), shape.text.as_str(), shape.angle));
             assert_eq!((back.heads, back.dashed, back.fill, back.number, back.face, back.font_px, back.stroke), (shape.heads, shape.dashed, shape.fill, shape.number, shape.face, shape.font_px, shape.stroke));
         }
+        let mut boxed = Shape::new(Tool::Rect, 0x161616, 3.5, (1.0, 2.0));
+        (boxed.points[1], boxed.filled, boxed.fill) = ((40.0, 30.0), true, 0xFFE629);
+        let back = Shape::read(&boxed.write()).expect("read back");
+        assert_eq!((back.filled, back.border, back.fill, back.color), (true, true, 0xFFE629, 0x161616));
         assert!(Shape::read("nonsense").is_none());
         assert!(Shape::read("arrow\tzz\t1\t0\t0\t16\t0\t01\t0\tFFFFFF\t0\t1,2 3,4\t").is_none());
+    }
+
+    #[test]
+    fn a_box_filled_before_fills_had_their_own_color_is_filled_in_its_color_with_no_border() {
+        let old = "rect\tE5484D\t3.5\t1\t6\t18\t0\t01\t0,256,0,0\tFFFFFF\t0\t10,10 50,40\t";
+        let shape = Shape::read(old).expect("read");
+        assert_eq!((shape.filled, shape.border, shape.fill), (true, false, 0xE5484D));
+        let outlined = Shape::read(&old.replacen("\t1\t6\t", "\t0\t6\t", 1)).expect("read");
+        assert_eq!((outlined.filled, outlined.border), (false, true));
+    }
+
+    #[test]
+    fn a_box_with_a_border_and_a_fill_has_each_in_its_own_color_and_is_hit_inside() {
+        let mut text = Text::load();
+        let mut boxed = Shape::new(Tool::Rect, 0xFF0000, 4.0, (10.0, 10.0));
+        (boxed.points[1], boxed.filled, boxed.fill) = ((70.0, 50.0), true, 0x00FF00);
+        let mut pixels = vec![0u32; 80 * 60];
+        boxed.draw(&mut Canvas::new(&mut pixels, 80, 60), &mut text);
+        assert_eq!((pixels[30 * 80 + 40], pixels[30 * 80 + 10], pixels[5 * 80 + 40]), (0x00FF00, 0xFF0000, 0));
+        assert!(boxed.hit(40, 30, &mut text));
+        boxed.filled = false;
+        boxed.touch();
+        assert!(!boxed.hit(40, 30, &mut text) && boxed.hit(10, 30, &mut text));
     }
 
     #[test]
@@ -1262,7 +1342,7 @@ mod tests {
         // A wide, low bar about (60, 50), turned a quarter: tall and narrow.
         let mut text = Text::load();
         let mut bar = Shape::new(Tool::Rect, 0xFF0000, 2.0, (20.0, 45.0));
-        (bar.points[1], bar.filled, bar.angle) = ((100.0, 55.0), true, std::f32::consts::FRAC_PI_2);
+        (bar.points[1], bar.filled, bar.border, bar.fill, bar.angle) = ((100.0, 55.0), true, false, 0xFF0000, std::f32::consts::FRAC_PI_2);
         assert!(bar.hit(60, 20, &mut text));
         assert!(!bar.hit(25, 50, &mut text));
         let mut pixels = vec![0u32; 120 * 100];

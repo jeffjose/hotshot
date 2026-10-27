@@ -72,11 +72,18 @@ the whole screen. Then:
 | `W` | frame: one of forty backdrops, with padding and a shadow |
 | `M` | show or hide the mouse pointer in the screenshot |
 | `C` `I` | colors, color picker |
+| `F` | fill a rectangle or oval, or not |
 | `1`-`4` | line width and text size |
 
-Shapes stay editable: you can move, resize and recolor them, duplicate
-them with `Ctrl+D`, and move one above or below another with `Ctrl+]` and
-`Ctrl+[`. Drag the dot in the middle of an arrow or line to bend it, and
+Shapes stay editable: select one and a small bar appears above it with
+what you can change about it (color, width, font and text style, arrow
+heads, dashes) and buttons to bring it forward or send it backward
+(Shift-click for all the way), duplicate it or delete it. Rectangles
+and ovals have a border and a fill, each in its own color or none. With
+a tool in hand and nothing selected, the same bar sits above the main
+one, for how the next shape is drawn. The keys work too: `Ctrl+D`
+duplicates, and `Ctrl+]` and `Ctrl+[` move a shape above or below
+another. Drag the dot in the middle of an arrow or line to bend it, and
 just outside a corner of a shape to rotate it. Shapes snap to each other,
 and the selection snaps to window edges. As in Figma, hold Shift to keep
 proportions (or rotate in 15° steps) and Alt to draw or resize from the
