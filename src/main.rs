@@ -533,7 +533,7 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     let mut back = vec![0u32; frame.len()];
     trace("editor ready");
 
-    let mut first = true;
+    let (mut first, mut titled) = (true, false);
     // How many strips have come since a frame was last drawn: drawing
     // one is not nothing, and is not done for every strip.
     let mut unseen = 0;
@@ -558,6 +558,12 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
             if std::mem::take(&mut first) {
                 trace("first frame of the editor up");
             }
+        }
+        // What the windows are called, for the bar of a window round the
+        // picture: asked once the screen is up and read, not to keep it.
+        if !titled && !first && strips.done() {
+            editor.set_titles(display.titled().into_iter().map(|(_, title, place)| (place, title)).collect());
+            titled = true;
         }
         display.set_cursor(editor.cursor());
         // With strips still to come, only what is already waiting is

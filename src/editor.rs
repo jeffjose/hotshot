@@ -665,6 +665,9 @@ pub struct Editor {
     monitors: Vec<Rect>,
     /// The windows on the screen, the topmost first.
     windows: Vec<Rect>,
+    /// What the windows are called, and where they are, once known: for
+    /// the bar of the window a picture is set in.
+    titles: Vec<(Rect, String)>,
     settings: Settings,
     text: Text,
 
@@ -1003,6 +1006,7 @@ impl Editor {
             dim,
             monitors: if monitors.is_empty() { vec![screen] } else { monitors },
             windows,
+            titles: Vec::new(),
             color: settings.color,
             corners: settings.corners,
             // Filled to begin with, as the config file may say: unless it
@@ -1909,6 +1913,10 @@ impl Editor {
                 let (index, point) = (*index, *point);
                 let to = (at.0 as f32 + 0.5, at.1 as f32 + 0.5);
                 let shape = &mut self.shapes[index];
+                // Let go of what it was stuck to while it is moved.
+                if point < 2 {
+                    shape.stuck[point] = None;
+                }
                 // With Shift, at one of eight angles from the other end.
                 let other = shape.points[1 - point.min(1)];
                 // A zoom's handles are not its points: one moves its
@@ -2183,6 +2191,15 @@ impl Editor {
                         going = vec![index];
                     }
                     self.moving = going.into_iter().map(|index| (index, self.shapes[index].clone())).collect();
+                    // A line moved without what it is stuck to lets go of it.
+                    let ids: Vec<u32> = self.moving.iter().map(|(_, shape)| shape.id).collect();
+                    for (index, shape) in &mut self.moving {
+                        for end in 0..2 {
+                            if shape.stuck[end].is_some_and(|(id, ..)| !ids.contains(&id)) {
+                                (shape.stuck[end], self.shapes[*index].stuck[end]) = (None, None);
+                            }
+                        }
+                    }
                 }
                 // Shift keeps it to across or down, whichever it has gone
                 // further, as Figma does.
@@ -2557,9 +2574,12 @@ impl Editor {
                     // more to come, nor a counter, which is for putting
                     // down 1, 2, 3 one after another.
                     self.made(self.shapes.len() - 1);
+                    // Its ends stuck to what they were put down on.
+                    self.stick(self.shapes.len() - 1, &[0, 1]);
                 }
             }
             Drag::Scale { .. } | Drag::Turn { .. } => self.scaling = None,
+            Drag::End { index, point, moved: true, .. } if point < 2 => self.stick(index, &[point]),
             Drag::Shape { .. } => (self.moving, self.guides) = (Vec::new(), Vec::new()),
             // A click on the frame, not a drag of it, opens what there
             // is to choose about it.
@@ -3232,6 +3252,35 @@ impl Editor {
 
     /// A copy of each shape picked out, a little down and to the right of
     /// it, and picked out in its place.
+    /// What the ends of arrows can be stuck to: the boxes, ovals and text.
+    fn anchors(&mut self) -> Vec<shapes::Anchor> {
+        let mut anchors = Vec::new();
+        for shape in &self.shapes {
+            anchors.extend(shape.anchor(&mut self.text));
+        }
+        anchors
+    }
+
+    /// Ends of a line stuck to what they are on, as Figma's connectors
+    /// are, to go with it when it moves.
+    fn stick(&mut self, index: usize, ends: &[usize]) {
+        let anchors = self.anchors();
+        let Some(shape) = self.shapes.get_mut(index) else { return };
+        for &end in ends {
+            let at = shape.points[end];
+            shape.stick(end, at, &anchors, 8.0);
+        }
+        self.follow();
+    }
+
+    /// The ends of arrows taken to what they are stuck to, where it is now.
+    fn follow(&mut self) {
+        if self.shapes.iter().any(|shape| shape.stuck.iter().any(Option::is_some)) {
+            let anchors = self.anchors();
+            shapes::follow(self.shapes.iter_mut(), &anchors);
+        }
+    }
+
     fn duplicate(&mut self) {
         let chosen = self.chosen();
         if chosen.is_empty() {
@@ -3242,7 +3291,7 @@ impl Editor {
         let mut counters = self.shapes.iter().filter(|shape| shape.tool == Tool::Counter).count() as u32;
         self.selected.clear();
         for index in chosen {
-            let mut copy = self.shapes[index].clone();
+            let mut copy = self.shapes[index].copied();
             copy.translate(by, by);
             // A counter copied counts on.
             if copy.tool == Tool::Counter {
@@ -3625,13 +3674,18 @@ impl Editor {
     /// it is with the room round it, its pixels, and whether any of it
     /// is see-through, which is said in the top byte of each.
     pub fn framed(&mut self) -> Option<(Rect, i32, i32, Vec<u32>, bool)> {
+        self.follow();
         let (area, mut pixels, rounded) = self.result()?;
         let (mut wide, mut high, mut clear) = (area.w, area.h, rounded);
         if !self.frame.is_plain() {
             if !rounded {
                 pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
             }
-            (wide, high, pixels) = frame::set(self.frame, &pixels, area.w, area.h, self.corner_radius(), self.scale(), self.photo.as_ref());
+            let picture = std::mem::take(&mut pixels);
+            (wide, high, pixels) = frame::set(self.frame, &picture, area.w, area.h, self.corner_radius(), self.scale(), self.photo.as_ref());
+            if let Some(title) = self.title() {
+                frame::title(self.frame, &mut pixels, wide, &picture, (area.w, area.h), self.scale(), &title, &mut self.text);
+            }
             clear = self.frame.is_clear() || (self.frame.backdrop == Backdrop::Photo && self.photo.is_none());
         }
         // A zoom may reach past the selection, and past the frame: the
@@ -3769,6 +3823,7 @@ impl Editor {
 
     /// Paints the screen as it now stands into a buffer of its size.
     pub fn draw(&mut self, out: &mut [u32]) {
+        self.follow();
         let layout = self.layout();
         let (width, height) = (self.shot.width, self.shot.height);
         let (px, pad) = (layout.px, layout.px as i32 / 2);
@@ -3782,12 +3837,21 @@ impl Editor {
         let framed = self.selection.filter(|_| !self.frame.is_plain() && !reshaping);
         if let Some(area) = framed {
             let (room, radius, scale) = (self.frame_room(), self.corner_radius(), self.scale());
-            let made_from = format!("{:?} {} {} {radius} {}", self.frame, area.w, area.h, self.photos);
+            // With a window, where the selection is says how dark its bar
+            // is and what it is called.
+            let title = self.title().filter(|_| self.frame.window != frame::Window::None);
+            let place = if self.frame.window == frame::Window::None { (0, 0) } else { (area.x, area.y) };
+            let made_from = format!("{:?} {} {} {radius} {} {place:?} {title:?}", self.frame, area.w, area.h, self.photos);
             if self.surround.as_ref().is_none_or(|kept| kept.0 != made_from) {
-                // Made as the picture's frame is, round a picture with
-                // nothing in it.
-                let nothing = vec![0u32; (area.w * area.h) as usize];
-                let (wide, _, pixels) = frame::set(self.frame, &nothing, area.w, area.h, radius, scale, self.photo.as_ref());
+                // Made as the picture's frame is, round the picture with
+                // none of it showing: what is on the screen there, wholly
+                // see-through, which is what its window's bar is made to
+                // go with.
+                let under: Vec<u32> = canvas::crop(&self.shot.pixels, self.shot.width, area).iter().map(|pixel| pixel & 0xFF_FFFF).collect();
+                let (wide, _, mut pixels) = frame::set(self.frame, &under, area.w, area.h, radius, scale, self.photo.as_ref());
+                if let Some(title) = &title {
+                    frame::title(self.frame, &mut pixels, wide, &under, (area.w, area.h), scale, title, &mut self.text);
+                }
                 self.surround = Some((made_from, wide, pixels));
             }
             if let Some((_, wide, pixels)) = &self.surround {
@@ -4730,6 +4794,23 @@ impl Editor {
         let photo = self.photo().map(crate::history::photo_mark);
         let backdrop = if self.frame.backdrop == Backdrop::Photo && photo.is_none() { Backdrop::None } else { self.frame.backdrop };
         crate::history::Recipe { area: self.selection.unwrap_or_default(), corners: self.corners, frame: Frame { backdrop, ..self.frame }, pointer: self.arrow_shows && self.arrow.is_some(), photo }
+    }
+
+    /// What the windows are called, and where each is, the topmost first.
+    pub fn set_titles(&mut self, titles: Vec<(Rect, String)>) {
+        (self.titles, self.dirty) = (titles, true);
+    }
+
+    /// What the window the selection is of is called: the topmost one
+    /// that is most of what is selected, and not much more.
+    fn title(&self) -> Option<String> {
+        let area = self.selection?;
+        let size = |rect: Rect| rect.w as i64 * rect.h as i64;
+        let of = self.titles.iter().find(|(place, _)| {
+            let both = size(place.intersect(area));
+            both * 10 >= size(area) * 8 && size(*place) * 2 <= size(area) * 3
+        });
+        of.map(|(_, title)| title.clone())
     }
 
     /// Sets the picture on a photograph from before, in the frame it

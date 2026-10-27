@@ -28,6 +28,8 @@ const EDGE_COLOR: u32 = 0x333333;
 const FIELD_COLOR: u32 = 0x111111;
 const VIEW_COLOR: u32 = 0x262626;
 const ACCENT: u32 = 0x3E63DD;
+/// The lines things snap to, as Figma draws them.
+const GUIDE: u32 = 0xF2555A;
 
 /// How wide the panels at either side are, and how tall the bar along
 /// the top, in pixels of the window.
@@ -37,6 +39,9 @@ const TOP: i32 = 44;
 
 /// How much larger a picture's shadow is than Tailwind's of its name.
 const SHADOW_SIZE: f32 = 2.0;
+
+/// How a handle at an end of a line pulls: that end, and nothing else.
+const END: i32 = 9;
 
 /// The widths of line there are, in pixels of the picture; and the sizes
 /// of text that go with them.
@@ -142,12 +147,14 @@ pub struct Picture {
     pub shadow: usize,
     pub opacity: u32,
     pub flip: (bool, bool),
+    /// What it is called, for the ends of arrows to be stuck to it by.
+    pub id: u32,
 }
 
 impl Picture {
     pub fn new(image: Arc<Image>, name: String, at: (f32, f32)) -> Picture {
         let (w, h) = (image.width() as f32, image.height() as f32);
-        Picture { image, name, cx: at.0, cy: at.1, w, h, angle: 0.0, crop: (0.0, 0.0, w, h), radius: 0.0, shadow: 0, opacity: 256, flip: (false, false) }
+        Picture { image, name, cx: at.0, cy: at.1, w, h, angle: 0.0, crop: (0.0, 0.0, w, h), radius: 0.0, shadow: 0, opacity: 256, flip: (false, false), id: shapes::fresh_id() }
     }
 
     /// A point of the artboard as a point of the picture unturned, from
@@ -250,6 +257,9 @@ pub enum Fill {
     /// One of the backdrops the frame box has, by where it is in
     /// `frame::BACKDROPS`.
     Backdrop(usize),
+    /// From one color to another, going the way an angle in degrees
+    /// says, as CSS's linear-gradient does.
+    Gradient(u32, u32, f32),
 }
 
 /// The artboard: how large, on what, and what is on it, the first layer
@@ -295,6 +305,11 @@ impl Doc {
                     *pixel = 0xFF00_0000 | frame::shade(which, (x as f32 + 0.5) / wide as f32, (y as f32 + 0.5) / high as f32, noise);
                 }
             }),
+            Fill::Gradient(from, to, angle) => out.par_chunks_mut(wide as usize).enumerate().for_each(|(y, row)| {
+                for (x, pixel) in row.iter_mut().enumerate() {
+                    *pixel = 0xFF00_0000 | gradient(from, to, angle, (x as f32 + 0.5, y as f32 + 0.5), (wide as f32, high as f32), (x * 7 + y * 13) % 16);
+                }
+            }),
         }
         for layer in self.layers.iter().filter(|layer| !layer.hidden) {
             match &layer.kind {
@@ -316,6 +331,7 @@ impl Doc {
             Fill::None => "background none\n".to_owned(),
             Fill::Color(color) => format!("background color {color:06X}\n"),
             Fill::Backdrop(which) => format!("background backdrop {}\n", BACKDROPS[which.min(BACKDROPS.len() - 1)].0),
+            Fill::Gradient(from, to, angle) => format!("background gradient {from:06X} {to:06X} {angle}\n"),
         };
         let mut images: Vec<Arc<Image>> = Vec::new();
         for layer in &self.layers {
@@ -328,7 +344,7 @@ impl Doc {
                     });
                     let (cx, cy, cw, ch) = picture.crop;
                     out += &format!(
-                        "picture {flags} {index} {} {} {} {} {} {cx} {cy} {cw} {ch} {} {} {} {} {} {}\n",
+                        "picture {flags} {index} {} {} {} {} {} {cx} {cy} {cw} {ch} {} {} {} {} {} {} {}\n",
                         picture.cx,
                         picture.cy,
                         picture.w,
@@ -339,6 +355,7 @@ impl Doc {
                         picture.opacity,
                         u8::from(picture.flip.0),
                         u8::from(picture.flip.1),
+                        picture.id,
                         picture.name.replace(['\n', '\t'], " ")
                     );
                 }
@@ -382,6 +399,7 @@ impl Doc {
                     doc.background = match words.next()? {
                         "color" => Fill::Color(u32::from_str_radix(words.next()?, 16).ok()?),
                         "backdrop" => Fill::Backdrop(frame::named(words.next()?)?),
+                        "gradient" => Fill::Gradient(u32::from_str_radix(words.next()?, 16).ok()?, u32::from_str_radix(words.next()?, 16).ok()?, words.next()?.parse().ok()?),
                         _ => Fill::None,
                     }
                 }
@@ -393,8 +411,10 @@ impl Doc {
                     let crop = (number()?, number()?, number()?, number()?);
                     let (radius, shadow, opacity) = (number()?, number()? as usize, number()? as u32);
                     let flip = (number()? == 1.0, number()? == 1.0);
+                    let id = number()? as u32;
+                    shapes::seen_id(id);
                     let name = words.collect::<Vec<_>>().join(" ");
-                    let picture = Picture { image, name, cx, cy, w, h, angle, crop, radius, shadow: shadow.min(frame::SHADOWS.len()), opacity: opacity.min(256), flip };
+                    let picture = Picture { image, name, cx, cy, w, h, angle, crop, radius, shadow: shadow.min(frame::SHADOWS.len()), opacity: opacity.min(256), flip, id };
                     doc.layers.push(Layer { kind: Kind::Picture(picture), hidden, locked });
                 }
                 "shape" => {
@@ -426,12 +446,15 @@ pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str) -> Doc {
     let room = 80;
     let mut doc = Doc::new(area.w + 2 * room, area.h + 2 * room);
     doc.background = Fill::Backdrop(frame::named("aurora").unwrap_or(0));
+    // The shapes read first, so that the picture is called something
+    // none of them is.
+    let drawn: Vec<Shape> = shapes.lines().filter_map(Shape::read).collect();
     let image = Image::new(area.w, area.h, pixels.iter().map(|pixel| pixel | 0xFF00_0000).collect());
     let middle = (room as f32 + area.w as f32 / 2.0, room as f32 + area.h as f32 / 2.0);
     let mut picture = Picture::new(Arc::new(image), "Screenshot".into(), middle);
     (picture.radius, picture.shadow) = (10.0, frame::SHADOWS.len());
     doc.layers.push(Layer::picture(picture));
-    for mut shape in shapes.lines().filter_map(Shape::read) {
+    for mut shape in drawn {
         shape.translate((room - area.x) as f32, (room - area.y) as f32);
         doc.layers.push(Layer::shape(shape));
     }
@@ -441,6 +464,22 @@ pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str) -> Doc {
 /// Where some bytes first come in others.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
+}
+
+/// The color of a gradient at a point of a box, as CSS's linear-gradient
+/// has it: along a line through its middle the way the angle says, long
+/// enough that its ends just reach the far corners. A little noise keeps
+/// a wide one from showing bands.
+pub fn gradient(from: u32, to: u32, angle: f32, (x, y): (f32, f32), (wide, high): (f32, f32), noise: usize) -> u32 {
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let length = (wide * sin).abs() + (high * cos).abs();
+    let along = ((x - wide / 2.0) * sin - (y - high / 2.0) * cos) / length.max(1.0) + 0.5;
+    let along = (along + (noise as f32 / 16.0 - 0.5) / 255.0).clamp(0.0, 1.0);
+    let part = |shift: u32| {
+        let (a, b) = ((from >> shift & 0xFF) as f32, (to >> shift & 0xFF) as f32);
+        ((a + (b - a) * along).round() as u32).min(255) << shift
+    };
+    part(16) | part(8) | part(0)
 }
 
 /// A color over another, each with how opaque it is in its top byte, by
@@ -601,6 +640,9 @@ enum Field {
     Opacity,
     ArtW,
     ArtH,
+    /// Which way the background's gradient goes, as CSS says it: 0 up,
+    /// 90 to the right, 180 down.
+    Angle,
 }
 
 impl Field {
@@ -613,6 +655,7 @@ impl Field {
             Field::Turn => "\u{b0}",
             Field::Radius => "Round",
             Field::Opacity => "Opacity",
+            Field::Angle => "Angle",
         }
     }
 }
@@ -623,6 +666,7 @@ enum Ground {
     None,
     Color,
     Backdrop,
+    Gradient,
 }
 
 /// What a color in the panel is for.
@@ -631,6 +675,9 @@ enum Paint {
     Line,
     Fill,
     Background,
+    /// The colors a gradient goes from and to.
+    From,
+    To,
 }
 
 /// What a click on the panels, or the bar along the top, does.
@@ -784,6 +831,9 @@ pub struct Studio {
     /// What was last done, said along the bottom for a while.
     note: Option<(String, std::time::Instant)>,
     last_press: (u32, (i32, i32)),
+    /// The lines what is being moved has snapped to, on the artboard:
+    /// up and down at an x, or across at a y.
+    guides: Vec<(bool, f32)>,
     dirty: bool,
 }
 
@@ -823,6 +873,7 @@ impl Studio {
             filename,
             note: None,
             last_press: (0, (-100, -100)),
+            guides: Vec::new(),
             dirty: true,
         };
         studio.fit();
@@ -866,6 +917,7 @@ impl Studio {
 
     /// Something has changed: drawn again, and the file is behind.
     fn changed(&mut self) {
+        self.follow();
         self.version += 1;
         self.edited = true;
         self.dirty = true;
@@ -979,15 +1031,24 @@ impl Studio {
                 chips(layout, &mut self.text, &mut y, presets);
                 fields(layout, &mut y, &[Field::ArtW, Field::ArtH]);
                 heading(layout, &mut y, "Background");
-                chips(layout, &mut self.text, &mut y, vec![("None".into(), Control::Ground(Ground::None)), ("Color".into(), Control::Ground(Ground::Color)), ("Backdrop".into(), Control::Ground(Ground::Backdrop))]);
+                chips(layout, &mut self.text, &mut y, vec![("None".into(), Control::Ground(Ground::None)), ("Color".into(), Control::Ground(Ground::Color)), ("Gradient".into(), Control::Ground(Ground::Gradient)), ("Backdrop".into(), Control::Ground(Ground::Backdrop))]);
                 match self.doc.background {
                     Fill::Color(_) => swatches(layout, &mut y, Paint::Background, false),
+                    Fill::Gradient(..) => {
+                        layout.words.push(((left, y), "From".to_owned(), DIM_TEXT_COLOR));
+                        y += line + 4;
+                        swatches(layout, &mut y, Paint::From, false);
+                        layout.words.push(((left, y), "To".to_owned(), DIM_TEXT_COLOR));
+                        y += line + 4;
+                        swatches(layout, &mut y, Paint::To, false);
+                        fields(layout, &mut y, &[Field::Angle]);
+                    }
                     Fill::Backdrop(_) => {
                         let (each, across) = (inner / 6, 6);
-                        for which in 0..24.min(BACKDROPS.len()) {
+                        for which in 0..BACKDROPS.len() {
                             layout.controls.push((Rect::new(left + which as i32 % across * each, y + which as i32 / across * each, each - 4, each - 4), Control::Backdrop(which)));
                         }
-                        y += 4 * each + 6;
+                        y += BACKDROPS.len().div_ceil(across as usize) as i32 * each + 6;
                     }
                     Fill::None => {}
                 }
@@ -1121,9 +1182,23 @@ impl Studio {
         let pulls = [(-1, -1), (1, -1), (1, 1), (-1, 1), (0, -1), (1, 0), (0, 1), (-1, 0)];
         match self.doc.layers[index].kind.clone() {
             Kind::Picture(picture) => pulls.iter().map(|&(px, py)| (self.to_window(picture.placed((px as f32 * picture.w / 2.0, py as f32 * picture.h / 2.0))), (px, py))).collect(),
-            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse) && shape.angle == 0.0 => {
-                let (x, y, w, h) = shape.frame();
-                pulls.iter().map(|&(px, py)| (self.to_window((x + w * (px + 1) as f32 / 2.0, y + h * (py + 1) as f32 / 2.0)), (px, py))).collect()
+            // A box or an oval by its frame, and text by its corners,
+            // turned with it.
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge) => {
+                let (x, y, w, h) = match shape.tool {
+                    Tool::Text | Tool::Badge => {
+                        let place = shape.local_bounds(&mut self.text);
+                        (place.x as f32, place.y as f32, place.w as f32, place.h as f32)
+                    }
+                    _ => shape.frame(),
+                };
+                let count = if matches!(shape.tool, Tool::Text | Tool::Badge) { 4 } else { 8 };
+                let spots: Vec<((f32, f32), (i32, i32))> = pulls[..count].iter().map(|&(px, py)| (shape.returned((x + w * (px + 1) as f32 / 2.0, y + h * (py + 1) as f32 / 2.0), &mut self.text), (px, py))).collect();
+                spots.into_iter().map(|(spot, pull)| (self.to_window(spot), pull)).collect()
+            }
+            // A line or an arrow by its ends, which pull as END does.
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => {
+                [0, 1].iter().map(|&end| (self.to_window(shape.points[end as usize]), (END, end))).collect()
             }
             Kind::Shape(_) => Vec::new(),
         }
@@ -1192,11 +1267,20 @@ impl Studio {
                 if !moved {
                     self.checkpoint();
                     self.drag = Drag::Move { from, moved: true };
+                    self.let_go();
+                }
+                // Snapped to the artboard and to the rest, but for along
+                // the way Shift holds it to, or with Ctrl held.
+                let (mut dx, mut dy) = if mods.ctrl { (dx.round(), dy.round()) } else { self.snap(dx.round(), dy.round()) };
+                if mods.shift && (at.0 - from.0).abs() >= (at.1 - from.1).abs() {
+                    dy = 0.0;
+                } else if mods.shift {
+                    dx = 0.0;
                 }
                 for (index, layer) in self.held.clone().into_iter().enumerate() {
                     if let Some(&chosen) = self.chosen().get(index) {
                         let mut layer = layer;
-                        layer.translate(dx.round(), dy.round());
+                        layer.translate(dx, dy);
                         self.doc.layers[chosen] = layer;
                     }
                 }
@@ -1335,7 +1419,7 @@ impl Studio {
             return;
         }
         if let Some(index) = self.picked() {
-            let corners: Vec<(i32, i32)> = handles.iter().take(4).map(|&(spot, _)| spot).collect();
+            let corners: Vec<(i32, i32)> = handles.iter().filter(|(_, pull)| pull.0 != END).take(4).map(|&(spot, _)| spot).collect();
             let turnable = match &self.doc.layers[index].kind {
                 Kind::Picture(_) => true,
                 Kind::Shape(shape) => shape.turns(),
@@ -1460,6 +1544,11 @@ impl Studio {
                         Fill::Backdrop(which) => which,
                         _ => frame::named("aurora").unwrap_or(0),
                     }),
+                    // Indigo to pink, down and to the right, to begin with.
+                    Ground::Gradient => match self.doc.background {
+                        Fill::Gradient(..) => self.doc.background,
+                        _ => Fill::Gradient(0x3E63DD, 0xD6409F, 135.0),
+                    },
                 };
                 self.changed();
             }
@@ -1535,6 +1624,13 @@ impl Studio {
             Paint::Background => {
                 self.checkpoint();
                 self.doc.background = Fill::Color(color.unwrap_or(0xFFFFFF));
+                self.changed();
+            }
+            Paint::From | Paint::To => {
+                let Fill::Gradient(from, to, angle) = self.doc.background else { return };
+                let color = color.unwrap_or(0xFFFFFF);
+                self.checkpoint();
+                self.doc.background = if paint == Paint::From { Fill::Gradient(color, to, angle) } else { Fill::Gradient(from, color, angle) };
                 self.changed();
             }
             Paint::Line => {
@@ -1642,6 +1738,13 @@ impl Studio {
                 } else if !matches!(self.tool, Tool::Pen | Tool::Marker | Tool::Counter) {
                     self.selected = vec![self.doc.layers.len() - 1];
                     self.tool = Tool::Select;
+                    // Its ends stuck to what they were put down on.
+                    self.stick(self.doc.layers.len() - 1, &[0, 1]);
+                }
+            }
+            Drag::Scale { pull, .. } if pull.0 == END => {
+                if let Some(index) = self.picked() {
+                    self.stick(index, &[pull.1 as usize]);
                 }
             }
             Drag::Marquee { from } => {
@@ -1659,6 +1762,116 @@ impl Studio {
             _ => {}
         }
         self.held.clear();
+        self.guides.clear();
+    }
+
+    /// What the ends of arrows can be stuck to: the pictures, and the
+    /// boxes, ovals and text, that are to be seen.
+    fn anchors(&mut self) -> Vec<shapes::Anchor> {
+        let mut anchors = Vec::new();
+        for layer in self.doc.layers.iter().filter(|layer| !layer.hidden) {
+            match &layer.kind {
+                Kind::Picture(picture) => anchors.push(shapes::Anchor { id: picture.id, middle: (picture.cx, picture.cy), half: (picture.w / 2.0, picture.h / 2.0), angle: picture.angle, round: false }),
+                Kind::Shape(shape) => anchors.extend(shape.anchor(&mut self.text)),
+            }
+        }
+        anchors
+    }
+
+    /// Ends of a line stuck to what they are on, as Figma's connectors
+    /// are, to go with it when it moves.
+    fn stick(&mut self, index: usize, ends: &[usize]) {
+        let anchors = self.anchors();
+        let reach = 8.0 / self.zoom;
+        if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
+            for &end in ends {
+                let at = shape.points[end];
+                shape.stick(end, at, &anchors, reach);
+            }
+        }
+        self.changed();
+    }
+
+    /// The ends of arrows taken to what they are stuck to, where it is now.
+    fn follow(&mut self) {
+        let stuck = |layer: &Layer| matches!(&layer.kind, Kind::Shape(shape) if shape.stuck.iter().any(Option::is_some));
+        if self.doc.layers.iter().any(stuck) {
+            let anchors = self.anchors();
+            let lines = self.doc.layers.iter_mut().filter_map(|layer| match &mut layer.kind {
+                Kind::Shape(shape) => Some(shape),
+                Kind::Picture(_) => None,
+            });
+            shapes::follow(lines, &anchors);
+        }
+    }
+
+    /// The lines among what is held let go of what they are stuck to that
+    /// is not held with them, as they are moved without it.
+    fn let_go(&mut self) {
+        let id = |layer: &Layer| match &layer.kind {
+            Kind::Picture(picture) => picture.id,
+            Kind::Shape(shape) => shape.id,
+        };
+        let ids: Vec<u32> = self.held.iter().map(id).collect();
+        let chosen = self.chosen();
+        for (at, layer) in self.held.iter_mut().enumerate() {
+            let Kind::Shape(shape) = &mut layer.kind else { continue };
+            for end in 0..2 {
+                if shape.stuck[end].is_some_and(|(id, ..)| !ids.contains(&id)) {
+                    shape.stuck[end] = None;
+                    if let Some(Layer { kind: Kind::Shape(placed), .. }) = chosen.get(at).and_then(|&index| self.doc.layers.get_mut(index)) {
+                        placed.stuck[end] = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// How far what is held is to go, made to bring its edges or its
+    /// middle onto those of the artboard or of another layer near enough,
+    /// as Figma's do: and the lines it is brought onto, to show.
+    fn snap(&mut self, dx: f32, dy: f32) -> (f32, f32) {
+        self.guides.clear();
+        let held: Vec<(f32, f32, f32, f32)> = self.held.clone().iter().map(|layer| layer.bounds(&mut self.text)).collect();
+        let Some(&(mut left, mut top, _, _)) = held.first() else { return (dx, dy) };
+        let (mut right, mut bottom) = (f32::MIN, f32::MIN);
+        for &(x, y, w, h) in &held {
+            (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h));
+        }
+        let chosen = self.chosen();
+        let (mut across, mut down) = (vec![0.0, self.doc.width as f32 / 2.0, self.doc.width as f32], vec![0.0, self.doc.height as f32 / 2.0, self.doc.height as f32]);
+        for index in 0..self.doc.layers.len() {
+            if chosen.contains(&index) || self.doc.layers[index].hidden {
+                continue;
+            }
+            let (x, y, w, h) = self.doc.layers[index].bounds(&mut self.text);
+            across.extend([x, x + w / 2.0, x + w]);
+            down.extend([y, y + h / 2.0, y + h]);
+        }
+        let reach = 6.0 / self.zoom;
+        // The nearest of its edges and middle to any of the lines.
+        let nearest = |mine: [f32; 3], lines: &[f32]| -> Option<(f32, f32)> {
+            let mut best: Option<(f32, f32)> = None;
+            for &line in lines {
+                for &at in &mine {
+                    let by = line - at;
+                    if by.abs() <= reach && best.is_none_or(|(was, _)| by.abs() < was.abs()) {
+                        best = Some((by, line));
+                    }
+                }
+            }
+            best
+        };
+        let (mut dx, mut dy) = (dx, dy);
+        if let Some((by, line)) = nearest([left + dx, (left + right) / 2.0 + dx, right + dx], &across) {
+            dx += by;
+            self.guides.push((true, line));
+        }
+        if let Some((by, line)) = nearest([top + dy, (top + bottom) / 2.0 + dy, bottom + dy], &down) {
+            dy += by;
+            self.guides.push((false, line));
+        }
+        (dx, dy)
     }
 
     /// The one picked out pulled by a handle to a point: the side or
@@ -1701,23 +1914,64 @@ impl Studio {
                 (picture.w, picture.h) = (w, h);
                 (picture.cx, picture.cy) = (was.cx + dx * cos - dy * sin, was.cy + dx * sin + dy * cos);
             }
+            // An end of a line where the pointer is; with Shift, along
+            // one of the eight ways from the other end.
+            Kind::Shape(shape) if pull.0 == END => {
+                // Let go of what it was stuck to while it is moved; it is
+                // stuck to what it is let go over.
+                let end = pull.1 as usize;
+                shape.stuck[end] = None;
+                let to = if mods.shift { shapes::constrained(Tool::Line, shape.points[1 - end], at) } else { at };
+                shape.points[end] = to;
+                shape.touch();
+            }
+            // Text by a corner: larger or smaller, by how much farther
+            // from its middle the corner is.
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Text | Tool::Badge) => {
+                let middle = shape.centre(&mut self.text);
+                let away = |(x, y): (f32, f32)| ((x - middle.0).powi(2) + (y - middle.1).powi(2)).sqrt().max(1.0);
+                let times = away(at) / away(from);
+                let before = shape.font_px;
+                shape.font_px = ((before as f32 * times).round() as u32).clamp(6, 600);
+                shape.touch();
+                // Grown about its middle, which stays where it was.
+                let now = shape.centre(&mut self.text);
+                shape.translate(middle.0 - now.0, middle.1 - now.1);
+            }
+            // A box or an oval by a side or a corner, across it as it is
+            // unturned, the side across from it staying where it was; with
+            // Shift, keeping its shape.
             Kind::Shape(shape) => {
                 let (x, y, w, h) = shape.frame();
-                let (fx, fy) = (at.0 - from.0, at.1 - from.1);
+                let middle = (x + w / 2.0, y + h / 2.0);
+                let unturned = |point: (f32, f32)| shapes::turn_point(point, middle, -shape.angle);
+                let (a, b) = (unturned(from), unturned(at));
+                let (fx, fy) = (b.0 - a.0, b.1 - a.1);
                 let (mut left, mut top, mut right, mut bottom) = (x, y, x + w, y + h);
                 match pull.0 {
-                    -1 => left += fx,
-                    1 => right += fx,
+                    -1 => left = (left + fx).min(right - 1.0),
+                    1 => right = (right + fx).max(left + 1.0),
                     _ => {}
                 }
                 match pull.1 {
-                    -1 => top += fy,
-                    1 => bottom += fy,
+                    -1 => top = (top + fy).min(bottom - 1.0),
+                    1 => bottom = (bottom + fy).max(top + 1.0),
                     _ => {}
                 }
-                shape.points[0] = (left, top);
+                if mods.shift && pull.0 != 0 && pull.1 != 0 && w > 0.0 && h > 0.0 {
+                    let ratio = w / h;
+                    let (nw, nh) = (right - left, bottom - top);
+                    let (nw, nh) = if nw / w > nh / h { (nw, nw / ratio) } else { (nh * ratio, nh) };
+                    if pull.0 < 0 { left = right - nw } else { right = left + nw }
+                    if pull.1 < 0 { top = bottom - nh } else { bottom = top + nh }
+                }
+                // The middle of what it is now, as it is turned; and the
+                // box about it, which turns about it.
+                let now = shapes::turn_point(((left + right) / 2.0, (top + bottom) / 2.0), middle, shape.angle);
+                let (hw, hh) = ((right - left) / 2.0, (bottom - top) / 2.0);
+                shape.points[0] = (now.0 - hw, now.1 - hh);
                 let far = shape.points.len() - 1;
-                shape.points[far.min(1)] = (right, bottom);
+                shape.points[far.min(1)] = (now.0 + hw, now.1 + hh);
                 shape.touch();
             }
         }
@@ -1776,6 +2030,12 @@ impl Studio {
         if let Field::ArtW | Field::ArtH = field {
             return Some(if field == Field::ArtW { self.doc.width } else { self.doc.height } as f32);
         }
+        if field == Field::Angle {
+            return match self.doc.background {
+                Fill::Gradient(_, _, angle) => Some(angle),
+                _ => None,
+            };
+        }
         let chosen = self.chosen();
         if chosen.len() > 1 {
             let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
@@ -1815,6 +2075,11 @@ impl Studio {
         match field {
             Field::ArtW => self.doc.width = (value.round() as i32).clamp(16, 8000),
             Field::ArtH => self.doc.height = (value.round() as i32).clamp(16, 8000),
+            Field::Angle => {
+                if let Fill::Gradient(from, to, _) = self.doc.background {
+                    self.doc.background = Fill::Gradient(from, to, value.round().rem_euclid(360.0));
+                }
+            }
             _ => {
                 let Some(now) = self.field(field) else { return };
                 let chosen = self.chosen();
@@ -1914,6 +2179,10 @@ impl Studio {
         self.selected.clear();
         for index in chosen {
             let mut copy = self.doc.layers[index].clone();
+            match &mut copy.kind {
+                Kind::Picture(picture) => picture.id = shapes::fresh_id(),
+                Kind::Shape(shape) => *shape = shape.copied(),
+            }
             copy.translate(16.0, 16.0);
             self.doc.layers.push(copy);
             self.selected.push(self.doc.layers.len() - 1);
@@ -2280,6 +2549,13 @@ impl Studio {
         if let Some(index) = self.cropping {
             self.draw_crop(&mut canvas, index);
         }
+        // The lines what is moved has snapped to, across the view.
+        for &(upright, at) in &self.guides {
+            match upright {
+                true => canvas.fill(self.to_window((at, 0.0)).0, view.y, 1, view.h, GUIDE),
+                false => canvas.fill(view.x, self.to_window((0.0, at)).1, view.w, 1, GUIDE),
+            }
+        }
         if let Drag::Marquee { from } = self.drag {
             let (a, b) = (self.to_window(from), self.pointer);
             let reach = Rect::spanning(a, b);
@@ -2308,6 +2584,21 @@ impl Studio {
         match self.doc.layers[index].kind.clone() {
             Kind::Picture(picture) => {
                 let corners = picture.corners().map(|corner| self.to_window(corner));
+                for side in 0..4 {
+                    line(canvas, corners[side], corners[(side + 1) % 4], color);
+                }
+            }
+            // A shape turned by an angle of its own, by its own box turned.
+            Kind::Shape(shape) if shape.turnable() && shape.angle != 0.0 => {
+                let (x, y, w, h) = match shape.tool {
+                    Tool::Text | Tool::Badge => {
+                        let place = shape.local_bounds(&mut self.text);
+                        (place.x as f32, place.y as f32, place.w as f32, place.h as f32)
+                    }
+                    _ => shape.frame(),
+                };
+                let corners = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|corner| shape.returned(corner, &mut self.text));
+                let corners = corners.map(|corner| self.to_window(corner));
                 for side in 0..4 {
                     line(canvas, corners[side], corners[(side + 1) % 4], color);
                 }
@@ -2442,6 +2733,8 @@ impl Studio {
                 Control::Swatch(paint, color) => {
                     let now = match (paint, &shown) {
                         (Paint::Background, _) => matches!(self.doc.background, Fill::Color(c) if Some(c) == color),
+                        (Paint::From, _) => matches!(self.doc.background, Fill::Gradient(c, ..) if Some(c) == color),
+                        (Paint::To, _) => matches!(self.doc.background, Fill::Gradient(_, c, _) if Some(c) == color),
                         (Paint::Line, Some(Layer { kind: Kind::Shape(shape), .. })) => Some(shape.color) == color,
                         (Paint::Fill, Some(Layer { kind: Kind::Shape(shape), .. })) => if shape.filled { Some(shape.fill) == color } else { color.is_none() },
                         _ => false,
@@ -2478,6 +2771,7 @@ impl Studio {
                             Fill::None => ground == Ground::None,
                             Fill::Color(_) => ground == Ground::Color,
                             Fill::Backdrop(_) => ground == Ground::Backdrop,
+                            Fill::Gradient(..) => ground == Ground::Gradient,
                         },
                         Control::Scale(times) => self.export_scale == times,
                         Control::Shadow(which) => matches!(&shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.shadow == which),
@@ -2930,6 +3224,84 @@ mod tests {
         let mut out = vec![0u32; 1400 * 900];
         studio.draw(&mut out);
         assert!(out.iter().any(|&pixel| pixel == 0xFF0000) && out[5] == PANEL_COLOR);
+    }
+
+    /// A drag in the view from one point of the artboard to another.
+    fn drag(studio: &mut Studio, from: (f32, f32), to: (f32, f32), mods: Mods) {
+        let (a, b) = (studio.to_window(from), studio.to_window(to));
+        studio.pointer_moved(a.0, a.1, mods);
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.pointer_moved((a.0 + b.0) / 2, (a.1 + b.1) / 2, mods);
+        studio.pointer_moved(b.0, b.1, mods);
+        studio.released();
+    }
+
+    #[test]
+    fn what_is_moved_snaps_to_the_artboard_and_to_the_rest() {
+        let mut studio = studio();
+        studio.add_picture(checker(100, 100), "pic");
+        studio.set_field(Field::X, 10.0);
+        studio.set_field(Field::Y, 200.0);
+        // Dragged to within a few pixels of the left of the artboard, it
+        // goes the rest of the way; with Ctrl held, it does not.
+        let step = 3.0 / studio.zoom;
+        drag(&mut studio, (60.0, 250.0), (60.0 - 10.0 + step, 250.0), Mods::default());
+        assert_eq!(studio.field(Field::X), Some(0.0));
+        drag(&mut studio, (50.0, 250.0), (50.0 + 2.0 * step, 250.0), Mods { ctrl: true, ..Mods::default() });
+        assert!(studio.field(Field::X).unwrap() > 0.5);
+        assert!(studio.guides.is_empty(), "the guides go when it is let go of");
+    }
+
+    #[test]
+    fn a_turned_box_is_sized_across_itself() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (300.0, 200.0));
+        boxed.points[1] = (400.0, 240.0);
+        boxed.angle = std::f32::consts::FRAC_PI_2;
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.selected = vec![0];
+        // Its right handle, turned a quarter, is below its middle; pulled
+        // further down, the box is longer and as tall as it was.
+        let (spot, pull) = studio.handles()[5];
+        assert_eq!(pull, (1, 0));
+        let at = studio.to_doc(spot);
+        assert!((at.0 - 350.0).abs() < 2.0 && (at.1 - 270.0).abs() < 2.0, "{at:?}");
+        drag(&mut studio, at, (at.0, at.1 + 40.0), Mods::default());
+        let Kind::Shape(shape) = &studio.doc.layers[0].kind else { panic!() };
+        let (_, _, w, h) = shape.frame();
+        assert!((w - 140.0).abs() < 2.0 && (h - 40.0).abs() < 0.5, "{w} by {h}");
+    }
+
+    #[test]
+    fn an_arrow_drawn_onto_a_picture_stays_stuck_to_it() {
+        let mut studio = studio();
+        studio.add_picture(checker(100, 100), "pic");
+        let Kind::Picture(picture) = studio.doc.layers[0].kind.clone() else { panic!() };
+        studio.key(Key::Char('a'), Mods::default(), true);
+        drag(&mut studio, (100.0, 100.0), (picture.cx, picture.cy), Mods::default());
+        let Kind::Shape(arrow) = studio.doc.layers[1].kind.clone() else { panic!() };
+        assert_eq!(arrow.stuck[1].map(|(id, ..)| id), Some(picture.id));
+        // The picture moved, the arrow's head goes with it.
+        studio.selected = vec![0];
+        studio.held = vec![studio.doc.layers[0].clone()];
+        studio.checkpoint();
+        studio.set_field(Field::X, 500.0);
+        let Kind::Shape(after) = studio.doc.layers[1].kind.clone() else { panic!() };
+        assert!(after.points[1].0 > arrow.points[1].0 + 100.0, "{:?} then {:?}", arrow.points[1], after.points[1]);
+    }
+
+    #[test]
+    fn a_gradient_goes_the_way_it_is_turned_and_is_kept() {
+        let mut text = Text::load();
+        let mut doc = Doc::new(200, 100);
+        doc.background = Fill::Gradient(0x000000, 0xFFFFFF, 90.0);
+        let (_, _, out) = doc.render(1.0, &mut text);
+        assert!(out[50 * 200 + 2] & 0xFF < 0x10 && out[50 * 200 + 197] & 0xFF > 0xF0);
+        doc.background = Fill::Gradient(0xFF0000, 0x0000FF, 180.0);
+        let (_, _, out) = doc.render(1.0, &mut text);
+        assert!(out[2 * 200 + 100] & 0xFF_FFFF > 0xF00000 && out[97 * 200 + 100] & 0xFF > 0xF0);
+        assert_eq!(Doc::read(&doc.write()).unwrap().background, doc.background);
     }
 
     /// The canvas as it is in a window, at a few moments, each written as

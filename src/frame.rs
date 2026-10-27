@@ -457,7 +457,7 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
     let corner = if bar > 0 { radius.max(10.0 * scale) } else { radius };
     let (box_x, box_y, box_w, box_h) = (room.0 as f32, (room.1 - bar) as f32, width as f32, (height + bar) as f32);
     let (half_w, half_h) = (box_w / 2.0, box_h / 2.0);
-    let dark = frame.window == Window::Terminal || (bar > 0 && darkish(picture, width, height));
+    let dark = bar_dark(frame, picture, width, height);
     out.par_chunks_mut(wide as usize).enumerate().for_each(|(y, row)| {
         let y = y as i32;
         for (x, pixel) in row.iter_mut().enumerate() {
@@ -536,6 +536,72 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
         }
     });
     (wide, high, out)
+}
+
+/// Whether the bar of a picture's window is dark: a terminal's always,
+/// and any other's over a picture dark along its top.
+fn bar_dark(frame: Frame, picture: &[u32], width: i32, height: i32) -> bool {
+    frame.window == Window::Terminal || (frame.window != Window::None && darkish(picture, width, height))
+}
+
+/// What a window is called, written in its bar, in a picture `set` made
+/// of a picture `width` by `height`: in the middle of a Mac window's or a
+/// terminal's, in the address of a browser's, and at the left of a
+/// desktop's; cut short with an ellipsis where it would not fit.
+pub fn title(frame: Frame, framed: &mut [u32], wide: i32, picture: &[u32], (width, height): (i32, i32), scale: f32, title: &str, text: &mut crate::text::Text) {
+    let bar = frame.window.bar(scale);
+    let title = title.trim();
+    if bar == 0 || title.is_empty() {
+        return;
+    }
+    let dark = bar_dark(frame, picture, width, height);
+    let room = frame.room(scale);
+    let (left, top) = (room.0, room.1 - bar);
+    let px = ((12.5 * scale).round() as u32).max(8);
+    let high = framed.len() as i32 / wide.max(1);
+    let mut canvas = crate::canvas::Canvas::new(framed, wide, high);
+    canvas.set_clip(crate::canvas::Rect::new(left, top, width, bar));
+    // As much of it as fits in so much room.
+    let mut fitted = |most: f32| -> String {
+        let most = most.max(0.0) as i32;
+        if text.width(title, px) <= most {
+            return title.to_owned();
+        }
+        let mut letters: Vec<char> = title.chars().collect();
+        while !letters.is_empty() && text.width(&format!("{}\u{2026}", letters.iter().collect::<String>()), px) > most {
+            letters.pop();
+        }
+        format!("{}\u{2026}", letters.iter().collect::<String>())
+    };
+    let ink = if dark { 0xC9CCD3 } else { 0x4A4D57 };
+    let middle = top + bar / 2;
+    match frame.window {
+        Window::Browser => {
+            // Over the faint line that stands for an address.
+            let half = (width as f32 * 0.25).min(240.0 * scale).max(40.0 * scale);
+            let says = fitted(2.0 * half - 24.0 * scale);
+            let wipe = (half * 0.45).max(12.0 * scale) as i32 + 2;
+            canvas.fill(left + width / 2 - wipe, middle - (3.0 * scale).ceil() as i32 - 1, 2 * wipe, (6.0 * scale).ceil() as i32 + 2, if dark { 0x3A3C42 } else { 0xFFFFFF });
+            text.draw_centered(&mut canvas, left + width / 2, middle, px, ink, &says);
+        }
+        Window::Mac | Window::Terminal => {
+            let says = fitted(width as f32 - 160.0 * scale);
+            text.draw_centered(&mut canvas, left + width / 2, middle, px, ink, &says);
+        }
+        Window::Desktop => {
+            let says = fitted(width as f32 - 130.0 * scale);
+            let line = crate::text::Text::line_height(px);
+            text.draw(&mut canvas, left + (12.0 * scale) as i32, middle - line / 2, px, ink, &says);
+        }
+        Window::None => {}
+    }
+    // Drawing on it left its pixels without how opaque they are, which
+    // in the bar is wholly.
+    for y in top.max(0)..(top + bar).min(high) {
+        for pixel in &mut framed[(y * wide + left.max(0)) as usize..(y * wide + (left + width).min(wide)) as usize] {
+            *pixel |= 0xFF00_0000;
+        }
+    }
 }
 
 /// Whether a picture is dark along its top, where a window's bar would
@@ -666,6 +732,14 @@ mod tests {
         assert_eq!(out[((50 - 25) * wide + 140) as usize] & 0xFF_FFFF, 0x2B2D31);
         // With no room asked for, the bar makes its own.
         assert!(Frame { window: Window::Mac, ..Frame::default() }.room(1.0).1 >= 30);
+        // What the window is called, in the middle of a Mac window's bar,
+        // in ink on its ground, the bar still wholly opaque.
+        let mac = Frame { window: Window::Mac, ..frame };
+        let (wide, _, mut out) = set(mac, &light, width, height, 0, 1.0, None);
+        let bar = |out: &[u32]| (130..170).flat_map(|x| (30..45).map(move |y| (x, y))).filter(|&(x, y)| out[(y * wide + 40 + x) as usize] & 0xFF_FFFF != 0xE8E9EC).count();
+        assert_eq!(bar(&out), 0);
+        title(mac, &mut out, wide, &light, (width, height), 1.0, "Notes", &mut crate::text::Text::load());
+        assert!(bar(&out) > 20 && out[(35 * wide + 140) as usize] >> 24 == 255);
     }
 
     #[test]

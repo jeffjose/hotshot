@@ -70,7 +70,7 @@ the whole screen. Then:
 | `S` | spotlight |
 | `Z` | zoom lens |
 | `J` `E` | the library: labels, status dots, key caps, tooltips, sticky notes, pins and the rest; and emoji, all searchable |
-| `W` | frame: one of forty backdrops, with padding, a shadow, and a browser, Mac, terminal or desktop window round the picture |
+| `W` | frame: one of forty backdrops, with padding, a shadow, and a browser, Mac, terminal or desktop window round the picture, with the title of the window you took in its bar |
 | `M` | show or hide the mouse pointer in the screenshot |
 | `C` `I` | colors, color picker |
 | `F` | fill a rectangle or oval, or not |
@@ -84,7 +84,11 @@ a fill, each in its own color or none. An arrow is made of parts: a head
 at either end (filled, open, hollow, dot, ring, diamond, bar or none), a
 straight or elbow path, and a solid, dashed or dotted line, with a white
 edge for busy pictures. Boxes, ovals and arrows can be sketched, drawn
-by hand. With
+by hand. An arrow or line drawn from or onto a box, oval or text sticks
+to it, as Figma's connectors do: put down well inside, it points at
+the box and stops at its edge; put down at the edge, it stays at that
+spot. It follows when the box moves, and lets go when its end is dragged
+away or it is moved on its own. With
 a tool in hand and nothing selected, the same bar sits above the main
 one, for how the next shape is drawn. The keys work too: `Ctrl+D`
 duplicates, and `Ctrl+]` and `Ctrl+[` move a shape above or below
@@ -105,7 +109,8 @@ pictures, laid out as Figma is: tools and actions along the top, layers
 down the left, and the properties of whatever is selected down the
 right. With nothing selected, the right panel belongs to the artboard:
 its size (X post, square, 16:9, story, A4, or typed), its background (a
-color, one of the frame box's backdrops, or nothing), and the export
+color, a two-color gradient at any angle, one of the frame box's
+backdrops, or nothing), and the export
 scale.
 
 Pictures come from files given on the command line, from the clipboard
@@ -119,7 +124,11 @@ press Enter, to crop it. The markup tools draw over everything, with the
 same arrow heads, fills and sketched lines as the editor. Space or the
 middle button pans, Ctrl+scroll zooms, `Ctrl+0` fits the artboard and
 `Ctrl+1` shows it at 100%. Shift-click or drag a box to select several,
-and line them up from the panel.
+and line them up from the panel. Things being moved snap to the edges
+and middles of the artboard and of each other, with a guide drawn where
+they do; hold Ctrl not to snap. Boxes, ovals and text keep their handles
+when rotated, and text grows by its corners; arrows and lines have a
+handle at each end, and stick to pictures as well as shapes.
 
 ![The canvas: a screenshot on a backdrop, rounded and shadowed, with an arrow over it and its properties on the right](docs/canvas.png)
 

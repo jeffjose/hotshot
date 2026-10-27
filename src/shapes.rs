@@ -108,6 +108,15 @@ pub struct Shape {
     /// boxes, ovals, text and badges. Lines and strokes are turned by
     /// their points instead.
     pub angle: f32,
+    /// What it is called among the shapes it is with, for an arrow to
+    /// be stuck to it by, which stays when it moves and when the rest
+    /// are put in another order.
+    pub id: u32,
+    /// What each end of a line or an arrow is stuck to, by its `id`, and
+    /// where on it: across it and down it unturned, from -1 to 1; or at
+    /// `WHOLE`, stuck to it as a whole, stopping at its edge on the way
+    /// to the other end.
+    pub stuck: [Option<(u32, f32, f32)>; 2],
     mask: RefCell<Option<Rc<Mask>>>,
     /// The same of what is inside the border of a rectangle or an oval
     /// that has both, which is drawn in its fill.
@@ -176,7 +185,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -196,7 +205,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -207,7 +216,10 @@ impl Shape {
                 u8::from(self.dotted),
                 u8::from(self.halo),
                 u8::from(self.elbow),
-                u8::from(self.sketch)
+                u8::from(self.sketch),
+                self.id,
+                stuck_word(self.stuck[0]),
+                stuck_word(self.stuck[1])
             ),
             self.fill,
             self.number,
@@ -253,6 +265,14 @@ impl Shape {
         }
         let mut flag = || more.next() == Some("1");
         (shape.dotted, shape.halo, shape.elbow, shape.sketch) = (flag(), flag(), flag(), flag());
+        // And what it is called, and what its ends are stuck to, which a
+        // file from before arrows stuck has not: such a shape is given a
+        // name of its own.
+        if let Some(id) = more.next().and_then(|id| id.parse::<u32>().ok()).filter(|&id| id > 0) {
+            shape.id = id;
+            seen_id(id);
+        }
+        shape.stuck = [more.next().and_then(stuck_read), more.next().and_then(stuck_read)];
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -668,6 +688,167 @@ impl Shape {
         }
         Some(points)
     }
+}
+
+/// The next name a shape or a picture is given: one no other in this
+/// run has, nor any read from a file.
+static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+pub fn fresh_id() -> u32 {
+    NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A name read from a file, which none given after is to be.
+pub fn seen_id(id: u32) {
+    NEXT_ID.fetch_max(id + 1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Where on what it is stuck to an end stuck as a whole is.
+pub const WHOLE: f32 = 9.0;
+
+fn stuck_word(stuck: Option<(u32, f32, f32)>) -> String {
+    stuck.map_or("-".to_owned(), |(id, u, v)| format!("{id}:{u}:{v}"))
+}
+
+fn stuck_read(word: &str) -> Option<(u32, f32, f32)> {
+    let mut parts = word.split(':');
+    let (id, u, v) = (parts.next()?.parse().ok()?, parts.next()?.parse::<f32>().ok()?, parts.next()?.parse::<f32>().ok()?);
+    (u.is_finite() && v.is_finite()).then_some((id, u, v))
+}
+
+/// Something an end of an arrow can be stuck to: a box of a size about a
+/// middle, turned so far, and whether it is round.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Anchor {
+    pub id: u32,
+    pub middle: Point,
+    pub half: (f32, f32),
+    pub angle: f32,
+    pub round: bool,
+}
+
+impl Anchor {
+    /// A point of it, from across and down it unturned, each -1 to 1.
+    fn at(&self, u: f32, v: f32) -> Point {
+        turn_point((self.middle.0 + u * self.half.0, self.middle.1 + v * self.half.1), self.middle, self.angle)
+    }
+
+    /// Where a line from its middle to a point leaves it, a little out
+    /// from its edge.
+    fn edge_towards(&self, to: Point) -> Point {
+        let (lx, ly) = turn_point(to, self.middle, -self.angle);
+        let (dx, dy) = (lx - self.middle.0, ly - self.middle.1);
+        let long = (dx * dx + dy * dy).sqrt();
+        if long < 1e-3 {
+            return self.middle;
+        }
+        let (hw, hh) = (self.half.0.max(1e-3), self.half.1.max(1e-3));
+        let reach = match self.round {
+            true => 1.0 / ((dx / hw).powi(2) + (dy / hh).powi(2)).sqrt(),
+            false => (hw / dx.abs().max(1e-6)).min(hh / dy.abs().max(1e-6)),
+        };
+        // Beyond its edge by a gap, unless the point is inside it.
+        let out = (reach + STUCK_GAP / long).min(1.0);
+        turn_point((self.middle.0 + dx * out, self.middle.1 + dy * out), self.middle, self.angle)
+    }
+}
+
+/// How far short of what it is stuck to as a whole an arrow stops.
+const STUCK_GAP: f32 = 6.0;
+
+impl Shape {
+    /// What an arrow can be stuck to of it: a box, an oval or text.
+    pub fn anchor(&self, text: &mut Text) -> Option<Anchor> {
+        let (x, y, w, h) = match self.tool {
+            Tool::Rect | Tool::Ellipse => self.frame(),
+            Tool::Text | Tool::Badge => {
+                let place = self.local_bounds(text);
+                (place.x as f32, place.y as f32, place.w as f32, place.h as f32)
+            }
+            _ => return None,
+        };
+        Some(Anchor { id: self.id, middle: (x + w / 2.0, y + h / 2.0), half: (w / 2.0, h / 2.0), angle: self.angle, round: self.tool == Tool::Ellipse })
+    }
+
+    /// A copy of it, called something of its own, with its ends stuck to
+    /// nothing.
+    pub fn copied(&self) -> Shape {
+        Shape { id: fresh_id(), stuck: [None; 2], ..self.clone() }
+    }
+
+    /// Whether it is a line that can have its ends stuck.
+    pub fn sticks(&self) -> bool {
+        matches!(self.tool, Tool::Line | Tool::Arrow)
+    }
+
+    /// An end of a line put down at a point: stuck to the topmost of the
+    /// anchors that the point is on or near, but itself; as a whole, if
+    /// the point is well inside it, or at the point, kept to its edge;
+    /// or to nothing.
+    pub fn stick(&mut self, end: usize, at: Point, anchors: &[Anchor], reach: f32) {
+        self.stuck[end] = None;
+        if !self.sticks() {
+            return;
+        }
+        for anchor in anchors.iter().rev().filter(|anchor| anchor.id != self.id) {
+            let (lx, ly) = turn_point(at, anchor.middle, -anchor.angle);
+            let (dx, dy) = (lx - anchor.middle.0, ly - anchor.middle.1);
+            let (hw, hh) = (anchor.half.0.max(1.0), anchor.half.1.max(1.0));
+            if dx.abs() > hw + reach || dy.abs() > hh + reach {
+                continue;
+            }
+            self.stuck[end] = Some(match dx.abs() < hw * 0.6 && dy.abs() < hh * 0.6 {
+                true => (anchor.id, WHOLE, WHOLE),
+                false => (anchor.id, (dx / hw).clamp(-1.0, 1.0), (dy / hh).clamp(-1.0, 1.0)),
+            });
+            break;
+        }
+    }
+}
+
+/// The ends of the lines among some shapes moved to what they are stuck
+/// to, where it now is; and an end stuck to something no longer there
+/// let go. Says whether any moved.
+pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]) -> bool {
+    let find = |id: u32| anchors.iter().find(|anchor| anchor.id == id);
+    let mut moved = false;
+    for shape in lines.filter(|shape| shape.sticks() && shape.stuck.iter().any(Option::is_some)) {
+        let mut this = false;
+        for _ in 0..2 {
+            for end in 0..2 {
+                let Some((id, u, v)) = shape.stuck[end] else { continue };
+                let Some(anchor) = find(id) else {
+                    shape.stuck[end] = None;
+                    continue;
+                };
+                // The ends are the first two points; a third is where the
+                // line is bent through, which an end stuck as a whole
+                // points itself towards.
+                let (at, near) = (end, if shape.points.len() > 2 && !shape.elbow { 2 } else { 1 - end });
+                let to = match u == WHOLE {
+                    // Towards the other end, or what that is stuck to as a
+                    // whole; or towards a bend, where there is one.
+                    true => {
+                        let other = match (shape.stuck[1 - end], shape.points.len()) {
+                            (Some((other, whole, _)), 2) if whole == WHOLE => find(other).map_or(shape.points[near], |anchor| anchor.middle),
+                            _ => shape.points[near],
+                        };
+                        anchor.edge_towards(other)
+                    }
+                    false => anchor.at(u, v),
+                };
+                if (to.0 - shape.points[at].0).abs() + (to.1 - shape.points[at].1).abs() > 0.01 {
+                    shape.points[at] = to;
+                    this = true;
+                }
+            }
+        }
+        if this {
+            moved = true;
+            shape.touch();
+        }
+    }
+    moved
 }
 
 /// `p` turned by `by` radians, clockwise on the screen, about `about`.
@@ -1900,5 +2081,36 @@ mod tests {
         assert_eq!(constrained(Tool::Rect, (0.0, 0.0), (30.0, -10.0)), (30.0, -30.0));
         let (x, y) = constrained(Tool::Line, (0.0, 0.0), (100.0, 8.0));
         assert!((x - 100.32).abs() < 0.1 && y.abs() < 1e-3);
+    }
+
+    #[test]
+    fn an_arrow_stuck_to_a_box_goes_with_it_and_stops_at_its_edge() {
+        let mut text = Text::load();
+        let mut boxed = Shape::new(Tool::Rect, 0, 2.0, (100.0, 100.0));
+        boxed.points[1] = (200.0, 160.0);
+        let mut arrow = Shape::new(Tool::Arrow, 0, 2.0, (0.0, 130.0));
+        arrow.points[1] = (150.0, 130.0);
+        // Put down well inside it, it is stuck to it as a whole, and stops
+        // short of its left side on the way from the other end.
+        let anchors = [boxed.anchor(&mut text).unwrap()];
+        arrow.stick(1, arrow.points[1], &anchors, 8.0);
+        assert_eq!(arrow.stuck[1], Some((boxed.id, WHOLE, WHOLE)));
+        assert!(follow(std::iter::once(&mut arrow), &anchors));
+        assert!((arrow.points[1].0 - (100.0 - STUCK_GAP)).abs() < 0.01 && (arrow.points[1].1 - 130.0).abs() < 0.01, "{:?}", arrow.points[1]);
+        // The box moved, the arrow goes with it.
+        boxed.translate(300.0, 0.0);
+        follow(std::iter::once(&mut arrow), &[boxed.anchor(&mut text).unwrap()]);
+        assert!((arrow.points[1].0 - (400.0 - STUCK_GAP)).abs() < 0.01, "{:?}", arrow.points[1]);
+        // Put down at its edge, at that spot of it.
+        arrow.stick(0, (400.0, 100.0), &[boxed.anchor(&mut text).unwrap()], 8.0);
+        assert_eq!(arrow.stuck[0], Some((boxed.id, -1.0, -1.0)));
+        // Saved and read back, it is still stuck, and the box is still
+        // what it is stuck to; and with the box gone, it lets go.
+        let back = Shape::read(&arrow.write()).unwrap();
+        assert_eq!((back.id, back.stuck), (arrow.id, arrow.stuck));
+        assert_eq!(Shape::read(&boxed.write()).unwrap().id, boxed.id);
+        follow(std::iter::once(&mut arrow), &[]);
+        assert_eq!(arrow.stuck, [None, None]);
+        assert_ne!(boxed.copied().id, boxed.id);
     }
 }
