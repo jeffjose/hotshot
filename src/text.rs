@@ -41,8 +41,6 @@ pub mod icons {
     pub const TRASH: &str = "\u{e011}";
     pub const FORWARD: &str = "\u{e01f}";
     pub const BACKWARD: &str = "\u{e020}";
-    pub const HEADS: &str = "\u{e021}";
-    pub const DASHED: &str = "\u{e022}";
     pub const DUPLICATE: &str = "\u{e023}";
 }
 

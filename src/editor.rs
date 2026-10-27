@@ -248,10 +248,14 @@ enum Button {
     Face,
     /// One of the ways text is set: heavy, slanted and the rest.
     Style(u8),
-    /// An arrow's head at each end, or one; lines in dashes, or whole;
-    /// and a zoom square, or round.
-    Heads,
-    Dashed,
+    /// A line's way, straight or round a corner; the head at its first
+    /// end and at its last, each a list of them; the kind of line, a list
+    /// too; whether it is drawn by hand; and a zoom square, or round.
+    Path,
+    Start,
+    End,
+    Stroke,
+    Sketch,
     Lens,
     /// What is picked out, over the shape above it, or under the one
     /// below; a copy of it; and away with it.
@@ -315,6 +319,12 @@ enum Cell {
     Emoji(usize),
     /// One of the widths of line, or sizes of text.
     Width(usize),
+    /// The head at one end of a line: which end, and which of the
+    /// `shapes::HEADS`, or past them, none.
+    Head(usize, u8),
+    /// A kind of line: solid, dashed, dotted; or, apart from those, an
+    /// edge of white round it.
+    Line(u8),
     /// What the picture is set on: nothing, or one of the backdrops
     /// counted from 1.
     Backdrop(usize),
@@ -388,8 +398,11 @@ impl Button {
             Button::Style(shapes::HIGHLIGHT) => ("Highlighted", ""),
             Button::Style(shapes::BOXED) => ("On a patch", ""),
             Button::Style(_) => ("Bulleted", ""),
-            Button::Heads => ("A head at each end", ""),
-            Button::Dashed => ("Dashed", "D"),
+            Button::Path => ("Straight or round a corner", ""),
+            Button::Start => ("The start", ""),
+            Button::End => ("The end", ""),
+            Button::Stroke => ("Solid, dashed or dotted", "D"),
+            Button::Sketch => ("Drawn by hand", ""),
             Button::Lens => ("Square or round", ""),
             Button::Forward => ("Bring forward, with Shift to the front", "Ctrl+]"),
             Button::Backward => ("Send backward, with Shift to the back", "Ctrl+["),
@@ -424,8 +437,7 @@ impl Button {
             Button::Tool(Tool::Zoom) => icons::ZOOM,
             Button::Tool(Tool::Badge) | Button::Badges => icons::BADGE,
             Button::Emoji => icons::STICKER,
-            Button::Heads => icons::HEADS,
-            Button::Dashed => icons::DASHED,
+            Button::Sketch => icons::PEN,
             Button::Forward => icons::FORWARD,
             Button::Backward => icons::BACKWARD,
             Button::Duplicate => icons::DUPLICATE,
@@ -442,7 +454,7 @@ impl Button {
             Button::Copy => icons::COPY,
             // Drawn as what they stand for: a color, a width, a font,
             // a letter set the way it says, a box or a ring.
-            Button::Color | Button::Border | Button::Fill | Button::Width | Button::Face | Button::Style(_) | Button::Lens => "",
+            Button::Color | Button::Border | Button::Fill | Button::Width | Button::Face | Button::Style(_) | Button::Lens | Button::Path | Button::Start | Button::End | Button::Stroke => "",
         }
     }
 }
@@ -651,6 +663,16 @@ pub struct Editor {
     flyout: Option<Button>,
     /// Whether lines and arrows are drawn in dashes.
     dashed: bool,
+    /// How the next line or arrow is drawn besides: the kind of head at
+    /// each end; which ends of a plain line have one, where an arrow's
+    /// are `heads`; in dots, with an edge of white, round a corner. And
+    /// whether boxes, ovals, lines and arrows are drawn by hand.
+    ends: [u8; 2],
+    line_heads: [bool; 2],
+    dotted: bool,
+    halo: bool,
+    elbow: bool,
+    sketch: bool,
     /// What the picture is set on, and how.
     frame: Frame,
     /// The photograph it is set on, when it is set on one.
@@ -742,6 +764,15 @@ fn paintable(tool: Tool) -> bool {
     matches!(tool, Tool::Rect | Tool::Ellipse)
 }
 
+/// The kinds of line there are, by what each is called; the last is not
+/// one of them but goes with any, an edge of white round it.
+const LINE_KINDS: [&str; 4] = ["Solid", "Dashed", "Dotted", "White edge"];
+
+/// Whether a tool draws a line, with heads to have and a way to go.
+fn lines(tool: Tool) -> bool {
+    matches!(tool, Tool::Line | Tool::Arrow)
+}
+
 /// What the bar over what is picked out has for how a kind of shape
 /// looks; or, for shapes of more than one kind, what they all have.
 /// `border` says whether a box or an oval has one, which only then has a
@@ -749,9 +780,8 @@ fn paintable(tool: Tool) -> bool {
 fn looks(kind: Option<Tool>, border: bool, styled: bool) -> Vec<Button> {
     let styles = STYLES.iter().map(|&(style, _)| Button::Style(style)).filter(|_| styled);
     match kind {
-        Some(Tool::Rect | Tool::Ellipse) => [Button::Fill, Button::Border].into_iter().chain(border.then_some(Button::Width)).collect(),
-        Some(Tool::Arrow) => vec![Button::Color, Button::Width, Button::Heads, Button::Dashed],
-        Some(Tool::Line) => vec![Button::Color, Button::Width, Button::Dashed],
+        Some(Tool::Rect | Tool::Ellipse) => [Button::Fill, Button::Border].into_iter().chain(border.then_some(Button::Width)).chain([Button::Sketch]).collect(),
+        Some(Tool::Arrow | Tool::Line) => vec![Button::Color, Button::Width, Button::Path, Button::Start, Button::End, Button::Stroke, Button::Sketch],
         Some(Tool::Text) => [Button::Color, Button::Width, Button::Face].into_iter().chain(styles).collect(),
         Some(Tool::Badge) => vec![Button::Color, Button::Face],
         Some(Tool::Zoom) => vec![Button::Color, Button::Width, Button::Lens],
@@ -881,6 +911,15 @@ fn hung(button: Rect, bar: Rect, over: bool, size: (i32, i32), monitor: Rect, pa
     (button.x + button.w / 2 - size.0 / 2, top)
 }
 
+/// A short line drawn as `like` is drawn, heads, dashes and all, in `ink`
+/// and `stroke` wide: how a button or a list shows a kind of line.
+fn sample(canvas: &mut Canvas, text: &mut Text, like: &Shape, from: (i32, i32), to: (i32, i32), ink: u32, stroke: f32) {
+    let mut line = Shape::new(Tool::Line, ink, stroke, (from.0 as f32, from.1 as f32));
+    line.points[1] = (to.0 as f32, to.1 as f32);
+    (line.heads, line.ends, line.dashed, line.dotted, line.halo, line.elbow) = (like.heads, like.ends, like.dashed, like.dotted, like.halo, like.elbow);
+    line.draw(canvas, text);
+}
+
 fn panel(canvas: &mut Canvas, rect: Rect, radius: i32) {
     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, radius, MENU_COLOR, 256);
     canvas.round_outline(rect.x, rect.y, rect.w, rect.h, radius, 1, MENU_EDGE_COLOR);
@@ -977,6 +1016,12 @@ impl Editor {
             popup: None,
             flyout: None,
             dashed,
+            ends: [shapes::FILLED_HEAD; 2],
+            line_heads: [false; 2],
+            dotted: false,
+            halo: false,
+            elbow: false,
+            sketch: false,
             all: false,
             pipette: false,
             hover: Target::Outside,
@@ -1310,6 +1355,23 @@ impl Editor {
                     layout.caption = Some(Rect::new(0, top + EMOJI_DOWN * side + pad / 4, across, line));
                     (across, top + EMOJI_DOWN * side + pad / 4 + line)
                 }
+                // The heads there are for an end of a line, none first;
+                // or the kinds of line: each drawn as it is, and named.
+                Button::Start | Button::End | Button::Stroke => {
+                    let rows: Vec<Cell> = match from {
+                        Button::Stroke => (0..LINE_KINDS.len() as u8).map(Cell::Line).collect(),
+                        _ => {
+                            let (end, none) = (usize::from(from == Button::End), shapes::HEADS.len() as u8);
+                            [none].into_iter().chain(0..none).map(|style| Cell::Head(end, style)).collect()
+                        }
+                    };
+                    let widest = shapes::HEADS.iter().chain(LINE_KINDS.iter()).map(|name| self.text.width(name, px)).max().unwrap_or(0);
+                    let across = 3 * side + widest + 2 * pad;
+                    for (index, cell) in rows.iter().enumerate() {
+                        cells.push((Rect::new(0, index as i32 * side, across, side), *cell));
+                    }
+                    (across, rows.len() as i32 * side)
+                }
                 // The widths of line, or sizes of text, one to a row:
                 // each drawn as it is, what it is called, and its key.
                 Button::Width => {
@@ -1570,7 +1632,8 @@ impl Editor {
             Tool::Arrow | Tool::Line => {
                 let (a, b, middle) = (shape.points[0], shape.points[1], shape.middle());
                 let mut ends = vec![at(0), at(1)];
-                if (a.0 - b.0).hypot(a.1 - b.1) >= 3.0 * ui_px(self.monitor().h) as f32 {
+                // Not an elbow, which goes its own way round its corner.
+                if !shape.elbow && (a.0 - b.0).hypot(a.1 - b.1) >= 3.0 * ui_px(self.monitor().h) as f32 {
                     ends.push((2, (middle.0.round() as i32, middle.1.round() as i32)));
                 }
                 ends
@@ -2384,10 +2447,14 @@ impl Editor {
                 shape.opacity = self.opacity;
                 shape.radius = self.settings.radius * self.scale();
                 shape.font_px = self.font_px();
-                if tool == Tool::Arrow {
-                    shape.heads = self.heads;
+                let line = matches!(tool, Tool::Arrow | Tool::Line);
+                match tool {
+                    Tool::Arrow => shape.heads = self.heads,
+                    Tool::Line => shape.heads = self.line_heads,
+                    _ => {}
                 }
-                shape.dashed = self.dashed && matches!(tool, Tool::Arrow | Tool::Line);
+                (shape.dashed, shape.dotted, shape.halo, shape.elbow) = (self.dashed && line, self.dotted && line, self.halo && line, self.elbow && line);
+                (shape.ends, shape.sketch) = (self.ends, self.sketch && (line || paintable(tool)));
                 shape.number = self.shapes.iter().filter(|shape| shape.tool == Tool::Counter).count() as u32 + 1;
                 self.shapes.push(shape);
                 self.selected.clear();
@@ -2786,8 +2853,12 @@ impl Editor {
                 self.flyout = if self.flyout == Some(button) { None } else { Some(button) };
             }
             Button::Style(style) => self.toggle_style(style),
-            Button::Heads => self.toggle_heads(),
-            Button::Dashed => self.toggle_dashed(),
+            Button::Start | Button::End | Button::Stroke => {
+                self.popup = None;
+                self.flyout = if self.flyout == Some(button) { None } else { Some(button) };
+            }
+            Button::Path => self.toggle_elbow(),
+            Button::Sketch => self.toggle_sketch(),
             Button::Lens => self.toggle_lens(),
             Button::Forward => self.restack(true, self.mods.shift),
             Button::Backward => self.restack(false, self.mods.shift),
@@ -2996,34 +3067,77 @@ impl Editor {
         self.dirty = true;
     }
 
-    /// A head at each end of the arrows picked out, or one at the last;
-    /// and so for the arrows drawn after.
-    fn toggle_heads(&mut self) {
-        self.heads = if self.shown().map_or(self.heads, |shape| shape.heads) == [true, true] { [false, true] } else { [true, true] };
-        let arrows: Vec<usize> = self.chosen().into_iter().filter(|&index| self.shapes[index].tool == Tool::Arrow).collect();
-        if !arrows.is_empty() {
+    /// Changes the shapes picked out of the kinds `kinds` says, as one
+    /// step to undo: `change` is done to each.
+    fn restyle(&mut self, kinds: fn(Tool) -> bool, change: impl Fn(&mut Shape)) {
+        let picked: Vec<usize> = self.chosen().into_iter().filter(|&index| kinds(self.shapes[index].tool)).collect();
+        if !picked.is_empty() {
             self.checkpoint();
         }
-        for index in arrows {
-            self.shapes[index].heads = self.heads;
+        for index in picked {
+            change(&mut self.shapes[index]);
             self.shapes[index].touch();
         }
         self.dirty = true;
     }
 
-    /// Dashes, for the lines and arrows picked out and for those drawn
+    /// The head at one end of the lines and arrows picked out, and of the
+    /// next: one of the `shapes::HEADS`, or past them, none.
+    fn set_head(&mut self, end: usize, style: u8) {
+        let on = usize::from(style) < shapes::HEADS.len();
+        match self.shown().map_or(self.tool, |shape| shape.tool) {
+            Tool::Line => self.line_heads[end] = on,
+            _ => self.heads[end] = on,
+        }
+        if on {
+            self.ends[end] = style;
+        }
+        self.restyle(lines, |shape| {
+            shape.heads[end] = on;
+            if on {
+                shape.ends[end] = style;
+            }
+        });
+    }
+
+    /// The kind of line of the lines and arrows picked out, and of the
+    /// next: solid, dashed or dotted; or, apart from those, an edge of
+    /// white round it, or none.
+    fn set_line(&mut self, kind: u8) {
+        if kind == 3 {
+            self.halo = !self.shown().map_or(self.halo, |shape| shape.halo);
+            let halo = self.halo;
+            return self.restyle(lines, |shape| shape.halo = halo);
+        }
+        (self.dashed, self.dotted) = (kind == 1, kind == 2);
+        self.restyle(lines, |shape| (shape.dashed, shape.dotted) = (kind == 1, kind == 2));
+    }
+
+    /// D: dashes, for the lines and arrows picked out and for those drawn
     /// after; or whole lines again.
     fn toggle_dashed(&mut self) {
-        self.dashed = !self.shown().map_or(self.dashed, |shape| shape.dashed);
-        let lines: Vec<usize> = self.chosen().into_iter().filter(|&index| matches!(self.shapes[index].tool, Tool::Line | Tool::Arrow)).collect();
-        if !lines.is_empty() {
-            self.checkpoint();
-        }
-        for index in lines {
-            self.shapes[index].dashed = self.dashed;
-            self.shapes[index].touch();
-        }
-        self.dirty = true;
+        let dashed = self.shown().map_or(self.dashed, |shape| shape.dashed && !shape.dotted);
+        self.set_line(if dashed { 0 } else { 1 });
+    }
+
+    /// Round a corner, or straight again, for the lines and arrows picked
+    /// out and the next. A line that bent no longer does: an elbow goes
+    /// its own way.
+    fn toggle_elbow(&mut self) {
+        self.elbow = !self.shown().map_or(self.elbow, |shape| shape.elbow);
+        let elbow = self.elbow;
+        self.restyle(lines, |shape| {
+            shape.elbow = elbow;
+            shape.points.truncate(2);
+        });
+    }
+
+    /// Drawn by hand, or cleanly again: the boxes, ovals, lines and
+    /// arrows picked out, and the next.
+    fn toggle_sketch(&mut self) {
+        self.sketch = !self.shown().map_or(self.sketch, |shape| shape.sketch);
+        let sketch = self.sketch;
+        self.restyle(|tool| lines(tool) || paintable(tool), |shape| shape.sketch = sketch);
     }
 
     /// The zooms picked out made square, or round again; and the next.
@@ -3092,6 +3206,18 @@ impl Editor {
     fn shown(&self) -> Option<&Shape> {
         let index = self.editing.map(|(index, _)| index).or_else(|| self.chosen().first().copied().filter(|_| self.tool == Tool::Select))?;
         self.shapes.get(index)
+    }
+
+    /// The line the bar over it shows: the one picked out, or one drawn
+    /// as the next would be with the tool in hand.
+    fn shown_line(&self) -> Shape {
+        if let Some(shape) = self.shown() {
+            return shape.clone();
+        }
+        let mut like = Shape::new(if self.tool == Tool::Line { Tool::Line } else { Tool::Arrow }, self.color, self.stroke(), (0.0, 0.0));
+        like.heads = if self.tool == Tool::Line { self.line_heads } else { self.heads };
+        (like.ends, like.dashed, like.dotted, like.halo, like.elbow, like.sketch) = (self.ends, self.dashed, self.dotted, self.halo, self.elbow, self.sketch);
+        like
     }
 
     /// Whether what the colors are for is a box or an oval, or are boxes
@@ -3266,6 +3392,18 @@ impl Editor {
             Cell::Width(size) => {
                 self.set_size(size);
                 self.flyout = None;
+            }
+            Cell::Head(end, style) => {
+                self.set_head(end, style);
+                self.flyout = None;
+            }
+            // The edge of white goes on and off with the box left open;
+            // a kind of line is one choice.
+            Cell::Line(kind) => {
+                self.set_line(kind);
+                if kind != 3 {
+                    self.flyout = None;
+                }
             }
             Cell::Badge(_) | Cell::Emoji(_) => {}
         }
@@ -3890,6 +4028,41 @@ impl Editor {
                         let wide = self.text.width(&key, px);
                         self.text.draw(&mut canvas, rect.right() - pad - wide, line, px, DIM_TEXT_COLOR, &key);
                     }
+                    // A head for one end, or a kind of line: a tick by the
+                    // one there is, a short line drawn with it, its name.
+                    Cell::Head(..) | Cell::Line(_) => {
+                        let (side, shown) = (layout.side, self.shown_line());
+                        let mut like = shown.clone();
+                        (like.heads, like.elbow) = ([false, false], false);
+                        let (now, name) = match cell {
+                            Cell::Head(end, style) => {
+                                let on = usize::from(style) < shapes::HEADS.len();
+                                like.heads[end] = on;
+                                (like.dashed, like.dotted, like.halo) = (false, false, false);
+                                if on {
+                                    like.ends[end] = style;
+                                }
+                                let now = if shown.heads[end] { shown.ends[end] == style } else { !on };
+                                (now, if on { shapes::HEADS[usize::from(style)] } else { "None" })
+                            }
+                            Cell::Line(kind) => {
+                                (like.dashed, like.dotted, like.halo) = (kind == 1, kind == 2, kind == 3);
+                                let now = match kind {
+                                    3 => shown.halo,
+                                    2 => shown.dotted,
+                                    1 => shown.dashed && !shown.dotted,
+                                    _ => !shown.dashed && !shown.dotted,
+                                };
+                                (now, LINE_KINDS[usize::from(kind)])
+                            }
+                            _ => continue,
+                        };
+                        if now {
+                            self.text.draw_centered(&mut canvas, rect.x + rect.h / 2, cy, px, TEXT_COLOR, icons::CHECK);
+                        }
+                        sample(&mut canvas, &mut self.text, &like, (rect.x + side, cy), (rect.x + side * 5 / 2, cy), TEXT_COLOR, 2.5);
+                        self.text.draw(&mut canvas, rect.x + 3 * side, cy - Text::line_height(px) / 2, px, TEXT_COLOR, name);
+                    }
                 }
                 // What is chosen now has a line of the accent round it.
                 let on = match cell {
@@ -4010,8 +4183,8 @@ impl Editor {
         let (fill, border, size) = (self.shown_fill(), self.shown_border(), self.shown_size());
         let face = shown.as_ref().map_or(self.face, |shape| shape.face);
         let style = shown.as_ref().filter(|shape| shape.tool == Tool::Text).map_or(self.style, |shape| shape.style);
-        let heads = shown.as_ref().map_or(self.heads, |shape| shape.heads) == [true, true];
-        let dashed = shown.as_ref().map_or(self.dashed, |shape| shape.dashed);
+        let line = self.shown_line();
+        let sketch = shown.as_ref().map_or(self.sketch, |shape| shape.sketch);
         let square = shown.as_ref().map_or(self.square, |shape| shape.filled);
         let chosen = self.chosen();
         let up = (0..self.shapes.len()).any(|index| chosen.contains(&index) && (index + 1..self.shapes.len()).any(|above| !chosen.contains(&above)));
@@ -4023,9 +4196,8 @@ impl Editor {
                 Button::Tool(tool) => tool == self.tool && !self.pipette,
                 Button::Pointer => self.arrow_shows && self.arrow.is_some(),
                 Button::Style(one) => style & one != 0,
-                Button::Heads => heads,
-                Button::Dashed => dashed,
-                Button::Width => self.flyout == Some(Button::Width),
+                Button::Sketch => sketch,
+                Button::Width | Button::Start | Button::End | Button::Stroke => self.flyout == Some(button),
                 _ => false,
             };
             let able = match button {
@@ -4124,6 +4296,28 @@ impl Editor {
                     self.text.look = crate::text::Look { heavy: i32::from(one == shapes::BOLD), slant: if one == shapes::ITALIC { 0.2 } else { 0.0 }, opacity: 256 };
                     self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, letter);
                     self.text.look = crate::text::Look::default();
+                }
+                // A line's way, its head at either end, and its kind, each
+                // drawn as it is: straight or round its corner; the head
+                // there, or none; solid, dashed, dotted, and its edge.
+                Button::Path => {
+                    let mut way = line.clone();
+                    (way.heads, way.dashed, way.dotted, way.halo) = ([false, false], false, false, false);
+                    let reach = side * 3 / 10;
+                    sample(canvas, &mut self.text, &way, (cx - reach, cy - reach), (cx + reach, cy + reach), ink, 2.0);
+                }
+                Button::Start | Button::End => {
+                    let end = usize::from(button == Button::End);
+                    let mut head = line.clone();
+                    (head.heads, head.dashed, head.dotted, head.halo, head.elbow) = ([end == 0 && line.heads[0], end == 1 && line.heads[1]], false, false, false, false);
+                    let reach = side * 3 / 8;
+                    sample(canvas, &mut self.text, &head, (cx - reach, cy), (cx + reach, cy), ink, 2.0);
+                }
+                Button::Stroke => {
+                    let mut kind = line.clone();
+                    (kind.heads, kind.elbow) = ([false, false], false);
+                    let reach = side * 3 / 8;
+                    sample(canvas, &mut self.text, &kind, (cx - reach, cy), (cx + reach, cy), ink, 2.0);
                 }
                 // A zoom's lens as it is: square, or round.
                 Button::Lens => self.text.draw_centered(canvas, cx, cy, px * 5 / 4, ink, if square { icons::RECT } else { icons::ELLIPSE }),
@@ -5537,14 +5731,31 @@ mod tests {
         // head at each end is so from then on.
         assert!(tray(&mut editor).is_empty());
         editor.key(Key::Char('a'), PLAIN);
-        assert_eq!(tray(&mut editor), [Button::Color, Button::Width, Button::Heads, Button::Dashed]);
+        assert_eq!(tray(&mut editor), [Button::Color, Button::Width, Button::Path, Button::Start, Button::End, Button::Stroke, Button::Sketch]);
         let (bar, over) = (editor.layout().bar.expect("the bar is up"), editor.layout().tray.expect("and the one over it"));
         assert!(over.bottom() <= bar.y);
-        let heads = button(&mut editor, Button::Heads);
-        click(&mut editor, heads, 0);
-        assert_eq!((editor.tool, editor.heads), (Tool::Arrow, [true, true]));
+        // The start's head, from its list: a dot.
+        let start = button(&mut editor, Button::Start);
+        click(&mut editor, start, 0);
+        assert_eq!(editor.flyout, Some(Button::Start));
+        let dot = editor.layout().cells.iter().find(|(_, cell)| *cell == Cell::Head(0, 3)).map(|(rect, _)| rect.center()).expect("the heads are up");
+        click(&mut editor, dot, 500);
+        assert_eq!((editor.tool, editor.heads, editor.ends[0], editor.flyout), (Tool::Arrow, [true, true], 3, None));
         drag(&mut editor, (200, 200), (400, 200));
-        assert_eq!(editor.shapes[0].heads, [true, true]);
+        assert_eq!((editor.shapes[0].heads, editor.shapes[0].ends[0]), ([true, true], 3));
+        // Picked out, it is made dotted, round a corner and by hand.
+        let stroke = button(&mut editor, Button::Stroke);
+        click(&mut editor, stroke, 800);
+        let dotted = editor.layout().cells.iter().find(|(_, cell)| *cell == Cell::Line(2)).map(|(rect, _)| rect.center()).expect("the kinds are up");
+        click(&mut editor, dotted, 900);
+        for (index, step) in [Button::Path, Button::Sketch].into_iter().enumerate() {
+            let at = button(&mut editor, step);
+            click(&mut editor, at, 1000 + index as u32 * 500);
+        }
+        let shape = &editor.shapes[0];
+        assert_eq!((shape.dotted, shape.dashed, shape.elbow, shape.sketch), (true, false, true, true));
+        editor.key(Key::Char('z'), Mods { shift: false, ctrl: true, alt: false });
+        assert!(!editor.shapes[0].sketch);
 
         // A second shape, moved until its left edge is within a few
         // pixels of the first one's, goes to it; and a line shows where.
@@ -5924,6 +6135,40 @@ mod tests {
         }
         cuts.selected = vec![cuts.shapes.len() - 3];
         write(&mut cuts, "20-cuts-and-bends");
+
+        // Every head, at the start and the end; elbows; dotted, dashed and
+        // white-edged lines; boxes and ovals drawn by hand; and the list
+        // of heads open over an arrow picked out.
+        let mut kinds = self::editor(width, height);
+        kinds.select(Rect::new(4 * unit, 4 * unit, 170 * unit, 96 * unit));
+        for (index, style) in (0..shapes::HEADS.len() as u8).enumerate() {
+            let y = (14 + index as i32 * 10) * unit;
+            let mut arrow = Shape::new(Tool::Arrow, PALETTE[(index * 3) % PALETTE.len()].0, STROKES[1] * unit as f32 / 10.0, ((12 * unit) as f32, y as f32));
+            arrow.points[1] = ((52 * unit) as f32, y as f32);
+            (arrow.heads, arrow.ends) = ([true, true], [style, style]);
+            kinds.shapes.push(arrow);
+        }
+        let lines = [(false, false, false, false), (true, false, false, false), (false, true, false, false), (false, false, true, false), (false, false, false, true)];
+        for (index, (dashed, dotted, halo, elbow)) in lines.into_iter().enumerate() {
+            let y = (14 + index as i32 * 14) * unit;
+            let mut line = Shape::new(Tool::Arrow, RED, STROKES[2] * unit as f32 / 10.0, ((64 * unit) as f32, y as f32));
+            line.points[1] = ((104 * unit) as f32, (y + if elbow { 10 * unit } else { 0 }) as f32);
+            (line.dashed, line.dotted, line.halo, line.elbow) = (dashed, dotted, halo, elbow);
+            kinds.shapes.push(line);
+        }
+        for (index, tool) in [Tool::Rect, Tool::Ellipse, Tool::Arrow].into_iter().enumerate() {
+            let top = (14 + index as i32 * 26) * unit;
+            let mut drawn = Shape::new(tool, PALETTE[9].0, STROKES[1] * unit as f32 / 10.0, ((116 * unit) as f32, top as f32));
+            drawn.points[1] = ((160 * unit) as f32, (top + 18 * unit) as f32);
+            (drawn.sketch, drawn.filled, drawn.fill) = (true, tool == Tool::Ellipse, PALETTE[17].0);
+            kinds.shapes.push(drawn);
+        }
+        kinds.selected = vec![kinds.shapes.len() - 1];
+        let start = button(&mut kinds, Button::Start);
+        kinds.pointer_moved(start.0, start.1, PLAIN);
+        kinds.pressed(1000);
+        kinds.released();
+        write(&mut kinds, "21-arrow-kinds");
     }
 
     /// Not a test either: makes the pictures the README shows, out of
@@ -6169,7 +6414,7 @@ mod tests {
         drag(&mut editor, (300, 300), (500, 400));
         // Picked out, the bar over it has its fill, its border and its
         // width, and what can be done with it; and is over it.
-        assert_eq!(tray(&mut editor), [Button::Fill, Button::Border, Button::Width, Button::Forward, Button::Backward, Button::Duplicate, Button::Delete]);
+        assert_eq!(tray(&mut editor), [Button::Fill, Button::Border, Button::Width, Button::Sketch, Button::Forward, Button::Backward, Button::Duplicate, Button::Delete]);
         let over = editor.layout().tray.expect("the bar over it");
         assert!(over.bottom() < 300);
         // The fill: the colors for it, and yellow; the border keeps its red.

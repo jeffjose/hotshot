@@ -63,9 +63,6 @@ OWN = {
     # it shows as the one in front leaves.
     "FORWARD": f'<rect x="9" y="9" width="12" height="12" rx="3" {LINE}/><rect x="3" y="3" width="12" height="12" rx="3" fill="currentColor"/>',
     "BACKWARD": f'<rect x="3" y="3" width="12" height="12" rx="3" {LINE}/><path d="M17 9h1a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-6a3 3 0 0 1-3-3v-1h5a3 3 0 0 0 3-3z" fill="currentColor"/>',
-    # A line with a head at each end, and one in dashes.
-    "HEADS": f'<path d="M4 12h16M7.5 8.5L4 12l3.5 3.5M16.5 8.5L20 12l-3.5 3.5" {LINE}/>',
-    "DASHED": f'<path d="M5 19l2.5-2.5M10.75 13.25l2.5-2.5M16.5 7.5L19 5" {LINE}/>',
     # A die showing five.
     "DICE": (
         f'<rect x="3" y="3" width="18" height="18" rx="5" {LINE}/>'

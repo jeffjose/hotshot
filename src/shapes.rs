@@ -79,8 +79,19 @@ pub struct Shape {
     /// Whether a line has an arrow's head at its first end and at its
     /// last: an arrow is a line with one at its last.
     pub heads: [bool; 2],
-    /// Whether a line or an arrow is drawn in dashes.
+    /// What the head at each end is, where there is one: one of the
+    /// `HEADS`, counted from 0.
+    pub ends: [u8; 2],
+    /// Whether a line or an arrow is drawn in dashes; in dots; with an
+    /// edge of white all round it, to show on a busy picture; and going
+    /// across and then down, round a corner, rather than straight.
     pub dashed: bool,
+    pub dotted: bool,
+    pub halo: bool,
+    pub elbow: bool,
+    /// Whether a box, an oval, a line or an arrow is drawn by hand: a
+    /// little uneven, its line gone over twice.
+    pub sketch: bool,
     /// What a rectangle or an oval is filled with, when it is `filled`;
     /// its `color` is then that of its border, if it has one.
     pub fill: u32,
@@ -113,6 +124,18 @@ pub const BULLETS: u8 = 8;
 /// On a patch of its own color, its letters in whichever of white and
 /// black reads on that.
 pub const BOXED: u8 = 16;
+
+/// The heads a line can have at either end, by what each is called: the
+/// usual solid one, two strokes, an outline, a dot, a ring, a diamond
+/// and a bar across, which says where a measure stops.
+pub const HEADS: [&str; 7] = ["Filled", "Open", "Hollow", "Dot", "Ring", "Diamond", "Bar"];
+pub const FILLED_HEAD: u8 = 0;
+const OPEN_HEAD: u8 = 1;
+const HOLLOW_HEAD: u8 = 2;
+const DOT_HEAD: u8 = 3;
+const RING_HEAD: u8 = 4;
+const DIAMOND_HEAD: u8 = 5;
+const BAR_HEAD: u8 = 6;
 
 /// What a highlight is the color of, and how opaque out of 256.
 const HIGHLIGHT_COLOR: (u32, u32) = (0xFFE629, 150);
@@ -153,7 +176,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], dashed: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -172,7 +195,20 @@ impl Shape {
             self.face,
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
-            format_args!("{},{},{},{},{}", u8::from(self.dashed), self.opacity, self.style, self.angle, u8::from(self.border)),
+            format_args!(
+                "{},{},{},{},{},{}{},{},{},{},{}",
+                u8::from(self.dashed),
+                self.opacity,
+                self.style,
+                self.angle,
+                u8::from(self.border),
+                self.ends[0],
+                self.ends[1],
+                u8::from(self.dotted),
+                u8::from(self.halo),
+                u8::from(self.elbow),
+                u8::from(self.sketch)
+            ),
             self.fill,
             self.number,
             points.join(" ")
@@ -209,6 +245,14 @@ impl Shape {
             None if shape.filled && matches!(tool, Tool::Rect | Tool::Ellipse) => (shape.fill, shape.border) = (shape.color, false),
             None => {}
         }
+        // And what each head is, dots, a white edge, an elbow and a
+        // hand-drawn look, which a file from before them has not.
+        if let Some(ends) = more.next() {
+            let mut digits = ends.chars().filter_map(|digit| digit.to_digit(10)).map(|digit| (digit as u8).min(HEADS.len() as u8 - 1));
+            shape.ends = [digits.next().unwrap_or(FILLED_HEAD), digits.next().unwrap_or(FILLED_HEAD)];
+        }
+        let mut flag = || more.next() == Some("1");
+        (shape.dotted, shape.halo, shape.elbow, shape.sketch) = (flag(), flag(), flag(), flag());
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -315,6 +359,23 @@ impl Shape {
     /// fill, which are drawn one over the other in their own colors.
     fn bordered_fill(&self) -> bool {
         matches!(self.tool, Tool::Rect | Tool::Ellipse) && self.filled && self.border
+    }
+
+    /// Whether its fill is drawn apart from its line: with a border too,
+    /// or drawn by hand, whose line is strokes and not an outline.
+    fn fill_apart(&self) -> bool {
+        matches!(self.tool, Tool::Rect | Tool::Ellipse) && self.filled && (self.border || self.sketch)
+    }
+
+    /// Whether it is drawn by hand: what can be, a box, an oval, a line
+    /// or an arrow, when it is said to be.
+    fn sketched(&self) -> bool {
+        self.sketch && matches!(self.tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow)
+    }
+
+    /// How wide the edge of white round a line is, when it has one.
+    fn halo_width(&self) -> f32 {
+        if self.halo && matches!(self.tool, Tool::Line | Tool::Arrow) { self.stroke * 0.8 + 2.0 } else { 0.0 }
     }
 
     pub fn translate(&mut self, dx: f32, dy: f32) {
@@ -464,7 +525,9 @@ impl Shape {
     /// The rectangle its outline is worked out over.
     fn extent(&self) -> Rect {
         let margin = match self.tool {
-            Tool::Arrow | Tool::Line if self.heads != [false, false] => self.head().0 + self.stroke,
+            Tool::Arrow | Tool::Line if self.heads != [false, false] => self.head().0 + self.stroke + self.halo_width() + if self.sketch { 4.0 } else { 0.0 },
+            Tool::Arrow | Tool::Line => self.stroke / 2.0 + self.halo_width() + if self.sketch { 4.0 } else { 0.0 },
+            Tool::Rect | Tool::Ellipse if self.sketch => self.stroke + 8.0,
             Tool::Counter => self.disc(),
             Tool::Pen | Tool::Marker => self.line_width() / 2.0,
             _ => self.stroke / 2.0,
@@ -511,7 +574,7 @@ impl Shape {
         // With a border as well as a fill, the outline is the border's:
         // what is inside it has a mask of its own.
         let filled = self.filled && !self.bordered_fill();
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radius: self.radius, head, heads: self.heads, dashed: self.dashed, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0) }
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radius: self.radius, head, heads: self.heads, ends: self.ends, dashed: self.dashed && !self.dotted, dotted: self.dotted, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0) }
     }
 
     /// Which of its points is the far one of the two it is between: the
@@ -528,6 +591,34 @@ impl Shape {
 
     /// Where the dot is that a line or an arrow is bent by: on its
     /// bend, or half way along it while it is straight.
+    /// The way an elbow goes, as connectors in a diagram go: across from
+    /// its first end, round a rounded corner, and down to its last; as
+    /// points evenly along it, which is what a bent line is drawn by.
+    fn elbow_path(&self) -> [Point; BENDS + 1] {
+        let (a, b) = (self.points[0], self.points[1]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let radius = 16f32.min(dx.abs() / 2.0).min(dy.abs() / 2.0);
+        let (sx, sy) = (dx.signum(), dy.signum());
+        let first = dx.abs() - radius;
+        // Most of the points go round the corner, which is where they are
+        // needed: four along each straight part, the rest the curve.
+        let (along, round) = (4, BENDS - 8);
+        let (cx, cy) = (a.0 + sx * first, a.1 + sy * radius);
+        let mut points = [a; BENDS + 1];
+        for (step, point) in points.iter_mut().enumerate() {
+            *point = if step <= along {
+                (a.0 + sx * first * step as f32 / along as f32, a.1)
+            } else if step < along + round {
+                let angle = std::f32::consts::FRAC_PI_2 * (step - along) as f32 / round as f32;
+                (cx + sx * radius * angle.sin(), cy - sy * radius * angle.cos())
+            } else {
+                let t = (step - along - round) as f32 / (BENDS - along - round) as f32;
+                (b.0, a.1 + sy * (radius + (dy.abs() - radius) * t))
+            };
+        }
+        points
+    }
+
     pub fn middle(&self) -> Point {
         let (a, b) = (self.points[0], self.points[1]);
         self.bend().unwrap_or(((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0))
@@ -548,6 +639,9 @@ impl Shape {
     /// A bent line as the short straight ones it is drawn as: a curve
     /// from one end to the other, through its bend half way.
     fn curve(&self) -> Option<[Point; BENDS + 1]> {
+        if self.elbow && matches!(self.tool, Tool::Line | Tool::Arrow) && self.points.len() >= 2 {
+            return Some(self.elbow_path());
+        }
         // Asked of every shape, which may have but one point: a pen's
         // as it is begun. Only a line or an arrow that bends has one.
         let through = self.bend()?;
@@ -597,7 +691,9 @@ struct Outline {
     radius: f32,
     head: (f32, f32),
     heads: [bool; 2],
+    ends: [u8; 2],
     dashed: bool,
+    dotted: bool,
     disc: f32,
     curve: Option<[Point; BENDS + 1]>,
     /// Where a bent line is a head's length back from either end: the
@@ -615,11 +711,15 @@ impl Outline {
         let half = self.stroke / 2.0;
         let solid = segment(p, from, to) - half;
         let length = (to.0 - from.0).hypot(to.1 - from.1);
-        if !self.dashed || length < 1.0 {
+        if !(self.dashed || self.dotted) || length < 1.0 {
             return solid;
         }
-        let (dash, gap) = (self.stroke * 2.5 + 4.0, self.stroke * 2.0 + 3.0);
         let along = ((p.0 - from.0) * (to.0 - from.0) + (p.1 - from.1) * (to.1 - from.1)) / length;
+        if self.dotted {
+            let across = ((p.0 - from.0) * (to.1 - from.1) - (p.1 - from.1) * (to.0 - from.0)).abs() / length;
+            return self.dot(across, along, 0.0, length);
+        }
+        let (dash, gap) = (self.stroke * 2.5 + 4.0, self.stroke * 2.0 + 3.0);
         let into = along.rem_euclid(dash + gap);
         // Inside a gap, it is as far from the line as from the gap's
         // nearer end; inside a dash, the other way about.
@@ -647,8 +747,12 @@ impl Outline {
             let at = |along: f32| (pair[0].0 + (pair[1].0 - pair[0].0) * along / length, pair[0].1 + (pair[1].1 - pair[0].1) * along / length);
             let (from, to) = (at((first - begins).max(0.0)), at((last - begins).min(length)));
             let mut far = segment(p, from, to) - half;
-            if self.dashed {
-                let run = (to.0 - from.0).hypot(to.1 - from.1).max(1e-3);
+            let run = (to.0 - from.0).hypot(to.1 - from.1).max(1e-3);
+            if self.dotted {
+                let along = ((p.0 - from.0) * (to.0 - from.0) + (p.1 - from.1) * (to.1 - from.1)) / run;
+                let across = ((p.0 - from.0) * (to.1 - from.1) - (p.1 - from.1) * (to.0 - from.0)).abs() / run;
+                far = self.dot(across, along, begins.max(first) - first, run);
+            } else if self.dashed {
                 let along = (((p.0 - from.0) * (to.0 - from.0) + (p.1 - from.1) * (to.1 - from.1)) / run).clamp(0.0, run);
                 let into = (begins.max(first) - first + along).rem_euclid(dash + gap);
                 far = far.max(if into > dash { (into - dash).min(dash + gap - into) } else { -into.min(dash - into) });
@@ -656,6 +760,46 @@ impl Outline {
             nearest = nearest.min(far);
         }
         nearest
+    }
+
+    /// How far a point is from the nearest of the dots a dotted line is
+    /// drawn as: `across` the line from it and `along` a stretch of it
+    /// `length` long, which begins `offset` along the whole line, so that
+    /// the dots keep their spacing from one stretch to the next.
+    fn dot(&self, across: f32, along: f32, offset: f32, length: f32) -> f32 {
+        let gap = self.stroke * 2.2 + 2.0;
+        let nearest = (((along + offset) / gap).round() * gap - offset).clamp(0.0, length);
+        across.hypot(along - nearest) - self.stroke / 2.0
+    }
+
+    /// How far a point is from the head at one end of a line, of the
+    /// kind it is: its tip, and the way the line goes as it comes to it.
+    /// And how much of the line to leave out at that end, under it.
+    fn tip(&self, p: Point, style: u8, tip: Point, way: (f32, f32)) -> (f32, f32) {
+        let (head, wide) = self.head;
+        let half = self.stroke / 2.0;
+        let (dx, dy) = way;
+        let back = |by: f32| (tip.0 - dx * by, tip.1 - dy * by);
+        let side = |at: Point, by: f32| (at.0 - dy * by, at.1 + dx * by);
+        let base = back(head);
+        match style {
+            OPEN_HEAD => (segment(p, tip, side(base, wide)).min(segment(p, tip, side(base, -wide))) - half, half),
+            HOLLOW_HEAD => (triangle(p, tip, side(base, wide), side(base, -wide)).abs() - half, head),
+            DOT_HEAD => ((p.0 - tip.0).hypot(p.1 - tip.1) - wide * 0.75, 0.0),
+            RING_HEAD => {
+                let (radius, middle) = (wide * 0.75, back(wide * 0.75));
+                (((p.0 - middle.0).hypot(p.1 - middle.1) - radius).abs() - half, 2.0 * radius)
+            }
+            DIAMOND_HEAD => {
+                let (middle, far) = (back(head * 0.55), back(head * 1.1));
+                (triangle(p, tip, side(middle, wide * 0.8), far).min(triangle(p, tip, far, side(middle, -wide * 0.8))) - 0.6, head)
+            }
+            BAR_HEAD => (segment(p, side(tip, wide), side(tip, -wide)) - half, 0.0),
+            // A head at an end: its point there, its barbs back along the
+            // line. The line stops inside it, where its round end would
+            // otherwise blunt the point.
+            _ => (triangle(p, tip, side(base, wide), side(base, -wide)) - 0.6, head * 0.8),
+        }
     }
 }
 
@@ -670,46 +814,37 @@ impl Outline {
         let half = self.stroke / 2.0;
         match self.tool {
             Tool::Line | Tool::Arrow => {
-                let (head, wide) = self.head;
-                // Bent, each head points the way the line is going as
-                // it comes to that end.
-                if let Some(curve) = &self.curve {
-                    let barbs = |tip: Point, back: Point| {
-                        let length = (tip.0 - back.0).hypot(tip.1 - back.1).max(1e-3);
-                        let (dx, dy) = ((tip.0 - back.0) / length, (tip.1 - back.1) / length);
-                        let base = (tip.0 - dx * head, tip.1 - dy * head);
-                        triangle((x, y), tip, (base.0 - dy * wide, base.1 + dx * wide), (base.0 + dy * wide, base.1 - dx * wide)) - 0.6
-                    };
-                    let mut nearest = f32::MAX;
-                    if self.heads[1] {
-                        nearest = nearest.min(barbs(b, self.backs[1]));
-                    }
-                    if self.heads[0] {
-                        nearest = nearest.min(barbs(a, self.backs[0]));
-                    }
-                    let trim = (if self.heads[0] { head * 0.8 } else { 0.0 }, if self.heads[1] { head * 0.8 } else { 0.0 });
-                    return nearest.min(self.bent((x, y), curve, trim));
-                }
+                let p = (x, y);
+                // The way the line goes as it comes to each end: bent,
+                // from a head's length back along it.
+                let way = |tip: Point, from: Point| {
+                    let length = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
+                    ((tip.0 - from.0) / length, (tip.1 - from.1) / length)
+                };
+                let (to_b, to_a) = match self.curve {
+                    Some(_) => (way(b, self.backs[1]), way(a, self.backs[0])),
+                    None => (way(b, a), way(a, b)),
+                };
                 let length = (b.0 - a.0).hypot(b.1 - a.1);
-                if length < 0.5 || self.heads == [false, false] {
-                    return self.shaft((x, y), a, b);
+                if self.curve.is_none() && length < 0.5 {
+                    return self.shaft(p, a, b);
                 }
-                let (dx, dy) = ((b.0 - a.0) / length, (b.1 - a.1) / length);
-                // A head at an end: its point there, its barbs back
-                // along the line. The shaft stops inside it, where its
-                // round end would otherwise blunt the point.
-                let (mut from, mut to, mut nearest) = (a, b, f32::MAX);
+                let (mut nearest, mut trim) = (f32::MAX, (0.0, 0.0));
                 if self.heads[1] {
-                    let base = (b.0 - dx * head, b.1 - dy * head);
-                    nearest = nearest.min(triangle((x, y), b, (base.0 - dy * wide, base.1 + dx * wide), (base.0 + dy * wide, base.1 - dx * wide)) - 0.6);
-                    to = (b.0 - dx * head * 0.8, b.1 - dy * head * 0.8);
+                    let (far, cut) = self.tip(p, self.ends[1], b, to_b);
+                    (nearest, trim.1) = (nearest.min(far), cut);
                 }
                 if self.heads[0] {
-                    let base = (a.0 + dx * head, a.1 + dy * head);
-                    nearest = nearest.min(triangle((x, y), a, (base.0 - dy * wide, base.1 + dx * wide), (base.0 + dy * wide, base.1 - dx * wide)) - 0.6);
-                    from = (a.0 + dx * head * 0.8, a.1 + dy * head * 0.8);
+                    let (far, cut) = self.tip(p, self.ends[0], a, to_a);
+                    (nearest, trim.0) = (nearest.min(far), cut);
                 }
-                nearest.min(self.shaft((x, y), from, to))
+                match &self.curve {
+                    Some(curve) => nearest.min(self.bent(p, curve, trim)),
+                    None => {
+                        let (dx, dy) = to_b;
+                        nearest.min(self.shaft(p, (a.0 + dx * trim.0, a.1 + dy * trim.0), (b.0 - dx * trim.1, b.1 - dy * trim.1)))
+                    }
+                }
             }
             Tool::Rect => {
                 let (left, top, w, h) = (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs());
@@ -751,6 +886,7 @@ impl Shape {
             _ => self.extent(),
         };
         let mask = match self.tool {
+            _ if self.sketched() => self.sketch_mask(bounds),
             Tool::Pen | Tool::Marker => {
                 let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
                 let half = self.line_width() / 2.0;
@@ -769,6 +905,124 @@ impl Shape {
         };
         let mask = Rc::new(mask);
         *self.mask.borrow_mut() = Some(mask.clone());
+        mask
+    }
+
+    /// The edge of white round a line that has one: its outline, grown
+    /// all round. Kept as the inside of a box is, which a line has none of.
+    fn halo_mask(&self) -> Rc<Mask> {
+        if let Some(mask) = self.inside.borrow().as_ref() {
+            return mask.clone();
+        }
+        let grow = self.halo_width();
+        let mask = match self.sketched() {
+            // Drawn by hand: its strokes, each made wider.
+            true => {
+                let mut wide = self.clone();
+                (wide.stroke, wide.halo) = (self.stroke + 2.0 * grow, false);
+                wide.sketch_mask(self.extent())
+            }
+            false => {
+                let outline = self.outline();
+                covered(self.extent(), move |x, y| outline.distance(x, y) - grow)
+            }
+        };
+        let mask = Rc::new(mask);
+        *self.inside.borrow_mut() = Some(mask.clone());
+        mask
+    }
+
+    /// The strokes of a box, an oval, a line or an arrow drawn by hand:
+    /// each line a little bowed, going a little past its corner, and gone
+    /// over a second time a little off the first. Uneven the same way
+    /// every time it is drawn, by a seed taken from where it is.
+    fn sketch_mask(&self, bounds: Rect) -> Mask {
+        let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
+        let mut seed = self.points.iter().take(2).fold(0x9E37_79B9u32, |seed, point| seed ^ (point.0.to_bits().rotate_left(7) ^ point.1.to_bits().rotate_left(19)).wrapping_mul(0x85EB_CA6B));
+        let mut wobble = move |amount: f32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * amount
+        };
+        let reach = (self.stroke * 1.2 + 3.0).min(10.0);
+        // A stroke from one point to another, bowed out a little at its
+        // middle, as a list of points close enough to be drawn straight.
+        let stroke = |from: Point, to: Point, wobble: &mut dyn FnMut(f32) -> f32| -> Vec<Point> {
+            let length = (to.0 - from.0).hypot(to.1 - from.1).max(1.0);
+            let (nx, ny) = (-(to.1 - from.1) / length, (to.0 - from.0) / length);
+            let bow = wobble((length * 0.015).min(reach * 0.6));
+            (0..=12)
+                .map(|step| {
+                    let t = step as f32 / 12.0;
+                    let lift = bow * 4.0 * t * (1.0 - t);
+                    (from.0 + (to.0 - from.0) * t + nx * lift, from.1 + (to.1 - from.1) * t + ny * lift)
+                })
+                .collect()
+        };
+        let mut strokes: Vec<(Vec<Point>, f32)> = Vec::new();
+        let half = self.stroke / 2.0;
+        let (left, top, width, height) = self.frame();
+        for pass in 0..2 {
+            let thin = if pass == 0 { half } else { (half * 0.7).max(0.6) };
+            let off = if pass == 0 { 0.0 } else { reach * 0.35 };
+            match self.tool {
+                Tool::Rect => {
+                    let corners = [(left, top), (left + width, top), (left + width, top + height), (left, top + height)];
+                    for side in 0..4 {
+                        let (from, to) = (corners[side], corners[(side + 1) % 4]);
+                        let length = (to.0 - from.0).hypot(to.1 - from.1).max(1.0);
+                        let (dx, dy) = ((to.0 - from.0) / length, (to.1 - from.1) / length);
+                        let (start, end) = (wobble(reach * 0.5).abs(), wobble(reach).abs());
+                        let from = (from.0 - dx * start + wobble(off), from.1 - dy * start + wobble(off));
+                        let to = (to.0 + dx * end + wobble(off), to.1 + dy * end + wobble(off));
+                        strokes.push((stroke(from, to, &mut wobble), thin));
+                    }
+                }
+                Tool::Ellipse => {
+                    let (cx, cy, rx, ry) = (left + width / 2.0, top + height / 2.0, width / 2.0, height / 2.0);
+                    let (begin, sweep) = (wobble(std::f32::consts::PI), std::f32::consts::TAU * (1.06 + wobble(0.04)));
+                    let (phase, swell) = (wobble(3.0), 0.025 + wobble(0.012).abs());
+                    let points = (0..=64)
+                        .map(|step| {
+                            let angle = begin + sweep * step as f32 / 64.0;
+                            let grow = 1.0 + swell * (angle * 2.0 + phase).sin() + off / rx.max(ry).max(1.0);
+                            (cx + rx * grow * angle.cos(), cy + ry * grow * angle.sin())
+                        })
+                        .collect();
+                    strokes.push((points, thin));
+                }
+                _ => {
+                    let (a, b) = (self.points[0], self.points[1]);
+                    let path: Vec<Point> = match self.curve() {
+                        Some(curve) => curve.iter().map(|point| (point.0 + wobble(off * 0.5), point.1 + wobble(off * 0.5))).collect(),
+                        None => stroke((a.0 + wobble(off), a.1 + wobble(off)), (b.0 + wobble(off), b.1 + wobble(off)), &mut wobble),
+                    };
+                    // Each head two strokes back from the tip, as a hand
+                    // makes one, whatever the kind it is drawn as clean.
+                    let (head, wide) = self.head();
+                    let (head, wide) = (head * 1.25, wide * 1.4);
+                    for (end, tip, from) in [(1, path[path.len() - 1], path[path.len().saturating_sub(4)]), (0, path[0], path[3.min(path.len() - 1)])] {
+                        if !self.heads[end] {
+                            continue;
+                        }
+                        let length = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
+                        let (dx, dy) = ((tip.0 - from.0) / length, (tip.1 - from.1) / length);
+                        let base = (tip.0 - dx * head * 1.1, tip.1 - dy * head * 1.1);
+                        for side in [1.0, -1.0] {
+                            let barb = (base.0 - dy * wide * side + wobble(off), base.1 + dx * wide * side + wobble(off));
+                            strokes.push((stroke(barb, tip, &mut wobble), thin));
+                        }
+                    }
+                    strokes.push((path, thin));
+                }
+            }
+        }
+        for (points, thin) in strokes {
+            for pair in points.windows(2) {
+                stamp(&mut mask, pair[0], pair[1], thin);
+            }
+        }
         mask
     }
 
@@ -872,10 +1126,18 @@ impl Shape {
             Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY * self.opacity / 256),
             // Its fill, and its border over that; or the one it has.
             Tool::Rect | Tool::Ellipse => {
-                if self.bordered_fill() {
+                if self.fill_apart() {
                     canvas.mask(&self.inside_mask(), self.fill, self.opacity);
                 }
-                canvas.mask(&self.mask(), if self.border { self.color } else { self.fill }, self.opacity);
+                if self.border || !self.sketch {
+                    canvas.mask(&self.mask(), if self.border { self.color } else { self.fill }, self.opacity);
+                }
+            }
+            // An edge of white first, a little wider all round, and the
+            // line over it.
+            Tool::Line | Tool::Arrow if self.halo => {
+                canvas.mask(&self.halo_mask(), 0xFFFFFF, self.opacity);
+                canvas.mask(&self.mask(), self.color, self.opacity);
             }
             Tool::Counter => {
                 canvas.mask(&self.mask(), self.color, self.opacity);
@@ -962,7 +1224,7 @@ impl Shape {
             // On its line, or with a fill inside its border, there too.
             _ => {
                 let mut masks = vec![self.mask()];
-                masks.extend(self.bordered_fill().then(|| self.inside_mask()));
+                masks.extend(self.fill_apart().then(|| self.inside_mask()));
                 masks.iter().any(|mask| {
                     let near = Rect::new(x - REACH, y - REACH, 2 * REACH + 1, 2 * REACH + 1).intersect(mask.bounds);
                     !near.is_empty() && (near.y..near.bottom()).any(|py| {
@@ -1245,6 +1507,77 @@ fn ellipse(x: f32, y: f32, rx: f32, ry: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pixels a shape covers on a dark canvas so large: where each is
+    /// lit, and with what.
+    fn drawn(shape: &Shape, wide: i32, high: i32) -> Vec<u32> {
+        let mut text = Text::load();
+        let mut pixels = vec![0u32; (wide * high) as usize];
+        shape.draw(&mut Canvas::new(&mut pixels, wide, high), &mut text);
+        pixels
+    }
+
+    #[test]
+    fn each_end_of_an_arrow_has_the_head_it_is_given() {
+        let mut arrow = Shape::new(Tool::Arrow, 0xFF0000, 4.0, (20.0, 40.0));
+        arrow.points[1] = (180.0, 40.0);
+        // The middle of a head is solid, or empty where it is an outline;
+        // a dot sits on the end; a bar stands across it.
+        assert_eq!(drawn(&arrow, 200, 80)[40 * 200 + 168], 0xFF0000);
+        arrow.ends[1] = HOLLOW_HEAD;
+        arrow.touch();
+        assert_eq!(drawn(&arrow, 200, 80)[40 * 200 + 168], 0);
+        arrow.ends[1] = DOT_HEAD;
+        arrow.touch();
+        assert_eq!(drawn(&arrow, 200, 80)[40 * 200 + 180], 0xFF0000);
+        arrow.ends[1] = BAR_HEAD;
+        arrow.touch();
+        let pixels = drawn(&arrow, 200, 80);
+        assert!(pixels[32 * 200 + 180] != 0 && pixels[32 * 200 + 160] == 0);
+        // Both ends, each its own.
+        (arrow.heads, arrow.ends) = ([true, true], [RING_HEAD, OPEN_HEAD]);
+        arrow.touch();
+        let pixels = drawn(&arrow, 200, 80);
+        assert!(pixels[40 * 200 + 20] != 0 && pixels[40 * 200 + 28] == 0, "a ring is hollow");
+    }
+
+    #[test]
+    fn an_elbow_goes_across_then_down_and_a_dotted_line_is_dots() {
+        let mut line = Shape::new(Tool::Line, 0xFFFFFF, 4.0, (20.0, 20.0));
+        (line.points[1], line.elbow) = ((120.0, 100.0), true);
+        let pixels = drawn(&line, 140, 120);
+        // Along the top, down the right, and nothing across the middle.
+        assert!(pixels[20 * 140 + 60] != 0 && pixels[70 * 140 + 120] != 0 && pixels[60 * 140 + 70] == 0);
+        let mut dots = Shape::new(Tool::Line, 0xFFFFFF, 4.0, (10.0, 10.0));
+        (dots.points[1], dots.dotted) = ((110.0, 10.0), true);
+        let row: Vec<bool> = drawn(&dots, 120, 20)[10 * 120..11 * 120].iter().map(|&pixel| pixel != 0).collect();
+        let runs = row.windows(2).filter(|pair| pair[0] && !pair[1]).count();
+        assert!(runs >= 8, "{runs} dots");
+    }
+
+    #[test]
+    fn a_white_edge_goes_round_a_line_and_a_sketch_is_drawn_by_hand() {
+        let mut line = Shape::new(Tool::Line, 0xFF0000, 4.0, (10.0, 30.0));
+        (line.points[1], line.halo) = ((110.0, 30.0), true);
+        let pixels = drawn(&line, 120, 60);
+        assert_eq!((pixels[30 * 120 + 60], pixels[34 * 120 + 60]), (0xFF0000, 0xFFFFFF));
+        // Sketched, a box is still where it was drawn, each time the same.
+        let mut boxed = Shape::new(Tool::Rect, 0xFF0000, 3.0, (30.0, 30.0));
+        (boxed.points[1], boxed.sketch) = ((130.0, 90.0), true);
+        let once = drawn(&boxed, 160, 120);
+        assert!(once.iter().filter(|&&pixel| pixel != 0).count() > 400);
+        assert!(once[60 * 160 + 80] == 0 && once == drawn(&boxed, 160, 120));
+        assert!(boxed.hit(30, 60, &mut Text::load()));
+    }
+
+    #[test]
+    fn heads_lines_elbows_and_sketches_are_written_down_and_read_back() {
+        let mut arrow = Shape::new(Tool::Arrow, 0x0090FF, 3.5, (10.0, 20.0));
+        arrow.points[1] = (90.0, 70.0);
+        (arrow.heads, arrow.ends, arrow.dotted, arrow.halo, arrow.elbow, arrow.sketch) = ([true, true], [DIAMOND_HEAD, BAR_HEAD], true, true, true, true);
+        let back = Shape::read(&arrow.write()).expect("read back");
+        assert_eq!((back.ends, back.dotted, back.halo, back.elbow, back.sketch), ([DIAMOND_HEAD, BAR_HEAD], true, true, true, true));
+    }
 
     #[test]
     fn distances_are_negative_inside_and_grow_outside() {
