@@ -38,6 +38,11 @@ PICKS = {
     "SPOTLIGHT": "flashlight-on", "ZOOM": "magnifier-zoom-in", "BADGE": "tag-horizontal",
     "FRAME": "gallery-wide", "STICKER": "smile-circle", "DOWN": "alt-arrow-down",
     "POINTER": "cursor-square", "RECORD": "videocamera-record", "DUPLICATE": "copy-add",
+    "CAMERA": "camera", "EYE": "eye", "EYE_OFF": "eye-closed", "LOCK": "lock-keyhole-minimalistic",
+    "FILE": "file", "PICTURE": "gallery", "FOLDER_OPEN": "folder-open", "HOME": "home",
+    "CLOCK": "clock-circle", "DRAFTS": "documents", "STAR": "star", "EXPORT": "export",
+    "SEARCH": "magnifier", "LINK": "link-minimalistic-2", "RIGHT": "alt-arrow-right", "CROP": "crop",
+    "LAYERS": "layers-minimalistic", "ADD_PICTURE": "gallery-add", "MENU": "menu-dots",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
@@ -46,6 +51,15 @@ LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="rou
 # the plain shapes the tools draw, which Solar has no icons of.
 OWN = {
     "LINE": f'<path d="M5 19L19 5" {LINE}/>',
+    # A frame, as Figma draws its tool: two lines each way.
+    "HASH": f'<path d="M8 3.5v17M16 3.5v17M3.5 8h17M3.5 16h17" {LINE}/>',
+    "PLUS": f'<path d="M12 5v14M5 12h14" {LINE}/>',
+    # Turned, round, kept to its shape, and flipped: for the fields
+    # that set each.
+    "ROTATE": f'<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v3.5H8" {LINE}/>',
+    "RADIUS": f'<path d="M5 19v-6a8 8 0 0 1 8-8h6" {LINE}/>',
+    "RATIO": f'<path d="M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2M8.5 12h7" {LINE}/>',
+    "FLIP": f'<path d="M12 3v18M9 7L4 17h5zM15 7l5 10h-5z" {LINE}/>',
     "RECT": f'<rect x="3" y="5" width="18" height="14" rx="4" {LINE}/>',
     "ELLIPSE": f'<ellipse cx="12" cy="12" rx="9.25" ry="7.25" {LINE}/>',
     "COUNTER": f'<circle cx="12" cy="12" r="9.25" {LINE}/><path d="M10.25 9.75L12.75 8V16" {LINE}/>',

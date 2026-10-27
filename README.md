@@ -104,10 +104,19 @@ center.
 
 ## Canvas
 
-`hotshot --canvas [FILE...]` (or `hotshot --edit`) opens a window for making a picture out of
-pictures, laid out as Figma is: tools and actions along the top, layers
-down the left, and the properties of whatever is selected down the
-right. With nothing selected, the right panel belongs to the artboard:
+`hotshot --edit` opens your projects: folders of files in
+`~/Pictures/hotshot`, with Recent, Drafts, and every capture taken in
+capture mode, any of which starts a new file. `hotshot --edit FILE`
+(or `--canvas`) opens a `.hotshot` file, or starts a file in Drafts with
+the pictures given. Files are saved as you work, as Figma saves them.
+
+A file has pages, listed down the left, and each page has frames: the
+pictures you export, laid out side by side. `F`, or the frame tool,
+drags out a new one; drag a frame by its name to move it, double-click
+the name to rename it. The layers of the frame you are in are listed
+under it. The tools float along the bottom, grouped as Figma's are, and
+the right panel holds the properties of whatever is selected, a section
+at a time. With nothing selected it belongs to the frame:
 its size (X post, square, 16:9, story, A4, or typed), its background (a
 color, a two-color gradient at any angle, one of the frame box's
 backdrops, or nothing), and the export
@@ -132,9 +141,9 @@ handle at each end, and stick to pictures as well as shapes.
 
 ![The canvas: a screenshot on a backdrop, rounded and shadowed, with an arrow over it and its properties on the right](docs/canvas.png)
 
-`Ctrl+E` exports a PNG to the screenshots folder at 1x, 2x or 3x, `Ctrl+C`
-copies it, and `Ctrl+S` saves everything in a `.hotshot` file, with the
-pictures inside it, which `hotshot --canvas` opens again.
+`Ctrl+E` exports the frame you are in as a PNG to the screenshots folder at 1x, 2x or 3x, `Ctrl+C`
+copies it. Ctrl+E in capture mode opens the picture there in a new file
+in Drafts, its shapes still editable.
 
 ## Pinning
 

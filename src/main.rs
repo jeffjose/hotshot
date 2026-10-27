@@ -6,6 +6,7 @@ mod dbus;
 mod editor;
 mod frame;
 mod history;
+mod home;
 mod options;
 mod output;
 mod pin;
@@ -350,11 +351,11 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     if how.canvas {
         let (area, pixels, shapes) = taken.keep.clone().unwrap_or((Rect::new(0, 0, taken.width, taken.height), taken.pixels.clone(), String::new()));
         let doc = studio::from_markup(area, &pixels, &shapes);
-        let dir = output::state_file("pins").ok_or("nowhere to keep it for the canvas")?;
-        std::fs::create_dir_all(&dir)?;
-        let file = dir.join(format!("{}-canvas.hotshot", std::process::id()));
+        // Kept as a file in Drafts, which the canvas opens and goes on
+        // keeping.
+        let file = home::fresh_file(&home::drafts(), "Capture");
         std::fs::write(&file, doc.write())?;
-        pin::again(&["--canvas".as_ref(), file.as_os_str(), "--forget".as_ref()])?;
+        pin::again(&["--canvas".as_ref(), file.as_os_str()])?;
         return Ok(ExitCode::SUCCESS);
     }
 

@@ -20,22 +20,27 @@ use crate::frame::{self, Shadow, BACKDROPS};
 use crate::shapes::{self, Shape, Tool};
 use crate::text::{icons, Text, FACES};
 
-// jog's colors, as the editor has them.
-const TEXT_COLOR: u32 = 0xEEEEEE;
-const DIM_TEXT_COLOR: u32 = 0x9A9A9A;
-const PANEL_COLOR: u32 = 0x1E1E1E;
-const EDGE_COLOR: u32 = 0x333333;
-const FIELD_COLOR: u32 = 0x111111;
-const VIEW_COLOR: u32 = 0x262626;
-const ACCENT: u32 = 0x3E63DD;
+// Figma's dark colors, which the editor's are near.
+pub(crate) const TEXT_COLOR: u32 = 0xF0F0F0;
+pub(crate) const DIM_TEXT_COLOR: u32 = 0xA8A8A8;
+pub(crate) const PANEL_COLOR: u32 = 0x2C2C2C;
+pub(crate) const EDGE_COLOR: u32 = 0x383838;
+pub(crate) const FIELD_COLOR: u32 = 0x383838;
+pub(crate) const HOVER_COLOR: u32 = 0x444444;
+pub(crate) const VIEW_COLOR: u32 = 0x1E1E1E;
+pub(crate) const ACCENT: u32 = 0x3E63DD;
+/// What is picked out, in a list; and the accent as text on the dark.
+pub(crate) const ROW_ON: u32 = 0x2E3D73;
+const ACCENT_TEXT: u32 = 0x9DB1F5;
 /// The lines things snap to, as Figma draws them.
 const GUIDE: u32 = 0xF2555A;
 
-/// How wide the panels at either side are, and how tall the bar along
-/// the top, in pixels of the window.
-const LEFT: i32 = 232;
-const RIGHT: i32 = 264;
-const TOP: i32 = 44;
+/// How far the panels float in from the window's edges, and how wide
+/// each is; and how much of the window's bottom the toolbar keeps.
+const INSET: i32 = 12;
+const LEFT_W: i32 = 252;
+const RIGHT_W: i32 = 268;
+const DOCK_ROOM: i32 = 72;
 
 /// How much larger a picture's shadow is than Tailwind's of its name.
 const SHADOW_SIZE: f32 = 2.0;
@@ -65,7 +70,9 @@ const TOOLS: [(Tool, &str, &str); 9] = [
 ];
 
 /// What a file of the canvas begins with.
-const MAGIC: &str = "HOTSHOT CANVAS 1";
+const MAGIC: &str = "HOTSHOT CANVAS 2";
+/// What a file from before pages and frames begins with.
+const OLD_MAGIC: &str = "HOTSHOT CANVAS 1";
 
 // ---- What is made ----
 
@@ -266,6 +273,13 @@ pub enum Fill {
 /// at the back.
 #[derive(Clone)]
 pub struct Doc {
+    /// What it is called, and where it is on its page.
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    /// The change it was last changed at, which says when what is shown
+    /// of it is behind; not kept in its file.
+    pub stamp: u64,
     pub width: i32,
     pub height: i32,
     pub background: Fill,
@@ -287,7 +301,7 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
 
 impl Doc {
     pub fn new(width: i32, height: i32) -> Doc {
-        Doc { width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new() }
+        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new() }
     }
 
     /// The artboard as a picture, `times` its size: each pixel with how
@@ -341,17 +355,27 @@ impl Doc {
         out
     }
 
-    /// The canvas as a file: what it is, line by line, and each picture
-    /// on it as the PNG it is, after its own line saying how long it is.
+    /// The frame as a file of its own: one page with it on it.
     pub fn write(&self) -> Vec<u8> {
-        let mut out = format!("{MAGIC}\nsize {} {}\n", self.width, self.height);
-        out += &match self.background {
+        write_pages(&[Page { name: "Page 1".into(), frames: vec![self.clone()] }])
+    }
+
+    /// The first frame of a file, or nothing from anything else.
+    #[cfg(test)]
+    pub fn read(bytes: &[u8]) -> Option<Doc> {
+        read_pages(bytes)?.into_iter().flat_map(|page| page.frames).next()
+    }
+
+    /// What it is, line by line: its size, its background and its layers,
+    /// each picture by where it is among `images`, which it is added to.
+    fn write_lines(&self, out: &mut String, images: &mut Vec<Arc<Image>>) {
+        *out += &format!("size {} {}\n", self.width, self.height);
+        *out += &match self.background {
             Fill::None => "background none\n".to_owned(),
             Fill::Color(color) => format!("background color {color:06X}\n"),
             Fill::Backdrop(which) => format!("background backdrop {}\n", BACKDROPS[which.min(BACKDROPS.len() - 1)].0),
             Fill::Gradient(from, to, angle) => format!("background gradient {from:06X} {to:06X} {angle}\n"),
         };
-        let mut images: Vec<Arc<Image>> = Vec::new();
         for layer in &self.layers {
             let flags = format!("{} {}", u8::from(layer.hidden), u8::from(layer.locked));
             match &layer.kind {
@@ -361,7 +385,7 @@ impl Doc {
                         images.len() - 1
                     });
                     let (cx, cy, cw, ch) = picture.crop;
-                    out += &format!(
+                    *out += &format!(
                         "picture {flags} {index} {} {} {} {} {} {cx} {cy} {cw} {ch} {} {} {} {} {} {} {}\n",
                         picture.cx,
                         picture.cy,
@@ -374,78 +398,142 @@ impl Doc {
                         u8::from(picture.flip.0),
                         u8::from(picture.flip.1),
                         picture.id,
-                        picture.name.replace(['\n', '\t'], " ")
+                        one_line(&picture.name)
                     );
                 }
-                Kind::Shape(shape) => out += &format!("shape {flags} {}\n", shape.write()),
+                Kind::Shape(shape) => *out += &format!("shape {flags} {}\n", shape.write()),
             }
         }
-        let mut bytes = out.into_bytes();
-        for image in images {
-            bytes.extend_from_slice(format!("image {}\n", image.png.len()).as_bytes());
-            bytes.extend_from_slice(&image.png);
-            bytes.push(b'\n');
-        }
-        bytes
     }
 
-    /// A canvas from a file `write` made, or nothing from any other.
-    pub fn read(bytes: &[u8]) -> Option<Doc> {
-        // The lines come first, the pictures after: the lines are read
-        // up to the first picture, which is where the bytes begin.
-        let text_end = find(bytes, b"\nimage ").map_or(bytes.len(), |at| at + 1);
-        let text = std::str::from_utf8(&bytes[..text_end]).ok()?;
-        let mut lines = text.lines();
-        if lines.next()? != MAGIC {
-            return None;
-        }
-        let mut images = Vec::new();
-        let mut at = text_end;
-        while let Some(rest) = bytes.get(at..).filter(|rest| rest.starts_with(b"image ")) {
-            let line_end = rest.iter().position(|&byte| byte == b'\n')?;
-            let length: usize = std::str::from_utf8(&rest[6..line_end]).ok()?.trim().parse().ok()?;
-            let png = rest.get(line_end + 1..line_end + 1 + length)?;
-            images.push(Arc::new(Image::open(png)?));
-            at += line_end + 1 + length + 1;
-        }
-        let mut doc = Doc::new(1, 1);
-        for line in lines {
-            let mut words = line.split(' ');
-            match words.next()? {
-                "size" => (doc.width, doc.height) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?),
-                "background" => {
-                    doc.background = match words.next()? {
-                        "color" => Fill::Color(u32::from_str_radix(words.next()?, 16).ok()?),
-                        "backdrop" => Fill::Backdrop(frame::named(words.next()?)?),
-                        "gradient" => Fill::Gradient(u32::from_str_radix(words.next()?, 16).ok()?, u32::from_str_radix(words.next()?, 16).ok()?, words.next()?.parse().ok()?),
-                        _ => Fill::None,
-                    }
+    /// One line of what `write_lines` wrote, read into it; or nothing, if
+    /// the line is not one of those.
+    fn read_line(&mut self, line: &str, images: &[Arc<Image>]) -> Option<()> {
+        let mut words = line.split(' ');
+        match words.next()? {
+            "size" => (self.width, self.height) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?),
+            "background" => {
+                self.background = match words.next()? {
+                    "color" => Fill::Color(u32::from_str_radix(words.next()?, 16).ok()?),
+                    "backdrop" => Fill::Backdrop(frame::named(words.next()?)?),
+                    "gradient" => Fill::Gradient(u32::from_str_radix(words.next()?, 16).ok()?, u32::from_str_radix(words.next()?, 16).ok()?, words.next()?.parse().ok()?),
+                    _ => Fill::None,
                 }
-                "picture" => {
-                    let (hidden, locked) = (words.next()? == "1", words.next()? == "1");
-                    let image = images.get(words.next()?.parse::<usize>().ok()?)?.clone();
-                    let mut number = || words.next().and_then(|word| word.parse::<f32>().ok());
-                    let (cx, cy, w, h, angle) = (number()?, number()?, number()?, number()?, number()?);
-                    let crop = (number()?, number()?, number()?, number()?);
-                    let (radius, shadow, opacity) = (number()?, number()? as usize, number()? as u32);
-                    let flip = (number()? == 1.0, number()? == 1.0);
-                    let id = number()? as u32;
-                    shapes::seen_id(id);
-                    let name = words.collect::<Vec<_>>().join(" ");
-                    let picture = Picture { image, name, cx, cy, w, h, angle, crop, radius, shadow: shadow.min(frame::SHADOWS.len()), opacity: opacity.min(256), flip, id };
-                    doc.layers.push(Layer { kind: Kind::Picture(picture), hidden, locked });
-                }
-                "shape" => {
-                    let rest = line.splitn(4, ' ').collect::<Vec<_>>();
-                    let shape = Shape::read(rest.get(3)?)?;
-                    doc.layers.push(Layer { kind: Kind::Shape(shape), hidden: rest[1] == "1", locked: rest[2] == "1" });
-                }
-                _ => {}
             }
+            "picture" => {
+                let (hidden, locked) = (words.next()? == "1", words.next()? == "1");
+                let image = images.get(words.next()?.parse::<usize>().ok()?)?.clone();
+                let mut number = || words.next().and_then(|word| word.parse::<f32>().ok());
+                let (cx, cy, w, h, angle) = (number()?, number()?, number()?, number()?, number()?);
+                let crop = (number()?, number()?, number()?, number()?);
+                let (radius, shadow, opacity) = (number()?, number()? as usize, number()? as u32);
+                let flip = (number()? == 1.0, number()? == 1.0);
+                let id = number()? as u32;
+                shapes::seen_id(id);
+                let name = words.collect::<Vec<_>>().join(" ");
+                let picture = Picture { image, name, cx, cy, w, h, angle, crop, radius, shadow: shadow.min(frame::SHADOWS.len()), opacity: opacity.min(256), flip, id };
+                self.layers.push(Layer { kind: Kind::Picture(picture), hidden, locked });
+            }
+            "shape" => {
+                let rest = line.splitn(4, ' ').collect::<Vec<_>>();
+                let shape = Shape::read(rest.get(3)?)?;
+                self.layers.push(Layer { kind: Kind::Shape(shape), hidden: rest[1] == "1", locked: rest[2] == "1" });
+            }
+            _ => return None,
         }
-        (doc.width > 0 && doc.height > 0).then_some(doc)
+        Some(())
     }
 }
+
+/// A name kept to one line of a file.
+fn one_line(name: &str) -> String {
+    name.replace(['\n', '\t', '\r'], " ")
+}
+
+/// A file of the canvas: what it is, line by line, page by page and frame
+/// by frame; and then each picture on it as the PNG it is, after its own
+/// line saying how long it is, once however many times it is used.
+pub fn write_pages(pages: &[Page]) -> Vec<u8> {
+    let mut out = format!("{MAGIC}\n");
+    let mut images: Vec<Arc<Image>> = Vec::new();
+    for page in pages {
+        out += &format!("page {}\n", one_line(&page.name));
+        for frame in &page.frames {
+            out += &format!("frame {} {} {}\n", frame.x, frame.y, one_line(&frame.name));
+            frame.write_lines(&mut out, &mut images);
+        }
+    }
+    let mut bytes = out.into_bytes();
+    for image in images {
+        bytes.extend_from_slice(format!("image {}\n", image.png.len()).as_bytes());
+        bytes.extend_from_slice(&image.png);
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
+/// The pages of a file `write_pages` made, or of one from before pages,
+/// which was one frame; or nothing from any other.
+pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
+    // The lines come first, the pictures after: the lines are read up to
+    // the first picture, which is where the bytes begin.
+    let text_end = find(bytes, b"\nimage ").map_or(bytes.len(), |at| at + 1);
+    let text = std::str::from_utf8(&bytes[..text_end]).ok()?;
+    let mut lines = text.lines();
+    let first = lines.next()?;
+    if first != MAGIC && first != OLD_MAGIC {
+        return None;
+    }
+    let mut images = Vec::new();
+    let mut at = text_end;
+    while let Some(rest) = bytes.get(at..).filter(|rest| rest.starts_with(b"image ")) {
+        let line_end = rest.iter().position(|&byte| byte == b'\n')?;
+        let length: usize = std::str::from_utf8(&rest[6..line_end]).ok()?.trim().parse().ok()?;
+        let png = rest.get(line_end + 1..line_end + 1 + length)?;
+        images.push(Arc::new(Image::open(png)?));
+        at += line_end + 1 + length + 1;
+    }
+    let mut pages: Vec<Page> = Vec::new();
+    for line in lines {
+        if let Some(name) = line.strip_prefix("page ") {
+            pages.push(Page { name: name.to_owned(), frames: Vec::new() });
+            continue;
+        }
+        if pages.is_empty() {
+            pages.push(Page { name: "Page 1".into(), frames: Vec::new() });
+        }
+        let page = pages.last_mut()?;
+        if let Some(rest) = line.strip_prefix("frame ") {
+            let mut words = rest.splitn(3, ' ');
+            let mut frame = Doc::new(1, 1);
+            (frame.x, frame.y) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+            frame.name = words.next().unwrap_or("Frame").to_owned();
+            page.frames.push(frame);
+            continue;
+        }
+        // A file from before frames is one frame, without saying so.
+        if page.frames.is_empty() {
+            page.frames.push(Doc::new(1, 1));
+        }
+        let _ = page.frames.last_mut()?.read_line(line, &images);
+    }
+    for page in &mut pages {
+        page.frames.retain(|frame| frame.width > 0 && frame.height > 0);
+        if page.frames.is_empty() {
+            page.frames.push(Doc::new(1200, 675));
+        }
+    }
+    (!pages.is_empty()).then_some(pages)
+}
+
+/// A page of a file: an endless canvas, with frames on it, each a picture
+/// to export.
+#[derive(Clone)]
+pub struct Page {
+    pub name: String,
+    pub frames: Vec<Doc>,
+}
+
 
 /// A path as said to someone: with the home folder as ~.
 fn shortened(path: &Path) -> String {
@@ -626,6 +714,11 @@ fn draw_shape(out: &mut [u32], wide: i32, high: i32, shape: &Shape, text: &mut T
 /// What is being done with the button down.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Drag {
+    /// A new frame dragged out on the page, from a point of it.
+    NewFrame { from: (f32, f32) },
+    /// The frame worked in moved by its name, from a point of the window,
+    /// from where it was.
+    MoveFrame { from: (i32, i32), origin: (f32, f32), moved: bool },
     None,
     /// The view moved, by the hand, the middle button or Space.
     Pan { from: (i32, i32), origin: (f32, f32) },
@@ -718,6 +811,19 @@ enum Control {
     Line(u8),
     Face(usize),
     Action(Action),
+    /// The way back to the projects; the pages, and a new one; the frames
+    /// of the page, in the list of layers; the frame tool; the list of a
+    /// group of tools, and one of the tools in it; the zoom, which fits;
+    /// and a color, which opens the colors.
+    Home,
+    Page(usize),
+    NewPage,
+    Frame(usize),
+    FrameTool,
+    Group(u8),
+    Pick(Tool),
+    Zoom,
+    ColorField(Paint),
     /// A part of a panel that is no control.
     Panel,
 }
@@ -727,7 +833,6 @@ enum Control {
 enum Action {
     Export,
     Copy,
-    Save,
     Capture,
     Crop,
     FlipAcross,
@@ -744,7 +849,6 @@ enum Action {
     Halo,
     Elbow,
     Sketch,
-    Fit,
 }
 
 impl Action {
@@ -752,7 +856,6 @@ impl Action {
         match self {
             Action::Export => "Export",
             Action::Copy => "Copy",
-            Action::Save => "Save",
             Action::Capture => "Capture",
             Action::Crop => "Crop",
             Action::FlipAcross => "Flip \u{2194}",
@@ -772,7 +875,6 @@ impl Action {
             Action::Halo => "White edge",
             Action::Elbow => "Elbow",
             Action::Sketch => "Sketch",
-            Action::Fit => "Fit",
         }
     }
 }
@@ -782,11 +884,35 @@ impl Action {
 struct Layout {
     view: Rect,
     controls: Vec<(Rect, Control)>,
-    /// What each control is, said where it is drawn: the panels' headings
-    /// and labels, which are no controls.
-    words: Vec<((i32, i32), String, u32)>,
-    /// The bar of tools floating along the bottom of the view.
+    /// What is said where, which is no control: headings, labels, the
+    /// names in the lists; at a size, in a color.
+    words: Vec<((i32, i32), String, u32, u32)>,
+    /// Icons, by where their middles are.
+    icons: Vec<((i32, i32), &'static str, u32, u32)>,
+    /// The lines between the sections of a panel.
+    rules: Vec<Rect>,
+    /// The panels floating over the page, the bar of tools along its
+    /// bottom, the list a group of tools opens, and the colors.
+    panels: Vec<Rect>,
     dock: Rect,
+    flyout: Option<Rect>,
+    popover: Option<Rect>,
+}
+
+/// The whole file as it was, to come back to with undo: its pages, the
+/// page shown, and the frame worked in.
+#[derive(Clone)]
+struct Snapshot {
+    pages: Vec<Page>,
+    page: usize,
+    active: usize,
+}
+
+/// What a name being typed is the name of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Naming {
+    Frame,
+    Page(usize),
 }
 
 /// What the window has to do for the canvas, that the canvas cannot.
@@ -801,11 +927,33 @@ pub enum Outcome {
     /// A picture of the screen is wanted, from a capture with the window
     /// out of the way, to be handed to `captured`.
     Capture,
+    /// The projects are wanted, this file kept.
+    Home,
 }
 
 /// The artboard, the layers, and everything about the window they are in.
 pub struct Studio {
+    /// The frame being worked in: taken out of its page, which holds
+    /// nothing in its place until it is put back.
     doc: Doc,
+    /// The pages of the file, and which of them is shown, and which of
+    /// its frames is `doc`.
+    pages: Vec<Page>,
+    page: usize,
+    active: usize,
+    /// The frame tool in hand, to drag out a new frame with; and whether
+    /// the frame worked in is itself what is picked out.
+    framing: bool,
+    frame_picked: bool,
+    /// The group of tools whose list is open over the toolbar; the colors
+    /// open beside the panel, and what they color; how far down the panel
+    /// of properties is scrolled; and a name being typed, and for what.
+    flyout: Option<u8>,
+    palette: Option<Paint>,
+    scroll: i32,
+    renaming: Option<(Naming, String)>,
+    /// Which tool of each group shows in the toolbar: the last one used.
+    groups: [Tool; 2],
     text: Text,
     width: i32,
     height: i32,
@@ -820,8 +968,8 @@ pub struct Studio {
     mods: Mods,
     /// Space held: the hand, for as long as it is.
     space: bool,
-    undo: Vec<Doc>,
-    redo: Vec<Doc>,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
     /// The layers as they were when something was taken hold of, to
     /// change from rather than from what the last move left.
     held: Vec<Layer>,
@@ -845,7 +993,9 @@ pub struct Studio {
     version: u64,
     /// The part of the artboard drawn last, at the size it is shown: at
     /// which change, at which zoom, and which part.
-    shown: Option<(u64, f32, Rect, Vec<u32>)>,
+    /// Each frame of the page as drawn last, at the size it is shown: at
+    /// which change to it, at which zoom, and which part of it.
+    shown: Vec<Option<(u64, f32, Rect, Vec<u32>)>>,
     /// Where it is kept, if it is; and whether it has changed since.
     pub path: Option<PathBuf>,
     edited: bool,
@@ -862,9 +1012,15 @@ pub struct Studio {
 }
 
 impl Studio {
+    #[cfg(test)]
     pub fn new(doc: Doc, text: Text, width: i32, height: i32, dir: PathBuf, filename: String) -> Studio {
+        Studio::with_pages(vec![Page { name: "Page 1".into(), frames: vec![doc] }], text, width, height, dir, filename)
+    }
+
+    /// The canvas, with a file's pages, at the first frame of the first.
+    pub fn with_pages(pages: Vec<Page>, text: Text, width: i32, height: i32, dir: PathBuf, filename: String) -> Studio {
         let mut studio = Studio {
-            doc,
+            doc: Doc::new(1, 1),
             text,
             width,
             height,
@@ -890,7 +1046,17 @@ impl Studio {
             export_scale: 2,
             typing: None,
             version: 0,
-            shown: None,
+            shown: Vec::new(),
+            pages: if pages.is_empty() { vec![Page { name: "Page 1".into(), frames: vec![Doc::new(1200, 675)] }] } else { pages },
+            page: 0,
+            active: 0,
+            framing: false,
+            frame_picked: false,
+            flyout: None,
+            palette: None,
+            scroll: 0,
+            renaming: None,
+            groups: [Tool::Rect, Tool::Pen],
             path: None,
             edited: false,
             dir,
@@ -900,6 +1066,7 @@ impl Studio {
             guides: Vec::new(),
             dirty: true,
         };
+        studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
         studio.fit();
         studio
     }
@@ -921,7 +1088,7 @@ impl Studio {
 
     /// What the window is called: the file, and whether it has changed.
     pub fn title(&self) -> String {
-        let name = self.path.as_ref().and_then(|path| path.file_name()).map_or("Untitled".to_owned(), |name| name.to_string_lossy().into_owned());
+        let name = self.path.as_ref().and_then(|path| path.file_stem()).map_or("Untitled".to_owned(), |name| name.to_string_lossy().into_owned());
         format!("{name}{} \u{2014} hotshot", if self.edited { " \u{2022}" } else { "" })
     }
 
@@ -930,19 +1097,135 @@ impl Studio {
         self.dirty = true;
     }
 
-    /// Something about to change: kept, to come back to with undo.
+    /// Something about to change: the whole file kept, to come back to
+    /// with undo.
     fn checkpoint(&mut self) {
-        self.undo.push(self.doc.clone());
+        let now = self.snapshot();
+        self.undo.push(now);
         self.redo.clear();
         if self.undo.len() > 100 {
             self.undo.remove(0);
         }
     }
 
+    fn snapshot(&self) -> Snapshot {
+        Snapshot { pages: self.gathered(), page: self.page, active: self.active }
+    }
+
+    /// The pages, with the frame worked in back in its place.
+    pub fn gathered(&self) -> Vec<Page> {
+        let mut pages = self.pages.clone();
+        pages[self.page].frames[self.active] = self.doc.clone();
+        pages
+    }
+
+    /// The file as it was at a snapshot, the frame worked in taken out.
+    fn restore(&mut self, snapshot: Snapshot) {
+        self.pages = snapshot.pages;
+        self.page = snapshot.page.min(self.pages.len() - 1);
+        self.active = snapshot.active.min(self.pages[self.page].frames.len() - 1);
+        self.doc = std::mem::replace(&mut self.pages[self.page].frames[self.active], Doc::new(1, 1));
+        self.selected.retain(|&index| index < self.doc.layers.len());
+        (self.cropping, self.editing) = (None, None);
+        self.shown.clear();
+    }
+
+    /// Another frame of the page worked in, the one before put back.
+    fn activate(&mut self, frame: usize) {
+        if frame == self.active || frame >= self.pages[self.page].frames.len() {
+            return;
+        }
+        self.commit_text();
+        let frames = &mut self.pages[self.page].frames;
+        std::mem::swap(&mut self.doc, &mut frames[self.active]);
+        std::mem::swap(&mut self.doc, &mut frames[frame]);
+        self.active = frame;
+        self.selected.clear();
+        (self.cropping, self.editing, self.frame_picked) = (None, None, false);
+        self.dirty = true;
+    }
+
+    /// Another page shown, at its first frame.
+    fn go_to_page(&mut self, page: usize) {
+        if page == self.page || page >= self.pages.len() {
+            return;
+        }
+        self.commit_text();
+        let back = std::mem::replace(&mut self.doc, Doc::new(1, 1));
+        self.pages[self.page].frames[self.active] = back;
+        (self.page, self.active) = (page, 0);
+        self.doc = std::mem::replace(&mut self.pages[page].frames[0], Doc::new(1, 1));
+        self.selected.clear();
+        (self.cropping, self.editing, self.frame_picked) = (None, None, false);
+        self.shown.clear();
+        self.fit();
+    }
+
+    /// The frames of the page shown, the one worked in among them.
+    fn frame(&self, index: usize) -> &Doc {
+        if index == self.active { &self.doc } else { &self.pages[self.page].frames[index] }
+    }
+
+    fn frame_count(&self) -> usize {
+        self.pages[self.page].frames.len()
+    }
+
+    /// A new page, with a frame on it the size of the one worked in.
+    fn new_page(&mut self) {
+        self.checkpoint();
+        let mut frame = Doc::new(self.doc.width, self.doc.height);
+        frame.background = self.doc.background;
+        let name = format!("Page {}", self.pages.len() + 1);
+        self.pages.push(Page { name, frames: vec![frame] });
+        self.go_to_page(self.pages.len() - 1);
+        self.renaming = Some((Naming::Page(self.page), String::new()));
+        self.changed();
+    }
+
+    /// A new frame on the page, where it was dragged out, worked in.
+    fn new_frame(&mut self, at: (f32, f32), size: (f32, f32)) {
+        self.checkpoint();
+        let mut frame = Doc::new((size.0.round() as i32).max(16), (size.1.round() as i32).max(16));
+        (frame.x, frame.y) = (at.0.round(), at.1.round());
+        frame.name = format!("Frame {}", self.frame_count() + 1);
+        self.pages[self.page].frames.push(frame);
+        let index = self.frame_count() - 1;
+        self.activate(index);
+        self.frame_picked = true;
+        self.changed();
+    }
+
+    /// The frame worked in, gone, where there are others on the page.
+    fn delete_frame(&mut self) {
+        if self.frame_count() < 2 {
+            return self.say("A page keeps one frame");
+        }
+        self.checkpoint();
+        let gone = self.active;
+        let next = if gone == 0 { 1 } else { gone - 1 };
+        self.activate(next);
+        self.pages[self.page].frames.remove(gone);
+        if self.active > gone {
+            self.active -= 1;
+        }
+        self.shown.clear();
+        self.changed();
+    }
+
+    /// Which frame of the page a point of it is in, the topmost.
+    fn frame_at(&self, (x, y): (f32, f32)) -> Option<usize> {
+        (0..self.frame_count()).rev().find(|&index| {
+            let frame = self.frame(index);
+            x >= frame.x && y >= frame.y && x < frame.x + frame.width as f32 && y < frame.y + frame.height as f32
+        })
+    }
+
+
     /// Something has changed: drawn again, and the file is behind.
     fn changed(&mut self) {
         self.follow();
         self.version += 1;
+        self.doc.stamp = self.version;
         self.edited = true;
         self.dirty = true;
     }
@@ -950,73 +1233,188 @@ impl Studio {
     // ---- The view ----
 
     fn layout(&mut self) -> Layout {
-        let view = Rect::new(LEFT, TOP, (self.width - LEFT - RIGHT).max(100), (self.height - TOP).max(100));
+        let view = Rect::new(0, 0, self.width, self.height);
         let mut layout = Layout { view, ..Layout::default() };
-        let px = 13;
-        let line = Text::line_height(px);
-        // Along the bottom of the view, floating over it as Figma's do,
-        // the tools; along the top, what the picture can be done with.
-        let (side, gap, pad) = (36, 4, 6);
-        let count = TOOLS.len() as i32;
-        let dock_w = count * side + (count - 1) * gap + 2 * pad;
-        layout.dock = Rect::new(view.x + (view.w - dock_w) / 2, view.bottom() - side - 2 * pad - 16, dock_w, side + 2 * pad);
-        let mut x = layout.dock.x + pad;
-        for (tool, ..) in TOOLS {
-            layout.controls.push((Rect::new(x, layout.dock.y + pad, side, side), Control::Tool(tool)));
-            x += side + gap;
-        }
-        layout.controls.push((layout.dock, Control::Panel));
-        let name = self.title().trim_end_matches(" \u{2014} hotshot").to_owned();
-        layout.words.push(((16, (TOP - line) / 2), name, TEXT_COLOR));
-        let side = 30;
-        let mut right = self.width - 12;
-        for action in [Action::Export, Action::Copy, Action::Save, Action::Capture, Action::Fit] {
-            let wide = self.text.width(action.says(), px) + 20;
-            right -= wide;
-            layout.controls.push((Rect::new(right, (TOP - side) / 2, wide, side), Control::Action(action)));
-            right -= 6;
-        }
-        // Down the left: the layers, the topmost first.
-        let mut y = TOP + 14;
-        layout.words.push(((14, y), "Layers".to_owned(), DIM_TEXT_COLOR));
-        y += line + 6;
-        let row = 30;
-        for index in (0..self.doc.layers.len()).rev() {
-            if y + row > self.height - 8 {
-                break;
+        self.toolbar(&mut layout);
+        self.left_panel(&mut layout);
+        self.right_panel(&mut layout);
+        // The frames' names on the page, to pick a frame by.
+        for index in 0..self.frame_count() {
+            let (place, _) = self.frame_label(index);
+            if self.over_page(place.center()) {
+                layout.controls.push((place, Control::Frame(index)));
             }
-            layout.controls.push((Rect::new(LEFT - 56, y, 22, row), Control::Eye(index)));
-            layout.controls.push((Rect::new(LEFT - 30, y, 22, row), Control::Lock(index)));
-            layout.controls.push((Rect::new(8, y, LEFT - 16, row), Control::Layer(index)));
-            y += row;
         }
-        layout.controls.push((Rect::new(0, TOP, LEFT, self.height - TOP), Control::Panel));
-        // Down the right: the properties of what is picked out, or of
-        // the artboard.
-        self.properties(&mut layout);
-        layout.controls.push((Rect::new(self.width - RIGHT, TOP, RIGHT, self.height - TOP), Control::Panel));
-        layout.controls.push((Rect::new(0, 0, self.width, TOP), Control::Panel));
         layout
     }
 
-    /// The panel of properties, laid out a row at a time.
-    fn properties(&mut self, layout: &mut Layout) {
-        let px = 13;
+    /// The tools, floating along the bottom of the page, grouped as
+    /// Figma's are: a caret beside a group opens a list of the rest.
+    fn toolbar(&mut self, layout: &mut Layout) {
+        let (side, caret, gap, pad) = (38, 14, 2, 5);
+        let items: Vec<(Control, i32)> = vec![
+            (Control::Tool(Tool::Select), side),
+            (Control::FrameTool, side),
+            (Control::Tool(self.groups[0]), side),
+            (Control::Group(0), caret),
+            (Control::Tool(Tool::Arrow), side),
+            (Control::Tool(self.groups[1]), side),
+            (Control::Group(1), caret),
+            (Control::Tool(Tool::Text), side),
+            (Control::Tool(Tool::Counter), side),
+            (Control::Panel, 9),
+            (Control::Action(Action::Capture), side),
+        ];
+        let wide = items.iter().map(|(_, wide)| wide + gap).sum::<i32>() - gap + 2 * pad;
+        let open = self.open_area();
+        let dock = Rect::new(open.x + (open.w - wide) / 2, self.height - 20 - side - 2 * pad, wide, side + 2 * pad);
+        let mut x = dock.x + pad;
+        let mut group_at = [0; 2];
+        for (control, w) in items {
+            if let Control::Group(group) = control {
+                group_at[usize::from(group)] = x - side - gap;
+            }
+            if control != Control::Panel {
+                layout.controls.push((Rect::new(x, dock.y + pad, w, side), control));
+            }
+            x += w + gap;
+        }
+        // The list a group opens, over its button.
+        if let Some(group) = self.flyout {
+            let tools: &[Tool] = if group == 0 { &[Tool::Rect, Tool::Ellipse, Tool::Line] } else { &[Tool::Pen, Tool::Marker] };
+            let (row, w) = (30, 190);
+            let list = Rect::new(group_at[usize::from(group)], dock.y - 8 - tools.len() as i32 * row - 10, w, tools.len() as i32 * row + 10);
+            for (at, &tool) in tools.iter().enumerate() {
+                layout.controls.push((Rect::new(list.x + 5, list.y + 5 + at as i32 * row, w - 10, row), Control::Pick(tool)));
+            }
+            layout.controls.push((list, Control::Panel));
+            layout.flyout = Some(list);
+        }
+        layout.controls.push((dock, Control::Panel));
+        layout.dock = dock;
+    }
+
+    /// The panel down the left: the file, its pages, and the layers of the
+    /// page shown, by frame.
+    fn left_panel(&mut self, layout: &mut Layout) {
+        let panel = Rect::new(INSET, INSET, LEFT_W, self.height - 2 * INSET);
+        layout.panels.push(panel);
+        let (left, inner) = (panel.x + 12, panel.w - 24);
+        let line = Text::line_height(12);
+        // The file: the way home, its project, and its name.
+        layout.controls.push((Rect::new(left, panel.y + 12, 28, 28), Control::Home));
+        let project = self.path.as_ref().and_then(|path| path.parent()).and_then(|dir| dir.file_name()).map_or("Drafts".to_owned(), |name| name.to_string_lossy().into_owned());
+        layout.words.push(((left + 38, panel.y + 10), project, DIM_TEXT_COLOR, 11));
+        let name = self.title().trim_end_matches(" \u{2014} hotshot").to_owned();
+        layout.words.push(((left + 38, panel.y + 25), name, TEXT_COLOR, 13));
+        // The pages.
+        let mut y = panel.y + 56;
+        layout.rules.push(Rect::new(panel.x, y, panel.w, 1));
+        y += 10;
+        layout.words.push(((left, y + (22 - line) / 2), "Pages".to_owned(), TEXT_COLOR, 12));
+        layout.controls.push((Rect::new(left + inner - 22, y, 22, 22), Control::NewPage));
+        y += 28;
+        let row = 28;
+        for index in 0..self.pages.len() {
+            layout.controls.push((Rect::new(left - 4, y, inner + 8, row), Control::Page(index)));
+            y += row;
+        }
+        // The layers of the page: each frame, and the layers of the one
+        // worked in, the topmost first.
+        y += 8;
+        layout.rules.push(Rect::new(panel.x, y, panel.w, 1));
+        y += 10;
+        layout.words.push(((left, y + (22 - line) / 2), "Layers".to_owned(), TEXT_COLOR, 12));
+        y += 28;
+        for frame in 0..self.frame_count() {
+            if y + row > panel.bottom() - 8 {
+                break;
+            }
+            layout.controls.push((Rect::new(left - 4, y, inner + 8, row), Control::Frame(frame)));
+            y += row;
+            if frame != self.active {
+                continue;
+            }
+            for index in (0..self.doc.layers.len()).rev() {
+                if y + row > panel.bottom() - 8 {
+                    break;
+                }
+                layout.controls.push((Rect::new(left + inner - 44, y, 22, row), Control::Eye(index)));
+                layout.controls.push((Rect::new(left + inner - 20, y, 22, row), Control::Lock(index)));
+                layout.controls.push((Rect::new(left + 14, y, inner - 10, row), Control::Layer(index)));
+                y += row;
+            }
+        }
+        layout.controls.push((panel, Control::Panel));
+    }
+
+    /// The panel down the right: the zoom and the way out at its top, and
+    /// under them what there is to set of what is picked out, or of the
+    /// frame, a section at a time, scrolled if it is long.
+    fn right_panel(&mut self, layout: &mut Layout) {
+        let panel = Rect::new(self.width - INSET - RIGHT_W, INSET, RIGHT_W, self.height - 2 * INSET);
+        layout.panels.push(panel);
+        let (left, inner) = (panel.x + 14, panel.w - 28);
+        layout.controls.push((Rect::new(left - 4, panel.y + 10, 64, 30), Control::Zoom));
+        layout.controls.push((Rect::new(left + inner - 92, panel.y + 10, 92, 30), Control::Action(Action::Export)));
+        let top = panel.y + 50;
+        // The sections, laid out apart and then kept to what of them shows.
+        let mut part = Layout::default();
+        let end = self.properties(&mut part, left, inner, top - self.scroll, panel.w);
+        let most = (end + self.scroll - panel.bottom() + 16).max(0);
+        if self.scroll > most {
+            self.scroll = most;
+            return self.right_panel(layout);
+        }
+        let shows = |rect: Rect| rect.y >= top && rect.bottom() <= panel.bottom() - 4;
+        layout.controls.extend(part.controls.into_iter().filter(|(rect, _)| shows(*rect)));
+        layout.words.extend(part.words.into_iter().filter(|((_, y), ..)| *y >= top && *y + 14 <= panel.bottom()));
+        layout.icons.extend(part.icons.into_iter().filter(|((_, y), ..)| *y - 8 >= top && *y + 8 <= panel.bottom()));
+        layout.rules.extend(part.rules.into_iter().filter(|rule| rule.y >= top && rule.y < panel.bottom()));
+        // The colors, beside the panel at the color they are for.
+        if let (Some(paint), Some(field)) = (self.palette, part.popover) {
+            let colors: Vec<Option<u32>> = (paint == Paint::Fill).then_some(None).into_iter().chain(PALETTE.iter().map(|&(color, _)| Some(color))).collect();
+            let (each, across) = (24, 7);
+            let rows = (colors.len() as i32 + across - 1) / across;
+            let size = (across * (each + 4) + 16, rows * (each + 4) + 16);
+            let place = Rect::new(panel.x - 8 - size.0, (field.y - 8).clamp(INSET, self.height - INSET - size.1), size.0, size.1);
+            let swatches = colors.iter().enumerate().map(|(at, &color)| (Rect::new(place.x + 10 + at as i32 % across * (each + 4), place.y + 10 + at as i32 / across * (each + 4), each, each), Control::Swatch(paint, color)));
+            let mut first: Vec<(Rect, Control)> = swatches.collect();
+            first.push((place, Control::Panel));
+            first.append(&mut layout.controls);
+            layout.controls = first;
+            layout.popover = Some(place);
+        }
+        layout.controls.push((panel, Control::Panel));
+    }
+
+    /// The sections of the panel of properties, from `y` down: what is
+    /// picked out, or the frame. Gives where they end.
+    fn properties(&mut self, layout: &mut Layout, left: i32, inner: i32, mut y: i32, panel_w: i32) -> i32 {
+        let px = 12;
         let line = Text::line_height(px);
-        let (left, inner) = (self.width - RIGHT + 14, RIGHT - 28);
-        let mut y = TOP + 14;
-        let heading = |layout: &mut Layout, y: &mut i32, says: &str| {
-            *y += 6;
-            layout.words.push(((left, *y), says.to_owned(), DIM_TEXT_COLOR));
-            *y += line + 6;
+        let rule_x = left - 14;
+        let section = |layout: &mut Layout, y: &mut i32, title: &str, hint: &str| {
+            layout.rules.push(Rect::new(rule_x, *y, panel_w, 1));
+            *y += 12;
+            layout.words.push(((left, *y), title.to_owned(), TEXT_COLOR, 12));
+            if !hint.is_empty() {
+                layout.words.push(((left + inner - (hint.chars().count() as i32 * 6), *y + 1), hint.to_owned(), DIM_TEXT_COLOR, 11));
+            }
+            *y += line + 10;
         };
-        // Two numbers to a row, each with its label to drag it by.
-        let fields = |layout: &mut Layout, y: &mut i32, pair: &[Field]| {
-            let each = (inner - 8) / 2;
-            for (index, &field) in pair.iter().enumerate() {
+        let small = |layout: &mut Layout, y: &mut i32, says: &str| {
+            layout.words.push(((left, *y), says.to_owned(), DIM_TEXT_COLOR, 11));
+            *y += Text::line_height(11) + 6;
+        };
+        // Numbers side by side, each with its label to drag it by.
+        let fields = |layout: &mut Layout, y: &mut i32, row: &[Field]| {
+            let count = row.len() as i32;
+            let each = (inner - 8 * (count - 1)) / count;
+            for (index, &field) in row.iter().enumerate() {
                 layout.controls.push((Rect::new(left + index as i32 * (each + 8), *y, each, 28), Control::Field(field)));
             }
-            *y += 34;
+            *y += 36;
         };
         // Chips, as many to a row as fit, each as wide as what it says.
         let chips = |layout: &mut Layout, text: &mut Text, y: &mut i32, items: Vec<(String, Control)>| {
@@ -1026,52 +1424,48 @@ impl Studio {
                 if x + wide > left + inner && x > left {
                     (x, *y) = (left, *y + 32);
                 }
-                layout.controls.push((Rect::new(x, *y, wide, 28), control));
-                layout.words.push(((x + 9, *y + (28 - line) / 2), says, TEXT_COLOR));
+                layout.controls.push((Rect::new(x, *y, wide, 26), control));
+                layout.words.push(((x + 9, *y + (26 - line) / 2), says, TEXT_COLOR, px));
                 x += wide + 6;
             }
             *y += 34;
         };
-        let swatches = |layout: &mut Layout, y: &mut i32, paint: Paint, none: bool| {
-            // Nine to a row, the none and the palette's twenty-five in three.
-            let each = (inner + 3) / 9 - 3;
-            let mut x = left;
-            let colors: Vec<Option<u32>> = none.then_some(None).into_iter().chain(PALETTE.iter().map(|&(color, _)| Some(color))).collect();
-            for color in colors {
-                if x + each > left + inner {
-                    (x, *y) = (left, *y + each + 4);
-                }
-                layout.controls.push((Rect::new(x, *y, each, each), Control::Swatch(paint, color)));
-                x += each + 3;
+        // A color, as Figma shows one: a swatch and its hex, which opens
+        // the colors beside the panel.
+        let color = |layout: &mut Layout, y: &mut i32, paint: Paint| {
+            let place = Rect::new(left, *y, inner, 28);
+            layout.controls.push((place, Control::ColorField(paint)));
+            if self.palette == Some(paint) {
+                layout.popover = Some(place);
             }
-            *y += each + 10;
+            *y += 36;
         };
-        if let Some(index) = self.cropping {
-            heading(layout, &mut y, "Crop");
-            layout.words.push(((left, y), "Drag the corners; Enter or Esc".to_owned(), TEXT_COLOR));
-            y += line + 10;
+        let actions = |list: &[Action]| list.iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect::<Vec<_>>();
+        let layer = |layout: &mut Layout, text: &mut Text, y: &mut i32| {
+            section(layout, y, "Layer", "");
+            chips(layout, text, y, actions(&[Action::Forward, Action::Backward, Action::Duplicate, Action::Delete]));
+        };
+        if self.cropping.is_some() {
+            section(layout, &mut y, "Crop", "");
+            small(layout, &mut y, "Drag the corners, or the picture inside");
             chips(layout, &mut self.text, &mut y, vec![("Done".to_owned(), Control::Action(Action::Crop))]);
-            let _ = index;
-            return;
+            return y;
         }
         let chosen = self.chosen();
         match chosen[..] {
             [] => {
-                heading(layout, &mut y, "Artboard");
+                let name = self.doc.name.clone();
+                section(layout, &mut y, "Frame", &name);
                 let presets = PRESETS.iter().enumerate().map(|(index, (name, ..))| (name.to_string(), Control::Preset(index))).collect();
                 chips(layout, &mut self.text, &mut y, presets);
                 fields(layout, &mut y, &[Field::ArtW, Field::ArtH]);
-                heading(layout, &mut y, "Background");
-                chips(layout, &mut self.text, &mut y, vec![("None".into(), Control::Ground(Ground::None)), ("Color".into(), Control::Ground(Ground::Color)), ("Gradient".into(), Control::Ground(Ground::Gradient)), ("Backdrop".into(), Control::Ground(Ground::Backdrop))]);
+                section(layout, &mut y, "Background", "");
+                chips(layout, &mut self.text, &mut y, vec![("Color".into(), Control::Ground(Ground::Color)), ("Gradient".into(), Control::Ground(Ground::Gradient)), ("Backdrop".into(), Control::Ground(Ground::Backdrop)), ("None".into(), Control::Ground(Ground::None))]);
                 match self.doc.background {
-                    Fill::Color(_) => swatches(layout, &mut y, Paint::Background, false),
+                    Fill::Color(_) => color(layout, &mut y, Paint::Background),
                     Fill::Gradient(..) => {
-                        layout.words.push(((left, y), "From".to_owned(), DIM_TEXT_COLOR));
-                        y += line + 4;
-                        swatches(layout, &mut y, Paint::From, false);
-                        layout.words.push(((left, y), "To".to_owned(), DIM_TEXT_COLOR));
-                        y += line + 4;
-                        swatches(layout, &mut y, Paint::To, false);
+                        color(layout, &mut y, Paint::From);
+                        color(layout, &mut y, Paint::To);
                         fields(layout, &mut y, &[Field::Angle]);
                     }
                     Fill::Backdrop(_) => {
@@ -1083,117 +1477,149 @@ impl Studio {
                     }
                     Fill::None => {}
                 }
-                heading(layout, &mut y, "Export");
+                section(layout, &mut y, "Export", "");
                 chips(layout, &mut self.text, &mut y, (1..=3).map(|times| (format!("{times}\u{d7}"), Control::Scale(times))).collect());
-                chips(layout, &mut self.text, &mut y, [Action::Export, Action::Copy, Action::Save].iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect());
+                chips(layout, &mut self.text, &mut y, actions(&[Action::Export, Action::Copy]));
             }
             [index] => match self.doc.layers[index].kind.clone() {
-                Kind::Picture(_) => {
-                    heading(layout, &mut y, "Picture");
-                    fields(layout, &mut y, &[Field::X, Field::Y]);
+                Kind::Picture(picture) => {
+                    section(layout, &mut y, "Picture", &format!("{} \u{d7} {} px", picture.image.width(), picture.image.height()));
+                    fields(layout, &mut y, &[Field::X, Field::Y, Field::Turn]);
                     fields(layout, &mut y, &[Field::W, Field::H]);
-                    fields(layout, &mut y, &[Field::Turn, Field::Radius]);
-                    fields(layout, &mut y, &[Field::Opacity]);
-                    heading(layout, &mut y, "Shadow");
+                    section(layout, &mut y, "Appearance", "");
+                    fields(layout, &mut y, &[Field::Opacity, Field::Radius]);
+                    chips(layout, &mut self.text, &mut y, actions(&[Action::Crop, Action::FlipAcross, Action::FlipDown, Action::Actual]));
+                    section(layout, &mut y, "Shadow", "");
                     let shadows = (0..=frame::SHADOWS.len()).map(|which| (if which == 0 { "None".to_owned() } else { frame::SHADOWS[which - 1].0.to_owned() }, Control::Shadow(which))).collect();
                     chips(layout, &mut self.text, &mut y, shadows);
-                    heading(layout, &mut y, "Picture");
-                    chips(layout, &mut self.text, &mut y, [Action::Crop, Action::FlipAcross, Action::FlipDown, Action::Actual].iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect());
-                    self.layer_controls(layout, &mut y, &chips, &heading);
+                    layer(layout, &mut self.text, &mut y);
                 }
                 Kind::Shape(shape) => {
-                    heading(layout, &mut y, "Shape");
-                    fields(layout, &mut y, &[Field::X, Field::Y]);
+                    let name = TOOLS.iter().find(|(tool, ..)| *tool == shape.tool).map_or("Shape", |(_, name, _)| name);
+                    section(layout, &mut y, name, "");
+                    if shape.turnable() {
+                        fields(layout, &mut y, &[Field::X, Field::Y, Field::Turn]);
+                    } else {
+                        fields(layout, &mut y, &[Field::X, Field::Y]);
+                    }
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
                         fields(layout, &mut y, &[Field::W, Field::H]);
                     }
+                    section(layout, &mut y, "Appearance", "");
+                    if shape.tool == Tool::Rect {
+                        fields(layout, &mut y, &[Field::Opacity, Field::Radius]);
+                    } else {
+                        fields(layout, &mut y, &[Field::Opacity]);
+                    }
                     match shape.tool {
-                        Tool::Rect => {
-                            fields(layout, &mut y, &[Field::Turn, Field::Radius]);
-                            fields(layout, &mut y, &[Field::Opacity]);
+                        Tool::Rect | Tool::Ellipse => {
+                            section(layout, &mut y, "Fill", "");
+                            color(layout, &mut y, Paint::Fill);
+                            section(layout, &mut y, "Border", "");
+                            color(layout, &mut y, Paint::Line);
+                            chips(layout, &mut self.text, &mut y, STROKES.iter().enumerate().map(|(size, width)| (format!("{width}"), Control::Width(size))).collect());
+                            chips(layout, &mut self.text, &mut y, actions(&[Action::Border, Action::Sketch]));
                         }
-                        _ if shape.turnable() => fields(layout, &mut y, &[Field::Turn, Field::Opacity]),
-                        _ => fields(layout, &mut y, &[Field::Opacity]),
-                    }
-                    let paintable = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
-                    heading(layout, &mut y, if paintable { "Border" } else { "Color" });
-                    swatches(layout, &mut y, Paint::Line, false);
-                    if paintable {
-                        heading(layout, &mut y, "Fill");
-                        swatches(layout, &mut y, Paint::Fill, true);
-                        chips(layout, &mut self.text, &mut y, vec![("Border".into(), Control::Action(Action::Border)), ("Sketch".into(), Control::Action(Action::Sketch))]);
-                    }
-                    match shape.tool {
                         Tool::Text | Tool::Badge => {
-                            heading(layout, &mut y, "Font");
+                            section(layout, &mut y, "Type", "");
+                            color(layout, &mut y, Paint::Line);
                             chips(layout, &mut self.text, &mut y, FACES.iter().enumerate().map(|(face, name)| (name.split(' ').next().unwrap_or(name).to_owned(), Control::Face(face))).collect());
-                            heading(layout, &mut y, "Size");
                             chips(layout, &mut self.text, &mut y, FONT_SIZES.iter().enumerate().map(|(size, px)| (px.to_string(), Control::Width(size))).collect());
                         }
                         _ => {
-                            heading(layout, &mut y, "Width");
+                            section(layout, &mut y, "Stroke", "");
+                            color(layout, &mut y, Paint::Line);
                             chips(layout, &mut self.text, &mut y, STROKES.iter().enumerate().map(|(size, width)| (format!("{width}"), Control::Width(size))).collect());
                         }
                     }
                     if matches!(shape.tool, Tool::Line | Tool::Arrow) {
+                        chips(layout, &mut self.text, &mut y, ["Solid", "Dashed", "Dotted"].iter().enumerate().map(|(kind, name)| (name.to_string(), Control::Line(kind as u8))).collect());
+                        chips(layout, &mut self.text, &mut y, actions(&[Action::Halo, Action::Elbow, Action::Sketch]));
                         let heads = |end: usize| -> Vec<(String, Control)> {
                             let none = shapes::HEADS.len() as u8;
                             [none].into_iter().chain(0..none).map(|style| (if style == none { "None".to_owned() } else { shapes::HEADS[usize::from(style)].to_owned() }, Control::Head(end, style))).collect()
                         };
-                        heading(layout, &mut y, "Start");
+                        section(layout, &mut y, "Ends", "");
+                        small(layout, &mut y, "Start");
                         chips(layout, &mut self.text, &mut y, heads(0));
-                        heading(layout, &mut y, "End");
+                        small(layout, &mut y, "End");
                         chips(layout, &mut self.text, &mut y, heads(1));
-                        heading(layout, &mut y, "Line");
-                        chips(layout, &mut self.text, &mut y, ["Solid", "Dashed", "Dotted"].iter().enumerate().map(|(kind, name)| (name.to_string(), Control::Line(kind as u8))).collect());
-                        chips(layout, &mut self.text, &mut y, [Action::Halo, Action::Elbow, Action::Sketch].iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect());
                     }
-                    self.layer_controls(layout, &mut y, &chips, &heading);
+                    layer(layout, &mut self.text, &mut y);
                 }
             },
             _ => {
-                heading(layout, &mut y, &format!("{} layers", chosen.len()));
+                section(layout, &mut y, &format!("{} layers", chosen.len()), "");
                 fields(layout, &mut y, &[Field::X, Field::Y]);
-                heading(layout, &mut y, "Line up");
+                section(layout, &mut y, "Line up", "");
                 chips(layout, &mut self.text, &mut y, (0..6).map(|way| (Action::Align(way).says().to_owned(), Control::Action(Action::Align(way)))).collect());
-                self.layer_controls(layout, &mut y, &chips, &heading);
+                layer(layout, &mut self.text, &mut y);
             }
         }
+        y
     }
 
-    /// What can be done with any layer: over and under the rest, a copy,
-    /// and away.
-    fn layer_controls(&mut self, layout: &mut Layout, y: &mut i32, chips: &dyn Fn(&mut Layout, &mut Text, &mut i32, Vec<(String, Control)>), heading: &dyn Fn(&mut Layout, &mut i32, &str)) {
-        heading(layout, y, "Layer");
-        let items = [Action::Forward, Action::Backward, Action::Duplicate, Action::Delete].iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect();
-        chips(layout, &mut self.text, y, items);
+    /// The part of the window between the panels and over the toolbar,
+    /// where what is fitted to the view goes.
+    fn open_area(&self) -> Rect {
+        let left = INSET + LEFT_W + INSET;
+        let right = self.width - INSET - RIGHT_W - INSET;
+        Rect::new(left, INSET, (right - left).max(100), (self.height - INSET - DOCK_ROOM).max(100))
     }
 
-    /// The artboard made to fit the view, with room round it.
+    /// The frame worked in made to fit the open part of the window, with
+    /// room round it.
     fn fit(&mut self) {
-        let view = Rect::new(LEFT, TOP, (self.width - LEFT - RIGHT).max(100), (self.height - TOP).max(100));
-        self.zoom = (view.w as f32 * 0.86 / self.doc.width as f32).min(view.h as f32 * 0.86 / self.doc.height as f32).clamp(0.02, 8.0);
-        self.pan = ((view.w as f32 - self.doc.width as f32 * self.zoom) / 2.0, (view.h as f32 - self.doc.height as f32 * self.zoom) / 2.0);
+        let open = self.open_area();
+        let (w, h) = (self.doc.width as f32, self.doc.height as f32);
+        self.zoom = (open.w as f32 * 0.86 / w).min(open.h as f32 * 0.86 / h).clamp(0.02, 8.0);
+        let middle = (open.x as f32 + open.w as f32 / 2.0, open.y as f32 + open.h as f32 / 2.0);
+        self.pan = (middle.0 - (self.doc.x + w / 2.0) * self.zoom, middle.1 - (self.doc.y + h / 2.0) * self.zoom);
         self.dirty = true;
     }
 
     /// Larger or smaller, about a point of the window, which stays over
-    /// the same point of the artboard.
+    /// the same point of the page.
     fn zoom_about(&mut self, times: f32, at: (i32, i32)) {
-        let view = self.layout().view;
-        let before = self.to_doc(at);
+        let before = self.to_page(at);
         self.zoom = (self.zoom * times).clamp(0.02, 16.0);
-        self.pan = ((at.0 - view.x) as f32 - before.0 * self.zoom, (at.1 - view.y) as f32 - before.1 * self.zoom);
+        self.pan = (at.0 as f32 + 0.5 - before.0 * self.zoom, at.1 as f32 + 0.5 - before.1 * self.zoom);
         self.dirty = true;
     }
 
-    /// A point of the window as a point of the artboard, and back.
-    fn to_doc(&self, (x, y): (i32, i32)) -> (f32, f32) {
-        (((x - LEFT) as f32 + 0.5 - self.pan.0) / self.zoom, ((y - TOP) as f32 + 0.5 - self.pan.1) / self.zoom)
+    /// A point of the window as a point of the page, and back.
+    fn to_page(&self, (x, y): (i32, i32)) -> (f32, f32) {
+        ((x as f32 + 0.5 - self.pan.0) / self.zoom, (y as f32 + 0.5 - self.pan.1) / self.zoom)
+    }
+
+    fn to_window_page(&self, (x, y): (f32, f32)) -> (i32, i32) {
+        ((x * self.zoom + self.pan.0).round() as i32, (y * self.zoom + self.pan.1).round() as i32)
+    }
+
+    /// A point of the window as a point of the frame worked in, and back.
+    fn to_doc(&self, at: (i32, i32)) -> (f32, f32) {
+        let (x, y) = self.to_page(at);
+        (x - self.doc.x, y - self.doc.y)
     }
 
     fn to_window(&self, (x, y): (f32, f32)) -> (i32, i32) {
-        ((x * self.zoom + self.pan.0).round() as i32 + LEFT, (y * self.zoom + self.pan.1).round() as i32 + TOP)
+        self.to_window_page((x + self.doc.x, y + self.doc.y))
+    }
+
+    /// Where a frame's name is, over its top left corner, in the window.
+    fn frame_label(&mut self, index: usize) -> (Rect, String) {
+        let frame = self.frame(index);
+        let (name, at) = (frame.name.clone(), (frame.x, frame.y));
+        let corner = self.to_window_page(at);
+        let wide = self.text.width(&name, 12).max(24) + 4;
+        (Rect::new(corner.0, corner.1 - Text::line_height(12) - 4, wide, Text::line_height(12)), name)
+    }
+
+    /// Whether a point of the window is over the page, and not a panel.
+    fn over_page(&self, (x, _): (i32, i32)) -> bool {
+        let left = x < INSET + LEFT_W + INSET;
+        let right = x >= self.width - INSET - RIGHT_W - INSET;
+        !(left || right)
     }
 
     fn chosen(&self) -> Vec<usize> {
@@ -1253,16 +1679,19 @@ impl Studio {
         match self.drag {
             Drag::Pan { .. } => return Cursor::Move,
             Drag::Turn { .. } => return Cursor::Turn,
-            Drag::Draw { .. } | Drag::Marquee { .. } => return Cursor::Crosshair,
+            Drag::Draw { .. } | Drag::Marquee { .. } | Drag::NewFrame { .. } => return Cursor::Crosshair,
+            Drag::MoveFrame { .. } => return Cursor::Move,
             Drag::Scrub { .. } => return Cursor::Across,
             _ => {}
         }
         if self.space {
             return Cursor::Move;
         }
-        let view = Rect::new(LEFT, TOP, self.width - LEFT - RIGHT, self.height - TOP);
-        if !view.contains(self.pointer.0, self.pointer.1) {
+        if !self.over_page(self.pointer) {
             return Cursor::Arrow;
+        }
+        if self.framing {
+            return Cursor::Crosshair;
         }
         match self.tool {
             Tool::Select => Cursor::Arrow,
@@ -1278,13 +1707,26 @@ impl Studio {
         let at = self.to_doc((x, y));
         match self.drag {
             Drag::None => {
-                let hovered = match (self.tool, self.layout().view.contains(x, y)) {
+                let hovered = match (self.tool, self.over_page((x, y)) && !self.framing) {
                     (Tool::Select, true) => self.layer_at(at),
                     _ => None,
                 };
                 self.dirty |= hovered != self.hovered;
                 self.hovered = hovered;
                 self.dirty = true;
+            }
+            Drag::NewFrame { .. } => self.dirty = true,
+            Drag::MoveFrame { from, origin, moved } => {
+                let (dx, dy) = ((x - from.0) as f32 / self.zoom, (y - from.1) as f32 / self.zoom);
+                if !moved && (x - from.0).abs().max((y - from.1).abs()) < 3 {
+                    return;
+                }
+                if !moved {
+                    self.checkpoint();
+                    self.drag = Drag::MoveFrame { from, origin, moved: true };
+                }
+                (self.doc.x, self.doc.y) = ((origin.0 + dx).round(), (origin.1 + dy).round());
+                self.changed();
             }
             Drag::Pan { from, origin } => {
                 self.pan = (origin.0 + (x - from.0) as f32, origin.1 + (y - from.1) as f32);
@@ -1367,13 +1809,18 @@ impl Studio {
 
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
         let at_window = self.pointer;
-        let at = self.to_doc(at_window);
         let double = time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at_window);
         self.dirty = true;
         match button {
             // The wheel: up and down, or with Shift across; with Ctrl,
             // larger and smaller about the pointer.
+            4 | 5 | 6 | 7 if self.pointer.0 >= self.width - INSET - RIGHT_W - INSET => {
+                // Over the panel of properties: that, scrolled.
+                self.scroll = (self.scroll + if button == 4 { -48 } else if button == 5 { 48 } else { 0 }).max(0);
+                return Outcome::Continue;
+            }
+            4 | 5 | 6 | 7 if self.pointer.0 < INSET + LEFT_W + INSET => return Outcome::Continue,
             4 | 5 | 6 | 7 => {
                 let up = matches!(button, 4 | 6);
                 if self.mods.ctrl {
@@ -1397,13 +1844,30 @@ impl Studio {
         }
         let control = self.control_at(at_window);
         if let Some(control) = control {
-            return self.press_control(control, double);
+            let outcome = self.press_control(control, double);
+            // A frame's name on the page is what it is moved by.
+            if let (Control::Frame(_), false, true) = (control, double, self.over_page(at_window)) {
+                self.drag = Drag::MoveFrame { from: at_window, origin: (self.doc.x, self.doc.y), moved: false };
+            }
+            return outcome;
         }
-        // In the view.
+        // On the page.
+        (self.palette, self.flyout) = (None, None);
+        self.commit_name();
         if self.space || self.tool == Tool::Select && self.mods.alt {
             self.drag = Drag::Pan { from: at_window, origin: self.pan };
             return Outcome::Continue;
         }
+        if self.framing {
+            self.drag = Drag::NewFrame { from: self.to_page(at_window) };
+            return Outcome::Continue;
+        }
+        // In another frame, that one worked in.
+        if let Some(frame) = self.frame_at(self.to_page(at_window)).filter(|&frame| frame != self.active && self.cropping.is_none()) {
+            self.activate(frame);
+        }
+        self.frame_picked = false;
+        let at = self.to_doc(at_window);
         if let Some(index) = self.cropping {
             return self.press_crop(index, at);
         }
@@ -1529,7 +1993,46 @@ impl Studio {
     }
 
     fn press_control(&mut self, control: Control, double: bool) -> Outcome {
+        // The colors stay open while colors are picked, and a group's list
+        // while it is picked from; anything else closes them.
+        if !matches!(control, Control::Swatch(..) | Control::ColorField(_)) {
+            self.palette = None;
+        }
+        if !matches!(control, Control::Group(_) | Control::Pick(_)) {
+            self.flyout = None;
+        }
+        if !matches!(control, Control::Page(_) | Control::Frame(_)) {
+            self.commit_name();
+        }
         match control {
+            Control::Home => return Outcome::Home,
+            Control::Page(index) => match double {
+                true => self.renaming = Some((Naming::Page(index), self.pages[index].name.clone())),
+                false => self.go_to_page(index),
+            },
+            Control::NewPage => self.new_page(),
+            Control::Frame(index) => {
+                self.activate(index);
+                (self.frame_picked, self.tool, self.framing) = (true, Tool::Select, false);
+                self.selected.clear();
+                if double {
+                    self.renaming = Some((Naming::Frame, self.doc.name.clone()));
+                }
+            }
+            Control::FrameTool => {
+                self.commit_text();
+                (self.framing, self.tool) = (!self.framing, Tool::Select);
+                self.selected.clear();
+            }
+            Control::Group(group) => self.flyout = if self.flyout == Some(group) { None } else { Some(group) },
+            Control::Pick(tool) => {
+                let group = usize::from(matches!(tool, Tool::Pen | Tool::Marker));
+                self.groups[group] = tool;
+                self.flyout = None;
+                self.set_tool(tool);
+            }
+            Control::Zoom => self.fit(),
+            Control::ColorField(paint) => self.palette = if self.palette == Some(paint) { None } else { Some(paint) },
             Control::Tool(tool) => self.set_tool(tool),
             Control::Layer(index) => {
                 match self.mods.shift {
@@ -1696,9 +2199,7 @@ impl Studio {
         match action {
             Action::Export => self.export(),
             Action::Copy => self.copy(),
-            Action::Save => self.save(),
             Action::Capture => return Outcome::Capture,
-            Action::Fit => self.fit(),
             Action::Crop => {
                 self.cropping = match self.cropping {
                     Some(_) => None,
@@ -1754,7 +2255,10 @@ impl Studio {
     fn set_tool(&mut self, tool: Tool) {
         self.commit_text();
         self.cropping = None;
-        self.tool = tool;
+        (self.tool, self.framing) = (tool, false);
+        if tool != Tool::Select {
+            self.frame_picked = false;
+        }
         if tool != Tool::Select {
             self.selected.clear();
         }
@@ -1765,6 +2269,15 @@ impl Studio {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.dirty = true;
         match drag {
+            // A frame dragged out; a click with the frame tool, one the size
+            // of the one worked in, there.
+            Drag::NewFrame { from } => {
+                let to = self.to_page(self.pointer);
+                let (w, h) = ((to.0 - from.0).abs(), (to.1 - from.1).abs());
+                let size = if w * self.zoom < 4.0 && h * self.zoom < 4.0 { (self.doc.width as f32, self.doc.height as f32) } else { (w, h) };
+                self.new_frame((from.0.min(to.0), from.1.min(to.1)), size);
+                self.framing = false;
+            }
             Drag::Draw { .. } => {
                 let slight = matches!(self.doc.layers.last(), Some(Layer { kind: Kind::Shape(shape), .. }) if shape.is_slight());
                 if slight {
@@ -2169,6 +2682,25 @@ impl Studio {
         }
     }
 
+    /// The name being typed given to what it names; none given, none.
+    fn commit_name(&mut self) {
+        let Some((naming, typed)) = self.renaming.take() else { return };
+        let typed = typed.trim().to_owned();
+        if typed.is_empty() {
+            return;
+        }
+        self.checkpoint();
+        match naming {
+            Naming::Frame => self.doc.name = typed,
+            Naming::Page(page) => {
+                if let Some(page) = self.pages.get_mut(page) {
+                    page.name = typed;
+                }
+            }
+        }
+        self.changed();
+    }
+
     fn commit_text(&mut self) {
         if let Some(index) = self.editing.take() {
             if matches!(&self.doc.layers.get(index), Some(Layer { kind: Kind::Shape(shape), .. }) if shape.is_slight()) {
@@ -2281,8 +2813,7 @@ impl Studio {
     /// fit in it if it is larger, and picked out.
     pub fn add_picture(&mut self, image: Image, name: &str) {
         self.checkpoint();
-        let view = self.layout().view;
-        let middle = self.to_doc(view.center());
+        let middle = self.to_doc(self.open_area().center());
         let image = Arc::new(image);
         let mut picture = Picture::new(image, name.to_owned(), middle);
         let most = (self.doc.width as f32 * 0.9 / picture.w).min(self.doc.height as f32 * 0.9 / picture.h).min(1.0);
@@ -2307,8 +2838,7 @@ impl Studio {
                 }
             } else {
                 self.checkpoint();
-                let view = self.layout().view;
-                let middle = self.to_doc(view.center());
+                let middle = self.to_doc(self.open_area().center());
                 let mut shape = Shape::new(Tool::Text, self.color, STROKES[self.size], middle);
                 (shape.text, shape.font_px, shape.face) = (text, FONT_SIZES[self.size], self.face);
                 self.doc.layers.push(Layer::shape(shape));
@@ -2362,24 +2892,29 @@ impl Studio {
     }
 
     /// The canvas kept in its file, or a new one among the pictures.
-    fn save(&mut self) {
-        let path = match &self.path {
-            Some(path) => path.clone(),
-            None => {
-                let name = format!("{}.hotshot", crate::output::dated(&self.filename).trim_end_matches(".png"));
-                self.dir.join(name)
-            }
-        };
+    /// The file kept where it is kept, or as a new one in Drafts: written
+    /// beside it first and put in its place, so that a file half written
+    /// is never what is there. Said, when `loud`.
+    pub fn save(&mut self, loud: bool) {
+        let path = self.path.clone().unwrap_or_else(|| crate::home::fresh_file(&crate::home::drafts(), "Untitled"));
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match std::fs::write(&path, self.doc.write()) {
+        let beside = path.with_extension("hotshot~");
+        match std::fs::write(&beside, write_pages(&self.gathered())).and_then(|()| std::fs::rename(&beside, &path)) {
             Ok(()) => {
-                self.say(format!("Saved {}", shortened(&path)));
+                if loud {
+                    self.say(format!("Saved {}", shortened(&path)));
+                }
                 (self.path, self.edited) = (Some(path), false);
             }
             Err(error) => self.say(format!("Could not save: {error}")),
         }
+    }
+
+    /// The text it draws with, handed back for the projects to draw with.
+    pub fn into_text(self) -> Text {
+        self.text
     }
 
     // ---- The keys ----
@@ -2392,6 +2927,17 @@ impl Studio {
             return Outcome::Continue;
         }
         if !down {
+            return Outcome::Continue;
+        }
+        // A name being typed.
+        if let Some((_, typed)) = &mut self.renaming {
+            match key {
+                Key::Char(letter) if !mods.ctrl => typed.push(letter),
+                Key::Backspace => drop(typed.pop()),
+                Key::Enter => self.commit_name(),
+                Key::Escape => self.renaming = None,
+                _ => {}
+            }
             return Outcome::Continue;
         }
         // A number being typed into its field.
@@ -2438,25 +2984,25 @@ impl Studio {
             (Key::Char('d'), true) => self.duplicate(),
             (Key::Char('c'), true) => self.copy(),
             (Key::Char('v'), true) => return Outcome::Paste,
-            (Key::Char('s'), true) => self.save(),
+            (Key::Char('s'), true) => self.save(true),
             (Key::Char('e'), true) => self.export(),
             (Key::Char('g'), true) => return Outcome::Capture,
             (Key::Char(']' | '}'), true) => self.restack(true),
             (Key::Char('[' | '{'), true) => self.restack(false),
             (Key::Char('0'), true) => self.fit(),
             (Key::Char('1'), true) => {
-                let view = self.layout().view;
-                let middle = view.center();
+                let middle = self.open_area().center();
                 self.zoom_about(1.0 / self.zoom, middle);
             }
             (Key::Char('=' | '+'), true) => {
-                let middle = self.layout().view.center();
+                let middle = self.open_area().center();
                 self.zoom_about(1.25, middle);
             }
             (Key::Char('-'), true) => {
-                let middle = self.layout().view.center();
+                let middle = self.open_area().center();
                 self.zoom_about(0.8, middle);
             }
+            (Key::Delete | Key::Backspace, _) if self.frame_picked && self.chosen().is_empty() => self.delete_frame(),
             (Key::Delete | Key::Backspace, _) => self.delete(),
             (Key::Escape, _) => {
                 if self.cropping.take().is_none() {
@@ -2496,6 +3042,9 @@ impl Studio {
                 if let Some(&(tool, ..)) = TOOLS.iter().find(|(_, _, key)| key.to_ascii_lowercase().starts_with(letter)) {
                     self.set_tool(tool);
                 }
+                if letter == 'f' {
+                    self.press_control(Control::FrameTool, false);
+                }
                 if letter == 'h' {
                     self.space = !self.space;
                 }
@@ -2508,39 +3057,44 @@ impl Studio {
     fn undo(&mut self) {
         self.commit_text();
         if let Some(before) = self.undo.pop() {
-            self.redo.push(std::mem::replace(&mut self.doc, before));
-            self.selected.retain(|&index| index < self.doc.layers.len());
-            self.cropping = None;
+            let now = self.snapshot();
+            self.redo.push(now);
+            self.restore(before);
             self.changed();
         }
     }
 
     fn redo(&mut self) {
         if let Some(after) = self.redo.pop() {
-            self.undo.push(std::mem::replace(&mut self.doc, after));
-            self.selected.retain(|&index| index < self.doc.layers.len());
+            let now = self.snapshot();
+            self.undo.push(now);
+            self.restore(after);
             self.changed();
         }
     }
 
     // ---- The picture of the window ----
 
-    /// The artboard as it is shown, drawn at the size it is shown at: the
-    /// part of it in the view and as much again round that, so that a
-    /// little panning needs nothing drawn. Drawn again when it changes,
-    /// when the zoom does, or when the view goes past what was drawn.
-    /// Gives where the artboard's corner is in the window, and how large
-    /// it is shown.
-    fn shown_artboard(&mut self, view: Rect) -> ((i32, i32), i32, i32) {
-        let (wide, high) = (((self.doc.width as f32 * self.zoom).round() as i32).max(1), ((self.doc.height as f32 * self.zoom).round() as i32).max(1));
-        let origin = (view.x + self.pan.0.round() as i32, view.y + self.pan.1.round() as i32);
+    /// A frame as it is shown, drawn at the size it is shown at: the part
+    /// of it in the view and as much again round that, so that a little
+    /// panning needs nothing drawn. Drawn again when it changes, when the
+    /// zoom does, or when the view goes past what was drawn. Gives where
+    /// its corner is in the window, and how large it is shown.
+    fn shown_frame(&mut self, index: usize, view: Rect) -> ((i32, i32), i32, i32) {
+        let frame = self.frame(index);
+        let (wide, high) = (((frame.width as f32 * self.zoom).round() as i32).max(1), ((frame.height as f32 * self.zoom).round() as i32).max(1));
+        let origin = self.to_window_page((frame.x, frame.y));
+        let stamp = frame.stamp;
         // What of it is in the view, counted from its corner.
         let seen = view.moved(-origin.0, -origin.1).intersect(Rect::new(0, 0, wide, high));
-        let fresh = self.shown.as_ref().is_some_and(|(version, zoom, part, _)| *version == self.version && *zoom == self.zoom && (seen.is_empty() || part.intersect(seen) == seen));
+        if self.shown.len() < self.frame_count() {
+            self.shown.resize_with(self.frame_count(), || None);
+        }
+        let fresh = self.shown[index].as_ref().is_some_and(|(kept, zoom, part, _)| *kept == stamp && *zoom == self.zoom && (seen.is_empty() || part.intersect(seen) == seen));
         if !fresh && !seen.is_empty() {
             let part = seen.inflate(view.w.max(view.h) / 2).intersect(Rect::new(0, 0, wide, high));
-            let pixels = self.doc.render_part(self.zoom, part, &mut self.text);
-            self.shown = Some((self.version, self.zoom, part, pixels));
+            let pixels = if index == self.active { self.doc.render_part(self.zoom, part, &mut self.text) } else { self.pages[self.page].frames[index].render_part(self.zoom, part, &mut self.text) };
+            self.shown[index] = Some((stamp, self.zoom, part, pixels));
         }
         (origin, wide, high)
     }
@@ -2549,19 +3103,20 @@ impl Studio {
         let (width, height) = (self.width, self.height);
         let layout = self.layout();
         let view = layout.view;
-        let (origin, wide, high) = self.shown_artboard(view);
         out.iter_mut().for_each(|pixel| *pixel = VIEW_COLOR);
-        // The view: dots on its ground, the artboard on that, over light
+        // The page: dots on its ground, the frames on that, each over light
         // squares where it is see-through.
         let dots = 24;
         let (ox, oy) = (self.pan.0.rem_euclid(dots as f32) as i32, self.pan.1.rem_euclid(dots as f32) as i32);
         for y in (view.y + oy..view.bottom()).step_by(dots as usize) {
             for x in (view.x + ox..view.right()).step_by(dots as usize) {
-                out[(y * width + x) as usize] = 0x3A3A3A;
+                out[(y * width + x) as usize] = 0x2E2E2E;
             }
         }
-        let shown = Rect::new(origin.0, origin.1, wide, high).intersect(view);
-        if let Some((_, _, part, pixels)) = &self.shown {
+        for index in 0..self.frame_count() {
+            let (origin, wide, high) = self.shown_frame(index, view);
+            let shown = Rect::new(origin.0, origin.1, wide, high).intersect(view);
+            let Some(Some((_, _, part, pixels))) = self.shown.get(index) else { continue };
             let drawn = part.moved(origin.0, origin.1).intersect(shown);
             for y in drawn.y..drawn.bottom() {
                 let row = &mut out[(y * width + drawn.x) as usize..(y * width + drawn.right()) as usize];
@@ -2575,9 +3130,28 @@ impl Studio {
                 }
             }
         }
-        // What the pointer is over, and what is picked out, with handles.
+        // Each frame's name over its corner; the one worked in, and the one
+        // picked out, lit.
         let mut canvas = Canvas::new(out, width, height);
         canvas.set_clip(view);
+        for index in 0..self.frame_count() {
+            let (place, name) = self.frame_label(index);
+            let color = if index == self.active && self.frame_picked { ACCENT_TEXT } else if index == self.active { TEXT_COLOR } else { DIM_TEXT_COLOR };
+            let name = match &self.renaming {
+                Some((Naming::Frame, typed)) if index == self.active => format!("{typed}|"),
+                _ => name,
+            };
+            self.text.draw(&mut canvas, place.x, place.y, 12, color, &name);
+        }
+        if self.frame_picked {
+            let (a, b) = (self.to_window((0.0, 0.0)), self.to_window((self.doc.width as f32, self.doc.height as f32)));
+            canvas.round_outline(a.0 - 1, a.1 - 1, b.0 - a.0 + 2, b.1 - a.1 + 2, 0, 2, ACCENT);
+        }
+        if let Drag::NewFrame { from } = self.drag {
+            let reach = Rect::spanning(self.to_window_page(from), self.pointer);
+            canvas.round_fill(reach.x, reach.y, reach.w, reach.h, 0, 0xFFFFFF, 30);
+            canvas.round_outline(reach.x, reach.y, reach.w, reach.h, 0, 1, ACCENT);
+        }
         if let Some(index) = self.hovered.filter(|index| !self.selected.contains(index) && *index < self.doc.layers.len()) {
             self.outline(&mut canvas, index, 0x7A93EA);
         }
@@ -2678,127 +3252,265 @@ impl Studio {
     }
 
     fn draw_panels(&mut self, canvas: &mut Canvas, layout: &Layout) {
-        let (width, height) = (self.width, self.height);
-        let px = 13;
+        let px = 12;
         let line_high = Text::line_height(px);
-        canvas.fill(0, 0, width, TOP, PANEL_COLOR);
-        canvas.fill(0, TOP - 1, width, 1, EDGE_COLOR);
-        canvas.fill(0, TOP, LEFT, height - TOP, PANEL_COLOR);
-        canvas.fill(LEFT - 1, TOP, 1, height - TOP, EDGE_COLOR);
-        canvas.fill(width - RIGHT, TOP, RIGHT, height - TOP, PANEL_COLOR);
-        canvas.fill(width - RIGHT, TOP, 1, height - TOP, EDGE_COLOR);
-        // The bar of tools, on a soft shadow.
-        let dock = layout.dock;
-        for grow in (1..=6).rev() {
-            canvas.round_fill(dock.x - grow, dock.y - grow + 3, dock.w + 2 * grow, dock.h + 2 * grow, 12 + grow, 0x000000, 14);
-        }
-        canvas.round_fill(dock.x, dock.y, dock.w, dock.h, 12, PANEL_COLOR, 256);
-        canvas.round_outline(dock.x, dock.y, dock.w, dock.h, 12, 1, EDGE_COLOR);
-        let hover = layout.controls.iter().find(|(rect, control)| rect.contains(self.pointer.0, self.pointer.1) && *control != Control::Panel).map(|(_, control)| *control);
+        let hover = layout.controls.iter().find(|(rect, _)| rect.contains(self.pointer.0, self.pointer.1)).map(|(_, control)| *control).filter(|control| *control != Control::Panel);
         let chosen = self.chosen();
         let shown = self.picked().map(|index| self.doc.layers[index].clone());
-        // The rows of layers first, for their eyes and locks to go over.
-        let rows = layout.controls.iter().filter(|(_, control)| matches!(control, Control::Layer(_)));
-        for &(rect, control) in rows.chain(layout.controls.iter().filter(|(_, control)| !matches!(control, Control::Layer(_)))) {
+        // The panels, and the bar of tools on a soft shadow.
+        for &panel in &layout.panels {
+            canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
+            canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
+        }
+        for place in [Some(layout.dock), layout.flyout, layout.popover].into_iter().flatten() {
+            for grow in (1..=6).rev() {
+                canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 12 + grow, 0x000000, 14);
+            }
+            canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
+            canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);
+        }
+        for rule in &layout.rules {
+            canvas.fill(rule.x + 1, rule.y, rule.w - 2, 1, EDGE_COLOR);
+        }
+        // The group's divider in the bar of tools.
+        let divider = layout.controls.iter().find(|(_, control)| *control == Control::Action(Action::Capture)).map(|(rect, _)| rect.x - 6);
+        if let Some(x) = divider {
+            canvas.fill(x, layout.dock.y + 14, 1, layout.dock.h - 28, HOVER_COLOR);
+        }
+        let tool_icon = |tool: Tool| match tool {
+            Tool::Select => icons::SELECT,
+            Tool::Rect => icons::RECT,
+            Tool::Ellipse => icons::ELLIPSE,
+            Tool::Line => icons::LINE,
+            Tool::Arrow => icons::ARROW,
+            Tool::Pen => icons::PEN,
+            Tool::Marker => icons::MARKER,
+            Tool::Text => icons::TEXT,
+            _ => icons::COUNTER,
+        };
+        let field_text = |text: &mut Text, canvas: &mut Canvas, rect: Rect, label: &str, icon: bool, value: &str, label_color: u32| {
+            let middle = rect.y + rect.h / 2;
+            let at = if icon {
+                text.draw_centered(canvas, rect.x + 15, middle, 14, label_color, label);
+                rect.x + 28
+            } else {
+                text.draw(canvas, rect.x + 9, middle - Text::line_height(11) / 2, 11, label_color, label);
+                rect.x + 16 + text.width(label, 11)
+            };
+            text.draw(canvas, at, middle - line_high / 2, px, TEXT_COLOR, value);
+        };
+        for &(rect, control) in &layout.controls {
             let hovered = hover == Some(control);
+            let (cx, cy) = rect.center();
             match control {
                 Control::Tool(tool) => {
-                    let on = self.tool == tool;
+                    let on = self.tool == tool && !self.framing;
                     if on {
-                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, ACCENT, 256);
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, ACCENT, 256);
                     } else if hovered {
-                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, 0xFFFFFF, 30);
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, HOVER_COLOR, 256);
                     }
-                    let icon = match tool {
-                        Tool::Select => icons::SELECT,
-                        Tool::Rect => icons::RECT,
-                        Tool::Ellipse => icons::ELLIPSE,
-                        Tool::Line => icons::LINE,
-                        Tool::Arrow => icons::ARROW,
-                        Tool::Pen => icons::PEN,
-                        Tool::Marker => icons::MARKER,
-                        Tool::Text => icons::TEXT,
-                        _ => icons::COUNTER,
+                    self.text.draw_centered(canvas, cx, cy, 17, if on { 0xFFFFFF } else { TEXT_COLOR }, tool_icon(tool));
+                }
+                Control::FrameTool => {
+                    if self.framing {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, ACCENT, 256);
+                    } else if hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, HOVER_COLOR, 256);
+                    }
+                    self.text.draw_centered(canvas, cx, cy, 17, if self.framing { 0xFFFFFF } else { TEXT_COLOR }, icons::HASH);
+                }
+                Control::Group(group) => {
+                    let open = self.flyout == Some(group);
+                    self.text.draw_centered(canvas, cx - 2, cy, 10, if open || hovered { TEXT_COLOR } else { DIM_TEXT_COLOR }, icons::DOWN);
+                }
+                Control::Pick(tool) => {
+                    let on = self.tool == tool;
+                    if on || hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
+                    }
+                    self.text.draw_centered(canvas, rect.x + 16, cy, 15, TEXT_COLOR, tool_icon(tool));
+                    if let Some((_, name, key)) = TOOLS.iter().find(|(known, ..)| *known == tool) {
+                        self.text.draw(canvas, rect.x + 34, cy - line_high / 2, px, TEXT_COLOR, name);
+                        let wide = self.text.width(key, px);
+                        self.text.draw(canvas, rect.right() - 10 - wide, cy - line_high / 2, px, DIM_TEXT_COLOR, key);
+                    }
+                }
+                Control::Action(Action::Capture) if rect.y >= layout.dock.y => {
+                    if hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, HOVER_COLOR, 256);
+                    }
+                    self.text.draw_centered(canvas, cx, cy, 17, TEXT_COLOR, icons::CAMERA);
+                }
+                Control::Action(Action::Export) if rect.y < INSET + 50 => {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, if hovered { 0x5472E4 } else { ACCENT }, 256);
+                    self.text.draw_centered(canvas, rect.x + 18, cy, 14, 0xFFFFFF, icons::EXPORT);
+                    self.text.draw(canvas, rect.x + 32, cy - line_high / 2, px, 0xFFFFFF, "Export");
+                }
+                Control::Zoom => {
+                    if hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+                    }
+                    let zoom = format!("{}%", (self.zoom * 100.0).round() as i32);
+                    self.text.draw(canvas, rect.x + 8, cy - line_high / 2, px, TEXT_COLOR, &zoom);
+                    let wide = self.text.width(&zoom, px);
+                    self.text.draw_centered(canvas, rect.x + 18 + wide, cy, 10, DIM_TEXT_COLOR, icons::DOWN);
+                }
+                Control::Home => {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 8, if hovered { 0x5472E4 } else { ACCENT }, 256);
+                    self.text.draw_centered(canvas, cx, cy, 15, 0xFFFFFF, if hovered { icons::HOME } else { icons::CAMERA });
+                }
+                Control::NewPage => {
+                    if hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+                    }
+                    self.text.draw_centered(canvas, cx, cy, 14, TEXT_COLOR, icons::PLUS);
+                }
+                Control::Page(index) => {
+                    let on = index == self.page;
+                    if on || hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
+                    }
+                    self.text.draw_centered(canvas, rect.x + 14, cy, 14, if on { TEXT_COLOR } else { DIM_TEXT_COLOR }, icons::FILE);
+                    let name = match &self.renaming {
+                        Some((Naming::Page(page), typed)) if *page == index => format!("{typed}|"),
+                        _ => self.pages[index].name.clone(),
                     };
-                    let (cx, cy) = rect.center();
-                    self.text.draw_centered(canvas, cx, cy, 16, if on { 0xFFFFFF } else { TEXT_COLOR }, icon);
+                    self.text.draw(canvas, rect.x + 28, cy - line_high / 2, px, TEXT_COLOR, &name);
+                    if on {
+                        let count = format!("{}", self.frame_count());
+                        let wide = self.text.width(&count, 11);
+                        self.text.draw(canvas, rect.right() - 10 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, &count);
+                    }
                 }
-                Control::Action(action) if rect.y < TOP => {
-                    let primary = action == Action::Export;
-                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, if primary { ACCENT } else if hovered { 0x3A3A3A } else { 0x2A2A2A }, 256);
-                    self.text.draw(canvas, rect.x + 10, rect.y + (rect.h - line_high) / 2, px, TEXT_COLOR, action.says());
+                Control::Frame(index) if rect.x < INSET + LEFT_W => {
+                    let on = index == self.active && (self.frame_picked || chosen.is_empty());
+                    if on || hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
+                    }
+                    let open = index == self.active;
+                    self.text.draw_centered(canvas, rect.x + 10, cy, 10, DIM_TEXT_COLOR, if open { icons::DOWN } else { icons::RIGHT });
+                    self.text.draw_centered(canvas, rect.x + 26, cy, 14, TEXT_COLOR, icons::HASH);
+                    let frame = self.frame(index);
+                    let (name, size) = (frame.name.clone(), format!("{} \u{d7} {}", frame.width, frame.height));
+                    let name: String = name.chars().take(16).collect();
+                    self.text.draw(canvas, rect.x + 40, cy - line_high / 2, px, TEXT_COLOR, &name);
+                    let wide = self.text.width(&size, 11);
+                    self.text.draw(canvas, rect.right() - 10 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, &size);
                 }
+                Control::Frame(_) => {}
                 Control::Layer(index) => {
                     let on = chosen.contains(&index);
-                    if on {
-                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, ACCENT, 256);
-                    } else if hovered {
-                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, 0xFFFFFF, 20);
+                    if on || hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
                     }
                     let layer = &self.doc.layers[index];
+                    let icon = match &layer.kind {
+                        Kind::Picture(_) => icons::PICTURE,
+                        Kind::Shape(shape) => match shape.tool {
+                            Tool::Badge => icons::BADGE,
+                            tool => tool_icon(tool),
+                        },
+                    };
                     let (name, faint) = (layer.name(), layer.hidden);
-                    // A small picture of what it is: the picture itself
-                    // in a square, or a mark for a shape.
-                    let icon = Rect::new(rect.x + 6, rect.y + 6, 18, rect.h - 12);
-                    match &layer.kind {
-                        Kind::Picture(_) => {
-                            canvas.round_fill(icon.x, icon.y, icon.w, icon.h, 3, 0xDDDDDD, 256);
-                            canvas.fill(icon.x + 3, icon.y + 5, icon.w - 6, 2, 0x8B8D98);
-                            canvas.fill(icon.x + 3, icon.y + 9, icon.w - 9, 2, 0x8B8D98);
-                        }
-                        Kind::Shape(shape) => canvas.round_fill(icon.x + 3, icon.y + 3, icon.w - 6, icon.h - 6, 3, shape.color, 256),
-                    }
-                    let shortened: String = name.chars().take(18).collect();
-                    self.text.draw(canvas, rect.x + 32, rect.y + (rect.h - line_high) / 2, px, if faint { DIM_TEXT_COLOR } else { TEXT_COLOR }, &shortened);
+                    let ink = if faint { DIM_TEXT_COLOR } else { TEXT_COLOR };
+                    self.text.draw_centered(canvas, rect.x + 12, cy, 14, ink, icon);
+                    let name: String = name.chars().take(18).collect();
+                    self.text.draw(canvas, rect.x + 28, cy - line_high / 2, px, ink, &name);
                 }
                 Control::Eye(index) => {
-                    let (cx, cy) = rect.center();
-                    let on = !self.doc.layers[index].hidden;
-                    canvas.disc(cx, cy, 4, if on { 0xC9CCD3 } else { 0x555555 }, 256);
-                    if !on {
-                        canvas.fill(cx - 6, cy, 12, 1, 0x888888);
+                    let layer = &self.doc.layers[index];
+                    let row_hovered = matches!(hover, Some(Control::Layer(at) | Control::Eye(at) | Control::Lock(at)) if at == index);
+                    if layer.hidden || row_hovered {
+                        self.text.draw_centered(canvas, cx, cy, 14, if layer.hidden { DIM_TEXT_COLOR } else { TEXT_COLOR }, if layer.hidden { icons::EYE_OFF } else { icons::EYE });
                     }
                 }
                 Control::Lock(index) => {
-                    if self.doc.layers[index].locked {
-                        let (cx, cy) = rect.center();
-                        canvas.round_fill(cx - 4, cy - 1, 9, 7, 2, 0xC9CCD3, 256);
-                        canvas.round_outline(cx - 3, cy - 6, 7, 8, 3, 1, 0xC9CCD3);
+                    let layer = &self.doc.layers[index];
+                    let row_hovered = matches!(hover, Some(Control::Layer(at) | Control::Eye(at) | Control::Lock(at)) if at == index);
+                    if layer.locked || row_hovered {
+                        self.text.draw_centered(canvas, cx, cy, 14, if layer.locked { TEXT_COLOR } else { DIM_TEXT_COLOR }, icons::LOCK);
                     }
                 }
                 Control::Field(field) => {
                     let typing = self.typing.as_ref().filter(|(typed, _)| *typed == field).map(|(_, typed)| typed.clone());
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, FIELD_COLOR, 256);
                     if typing.is_some() || hovered {
-                        canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 1, if typing.is_some() { ACCENT } else { 0x444444 });
+                        canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 1, if typing.is_some() { ACCENT } else { 0x555555 });
                     }
-                    let label = field.label();
-                    self.text.draw(canvas, rect.x + 8, rect.y + (rect.h - line_high) / 2, px, DIM_TEXT_COLOR, label);
                     let value = match typing {
                         Some(typed) => format!("{typed}|"),
-                        None => self.field(field).map_or("\u{2014}".to_owned(), |value| format!("{}", value.round() as i32)),
+                        None => self.field(field).map_or("\u{2014}".to_owned(), |value| match field {
+                            Field::Opacity => format!("{}%", value.round() as i32),
+                            Field::Turn | Field::Angle => format!("{}\u{b0}", value.round() as i32),
+                            _ => format!("{}", value.round() as i32),
+                        }),
                     };
-                    let label_w = self.text.width(label, px);
-                    self.text.draw(canvas, rect.x + 16 + label_w, rect.y + (rect.h - line_high) / 2, px, TEXT_COLOR, &value);
+                    let (label, icon) = match field {
+                        Field::Turn | Field::Angle => (icons::ROTATE, true),
+                        Field::Radius => (icons::RADIUS, true),
+                        Field::Opacity => (icons::EYE, true),
+                        other => (other.label(), false),
+                    };
+                    field_text(&mut self.text, canvas, rect, label, icon, &value, DIM_TEXT_COLOR);
+                }
+                Control::ColorField(paint) => {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, FIELD_COLOR, 256);
+                    if hovered || self.palette == Some(paint) {
+                        canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 1, if self.palette == Some(paint) { ACCENT } else { 0x555555 });
+                    }
+                    let now = match (paint, &shown, self.doc.background) {
+                        (Paint::Background, _, Fill::Color(color)) => Some(color),
+                        (Paint::From, _, Fill::Gradient(from, ..)) => Some(from),
+                        (Paint::To, _, Fill::Gradient(_, to, _)) => Some(to),
+                        (Paint::Line, Some(Layer { kind: Kind::Shape(shape), .. }), _) => Some(shape.color),
+                        (Paint::Fill, Some(Layer { kind: Kind::Shape(shape), .. }), _) => shape.filled.then_some(shape.fill),
+                        _ => None,
+                    };
+                    let swatch = Rect::new(rect.x + 7, cy - 8, 16, 16);
+                    match now {
+                        Some(color) => canvas.round_fill(swatch.x, swatch.y, swatch.w, swatch.h, 4, color, 256),
+                        None => {
+                            canvas.round_fill(swatch.x, swatch.y, swatch.w, swatch.h, 4, 0xF2F2F2, 256);
+                            for step in 2..14 {
+                                canvas.fill(swatch.x + step, swatch.bottom() - step - 1, 1, 1, 0xE5484D);
+                            }
+                        }
+                    }
+                    canvas.round_outline(swatch.x, swatch.y, swatch.w, swatch.h, 4, 1, 0x555555);
+                    let says = match (now, paint) {
+                        (Some(color), _) => format!("{color:06X}"),
+                        (None, _) => "None".to_owned(),
+                    };
+                    let label = match paint {
+                        Paint::From => "From",
+                        Paint::To => "To",
+                        _ => "",
+                    };
+                    self.text.draw(canvas, rect.x + 32, cy - line_high / 2, px, TEXT_COLOR, &says);
+                    if !label.is_empty() {
+                        let wide = self.text.width(label, 11);
+                        self.text.draw(canvas, rect.right() - 10 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, label);
+                    }
                 }
                 Control::Swatch(paint, color) => {
-                    let now = match (paint, &shown) {
-                        (Paint::Background, _) => matches!(self.doc.background, Fill::Color(c) if Some(c) == color),
-                        (Paint::From, _) => matches!(self.doc.background, Fill::Gradient(c, ..) if Some(c) == color),
-                        (Paint::To, _) => matches!(self.doc.background, Fill::Gradient(_, c, _) if Some(c) == color),
-                        (Paint::Line, Some(Layer { kind: Kind::Shape(shape), .. })) => Some(shape.color) == color,
-                        (Paint::Fill, Some(Layer { kind: Kind::Shape(shape), .. })) => if shape.filled { Some(shape.fill) == color } else { color.is_none() },
+                    let now = match (paint, &shown, self.doc.background) {
+                        (Paint::Background, _, Fill::Color(c)) => Some(c) == color,
+                        (Paint::From, _, Fill::Gradient(c, ..)) => Some(c) == color,
+                        (Paint::To, _, Fill::Gradient(_, c, _)) => Some(c) == color,
+                        (Paint::Line, Some(Layer { kind: Kind::Shape(shape), .. }), _) => Some(shape.color) == color,
+                        (Paint::Fill, Some(Layer { kind: Kind::Shape(shape), .. }), _) => if shape.filled { Some(shape.fill) == color } else { color.is_none() },
                         _ => false,
                     };
-                    let (cx, cy) = rect.center();
-                    let radius = rect.w / 2 - 3;
-                    canvas.disc(cx, cy, radius + 2, if now { 0xFFFFFF } else { 0x444444 }, 256);
+                    if now || hovered {
+                        canvas.round_outline(rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4, 7, 2, if now { 0xFFFFFF } else { 0x777777 });
+                    }
                     match color {
-                        Some(color) => canvas.disc(cx, cy, radius, color, 256),
+                        Some(color) => canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 5, color, 256),
                         None => {
-                            canvas.disc(cx, cy, radius, 0xF2F2F2, 256);
-                            for step in -radius * 7 / 10..radius * 7 / 10 {
-                                canvas.fill(cx + step - 1, cy - step - 1, 2, 2, 0xE5484D);
+                            canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 5, 0xF2F2F2, 256);
+                            for step in 3..rect.w - 3 {
+                                canvas.fill(rect.x + step, rect.bottom() - step - 1, 2, 2, 0xE5484D);
                             }
                         }
                     }
@@ -2837,40 +3549,39 @@ impl Studio {
                         Control::Action(Action::Crop) => self.cropping.is_some(),
                         _ => false,
                     };
-                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ACCENT } else if hovered { 0x3A3A3A } else { 0x2A2A2A }, 256);
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ACCENT } else if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
                 }
             }
         }
-        for ((x, y), words, color) in &layout.words {
-            self.text.draw(canvas, *x, *y, px, *color, words);
+        for ((x, y), words, color, size) in &layout.words {
+            self.text.draw(canvas, *x, *y, *size, *color, words);
         }
-        // Along the bottom of the view: how large it is shown, and what
-        // was last done.
-        let zoom = format!("{}%", (self.zoom * 100.0).round() as i32);
-        let wide = self.text.width(&zoom, px) + 16;
-        let view = layout.view;
-        canvas.round_fill(view.right() - wide - 10, view.bottom() - 34, wide, 24, 6, PANEL_COLOR, 230);
-        self.text.draw(canvas, view.right() - wide - 2, view.bottom() - 34 + (24 - line_high) / 2, px, TEXT_COLOR, &zoom);
+        for ((x, y), icon, color, size) in &layout.icons {
+            self.text.draw_centered(canvas, *x, *y, *size, *color, icon);
+        }
+        // Over the bar of tools: what was last done, and the name and key
+        // of the button under the pointer.
         if let Some((note, when)) = &self.note {
             if when.elapsed().as_secs_f32() < 3.0 {
                 let note = note.clone();
                 let wide = self.text.width(&note, px) + 24;
-                let (x, y) = (view.x + (view.w - wide) / 2, layout.dock.y - 44);
+                let (x, y) = (layout.dock.x + (layout.dock.w - wide) / 2, layout.dock.y - 44);
                 canvas.round_fill(x, y, wide, 32, 8, 0x000000, 210);
                 self.text.draw(canvas, x + 12, y + (32 - line_high) / 2, px, TEXT_COLOR, &note);
             }
         }
-        // The name of the button under the pointer, and its key.
-        if let Some(Control::Tool(tool)) = hover {
-            if let Some((_, name, key)) = TOOLS.iter().find(|(known, ..)| *known == tool) {
-                let says = format!("{name}  {key}");
-                let wide = self.text.width(&says, px) + 16;
-                let (x, y) = (self.pointer.0 - wide / 2, layout.dock.y - line_high - 16);
-                canvas.round_fill(x.max(4), y, wide, line_high + 8, 6, 0x000000, 220);
-                self.text.draw(canvas, x.max(4) + 8, y + 4, px, TEXT_COLOR, &says);
-            }
+        let says = match hover {
+            Some(Control::Tool(tool)) => TOOLS.iter().find(|(known, ..)| *known == tool).map(|(_, name, key)| format!("{name}  {key}")),
+            Some(Control::FrameTool) => Some("Frame  F".to_owned()),
+            Some(Control::Action(Action::Capture)) if self.pointer.1 >= layout.dock.y => Some("Capture the screen  Ctrl+G".to_owned()),
+            _ => None,
+        };
+        if let (Some(says), None) = (says, self.flyout) {
+            let wide = self.text.width(&says, px) + 16;
+            let (x, y) = (self.pointer.0 - wide / 2, layout.dock.y - line_high - 18);
+            canvas.round_fill(x.max(4), y, wide, line_high + 8, 6, 0x000000, 220);
+            self.text.draw(canvas, x.max(4) + 8, y + 4, px, TEXT_COLOR, &says);
         }
-        let _ = DIM_TEXT_COLOR;
     }
 }
 
@@ -2886,50 +3597,31 @@ fn line(canvas: &mut Canvas, from: (i32, i32), to: (i32, i32), color: u32) {
 
 // ---- The window ----
 
-/// The canvas in a window of its own, until it is closed: with the files
-/// given, a canvas saved before or pictures to put on a new one.
-pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::Result<()> {
-    use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::*;
-    use x11rb::protocol::Event;
-    use x11rb::wrapper::ConnectionExt as _;
+/// What the window shows: the projects, or a file in the canvas.
+enum Shown {
+    Home(crate::home::Home),
+    Studio(Box<Studio>),
+}
 
-    let mut display = crate::x11::Display::open()?;
-    display.prepare()?;
-    let text = Text::load();
-
-    // A canvas from its file; or a new one, the size of the first picture
-    // given, or of the screen's half, with the pictures on it.
-    let mut doc = None;
-    let mut pictures = Vec::new();
-    let mut path = None;
-    for file in files {
-        let bytes = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
-        if let Some(read) = Doc::read(&bytes) {
-            // One the editor handed over is for this once, and is kept
-            // anew where it is saved.
-            if options.forget {
-                let _ = std::fs::remove_file(file);
+/// A file of the canvas from its pages, in a window so large, kept at a
+/// path; with pictures, a new frame round the first of them, on a
+/// backdrop, and them on it.
+fn opened(pages: Option<Vec<Page>>, pictures: Vec<(Image, String)>, path: PathBuf, text: Text, size: (i32, i32), options: &crate::options::Options) -> Studio {
+    let pages = pages.unwrap_or_else(|| {
+        let frame = match pictures.first() {
+            Some((image, _)) => {
+                let mut frame = Doc::new(image.width() + 160, image.height() + 160);
+                frame.background = Fill::Backdrop(frame::named("aurora").unwrap_or(0));
+                frame
             }
-            (doc, path) = (Some(read), (!options.forget).then(|| file.clone()));
-            continue;
-        }
-        let image = Image::open(&bytes).ok_or_else(|| format!("{} is neither a picture nor a canvas", file.display()))?;
-        let name = file.file_stem().map_or("Picture".to_owned(), |stem| stem.to_string_lossy().into_owned());
-        pictures.push((image, name));
-    }
-    let doc = doc.unwrap_or_else(|| match pictures.first() {
-        Some((image, _)) => {
-            let mut doc = Doc::new(image.width() + 160, image.height() + 160);
-            doc.background = Fill::Backdrop(frame::named("aurora").unwrap_or(0));
-            doc
-        }
-        None => Doc::new(1200, 675),
+            None => Doc::new(1200, 675),
+        };
+        vec![Page { name: "Page 1".into(), frames: vec![frame] }]
     });
-    let (width, height) = ((display.width * 4 / 5).clamp(900, 2400), (display.height * 4 / 5).clamp(600, 1600));
-    let dir = options.places.get(0).cloned().unwrap_or_else(|| options.dir.clone());
-    let mut studio = Studio::new(doc, text, width, height, dir, options.filename.clone());
-    studio.path = path;
+    let dir = options.places.first().cloned().unwrap_or_else(|| options.dir.clone());
+    let mut studio = Studio::with_pages(pages, text, size.0, size.1, dir, options.filename.clone());
+    studio.path = Some(path);
+    let fresh = !pictures.is_empty();
     for (index, (image, name)) in pictures.into_iter().enumerate() {
         studio.add_picture(image, &name);
         // Pictures after the first a little down and to the right.
@@ -2939,6 +3631,46 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         }
     }
     (studio.undo, studio.edited) = (Vec::new(), false);
+    if fresh {
+        studio.save(false);
+    }
+    studio
+}
+
+/// The canvas in a window of its own, until it is closed. With no files,
+/// the projects; with a file of the canvas, that; with pictures, a new
+/// file in Drafts with them on it.
+pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::Result<()> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::*;
+    use x11rb::protocol::Event;
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let mut display = crate::x11::Display::open()?;
+    display.prepare()?;
+    let text = Text::load();
+    let (width, height) = ((display.width * 4 / 5).clamp(900, 2400), (display.height * 4 / 5).clamp(600, 1600));
+
+    let mut pages = None;
+    let mut pictures = Vec::new();
+    let mut path = None;
+    for file in files {
+        let bytes = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+        if let Some(read) = read_pages(&bytes) {
+            (pages, path) = (Some(read), Some(file.clone()));
+            continue;
+        }
+        let image = Image::open(&bytes).ok_or_else(|| format!("{} is neither a picture nor a canvas", file.display()))?;
+        let name = file.file_stem().map_or("Picture".to_owned(), |stem| stem.to_string_lossy().into_owned());
+        pictures.push((image, name));
+    }
+    let mut screen = match (pages.is_some(), pictures.is_empty()) {
+        (false, true) => Shown::Home(crate::home::Home::new(text, width, height, options.dir.clone())),
+        _ => {
+            let path = path.unwrap_or_else(|| crate::home::fresh_file(&crate::home::drafts(), "Untitled"));
+            Shown::Studio(Box::new(opened(pages, pictures, path, text, (width, height), options)))
+        }
+    };
 
     let conn = &display.conn;
     let atom = |name: &str| -> crate::x11::Result<Atom> { Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom) };
@@ -2958,6 +3690,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let mut frame = vec![0u32; (width * height) as usize];
     let (mut size, mut title, mut cursor) = ((width, height), String::new(), None::<crate::editor::Cursor>);
     let mut time = 0u32;
+    let mut saved = std::time::Instant::now();
     loop {
         // What has happened: a run of the pointer's movements told as
         // where it last was.
@@ -2965,89 +3698,155 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);
         }
-        let mut outcome = Outcome::Continue;
+        let (mut outcome, mut homeward) = (Outcome::Continue, crate::home::Outcome::Continue);
         let mut motion = None;
+        let moved = |screen: &mut Shown, (x, y, mods): (i32, i32, Mods)| match screen {
+            Shown::Home(home) => home.pointer_moved(x, y),
+            Shown::Studio(studio) => studio.pointer_moved(x, y, mods),
+        };
         for event in events {
             match event {
-                Event::MotionNotify(moved) => motion = Some((i32::from(moved.event_x), i32::from(moved.event_y), crate::x11::mods(moved.state.into()))),
+                Event::MotionNotify(motion_event) => motion = Some((i32::from(motion_event.event_x), i32::from(motion_event.event_y), crate::x11::mods(motion_event.state.into()))),
                 Event::ButtonPress(press) => {
-                    if let Some((x, y, mods)) = motion.take() {
-                        studio.pointer_moved(x, y, mods);
+                    if let Some(at) = motion.take() {
+                        moved(&mut screen, at);
                     }
                     time = press.time;
-                    studio.pointer_moved(i32::from(press.event_x), i32::from(press.event_y), crate::x11::mods(press.state.into()));
-                    outcome = studio.pressed(press.detail, press.time);
+                    moved(&mut screen, (i32::from(press.event_x), i32::from(press.event_y), crate::x11::mods(press.state.into())));
+                    match &mut screen {
+                        Shown::Home(home) => homeward = home.pressed(press.detail, press.time),
+                        Shown::Studio(studio) => outcome = studio.pressed(press.detail, press.time),
+                    }
                 }
                 Event::ButtonRelease(release) if release.detail <= 3 => {
-                    if let Some((x, y, mods)) = motion.take() {
-                        studio.pointer_moved(x, y, mods);
+                    if let Some(at) = motion.take() {
+                        moved(&mut screen, at);
                     }
-                    studio.released();
+                    if let Shown::Studio(studio) = &mut screen {
+                        studio.released();
+                    }
                 }
                 Event::KeyPress(press) | Event::KeyRelease(press) => {
                     let down = event_is_press(&event);
                     let state: u16 = press.state.into();
                     time = press.time;
-                    outcome = studio.key(display.key(press.detail, state), crate::x11::mods(state), down);
+                    let key = display.key(press.detail, state);
+                    match &mut screen {
+                        Shown::Home(home) if down => homeward = home.key(key, crate::x11::mods(state)),
+                        Shown::Home(_) => {}
+                        Shown::Studio(studio) => outcome = studio.key(key, crate::x11::mods(state), down),
+                    }
                 }
-                Event::Expose(_) => studio.dirty = true,
+                Event::Expose(_) => match &mut screen {
+                    Shown::Home(home) => home.resize(size.0, size.1),
+                    Shown::Studio(studio) => studio.dirty = true,
+                },
                 Event::ConfigureNotify(configured) if configured.window == window => {
                     let now = (i32::from(configured.width), i32::from(configured.height));
                     if now != size {
                         size = now;
                         frame = vec![0u32; (now.0 * now.1) as usize];
-                        studio.resize(now.0, now.1);
+                        match &mut screen {
+                            Shown::Home(home) => home.resize(now.0, now.1),
+                            Shown::Studio(studio) => studio.resize(now.0, now.1),
+                        }
                     }
                 }
                 Event::ClientMessage(message) if message.type_ == protocols && message.data.as_data32()[0] == delete => outcome = Outcome::Quit,
                 _ => {}
             }
-            if outcome != Outcome::Continue {
+            if outcome != Outcome::Continue || homeward != crate::home::Outcome::Continue {
                 break;
             }
         }
-        if let Some((x, y, mods)) = motion {
-            studio.pointer_moved(x, y, mods);
+        if let Some(at) = motion {
+            moved(&mut screen, at);
         }
-        match outcome {
-            Outcome::Quit => break,
-            Outcome::Paste => {
-                let picture = selection(conn, window, atom("CLIPBOARD")?, atom("image/png")?, atom("HOTSHOT_CANVAS")?, atom("INCR")?, time);
-                let words = match picture {
-                    Some(_) => None,
-                    None => selection(conn, window, atom("CLIPBOARD")?, utf8, atom("HOTSHOT_CANVAS")?, atom("INCR")?, time).and_then(|bytes| String::from_utf8(bytes).ok()),
-                };
-                studio.pasted(picture, words);
+        // Between the screens: a file opened or begun from the projects,
+        // and the projects again from a file, which is kept first.
+        screen = match (screen, homeward) {
+            (Shown::Home(home), crate::home::Outcome::Open(path)) => {
+                let pages = std::fs::read(&path).ok().and_then(|bytes| read_pages(&bytes));
+                Shown::Studio(Box::new(opened(pages, Vec::new(), path, home.into_text(), size, options)))
             }
-            Outcome::Capture => {
-                // Out of the way, the screen captured by a hotshot of its
-                // own into a file, and the window back.
-                conn.unmap_window(window)?;
-                conn.flush()?;
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                let file = std::env::temp_dir().join(format!("hotshot-canvas-{}.png", std::process::id()));
-                let _ = std::process::Command::new(std::env::current_exe()?).arg("-o").arg(&file).status();
-                conn.map_window(window)?;
-                conn.flush()?;
-                studio.captured(&file);
+            (Shown::Home(home), crate::home::Outcome::New(dir, picture)) => {
+                let pictures: Vec<(Image, String)> = picture.iter().filter_map(|file| Some((Image::open(&std::fs::read(file).ok()?)?, "Capture".to_owned()))).collect();
+                let path = crate::home::fresh_file(&dir, "Untitled");
+                let mut studio = opened(None, pictures, path, home.into_text(), size, options);
+                studio.save(false);
+                Shown::Studio(Box::new(studio))
             }
-            Outcome::Continue => {}
+            (Shown::Home(_), crate::home::Outcome::Quit) => break,
+            (Shown::Studio(mut studio), _) if outcome == Outcome::Home => {
+                studio.save(false);
+                let place = studio.path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf);
+                let mut home = crate::home::Home::new(studio.into_text(), size.0, size.1, options.dir.clone());
+                if let Some(dir) = place.clone().filter(|dir| *dir != crate::home::drafts() && dir.parent() == Some(crate::home::library().as_path())) {
+                    home.place = crate::home::Place::Project(dir);
+                } else if place.is_some() {
+                    home.place = crate::home::Place::Drafts;
+                }
+                Shown::Home(home)
+            }
+            (screen, _) => screen,
+        };
+        if let Shown::Studio(studio) = &mut screen {
+            match outcome {
+                Outcome::Quit => {
+                    studio.save(false);
+                    break;
+                }
+                Outcome::Paste => {
+                    let picture = selection(conn, window, atom("CLIPBOARD")?, atom("image/png")?, atom("HOTSHOT_CANVAS")?, atom("INCR")?, time);
+                    let words = match picture {
+                        Some(_) => None,
+                        None => selection(conn, window, atom("CLIPBOARD")?, utf8, atom("HOTSHOT_CANVAS")?, atom("INCR")?, time).and_then(|bytes| String::from_utf8(bytes).ok()),
+                    };
+                    studio.pasted(picture, words);
+                }
+                Outcome::Capture => {
+                    // Out of the way, the screen captured by a hotshot of
+                    // its own into a file, and the window back.
+                    conn.unmap_window(window)?;
+                    conn.flush()?;
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    let file = std::env::temp_dir().join(format!("hotshot-canvas-{}.png", std::process::id()));
+                    let _ = std::process::Command::new(std::env::current_exe()?).arg("-o").arg(&file).status();
+                    conn.map_window(window)?;
+                    conn.flush()?;
+                    studio.captured(&file);
+                }
+                Outcome::Continue | Outcome::Home => {}
+            }
+            // Kept as it is changed, as Figma keeps its files: once it
+            // has been still a moment.
+            if studio.edited && studio.drag == Drag::None && saved.elapsed().as_secs_f32() > 1.5 {
+                studio.save(false);
+                saved = std::time::Instant::now();
+            }
+        } else if outcome == Outcome::Quit {
+            break;
         }
-        let now = studio.title();
+        let (now, wanted, dirty) = match &mut screen {
+            Shown::Home(home) => (home.title(), home.cursor(), home.take_dirty()),
+            Shown::Studio(studio) => (studio.title(), studio.cursor(), studio.take_dirty()),
+        };
         if now != title {
             conn.change_property8(PropMode::REPLACE, window, AtomEnum::WM_NAME, AtomEnum::STRING, now.as_bytes())?;
             conn.change_property8(PropMode::REPLACE, window, net_name, utf8, now.as_bytes())?;
             title = now;
         }
-        let wanted = studio.cursor();
         if cursor != Some(wanted) {
             if let Some(id) = display.cursor_of(wanted) {
                 conn.change_window_attributes(window, &ChangeWindowAttributesAux::new().cursor(id))?;
             }
             cursor = Some(wanted);
         }
-        if studio.take_dirty() {
-            studio.draw(&mut frame);
+        if dirty {
+            match &mut screen {
+                Shown::Home(home) => home.draw(&mut frame),
+                Shown::Studio(studio) => studio.draw(&mut frame),
+            }
             crate::x11::put(conn, window, gc, false, size.0, size.1, &frame)?;
         }
         conn.flush()?;
@@ -3230,7 +4029,11 @@ mod tests {
         studio.pointer_moved(b.0, b.1, Mods::default());
         studio.released();
         assert_eq!((studio.doc.layers.len(), studio.selected.clone(), studio.tool), (1, vec![0], Tool::Select));
-        // Its fill, from the panel.
+        // Its fill, from the colors its fill opens.
+        let field = studio.layout().controls.iter().find(|(_, control)| *control == Control::ColorField(Paint::Fill)).map(|(rect, _)| rect.center()).expect("its fill is in the panel");
+        studio.pointer_moved(field.0, field.1, Mods::default());
+        studio.pressed(1, 2000);
+        studio.released();
         let swatch = studio.layout().controls.iter().find(|(_, control)| *control == Control::Swatch(Paint::Fill, Some(0xFFE629))).map(|(rect, _)| rect.center()).expect("the fill swatches are up");
         studio.pointer_moved(swatch.0, swatch.1, Mods::default());
         studio.pressed(1, 3000);
@@ -3274,7 +4077,7 @@ mod tests {
         assert_eq!((studio.doc.layers[1].name(), studio.selected.clone()), ("one".to_owned(), vec![1]));
         let mut out = vec![0u32; 1400 * 900];
         studio.draw(&mut out);
-        assert!(out.iter().any(|&pixel| pixel == 0xFF0000) && out[5] == PANEL_COLOR);
+        assert!(out.iter().any(|&pixel| pixel == 0xFF0000) && out[5] == VIEW_COLOR && out[((INSET + 80) * 1400 + INSET + 200) as usize] == PANEL_COLOR);
     }
 
     /// A drag in the view from one point of the artboard to another.
@@ -3340,6 +4143,47 @@ mod tests {
         studio.set_field(Field::X, 500.0);
         let Kind::Shape(after) = studio.doc.layers[1].kind.clone() else { panic!() };
         assert!(after.points[1].0 > arrow.points[1].0 + 100.0, "{:?} then {:?}", arrow.points[1], after.points[1]);
+    }
+
+    #[test]
+    fn pages_and_frames_are_made_worked_in_undone_and_kept() {
+        let mut studio = studio();
+        studio.add_picture(checker(100, 80), "pic");
+        // A frame dragged out beside the first, with the frame tool.
+        (studio.zoom, studio.pan) = (0.5, (300.0, 100.0));
+        studio.press_control(Control::FrameTool, false);
+        let (a, b) = (studio.to_window_page((900.0, 0.0)), studio.to_window_page((1200.0, 400.0)));
+        studio.pointer_moved(a.0, a.1, Mods::default());
+        studio.pressed(1, 1000);
+        studio.pointer_moved(b.0, b.1, Mods::default());
+        studio.released();
+        assert_eq!((studio.frame_count(), studio.active, studio.doc.width, studio.doc.height), (2, 1, 300, 400));
+        assert!((studio.doc.x - 900.0).abs() <= 1.0, "{}", studio.doc.x);
+        assert!(studio.doc.layers.is_empty() && studio.frame_picked);
+        // A click in the first works in it again, with its picture.
+        let inside = studio.to_window_page((50.0, 50.0));
+        studio.pointer_moved(inside.0, inside.1, Mods::default());
+        studio.pressed(1, 5000);
+        studio.released();
+        assert_eq!((studio.active, studio.doc.layers.len()), (0, 1));
+        // A page more, then undone, and done again.
+        studio.press_control(Control::NewPage, false);
+        studio.commit_name();
+        assert_eq!((studio.pages.len(), studio.page), (2, 1));
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert_eq!((studio.pages.len(), studio.page, studio.doc.layers.len()), (1, 0, 1));
+        studio.key(Key::Char('z'), Mods { ctrl: true, shift: true, ..Mods::default() }, true);
+        assert_eq!(studio.pages.len(), 2);
+        // Kept, and read back: every page, every frame, where it was.
+        let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].frames.iter().map(|frame| (frame.name.clone(), frame.x, frame.width)).collect::<Vec<_>>(), [("Frame 1".to_owned(), 0.0, 800), ("Frame 2".to_owned(), studio.pages[0].frames[1].x, 300)]);
+        assert_eq!(back[0].frames[0].layers.len(), 1);
+        // A file from before pages is one page with its one frame.
+        let old = studio.doc.write();
+        let old = [OLD_MAGIC.as_bytes(), &old[old.iter().position(|&byte| byte == b'\n').unwrap()..]].concat();
+        let old: Vec<u8> = String::from_utf8_lossy(&old).lines().filter(|line| !line.starts_with("page ") && !line.starts_with("frame ")).collect::<Vec<_>>().join("\n").into_bytes();
+        assert_eq!(read_pages(&old).map(|pages| (pages.len(), pages[0].frames.len())), Some((1, 1)));
     }
 
     #[test]

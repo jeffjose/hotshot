@@ -42,7 +42,8 @@ What to take:
                              was drawn on it still to be moved and changed
   -e, --edit                 with any of those: open with that area selected,
                              to be drawn on, rather than taking it at once;
-                             by itself, or with files, the same as --canvas
+                             by itself, your projects; with files, the
+                             same as --canvas
   -D, --delay SEC            wait before freezing the screen
 
 What to do with it:
@@ -91,7 +92,8 @@ and there is no line, button or keys):
   -c                         with --record: the file on the clipboard
 
 Making a picture of pictures:
-      --canvas [FILE...]     a window to make one in, as in Figma: pictures
+      --canvas [FILE...]     a window to make one in, as in Figma: files of
+                             pages and frames, kept as you work; pictures
                              from files, the clipboard (Ctrl+V) or the
                              screen (Capture), moved, sized, turned,
                              cropped (double click), rounded and

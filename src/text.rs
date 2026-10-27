@@ -42,6 +42,23 @@ pub mod icons {
     pub const FORWARD: &str = "\u{e01f}";
     pub const BACKWARD: &str = "\u{e020}";
     pub const DUPLICATE: &str = "\u{e023}";
+    pub const FOLDER: &str = "\u{e014}";
+    pub const CAMERA: &str = "\u{e030}";
+    pub const HASH: &str = "\u{e031}";
+    pub const PLUS: &str = "\u{e032}";
+    pub const EYE: &str = "\u{e033}";
+    pub const EYE_OFF: &str = "\u{e034}";
+    pub const LOCK: &str = "\u{e035}";
+    pub const FILE: &str = "\u{e036}";
+    pub const PICTURE: &str = "\u{e037}";
+    pub const FOLDER_OPEN: &str = "\u{e038}";
+    pub const HOME: &str = "\u{e039}";
+    pub const CLOCK: &str = "\u{e03a}";
+    pub const DRAFTS: &str = "\u{e03b}";
+    pub const EXPORT: &str = "\u{e03d}";
+    pub const ROTATE: &str = "\u{e03f}";
+    pub const RADIUS: &str = "\u{e040}";
+    pub const RIGHT: &str = "\u{e043}";
 }
 
 const FONT_PATHS: &[&str] = &[
