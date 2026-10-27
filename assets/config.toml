@@ -90,6 +90,9 @@
 # sizes ("2xs", "xs", "sm", "md", "lg", "xl", "2xl"), or CSS's
 # box-shadow, in quotes, as "0 10px 15px -3px rgb(0 0 0 / 0.1)".
 # shadow = false
+# A window round the picture, inside the frame: "browser", "mac",
+# "terminal", "desktop" or "none". Its bar is dark over a dark picture.
+# window-frame = "none"
 
 # How things are drawn to begin with: how opaque, in percent; lines and
 # arrows in dashes; which ends of an arrow have heads ("end", "start",

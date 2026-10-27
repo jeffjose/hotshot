@@ -126,6 +126,8 @@ Look:
                              (sans, the default), instrument-serif (serif),
                              architects-daughter (hand), fira-code (mono)
                              or anton (impact), which is for captions
+      --window-frame KIND    show the picture in a window: browser, mac,
+                             terminal or desktop; none, the usual
       --backdrop NAME        set the picture on a backdrop: aurora, orchid,
                              sorbet, glacier, dusk, graphite or any other
                              of the forty the box of them names (W, then
@@ -415,7 +417,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -559,6 +561,15 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
                 "both" => [true, true],
                 _ => return Err(format!("invalid arrow heads '{text}', expected end, start or both")),
             };
+        }
+        "window-frame" => {
+            let text = value()?;
+            let wanted = text.to_ascii_lowercase();
+            options.settings.frame.window = frame::WINDOWS
+                .iter()
+                .find(|(window, name)| name.to_ascii_lowercase().starts_with(&wanted) || (wanted == "none" && *window == frame::Window::None))
+                .map(|(window, _)| *window)
+                .ok_or(format!("invalid window '{text}', expected browser, mac, terminal, desktop or none"))?;
         }
         "zoom" => {
             let text = value()?;
@@ -997,6 +1008,9 @@ mod tests {
         assert!(!options.settings.magnifier);
         assert_eq!((options.settings.size, options.settings.accent, options.settings.color), (2, 0x12A594, 0x00FF00));
         assert_eq!(options.settings.windows, Windows::Outline);
+        read_config(&mut options, "window-frame = \"terminal\"").unwrap();
+        assert_eq!(options.settings.frame.window, frame::Window::Terminal);
+        assert!(read_config(&mut options, "window-frame = \"tv\"").is_err());
         read_config(&mut options, "windows = \"bright\"").unwrap();
         assert_eq!(options.settings.windows, Windows::Bright);
         assert!(read_config(&mut options, "windows = \"dim\"").is_err());

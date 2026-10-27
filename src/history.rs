@@ -169,7 +169,7 @@ fn read_line(line: &str) -> Option<Taken> {
         "1" => Shadow::named(frame::SHADOW)?,
         said => Shadow::parse(&said.replace('_', " ")).ok()?,
     };
-    let frame = Frame { backdrop, pad: (number(across)?, number(down)?), radius: number(radius)?, shadow };
+    let frame = Frame { backdrop, pad: (number(across)?, number(down)?), radius: number(radius)?, shadow, ..Frame::default() };
     let recipe = Recipe { area, corners: corners.parse().ok()?, frame, pointer: pointer == "1", photo };
     Some(Taken { name: name.into(), when: when.parse().ok()?, recipe })
 }
@@ -293,7 +293,7 @@ mod tests {
     use super::*;
 
     fn recipe(x: i32, corners: f32) -> Recipe {
-        Recipe { area: Rect::new(x, 20, 300, 200), corners, frame: Frame { backdrop: Backdrop::Gradient(frame::named("dusk").unwrap()), pad: (64, 40), radius: 12, shadow: Shadow::named("lg").unwrap() }, pointer: true, photo: None }
+        Recipe { area: Rect::new(x, 20, 300, 200), corners, frame: Frame { backdrop: Backdrop::Gradient(frame::named("dusk").unwrap()), pad: (64, 40), radius: 12, shadow: Shadow::named("lg").unwrap(), ..Frame::default() }, pointer: true, photo: None }
     }
 
     #[test]

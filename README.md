@@ -68,18 +68,22 @@ the whole screen. Then:
 | `B` | blur |
 | `S` | spotlight |
 | `Z` | zoom lens |
-| `J` `E` | badges (twelve styles, any color), emoji |
-| `W` | frame: one of forty backdrops, with padding and a shadow |
+| `J` `E` | the library: labels, status dots, key caps, tooltips, sticky notes, pins and the rest; and emoji, all searchable |
+| `W` | frame: one of forty backdrops, with padding, a shadow, and a browser, Mac, terminal or desktop window round the picture |
 | `M` | show or hide the mouse pointer in the screenshot |
 | `C` `I` | colors, color picker |
 | `F` | fill a rectangle or oval, or not |
 | `1`-`4` | line width and text size |
 
 Shapes stay editable: select one and a small bar appears above it with
-what you can change about it (color, width, font and text style, arrow
-heads, dashes) and buttons to bring it forward or send it backward
-(Shift-click for all the way), duplicate it or delete it. Rectangles
-and ovals have a border and a fill, each in its own color or none. With
+what you can change about it (color, width, font and text style) and
+buttons to bring it forward or send it backward (Shift-click for all the
+way), duplicate it or delete it. Rectangles and ovals have a border and
+a fill, each in its own color or none. An arrow is made of parts: a head
+at either end (filled, open, hollow, dot, ring, diamond, bar or none), a
+straight or elbow path, and a solid, dashed or dotted line, with a white
+edge for busy pictures. Boxes, ovals and arrows can be sketched, drawn
+by hand. With
 a tool in hand and nothing selected, the same bar sits above the main
 one, for how the next shape is drawn. The keys work too: `Ctrl+D`
 duplicates, and `Ctrl+]` and `Ctrl+[` move a shape above or below

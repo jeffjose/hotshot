@@ -368,8 +368,34 @@ pub enum Backdrop {
     Photo,
 }
 
-/// How the picture is set: on what, with how much room, and whether
-/// with a shadow.
+/// A window the picture is shown in, within its frame: the bar such a
+/// window has over what is in it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Window {
+    #[default]
+    None,
+    /// The three lights, and an address in a pill in the middle.
+    Browser,
+    /// The three lights alone.
+    Mac,
+    /// Dark, whatever the picture: a terminal that lost its own.
+    Terminal,
+    /// Three buttons at the right, the way most desktops draw them.
+    Desktop,
+}
+
+/// The windows there are, by what each is called.
+pub const WINDOWS: [(Window, &str); 5] = [(Window::None, "No window"), (Window::Browser, "Browser"), (Window::Mac, "Mac window"), (Window::Terminal, "Terminal"), (Window::Desktop, "Desktop window")];
+
+impl Window {
+    /// How tall its bar is, at a scale.
+    pub fn bar(self, scale: f32) -> i32 {
+        if self == Window::None { 0 } else { (30.0 * scale).round() as i32 }
+    }
+}
+
+/// How the picture is set: on what, with how much room, whether with a
+/// shadow, and in what window.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Frame {
     pub backdrop: Backdrop,
@@ -379,21 +405,25 @@ pub struct Frame {
     /// How round the corners of the whole are, in the same pixels.
     pub radius: i32,
     pub shadow: Shadow,
+    pub window: Window,
 }
 
 impl Frame {
     /// Whether it does anything at all to the picture.
     pub fn is_plain(&self) -> bool {
-        self.backdrop == Backdrop::None && self.pad == (0, 0) && !self.shadow.on()
+        self.backdrop == Backdrop::None && self.pad == (0, 0) && !self.shadow.on() && self.window == Window::None
     }
 
     /// The room beside the picture, and above and below it, in pixels
     /// at a scale. A shadow has to have somewhere to fall, whatever the
-    /// room asked for.
+    /// room asked for; and a window's bar, which goes in the room over
+    /// the picture, room to be in.
     pub fn room(&self, scale: f32) -> (i32, i32) {
         let reach = self.shadow.reach();
         let asked = |pad: i32, least: f32| ((pad.max(0) as f32 * scale).round() as i32).max((least * scale).ceil() as i32);
-        (asked(self.pad.0, reach.0), asked(self.pad.1, reach.1))
+        let bar = self.window.bar(scale);
+        let top = if bar > 0 { bar + (12.0 * scale).round() as i32 } else { 0 };
+        (asked(self.pad.0, reach.0), asked(self.pad.1, reach.1).max(top))
     }
 
     /// Whether what it makes is see-through anywhere: with nothing
@@ -419,7 +449,15 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
     let (wide, high) = (width + 2 * room.0, height + 2 * room.1);
     let outer = ((frame.radius.max(0) as f32 * scale).round()).min(wide.min(high) as f32 / 2.0);
     let mut out = vec![0u32; (wide * high) as usize];
-    let (half_w, half_h, radius) = (width as f32 / 2.0, height as f32 / 2.0, (round as f32).max(2.0 * scale));
+    let radius = (round as f32).max(2.0 * scale);
+    // In a window, its bar is over the picture, in the room there; and the
+    // shadow and the rounding of the corners are the window's, bar and all.
+    // Its bar is dark over a dark picture, as an app in dark mode has it.
+    let bar = frame.window.bar(scale);
+    let corner = if bar > 0 { radius.max(10.0 * scale) } else { radius };
+    let (box_x, box_y, box_w, box_h) = (room.0 as f32, (room.1 - bar) as f32, width as f32, (height + bar) as f32);
+    let (half_w, half_h) = (box_w / 2.0, box_h / 2.0);
+    let dark = frame.window == Window::Terminal || (bar > 0 && darkish(picture, width, height));
     out.par_chunks_mut(wide as usize).enumerate().for_each(|(y, row)| {
         let y = y as i32;
         for (x, pixel) in row.iter_mut().enumerate() {
@@ -448,7 +486,7 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
             for layer in frame.shadow.layers().iter().rev() {
                 let (dx, dy, grow) = (f32::from(layer.x) * scale, f32::from(layer.y) * scale, f32::from(layer.spread) * scale);
                 let (wide_half, high_half) = ((half_w + grow).max(0.0), (half_h + grow).max(0.0));
-                let away = round_box(x as f32 + 0.5 - room.0 as f32 - half_w - dx, y as f32 + 0.5 - room.1 as f32 - half_h - dy, wide_half, high_half, (radius + grow).clamp(0.0, wide_half.min(high_half)));
+                let away = round_box(x as f32 + 0.5 - box_x - half_w - dx, y as f32 + 0.5 - box_y - half_h - dy, wide_half, high_half, (corner + grow).clamp(0.0, wide_half.min(high_half)));
                 let deviation = f32::from(layer.blur.max(0)) * scale / 2.0;
                 let near = if deviation < 0.5 { (0.5 - away).clamp(0.0, 1.0) } else { 0.5 * (1.0 - erf(away / (deviation * std::f32::consts::SQRT_2))) };
                 let alpha = near * (layer.color >> 24) as f32 / 255.0;
@@ -468,11 +506,23 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
                     None => (whole(cast.map(|part| part / cover)), (cover * 255.0).round() as u32),
                 };
             }
-            // And the picture over it, where the pixel is in it.
+            // And the picture over it, where the pixel is in it; or the
+            // window's bar. In a window, nothing of either outside the
+            // curve of its corners.
             let (px, py) = (x - room.0, y - room.1);
-            if px >= 0 && py >= 0 && px < width && py < height {
-                let over = picture[(py * width + px) as usize];
-                let cover = over >> 24;
+            let shown = if px >= 0 && py >= 0 && px < width && py < height {
+                Some(picture[(py * width + px) as usize])
+            } else if bar > 0 && px >= 0 && px < width && py < 0 && py >= -bar {
+                Some(0xFF00_0000 | window_bar(frame.window, dark, px as f32 + 0.5, (py + bar) as f32 + 0.5, width as f32, bar as f32, scale))
+            } else {
+                None
+            };
+            if let Some(over) = shown {
+                let mut cover = over >> 24;
+                if bar > 0 {
+                    let inside = round_box(x as f32 + 0.5 - box_x - half_w, y as f32 + 0.5 - box_y - half_h, half_w, half_h, corner);
+                    cover = (cover as f32 * (0.5 - inside).clamp(0.0, 1.0)) as u32;
+                }
                 color = mix(color, over & 0xFF_FFFF, cover + (cover >> 7));
                 opaque = opaque + (255 - opaque) * cover / 255;
             }
@@ -486,6 +536,64 @@ pub fn set(frame: Frame, picture: &[u32], width: i32, height: i32, round: i32, s
         }
     });
     (wide, high, out)
+}
+
+/// Whether a picture is dark along its top, where a window's bar would
+/// meet it: a few hundred of its pixels looked at.
+fn darkish(picture: &[u32], width: i32, height: i32) -> bool {
+    let rows = height.clamp(1, 24);
+    let step = ((width * rows) / 300).max(1) as usize;
+    let looked: Vec<u32> = picture[..(width * rows) as usize].iter().step_by(step).map(|pixel| ((pixel >> 16 & 0xFF) * 3 + (pixel >> 8 & 0xFF) * 6 + (pixel & 0xFF)) / 10).collect();
+    looked.iter().sum::<u32>() < 110 * looked.len().max(1) as u32
+}
+
+/// A pixel of a window's bar, `x` along it and `y` down it, of a bar so
+/// wide and tall: its ground, and on it the three lights at its left, an
+/// address in a pill, or three buttons at its right.
+fn window_bar(window: Window, dark: bool, x: f32, y: f32, wide: f32, high: f32, scale: f32) -> u32 {
+    let ground = if dark { 0x2B2D31 } else { 0xE8E9EC };
+    let middle = high / 2.0;
+    // Something round, or a line, drawn smooth: how much of the pixel it
+    // covers, from how far the pixel is from its edge.
+    let mut color = ground;
+    let mut over = |away: f32, ink: u32| {
+        let cover = (0.5 - away).clamp(0.0, 1.0);
+        if cover > 0.0 {
+            color = mix(color, ink, (cover * 256.0) as u32);
+        }
+    };
+    let dot = |cx: f32| (x - cx).hypot(y - middle) - 6.0 * scale;
+    match window {
+        Window::Browser | Window::Mac | Window::Terminal => {
+            for (at, light) in [(16.0, 0xFF5F57), (36.0, 0xFEBC2E), (56.0, 0x28C840)] {
+                over(dot(at * scale), light);
+            }
+            if window == Window::Browser {
+                // The address: a pill as wide as half the window, at most,
+                // in its middle, with a faint line for what is typed in it.
+                let half = (wide * 0.25).min(240.0 * scale).max(40.0 * scale);
+                let pill = round_box(x - wide / 2.0, y - middle, half, high * 0.3, high * 0.3);
+                over(pill, if dark { 0x3A3C42 } else { 0xFFFFFF });
+                let typed = round_box(x - wide / 2.0, y - middle, (half * 0.45).max(12.0 * scale), 2.0 * scale, 2.0 * scale);
+                over(typed, if dark { 0x6E7079 } else { 0xC2C4CC });
+            }
+        }
+        Window::Desktop => {
+            let ink = if dark { 0xC9CCD3 } else { 0x4A4D57 };
+            let size = 5.0 * scale;
+            let (close, grow, shrink) = (wide - 22.0 * scale, wide - 56.0 * scale, wide - 90.0 * scale);
+            let line = |from: (f32, f32), to: (f32, f32)| {
+                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                let along = (((x - from.0) * dx + (y - from.1) * dy) / (dx * dx + dy * dy).max(1e-3)).clamp(0.0, 1.0);
+                (x - from.0 - dx * along).hypot(y - from.1 - dy * along) - 0.7 * scale
+            };
+            over(line((close - size, middle - size), (close + size, middle + size)).min(line((close + size, middle - size), (close - size, middle + size))), ink);
+            over((round_box(x - grow, y - middle, size, size, 0.0).abs()) - 0.7 * scale, ink);
+            over(line((shrink - size, middle), (shrink + size, middle)), ink);
+        }
+        Window::None => {}
+    }
+    color
 }
 
 /// A photograph from a file: a PNG or a JPEG.
@@ -537,6 +645,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_window_has_its_bar_over_the_picture_light_or_dark_by_the_picture() {
+        let (width, height) = (300, 200);
+        let light = vec![0xFFF0F0F0u32; (width * height) as usize];
+        let frame = Frame { pad: (40, 50), window: Window::Browser, ..Frame::default() };
+        let (wide, high, out) = set(frame, &light, width, height, 0, 1.0, None);
+        assert_eq!((wide, high), (width + 80, height + 100));
+        // The bar is right over the picture: its ground, its lights at
+        // the left, and the address in the middle.
+        let at = |x: i32, y: i32| out[(y * wide + x) as usize] & 0xFF_FFFF;
+        assert_eq!(at(40 + 100, 50 - 25), 0xE8E9EC);
+        assert_eq!(at(40 + 16, 50 - 15), 0xFF5F57);
+        assert_eq!(at(40 + 200, 50 - 15), 0xFFFFFF);
+        assert_eq!(out[(10 * wide + 10) as usize] >> 24, 0, "nothing behind it but the window");
+        // Over a dark picture, a dark bar; and a terminal is dark anyway.
+        let dark = vec![0xFF101010u32; (width * height) as usize];
+        let (_, _, out) = set(frame, &dark, width, height, 0, 1.0, None);
+        assert_eq!(out[((50 - 25) * wide + 140) as usize] & 0xFF_FFFF, 0x2B2D31);
+        let (_, _, out) = set(Frame { window: Window::Terminal, ..frame }, &light, width, height, 0, 1.0, None);
+        assert_eq!(out[((50 - 25) * wide + 140) as usize] & 0xFF_FFFF, 0x2B2D31);
+        // With no room asked for, the bar makes its own.
+        assert!(Frame { window: Window::Mac, ..Frame::default() }.room(1.0).1 >= 30);
+    }
+
+    #[test]
     fn a_plain_frame_is_the_picture_and_a_backdrop_is_all_round_it() {
         let picture = vec![0xFF11_2233u32; 4 * 2];
         let (wide, high, plain) = set(Frame::default(), &picture, 4, 2, 0, 1.0, None);
@@ -544,7 +676,7 @@ mod tests {
         assert!(Frame::default().is_plain());
 
         let slate = named("slate").unwrap();
-        let frame = Frame { backdrop: Backdrop::Gradient(slate), pad: (PADS[1], PADS[1]), radius: 0, shadow: Shadow::NONE };
+        let frame = Frame { backdrop: Backdrop::Gradient(slate), pad: (PADS[1], PADS[1]), radius: 0, shadow: Shadow::NONE, window: Window::None };
         let (wide, high, framed) = set(frame, &picture, 4, 2, 0, 1.0, None);
         assert_eq!((wide, high), (4 + 64, 2 + 64));
         // Opaque everywhere; the picture in the middle of it, and at
@@ -570,7 +702,7 @@ mod tests {
         // Tailwind's 2xl: 25 down, 50 blurred, 12 drawn in all round,
         // so that beside the picture it is all but gone, and under it
         // reaches 25 - 12 + 75 out.
-        let frame = Frame { backdrop: Backdrop::None, pad: (0, 0), radius: 0, shadow: Shadow::named("2xl").unwrap() };
+        let frame = Frame { backdrop: Backdrop::None, pad: (0, 0), radius: 0, shadow: Shadow::named("2xl").unwrap(), window: Window::None };
         let (wide, high, framed) = set(frame, &picture, 200, 100, 8, 1.0, None);
         let room = frame.room(1.0);
         assert_eq!((room, wide, high), ((63, 88), 200 + 2 * 63, 100 + 2 * 88));

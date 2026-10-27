@@ -268,7 +268,7 @@ enum Button {
     Cancel,
     Save,
     Copy,
-    /// The badges and stickers there are to put on the picture.
+    /// The library: labels, notes and emoji to put on the picture.
     Badges,
     /// What the picture is set on, and how.
     Frame,
@@ -279,16 +279,53 @@ enum Button {
     Record,
     /// Which folder Save saves to.
     Places,
-    /// Every emoji there is, to be searched and put on the picture.
+    /// The library opened on its emoji, which E opens it on. It has no
+    /// button of its own.
     Emoji,
 }
 
-/// What a badge says when it is put on the picture, to be typed over
-/// there and then; and how many of its looks the box of them has to a
-/// row. A badge is a look, chosen from that box, in the color in hand:
-/// which the box of colors changes, as it does any shape's.
+/// What a label says when it is put on the picture, to be typed over
+/// there and then. A badge is a look, chosen from the library, in the
+/// color in hand or its own: which the box of colors changes, as it does
+/// any shape's.
 const BADGE_SAYS: &str = "Label";
-const BADGE_ACROSS: i32 = 4;
+
+/// What the library has besides emoji, shelf by shelf: each a look of a
+/// badge, the shelf it is on, what it says when it is put down, to be
+/// typed over, and the color it comes in, or none for the color in hand.
+/// The plain ones first, and the twelve with a finish after them.
+const LIBRARY: [(usize, u8, &str, Option<u32>); 26] = [
+    (12, 0, "Live", Some(0x30A46C)),
+    (13, 0, "Do", Some(0x30A46C)),
+    (14, 0, "Don't", Some(0xE5484D)),
+    (15, 0, "#1284", Some(0x8D8D8D)),
+    (16, 0, "Ctrl", None),
+    (25, 0, "Ctrl", None),
+    (17, 0, "P0", Some(0xE5484D)),
+    (24, 0, "4", Some(0xE5484D)),
+    (0, 0, BADGE_SAYS, None),
+    (1, 0, BADGE_SAYS, None),
+    (2, 0, BADGE_SAYS, None),
+    (3, 0, BADGE_SAYS, None),
+    (4, 0, BADGE_SAYS, None),
+    (5, 0, BADGE_SAYS, None),
+    (6, 0, BADGE_SAYS, None),
+    (7, 0, BADGE_SAYS, None),
+    (8, 0, BADGE_SAYS, None),
+    (9, 0, BADGE_SAYS, None),
+    (10, 0, BADGE_SAYS, None),
+    (11, 0, BADGE_SAYS, None),
+    (18, 1, "Opens in a new tab", Some(0x1C2024)),
+    (19, 1, "Use 8 or more characters", Some(0xE5484D)),
+    (20, 1, "cargo build", None),
+    (21, 1, "Heads up", None),
+    (22, 1, "Ask about this", Some(0xFFE629)),
+    (23, 1, "Why does this say 0?", Some(0xFFFFFF)),
+];
+
+/// The library's shelves, down its side.
+const SHELVES: [&str; 3] = ["Labels", "Notes", "Emoji"];
+const EMOJI_SHELF: u8 = 2;
 
 /// The emoji there are to put on it, as stickers.
 fn emoji() -> &'static [(&'static str, &'static str)] {
@@ -298,7 +335,7 @@ fn emoji() -> &'static [(&'static str, &'static str)] {
 
 /// How many emoji there are across the box they are chosen from, and
 /// how many rows of them show at once.
-const EMOJI_ACROSS: i32 = 10;
+const EMOJI_ACROSS: i32 = 12;
 const EMOJI_DOWN: i32 = 7;
 
 /// What the lines are drawn in that say where the selection lines up
@@ -313,8 +350,11 @@ const BACKDROP_KINDS: [(&str, usize); 3] = [("Mesh", 16), ("Gradient", 16), ("Pl
 /// A thing to be chosen in a box that hangs from the bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Cell {
-    /// A badge in one of its looks.
+    /// One of the things in the library that are badges, by where it is
+    /// in `LIBRARY`.
     Badge(usize),
+    /// One of the library's shelves.
+    Shelf(u8),
     /// An emoji: which of those the search has found.
     Emoji(usize),
     /// One of the widths of line, or sizes of text.
@@ -339,6 +379,9 @@ enum Cell {
     Shade(usize),
     /// One of the folders Save can save to.
     Place(usize),
+    /// One of the windows the picture can be in, by where it is in
+    /// `frame::WINDOWS`.
+    Window(usize),
 }
 
 /// The bar of tools, in the groups it is divided into. How what is drawn
@@ -359,7 +402,6 @@ const GROUPS: [&[Button]; 4] = [
         Button::Tool(Tool::Spotlight),
         Button::Tool(Tool::Zoom),
         Button::Badges,
-        Button::Emoji,
     ],
     &[Button::Undo, Button::Redo],
     &[Button::Frame, Button::Pointer],
@@ -386,7 +428,7 @@ impl Button {
             Button::Tool(Tool::Blur) => ("Blur", "B"),
             Button::Tool(Tool::Spotlight) => ("Spotlight", "S"),
             Button::Tool(Tool::Zoom) => ("Zoom", "Z"),
-            Button::Tool(Tool::Badge) | Button::Badges => ("Badges", "J"),
+            Button::Tool(Tool::Badge) | Button::Badges => ("Library: labels, notes, emoji", "J"),
             Button::Emoji => ("Emoji", "E"),
             Button::Color => ("Color", "C"),
             Button::Border => ("Border", "C"),
@@ -661,6 +703,8 @@ pub struct Editor {
     popup: Option<Anchor>,
     /// The box open under one of the bar's other buttons, by the button.
     flyout: Option<Button>,
+    /// Which of the library's shelves it shows.
+    shelf: u8,
     /// Whether lines and arrows are drawn in dashes.
     dashed: bool,
     /// How the next line or arrow is drawn besides: the kind of head at
@@ -1015,6 +1059,7 @@ impl Editor {
             heads,
             popup: None,
             flyout: None,
+            shelf: 0,
             dashed,
             ends: [shapes::FILLED_HEAD; 2],
             line_heads: [false; 2],
@@ -1334,26 +1379,56 @@ impl Editor {
                     for index in 1..frame::SHADOWS.len() {
                         cells.push((Rect::new((index as i32 - 1) * side, down, side, side), Cell::Shade(index)));
                     }
+                    // And the window it is in, if any: none, a browser,
+                    // a Mac's, a terminal, a desktop's.
+                    let down = down + side + pad / 2;
+                    for index in 0..frame::WINDOWS.len() {
+                        cells.push((Rect::new(index as i32 * side, down, side, side), Cell::Window(index)));
+                    }
                     (across, down + side)
                 }
                 // Every emoji there is, or those whose names have in
                 // them what has been typed: a line to type in, as many
                 // rows of them as show at once, and under those the
                 // name of the one the pointer is on.
-                Button::Emoji => {
-                    let across = EMOJI_ACROSS * side;
+                // The library: a line to search all of it in; its shelves
+                // down its side; and what is on the shelf chosen, or what
+                // has been found on all of them, the labels and notes as
+                // they will look and then the emoji; and under them the
+                // name of the one the pointer is on.
+                Button::Badges | Button::Emoji => {
+                    let (rail, each, tall) = (side * 4, (px as i32 * 19 / 2).max(side * 4), side * 3 / 2);
+                    let content = (3 * each).max(EMOJI_ACROSS * side);
+                    let across = rail + pad + content;
                     layout.field = Some(Rect::new(0, 0, across, side));
-                    let found = self.emoji_found();
                     let top = side + pad / 2;
-                    for at in 0..EMOJI_ACROSS * EMOJI_DOWN {
-                        let index = (self.scroll * EMOJI_ACROSS + at) as usize;
-                        if index < found.len() {
-                            cells.push((Rect::new(at % EMOJI_ACROSS * side, top + at / EMOJI_ACROSS * side, side, side), Cell::Emoji(index)));
-                        }
+                    for (index, _) in SHELVES.iter().enumerate() {
+                        cells.push((Rect::new(0, top + index as i32 * side, rail, side), Cell::Shelf(index as u8)));
                     }
+                    let (left, searching) = (rail + pad, !self.query.is_empty());
+                    let mut down = top;
+                    if searching || self.shelf != EMOJI_SHELF {
+                        let found = self.library_found();
+                        for (at, &item) in found.iter().enumerate() {
+                            cells.push((Rect::new(left + at as i32 % 3 * each, down + at as i32 / 3 * tall, each, tall), Cell::Badge(item)));
+                        }
+                        down += (found.len() as i32 + 2) / 3 * tall;
+                    }
+                    if searching || self.shelf == EMOJI_SHELF {
+                        let found = self.emoji_found();
+                        let rows = if searching { 3 } else { EMOJI_DOWN };
+                        for at in 0..EMOJI_ACROSS * rows {
+                            let index = (self.scroll * EMOJI_ACROSS + at) as usize;
+                            if index < found.len() {
+                                cells.push((Rect::new(left + at % EMOJI_ACROSS * side, down + at / EMOJI_ACROSS * side, side, side), Cell::Emoji(index)));
+                            }
+                        }
+                        down += ((found.len() as i32 - self.scroll * EMOJI_ACROSS).clamp(0, EMOJI_ACROSS * rows) + EMOJI_ACROSS - 1) / EMOJI_ACROSS * side;
+                    }
+                    let down = down.max(top + SHELVES.len() as i32 * side);
                     let line = Text::line_height(px);
-                    layout.caption = Some(Rect::new(0, top + EMOJI_DOWN * side + pad / 4, across, line));
-                    (across, top + EMOJI_DOWN * side + pad / 4 + line)
+                    layout.caption = Some(Rect::new(0, down + pad / 4, across, line));
+                    (across, down + pad / 4 + line)
                 }
                 // The heads there are for an end of a line, none first;
                 // or the kinds of line: each drawn as it is, and named.
@@ -1393,21 +1468,8 @@ impl Editor {
                     }
                     (across, self.settings.places.len() as i32 * side)
                 }
-                // The badges as they will look, one after another for
-                // as far as a row goes, and the stickers in rows of
-                // eight.
-                _ => {
-                    // Every look of a badge, in the color in hand, each
-                    // with room to be seen as it will be; and under
-                    // them what the one the pointer is on is called.
-                    let (each, tall) = (self.text.width(BADGE_SAYS, px) + px as i32 * 4, side * 3 / 2);
-                    let rows = (shapes::BADGE_STYLES as i32 + BADGE_ACROSS - 1) / BADGE_ACROSS;
-                    for index in 0..shapes::BADGE_STYLES as i32 {
-                        cells.push((Rect::new(index % BADGE_ACROSS * each, index / BADGE_ACROSS * tall, each, tall), Cell::Badge(index as usize)));
-                    }
-                    layout.caption = Some(Rect::new(0, rows * tall, BADGE_ACROSS * each, side));
-                    (BADGE_ACROSS * each, rows * tall + side)
-                }
+                // Nothing else has a box of its own.
+                _ => (0, 0),
             };
             let (width, height) = (across + 2 * margin, down + 2 * margin);
             // From its button, on whichever bar that is on.
@@ -2558,8 +2620,8 @@ impl Editor {
 
     /// The wheel: a thicker line, or a thinner.
     pub fn scrolled(&mut self, up: bool) {
-        // With the emoji open, it is the emoji that go up and down.
-        if self.flyout == Some(Button::Emoji) {
+        // With the library open, it is the emoji that go up and down.
+        if self.flyout == Some(Button::Badges) {
             let rows = (self.emoji_found().len() as i32 + EMOJI_ACROSS - 1) / EMOJI_ACROSS;
             self.scroll = (self.scroll + if up { -2 } else { 2 }).clamp(0, (rows - EMOJI_DOWN).max(0));
             self.dirty = true;
@@ -2576,16 +2638,19 @@ impl Editor {
     pub fn key(&mut self, key: Key, mods: Mods) -> Outcome {
         self.dirty = true;
         self.mods = mods;
-        // With the emoji open, what is typed is what is looked for
-        // among their names; Enter takes the first found, and the
-        // arrows go up and down them.
-        if self.flyout == Some(Button::Emoji) && !mods.ctrl {
+        // With the library open, what is typed is what is looked for
+        // among the names of all that is in it; Enter takes the first
+        // found, and the arrows go up and down the emoji.
+        if self.flyout == Some(Button::Badges) && !mods.ctrl {
             match key {
                 Key::Char(letter) => (self.query, self.scroll) = (format!("{}{letter}", self.query), 0),
                 Key::Backspace => (self.scroll, _) = (0, self.query.pop()),
                 Key::Up => self.scrolled(true),
                 Key::Down => self.scrolled(false),
-                Key::Enter => self.choose(Cell::Emoji(0)),
+                Key::Enter => match self.library_found().first() {
+                    Some(&first) if !self.query.is_empty() || self.shelf != EMOJI_SHELF => self.choose(Cell::Badge(first)),
+                    _ => self.choose(Cell::Emoji(0)),
+                },
                 Key::Escape => self.flyout = None,
                 _ => {}
             }
@@ -2880,11 +2945,19 @@ impl Editor {
                 }
                 texts.iter().for_each(|&index| self.shapes[index].face = self.face);
             }
+            // The library hangs from its own button whichever way it is
+            // opened; E opens it on its emoji.
             Button::Badges | Button::Frame | Button::Places | Button::Emoji => {
                 (self.query, self.scroll) = (String::new(), 0);
                 self.commit_text();
                 self.popup = None;
-                self.flyout = if self.flyout == Some(button) { None } else { Some(button) };
+                let (box_of, shelf) = match button {
+                    Button::Emoji => (Button::Badges, Some(EMOJI_SHELF)),
+                    other => (other, None),
+                };
+                let open = self.flyout == Some(box_of) && shelf.is_none_or(|shelf| shelf == self.shelf);
+                self.shelf = shelf.unwrap_or(self.shelf);
+                self.flyout = if open { None } else { Some(box_of) };
             }
             Button::Undo => self.undo(),
             Button::Redo => self.redo(),
@@ -3377,6 +3450,7 @@ impl Editor {
             }
             Cell::Shadow => self.frame.shadow = if self.frame.shadow.on() { Shadow::NONE } else { Shadow::named(frame::SHADOW).expect("the usual shadow is one of them") },
             Cell::Shade(which) => self.frame.shadow = Shadow::of_preset(which),
+            Cell::Window(which) => self.frame.window = frame::WINDOWS[which.min(frame::WINDOWS.len() - 1)].0,
             Cell::More => self.more = !self.more,
             // Asked for here, fetched by whoever has the network, and
             // set behind the picture when it comes.
@@ -3405,6 +3479,7 @@ impl Editor {
                     self.flyout = None;
                 }
             }
+            Cell::Shelf(shelf) => (self.shelf, self.scroll) = (shelf, 0),
             Cell::Badge(_) | Cell::Emoji(_) => {}
         }
         if !matches!(cell, Cell::Badge(_) | Cell::Emoji(_)) {
@@ -3412,11 +3487,15 @@ impl Editor {
         }
         self.checkpoint();
         let (stroke, font_px) = (self.stroke(), self.font_px());
+        let mut says = 0;
         let mut shape = match cell {
-            // The look clicked on, in the color in hand.
-            Cell::Badge(look) => {
-                let mut shape = Shape::new(Tool::Badge, self.color, stroke, (0.0, 0.0));
-                (shape.text, shape.font_px, shape.face, shape.number) = (BADGE_SAYS.to_owned(), font_px, self.face, look as u32);
+            // The look clicked on, saying what it does, in its own color
+            // or the color in hand.
+            Cell::Badge(item) => {
+                let Some(&(look, _, words, color)) = LIBRARY.get(item) else { return };
+                let mut shape = Shape::new(Tool::Badge, color.unwrap_or(self.color), stroke, (0.0, 0.0));
+                (shape.text, shape.font_px, shape.face, shape.number) = (words.to_owned(), font_px, self.face, look as u32);
+                says = words.len();
                 shape
             }
             Cell::Emoji(index) => {
@@ -3438,7 +3517,7 @@ impl Editor {
         // is what it says, in place of what it was put down saying.
         if badge {
             self.editing = Some((self.shapes.len() - 1, false));
-            (self.caret, self.all) = (BADGE_SAYS.len(), true);
+            (self.caret, self.all) = (says, true);
             self.selected.clear();
         }
     }
@@ -3462,6 +3541,22 @@ impl Editor {
             self.look = None;
         }
         self.dirty = true;
+    }
+
+    /// What of the library that is not emoji shows: whatever has in its
+    /// name, or in what it says, every word typed; with nothing typed,
+    /// what is on the shelf chosen. By their places in `LIBRARY`.
+    fn library_found(&self) -> Vec<usize> {
+        let typed = self.query.to_lowercase();
+        let words: Vec<&str> = typed.split_whitespace().collect();
+        let fits = |&(look, shelf, says, _): &(usize, u8, &str, Option<u32>)| match words.is_empty() {
+            true => shelf == self.shelf,
+            false => {
+                let named = format!("{} {says}", shapes::BADGE_NAMES[look]).to_lowercase();
+                words.iter().all(|word| named.contains(word))
+            }
+        };
+        LIBRARY.iter().enumerate().filter(|(_, item)| fits(item)).map(|(index, _)| index).collect()
     }
 
     /// The emoji whose names have in them every word typed, by their
@@ -3621,7 +3716,7 @@ impl Editor {
         let mut nearest = (i32::MAX, 0);
         self.text.look = shape.look();
         for at_letter in line.char_indices().map(|(at, _)| at).chain([line.len()]) {
-            let off = (left + self.text.width_in(shape.face, &format!("{}{}", shape.lead(), &line[..at_letter]), shape.font_px) - at.0).abs();
+            let off = (left + self.text.width_in(shape.words_face(), &format!("{}{}", shape.lead(), &line[..at_letter]), shape.font_px) - at.0).abs();
             if off < nearest.0 {
                 nearest = (off, at_letter);
             }
@@ -3772,7 +3867,7 @@ impl Editor {
                 // As far along as the letters before it are wide, set
                 // the way this text is set and after its dot if it has one.
                 self.text.look = shape.look();
-                let along = self.text.width_in(shape.face, &format!("{}{last}", shape.lead()), shape.font_px);
+                let along = self.text.width_in(shape.words_face(), &format!("{}{last}", shape.lead()), shape.font_px);
                 self.text.look = crate::text::Look::default();
                 let x = origin.0 + along;
                 let y = origin.1 + (rows - 1) * line;
@@ -3947,12 +4042,27 @@ impl Editor {
                 match cell {
                     // A look of a badge, as it will be on the picture: in
                     // the color in hand, and the size it will be there.
-                    Cell::Badge(look) => {
-                        let mut badge = Shape::new(Tool::Badge, self.color, 1.0, (0.0, 0.0));
-                        (badge.text, badge.font_px, badge.number) = (BADGE_SAYS.to_owned(), px, look as u32);
+                    // A thing in the library, as it will be put down: in
+                    // its own color or the one in hand, saying what it
+                    // will, a little smaller, kept to its cell.
+                    Cell::Badge(item) => {
+                        let Some(&(look, _, words, color)) = LIBRARY.get(item) else { continue };
+                        let mut badge = Shape::new(Tool::Badge, color.unwrap_or(self.color), 1.0, (0.0, 0.0));
+                        (badge.text, badge.font_px, badge.number) = (words.to_owned(), px * 7 / 8, look as u32);
                         let size = badge.bounds(&mut self.text);
-                        badge.points[0] = ((cx - size.w / 2) as f32, (cy - size.h / 2) as f32);
+                        badge.points[0] = ((cx - size.w / 2).max(inner.x) as f32, (cy - size.h / 2) as f32);
+                        canvas.set_clip(inner);
                         badge.draw(&mut canvas, &mut self.text);
+                        canvas.reset_clip();
+                    }
+                    // A shelf, by its name: lit when it is the one shown.
+                    Cell::Shelf(shelf) => {
+                        let shown = shelf == self.shelf && self.query.is_empty();
+                        if shown {
+                            canvas.round_fill(rect.x, rect.y, rect.w, rect.h, pad / 2, accent, 256);
+                        }
+                        let name = SHELVES[usize::from(shelf)];
+                        self.text.draw(&mut canvas, rect.x + pad, cy - Text::line_height(px) / 2, px, if shown { on(accent) } else { TEXT_COLOR }, name);
                     }
                     Cell::Emoji(index) => {
                         if let Some(&which) = self.emoji_found().get(index) {
@@ -3982,6 +4092,33 @@ impl Editor {
                         true => self.text.draw_centered(&mut canvas, cx, cy, px, TEXT_COLOR, icons::DOWN),
                         false => (-1..=1).for_each(|dot| canvas.disc(cx + dot * (px as i32 * 2 / 5).max(4), cy, (px as i32 / 9).max(1), TEXT_COLOR, 256)),
                     },
+                    // No window: crossed out, as no backdrop is. A window:
+                    // a small one, its bar over it, lights or buttons on it.
+                    Cell::Window(0) => {
+                        canvas.round_outline(inner.x, inner.y, inner.w, inner.h, pad / 2, 1, DIM_TEXT_COLOR);
+                        self.text.draw_centered(&mut canvas, cx, cy, px, DIM_TEXT_COLOR, icons::CLOSE);
+                    }
+                    Cell::Window(which) => {
+                        let window = frame::WINDOWS[which.min(frame::WINDOWS.len() - 1)].0;
+                        let small = inner.inflate(-(px as i32 / 6).max(1));
+                        let (body, top) = if window == frame::Window::Terminal { (0x16171A, 0x2B2D31) } else { (0xFFFFFF, 0xD9DBE0) };
+                        let bar = (small.h / 3).max(4);
+                        canvas.round_fill(small.x, small.y, small.w, small.h, pad / 3, body, 256);
+                        canvas.round_fill(small.x, small.y, small.w, bar + pad / 3, pad / 3, top, 256);
+                        canvas.fill(small.x, small.y + bar, small.w, pad / 3, body);
+                        let dot = (bar / 5).max(1);
+                        match window {
+                            frame::Window::Desktop => canvas.fill(small.right() - 3 * dot - 2, small.y + bar / 2 - dot / 2, 2 * dot, dot.max(1), 0x4A4D57),
+                            _ => {
+                                for (at, light) in [(0, 0xFF5F57), (1, 0xFEBC2E), (2, 0x28C840)] {
+                                    canvas.disc(small.x + 2 * dot + at * 3 * dot, small.y + bar / 2, dot, light, 256);
+                                }
+                                if window == frame::Window::Browser {
+                                    canvas.round_fill(small.x + small.w / 2 - small.w / 6, small.y + bar / 4, small.w / 2, bar / 2, bar / 4, 0xFFFFFF, 256);
+                                }
+                            }
+                        }
+                    }
                     Cell::Dice => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::DICE),
                     Cell::Own => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::FRAME),
                     // A square with its shadow under it.
@@ -4071,6 +4208,7 @@ impl Editor {
                     Cell::Dice | Cell::Own => false,
                     Cell::Shadow => self.frame.shadow.on(),
                     Cell::Shade(which) => self.frame.shadow == Shadow::of_preset(which),
+                    Cell::Window(which) => self.frame.window == frame::WINDOWS[which].0,
                     _ => false,
                 };
                 if on {
@@ -4122,11 +4260,11 @@ impl Editor {
                 let says = match self.hover {
                     // Or what the look of a badge is called, in the box
                     // of those.
-                    Target::Cell(Cell::Badge(look)) => shapes::BADGE_NAMES[look.min(shapes::BADGE_STYLES - 1)].to_owned(),
-                    _ if self.flyout == Some(Button::Badges) => "In the color in hand; type what it says".to_owned(),
+                    Target::Cell(Cell::Badge(item)) => LIBRARY.get(item).map_or(String::new(), |&(look, ..)| shapes::BADGE_NAMES[look].to_owned()),
                     Target::Cell(Cell::Emoji(index)) => found.get(index).map_or(String::new(), |&which| emoji()[which].1.to_owned()),
-                    _ if found.is_empty() => "None by that name".to_owned(),
-                    _ => format!("{} emoji; the wheel goes through them", found.len()),
+                    _ if !self.query.is_empty() && found.is_empty() && self.library_found().is_empty() => "None by that name".to_owned(),
+                    _ if self.shelf == EMOJI_SHELF && self.query.is_empty() => format!("{} emoji; the wheel goes through them", found.len()),
+                    _ => "Type what it says once it is down; recolor it as any shape".to_owned(),
                 };
                 self.text.draw(&mut canvas, caption.x + pad / 2, caption.y, px, DIM_TEXT_COLOR, &says);
             }
@@ -5386,14 +5524,16 @@ mod tests {
     fn a_badge_is_a_look_in_the_color_in_hand_and_says_what_is_typed() {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (100, 100), (899, 699));
-        // The box of them has every look, and nothing else to choose.
+        // The library: its shelves, and the labels on the first of them.
         editor.key(Key::Char('j'), PLAIN);
         let cells: Vec<Cell> = editor.layout().cells.iter().map(|(_, cell)| *cell).collect();
-        assert_eq!(cells, (0..shapes::BADGE_STYLES).map(Cell::Badge).collect::<Vec<_>>());
+        let labels: Vec<Cell> = (0..LIBRARY.len()).filter(|&item| LIBRARY[item].1 == 0).map(Cell::Badge).collect();
+        assert_eq!(cells, [Cell::Shelf(0), Cell::Shelf(1), Cell::Shelf(2)].into_iter().chain(labels).collect::<Vec<_>>());
         // One chosen is put down in the color in hand, saying nothing
         // meant: what is typed is what it says, and Enter ends it.
         editor.set_color(0x0090FF);
-        let gloss = editor.layout().cells[6].0.center();
+        let at = |editor: &mut Editor, look: usize| editor.layout().cells.iter().find(|(_, cell)| matches!(cell, Cell::Badge(item) if LIBRARY[*item].0 == look)).map(|(rect, _)| rect.center()).expect("it is on the shelf");
+        let gloss = at(&mut editor, 6);
         click(&mut editor, gloss, 1000);
         assert_eq!((editor.shapes[0].tool, editor.shapes[0].number, editor.shapes[0].color, editor.shapes[0].text.as_str()), (Tool::Badge, 6, 0x0090FF, BADGE_SAYS));
         assert!(editor.editing.is_some() && editor.flyout.is_none());
@@ -5426,6 +5566,20 @@ mod tests {
             assert!(out.iter().any(|&pixel| pixel != 0), "{look}");
             out.fill(0);
         }
+        // Some come in a color of their own, saying what they are for;
+        // and anything in the library is found by typing.
+        editor.key(Key::Char('j'), PLAIN);
+        let tick = at(&mut editor, 13);
+        click(&mut editor, tick, 2000);
+        assert_eq!((editor.shapes[2].number, editor.shapes[2].color, editor.shapes[2].text.as_str()), (13, 0x30A46C, "Do"));
+        editor.key(Key::Escape, PLAIN);
+        editor.key(Key::Char('j'), PLAIN);
+        for letter in "tooltip".chars() {
+            editor.key(Key::Char(letter), PLAIN);
+        }
+        assert_eq!(editor.library_found().iter().map(|&item| LIBRARY[item].0).collect::<Vec<_>>(), [18]);
+        editor.key(Key::Enter, PLAIN);
+        assert_eq!((editor.shapes[3].number, editor.shapes[3].text.as_str()), (18, "Opens in a new tab"));
     }
 
     #[test]
@@ -5584,7 +5738,7 @@ mod tests {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (300, 200), (900, 600));
         editor.key(Key::Char('e'), PLAIN);
-        assert_eq!((editor.flyout, editor.emoji_found().len()), (Some(Button::Emoji), emoji().len()));
+        assert_eq!((editor.flyout, editor.shelf, editor.emoji_found().len()), (Some(Button::Badges), EMOJI_SHELF, emoji().len()));
         assert!(emoji().len() > 1300);
         // The wheel goes down them, and no further up than the top.
         editor.scrolled(false);
@@ -5953,15 +6107,20 @@ mod tests {
         editor.released();
         // Every look of a badge, each in a color of its own and saying
         // what it is called; and two emoji.
-        let looks = (0..shapes::BADGE_STYLES).map(|look| (Cell::Badge(look), (16 + (look as i32 % 4) * 24, 12 + (look as i32 / 4) * 8)));
-        for (cell, to) in looks.chain([(Cell::Emoji(6), (112, 12)), (Cell::Emoji(40), (120, 12))]) {
-            if let Cell::Badge(look) = cell {
-                editor.color = PALETTE[(look * 5 + 1) % PALETTE.len()].0;
+        // Every label and note in the library, the labels of the old kind
+        // each in a color of its own and saying what it is called, the
+        // rest as they come; and two emoji.
+        let looks = (0..LIBRARY.len()).map(|item| (Cell::Badge(item), (16 + (item as i32 % 3) * 36, 12 + (item as i32 / 3) * 8)));
+        for (cell, to) in looks.chain([(Cell::Emoji(6), (140, 12)), (Cell::Emoji(40), (150, 12))]) {
+            if let Cell::Badge(item) = cell {
+                editor.color = PALETTE[(item * 5 + 1) % PALETTE.len()].0;
             }
             editor.choose(cell);
-            if let Cell::Badge(look) = cell {
-                for letter in shapes::BADGE_NAMES[look].chars() {
-                    editor.key(Key::Char(letter), PLAIN);
+            if let Cell::Badge(item) = cell {
+                if LIBRARY[item].2 == BADGE_SAYS {
+                    for letter in shapes::BADGE_NAMES[LIBRARY[item].0].chars() {
+                        editor.key(Key::Char(letter), PLAIN);
+                    }
                 }
                 editor.key(Key::Enter, PLAIN);
             }
@@ -6235,7 +6394,7 @@ mod tests {
         editor.set_color(PALETTE[1].0);
         stroke(&mut editor, 'a', (1330, 520), (1235, 460));
         editor.corners = 12.0;
-        for cell in [Cell::Backdrop(frame::named("sorbet").unwrap() + 1), Cell::Shadow] {
+        for cell in [Cell::Backdrop(frame::named("sorbet").unwrap() + 1), Cell::Shadow, Cell::Window(1)] {
             editor.choose(cell);
         }
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
@@ -6327,7 +6486,7 @@ mod tests {
         // 3. What comes of it: set on a backdrop, the corners rounded,
         // with Tailwind's 2xl for a shadow.
         editor.corners = 12.0;
-        editor.frame = Frame { backdrop: Backdrop::Gradient(frame::named("sorbet").unwrap()), pad: (72, 56), radius: 18, shadow: Shadow::named("2xl").unwrap() };
+        editor.frame = Frame { backdrop: Backdrop::Gradient(frame::named("sorbet").unwrap()), pad: (72, 56), radius: 18, shadow: Shadow::named("2xl").unwrap(), ..Frame::default() };
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
         std::fs::write(dir.join("3-framed.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
 
@@ -6352,7 +6511,7 @@ mod tests {
         editor.shapes[arrow].bend_to((680.0, 730.0));
         click(&mut editor, (900, 200), 70_000);
         editor.corners = 10.0;
-        editor.frame = Frame { backdrop: Backdrop::Gradient(frame::named("midnight").unwrap()), pad: (64, 48), radius: 16, shadow: Shadow::named("xl").unwrap() };
+        editor.frame = Frame { backdrop: Backdrop::Gradient(frame::named("midnight").unwrap()), pad: (64, 48), radius: 16, shadow: Shadow::named("xl").unwrap(), ..Frame::default() };
         let (_, wide, high, pixels, alpha) = editor.framed().unwrap();
         std::fs::write(dir.join("4-explain.png"), crate::output::encode(wide as u32, high as u32, &pixels, alpha).unwrap()).unwrap();
     }

@@ -339,12 +339,23 @@ impl Shape {
         self.points[3] = (middle.0 + size.0 / 2.0, middle.1 + size.1 / 2.0);
     }
 
+    /// The face its words are drawn in: its own, but that some looks of a
+    /// badge keep to one of their own.
+    pub fn words_face(&self) -> usize {
+        if self.tool == Tool::Badge { badge_face(self.number as usize, self.face) } else { self.face }
+    }
+
     /// Where the first letter of a shape with words on it goes.
     pub fn text_origin(&self) -> (i32, i32) {
         let (x, y) = (self.points[0].0.round() as i32, self.points[0].1.round() as i32);
         match self.tool {
             // After the dot at the front of a badge.
-            Tool::Badge => (x + badge_lead(self.number as usize, self.font_px as i32), y + Text::line_height(self.font_px) / 6),
+            // A pin's words are in its middle, which takes their width to
+            // know: put near enough for the caret.
+            Tool::Badge => {
+                let (lead, _, _, top) = badge_layout(self.number as usize, 0, self.font_px as i32, Text::line_height(self.font_px));
+                (x + if self.number == 24 { self.font_px as i32 / 2 } else { lead }, y + top)
+            }
             _ => (x, y),
         }
     }
@@ -509,9 +520,10 @@ impl Shape {
             // A badge is as wide as its words, with a dot before them
             // and room at either end.
             Tool::Badge => {
-                let line = Text::line_height(self.font_px);
-                let width = text.width_in(self.face, &self.text, self.font_px) + badge_lead(self.number as usize, self.font_px as i32) + self.font_px as i32 * 3 / 4;
-                Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width, line + line / 3)
+                let style = self.number as usize;
+                let words = text.width_in(badge_face(style, self.face), &self.text, self.font_px);
+                let (_, width, height, _) = badge_layout(style, words, self.font_px as i32, Text::line_height(self.font_px));
+                Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width, height)
             }
             Tool::Zoom => {
                 let (of, shown) = self.zoomed();
@@ -1237,11 +1249,70 @@ impl Shape {
     }
 }
 
-/// How many ways a badge can look.
-pub const BADGE_STYLES: usize = 12;
+/// A triangle filled with a color, its edges smoothed.
+fn filled_triangle(canvas: &mut Canvas, a: Point, b: Point, c: Point, color: u32) {
+    let (left, top) = (a.0.min(b.0).min(c.0).floor() as i32 - 1, a.1.min(b.1).min(c.1).floor() as i32 - 1);
+    let (right, bottom) = (a.0.max(b.0).max(c.0).ceil() as i32 + 1, a.1.max(b.1).max(c.1).ceil() as i32 + 1);
+    for y in top..bottom {
+        for x in left..right {
+            let away = triangle((x as f32 + 0.5, y as f32 + 0.5), a, b, c);
+            let cover = ((0.5 - away).clamp(0.0, 1.0) * 255.0) as u8;
+            if cover > 0 {
+                canvas.blend(x, y, color, cover);
+            }
+        }
+    }
+}
 
-/// What each look of a badge is called.
-pub const BADGE_NAMES: [&str; BADGE_STYLES] = ["Soft", "Solid", "Outline", "Pill", "Dark", "Label", "Gloss", "Blend", "Glow", "Tag", "Marker", "Sticker"];
+/// How many ways a badge can look.
+pub const BADGE_STYLES: usize = 26;
+
+/// What each look of a badge is called. The first twelve are labels with
+/// some finish to them; those after are plainer, borrowed from what
+/// interfaces show: a status, a verdict, a reference, a key, a priority,
+/// a tooltip, code, a card, a note, a bubble, a pin.
+pub const BADGE_NAMES: [&str; BADGE_STYLES] = [
+    "Soft", "Solid", "Outline", "Pill", "Dark", "Label", "Gloss", "Blend", "Glow", "Tag", "Marker", "Sticker", "Status", "Do", "Don't", "Chip", "Key", "Priority", "Tooltip", "Error", "Code", "Card", "Sticky note", "Bubble", "Pin", "Glass key",
+];
+
+/// The face some looks keep to whatever face is in hand: code and a
+/// chip in mono, a sticky note in the hand-drawn face.
+fn badge_face(style: usize, face: usize) -> usize {
+    match style {
+        15 | 20 => 3,
+        22 => 2,
+        _ => face,
+    }
+}
+
+/// How a badge of a look is laid out round words `words` wide, in
+/// letters `px` high on lines `line` high: its width and height, and
+/// where its words go, from its top left.
+fn badge_layout(style: usize, words: i32, px: i32, line: i32) -> (i32, i32, i32, i32) {
+    let standard = line + line / 3;
+    let (lead, trail, high, top) = match style {
+        12 => (px * 5 / 4, px * 3 / 4, standard, (standard - line) / 2),
+        13 | 14 => (px * 2, px * 3 / 4, standard, (standard - line) / 2),
+        15 => (px / 2, px / 2, line + line / 6, line / 12),
+        16 | 25 => (px * 3 / 5, px * 3 / 5, standard + line / 8, (standard - line) / 2),
+        17 => (px / 3, px / 3, line, 0),
+        // A tooltip has its point under it; an error, over it at the left.
+        18 => (px * 3 / 4, px * 3 / 4, line * 3 / 2 + line / 3, line / 4),
+        19 => (px * 3 / 4, px * 3 / 4, line * 3 / 2 + line / 3, line / 3 + line / 4),
+        20 => (px * 3 / 2, px * 3 / 4, line + line * 2 / 3, line / 3),
+        21 => (px, px, line * 2, line / 2),
+        22 => (px * 3 / 4, px * 3 / 2, line * 5 / 2, line / 2),
+        // A bubble has its tail under it.
+        23 => (px, px, line * 3 / 2 + line / 2, line / 4),
+        // A pin: a round head as wide as its words, and a point under it.
+        24 => {
+            let round = (words + px).max(line * 3 / 2);
+            return ((round - words) / 2, round, round * 7 / 5, (round - line) / 2);
+        }
+        _ => (badge_lead(style, px), px * 3 / 4, standard, (standard - line) / 2),
+    };
+    (lead, words + lead + trail, high, top)
+}
 
 /// How far in from its left a badge's words begin, in one of its looks
 /// and at a size of letter: after a dot, or a bar, or nothing.
@@ -1385,6 +1456,112 @@ pub fn draw_badge(canvas: &mut Canvas, text: &mut Text, place: Rect, style: usiz
             patch(canvas, place, high / 2, 0, 0.0, 256, |_, down| mix(mix(solid, 0xFFFFFF, 26), mix(solid, 0x000000, 20), (down * 256.0) as u32));
             ink_on(solid)
         }
+        // A status: a dot of the color and the words, on a plain white
+        // ground so they read on anything.
+        12 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 2, 0xD9DBE0, 256);
+            canvas.round_fill(place.x + 1, place.y + 1, place.w - 2, high - 2, high / 2 - 1, 0xFFFFFF, 256);
+            canvas.disc(place.x + size * 5 / 8, place.y + high / 2, (size / 4).max(2), solid, 256);
+            0x161616
+        }
+        // Do, and don't: a tick or a cross on a disc of the color, and
+        // the words in a darker shade of it.
+        13 | 14 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 2, 0xD9DBE0, 256);
+            canvas.round_fill(place.x + 1, place.y + 1, place.w - 2, high - 2, high / 2 - 1, 0xFFFFFF, 256);
+            let (cx, cy, radius) = (place.x + size, place.y + high / 2, size * 3 / 5);
+            canvas.disc(cx, cy, radius, solid, 256);
+            let reach = Rect::new(cx - radius, cy - radius, 2 * radius + 1, 2 * radius + 1);
+            let mut mark = Mask { bounds: reach, alpha: vec![0; (reach.w * reach.h) as usize] };
+            let (x, y, r, thick) = (cx as f32 + 0.5, cy as f32 + 0.5, radius as f32, (size as f32 / 9.0).max(1.2));
+            if style == 13 {
+                stamp(&mut mark, (x - r * 0.45, y + r * 0.02), (x - r * 0.12, y + r * 0.35), thick);
+                stamp(&mut mark, (x - r * 0.12, y + r * 0.35), (x + r * 0.45, y - r * 0.3), thick);
+            } else {
+                stamp(&mut mark, (x - r * 0.35, y - r * 0.35), (x + r * 0.35, y + r * 0.35), thick);
+                stamp(&mut mark, (x + r * 0.35, y - r * 0.35), (x - r * 0.35, y + r * 0.35), thick);
+            }
+            canvas.mask(&mark, 0xFFFFFF, 256);
+            mix(solid, 0x000000, 110)
+        }
+        // A chip: a reference, in mono on a pale tint of the color.
+        15 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 4, mix(solid, 0xFFFFFF, 215), 256);
+            0x1C2024
+        }
+        // A key, as keyboards draw them: white, edged, deeper at the
+        // bottom; and one of dark glass, as screencasts show them.
+        16 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 4, 0xB9BBC6, 256);
+            canvas.round_fill(place.x + 1, place.y + 1, place.w - 2, high - 4, high / 4 - 1, 0xFFFFFF, 256);
+            0x1C2024
+        }
+        25 => {
+            canvas.round_fill(place.x, place.y, place.w, high, high / 4, 0x141416, 230);
+            canvas.round_outline(place.x, place.y, place.w, high, high / 4, 1, 0x4A4D57);
+            0xFFFFFF
+        }
+        // A priority: the color, square, small.
+        17 => {
+            canvas.round_fill(place.x, place.y, place.w, high, (size / 6).max(2), solid, 256);
+            ink_on(solid)
+        }
+        // A tooltip: the color, with a point under its middle; and one
+        // with its point over it near its left, as a form shows an error.
+        18 | 19 => {
+            let point = Text::line_height(px) / 3;
+            let (body, tip) = match style {
+                18 => (Rect::new(place.x, place.y, place.w, high - point), (place.x + place.w / 2, place.bottom())),
+                _ => (Rect::new(place.x, place.y + point, place.w, high - point), (place.x + size * 3 / 2, place.y)),
+            };
+            canvas.round_fill(body.x, body.y, body.w, body.h, size / 3, solid, 256);
+            let base = if style == 18 { body.bottom() } else { body.y };
+            filled_triangle(canvas, (tip.0 as f32, tip.1 as f32), ((tip.0 - point) as f32, base as f32), ((tip.0 + point) as f32, base as f32), solid);
+            ink_on(solid)
+        }
+        // Code: light mono on near black, after a dim prompt.
+        20 => {
+            canvas.round_fill(place.x, place.y, place.w, high, size / 3, 0x1C2024, 256);
+            let line = Text::line_height(px);
+            text.draw_in(3, canvas, place.x + size / 2, place.y + line / 3, px, 0x8B8D98, "$");
+            0xE6E8EC
+        }
+        // A card: white, softly shadowed, its words heavy.
+        21 => {
+            patch(canvas, Rect::new(place.x, place.y + size / 4, place.w, high), size / 2, size / 4, size as f32 * 0.8, 70, |_, _| 0x000000);
+            canvas.round_fill(place.x, place.y, place.w, high, size / 2, 0xE1E3E8, 256);
+            canvas.round_fill(place.x + 1, place.y + 1, place.w - 2, high - 2, size / 2 - 1, 0xFFFFFF, 256);
+            0x161616
+        }
+        // A sticky note: a square of the color with a curl of shadow
+        // under its lower edge, in the hand-drawn face.
+        22 => {
+            patch(canvas, Rect::new(place.x + size / 3, place.y + size / 2, place.w - size * 2 / 3, high), 2, size / 3, size as f32 * 0.7, 110, |_, _| 0x000000);
+            canvas.round_fill(place.x, place.y, place.w, high, 2, solid, 256);
+            mix(ink_on(solid), solid, 40)
+        }
+        // A bubble: the color, edged in dark, with a tail under its left.
+        23 => {
+            let tail = Text::line_height(px) / 2;
+            let body = Rect::new(place.x, place.y, place.w, high - tail);
+            let edge = (size / 8).max(2);
+            let (tip, left, right) = ((place.x + size, place.bottom()), (place.x + size * 3 / 4, body.bottom() - edge), (place.x + size * 2, body.bottom() - edge));
+            filled_triangle(canvas, (tip.0 as f32, tip.1 as f32), (left.0 as f32, left.1 as f32), (right.0 as f32, right.1 as f32), 0x161616);
+            canvas.round_fill(body.x, body.y, body.w, body.h, body.h / 2, 0x161616, 256);
+            canvas.round_fill(body.x + edge, body.y + edge, body.w - 2 * edge, body.h - 2 * edge, body.h / 2 - edge, solid, 256);
+            let inset = edge as f32 * 1.8;
+            filled_triangle(canvas, (tip.0 as f32 + inset * 0.3, tip.1 as f32 - inset * 1.6), (left.0 as f32 + inset, left.1 as f32 - 1.0), (right.0 as f32 - inset * 0.8, right.1 as f32 - 1.0), solid);
+            ink_on(solid)
+        }
+        // A pin: a round head of the color over a point, its words in
+        // the middle of the head.
+        24 => {
+            let round = place.w;
+            let (cx, cy) = (place.x + round / 2, place.y + round / 2);
+            filled_triangle(canvas, (cx as f32, place.bottom() as f32), (cx as f32 - round as f32 * 0.42, cy as f32 + round as f32 * 0.2), (cx as f32 + round as f32 * 0.42, cy as f32 + round as f32 * 0.2), solid);
+            canvas.disc(cx, cy, round / 2, solid, 256);
+            ink_on(solid)
+        }
         // Dark: near black, with a dot of the hue.
         4 => {
             canvas.round_fill(place.x, place.y, place.w, high, high / 3, 0x161616, 256);
@@ -1399,7 +1576,11 @@ pub fn draw_badge(canvas: &mut Canvas, text: &mut Text, place: Rect, style: usiz
             0x161616
         }
     };
-    text.draw_in(face, canvas, place.x + badge_lead(style, size), place.y + (high - Text::line_height(px)) / 2, px, color, words);
+    let face = badge_face(style, face);
+    let (lead, _, _, top) = badge_layout(style, text.width_in(face, words, px), size, Text::line_height(px));
+    text.look.heavy = i32::from(style == 21);
+    text.draw_in(face, canvas, place.x + lead, place.y + top, px, color, words);
+    text.look.heavy = 0;
 }
 
 /// Where a drag from `from` should be taken to end, with Shift held:
