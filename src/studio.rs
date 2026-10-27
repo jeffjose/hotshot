@@ -295,32 +295,50 @@ impl Doc {
     /// all where nothing is on it.
     pub fn render(&self, times: f32, text: &mut Text) -> (i32, i32, Vec<u32>) {
         let (wide, high) = (((self.width as f32 * times).round() as i32).max(1), ((self.height as f32 * times).round() as i32).max(1));
-        let mut out = vec![0u32; (wide * high) as usize];
+        (wide, high, self.render_part(times, Rect::new(0, 0, wide, high), text))
+    }
+
+    /// Part of the artboard as a picture, `times` its size: the pixels of
+    /// `part` of that, everything drawn afresh at that size, so that the
+    /// shapes and the text on it are as sharp however large it is shown.
+    pub fn render_part(&self, times: f32, part: Rect, text: &mut Text) -> Vec<u32> {
+        let (wide, high) = (((self.width as f32 * times).round() as i32).max(1) as f32, ((self.height as f32 * times).round() as i32).max(1) as f32);
+        let mut out = vec![0u32; (part.w.max(0) * part.h.max(0)) as usize];
+        if out.is_empty() {
+            return out;
+        }
         match self.background {
             Fill::None => {}
             Fill::Color(color) => out.iter_mut().for_each(|pixel| *pixel = 0xFF00_0000 | color),
-            Fill::Backdrop(which) => out.par_chunks_mut(wide as usize).enumerate().for_each(|(y, row)| {
+            Fill::Backdrop(which) => out.par_chunks_mut(part.w as usize).enumerate().for_each(|(y, row)| {
+                let y = y + part.y as usize;
                 for (x, pixel) in row.iter_mut().enumerate() {
+                    let x = x + part.x as usize;
                     let noise = ((x * 7 + y * 13) % 16) as f32 / 16.0;
-                    *pixel = 0xFF00_0000 | frame::shade(which, (x as f32 + 0.5) / wide as f32, (y as f32 + 0.5) / high as f32, noise);
+                    *pixel = 0xFF00_0000 | frame::shade(which, (x as f32 + 0.5) / wide, (y as f32 + 0.5) / high, noise);
                 }
             }),
-            Fill::Gradient(from, to, angle) => out.par_chunks_mut(wide as usize).enumerate().for_each(|(y, row)| {
+            Fill::Gradient(from, to, angle) => out.par_chunks_mut(part.w as usize).enumerate().for_each(|(y, row)| {
+                let y = y + part.y as usize;
                 for (x, pixel) in row.iter_mut().enumerate() {
-                    *pixel = 0xFF00_0000 | gradient(from, to, angle, (x as f32 + 0.5, y as f32 + 0.5), (wide as f32, high as f32), (x * 7 + y * 13) % 16);
+                    let x = x + part.x as usize;
+                    *pixel = 0xFF00_0000 | gradient(from, to, angle, (x as f32 + 0.5, y as f32 + 0.5), (wide, high), (x * 7 + y * 13) % 16);
                 }
             }),
         }
         for layer in self.layers.iter().filter(|layer| !layer.hidden) {
             match &layer.kind {
-                Kind::Picture(picture) => draw_picture(&mut out, wide, high, picture, times),
+                Kind::Picture(picture) => draw_picture(&mut out, part, picture, times),
                 Kind::Shape(shape) => {
-                    let shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
-                    draw_shape(&mut out, wide, high, &shape, text);
+                    let mut shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
+                    if (part.x, part.y) != (0, 0) {
+                        shape.translate(-part.x as f32, -part.y as f32);
+                    }
+                    draw_shape(&mut out, part.w, part.h, &shape, text);
                 }
             }
         }
-        (wide, high, out)
+        out
     }
 
     /// The canvas as a file: what it is, line by line, and each picture
@@ -504,9 +522,10 @@ fn over(under: u32, color: u32, amount: f32) -> u32 {
 /// A picture drawn onto the artboard at `times` its size: its shadow, then
 /// it, each pixel of it from the four nearest of the copy of it of about
 /// the size it is shown at, kept to its rounded corners.
-fn draw_picture(out: &mut [u32], wide: i32, high: i32, picture: &Picture, times: f32) {
+fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32) {
+    let (wide, high) = (part.w, part.h);
     let mut at = picture.clone();
-    (at.cx, at.cy, at.w, at.h, at.radius) = (picture.cx * times, picture.cy * times, picture.w * times, picture.h * times, picture.radius * times);
+    (at.cx, at.cy, at.w, at.h, at.radius) = (picture.cx * times - part.x as f32, picture.cy * times - part.y as f32, picture.w * times, picture.h * times, picture.radius * times);
     let picture = &at;
     let shadow = Shadow::of_preset(picture.shadow.saturating_sub(1));
     let layers = if picture.shadow == 0 { &[][..] } else { shadow.layers() };
@@ -653,7 +672,7 @@ impl Field {
             Field::W | Field::ArtW => "W",
             Field::H | Field::ArtH => "H",
             Field::Turn => "\u{b0}",
-            Field::Radius => "Round",
+            Field::Radius => "Radius",
             Field::Opacity => "Opacity",
             Field::Angle => "Angle",
         }
@@ -766,6 +785,8 @@ struct Layout {
     /// What each control is, said where it is drawn: the panels' headings
     /// and labels, which are no controls.
     words: Vec<((i32, i32), String, u32)>,
+    /// The bar of tools floating along the bottom of the view.
+    dock: Rect,
 }
 
 /// What the window has to do for the canvas, that the canvas cannot.
@@ -812,16 +833,19 @@ pub struct Studio {
     color: u32,
     fill: Option<u32>,
     size: usize,
+    /// How round the corners of the next rectangle are.
+    radius: f32,
     face: usize,
     /// How much larger a picture is exported than the artboard.
     export_scale: u32,
     /// A number being typed into its field, and what has been typed.
     typing: Option<(Field, String)>,
-    /// The artboard as drawn last, and at the size it is shown, each with
-    /// the change it was drawn at.
+    /// How many changes there have been, which says when what is shown
+    /// is behind.
     version: u64,
-    rendered: Option<(u64, i32, i32, Vec<u32>)>,
-    shown: Option<(u64, i32, i32, Vec<u32>)>,
+    /// The part of the artboard drawn last, at the size it is shown: at
+    /// which change, at which zoom, and which part.
+    shown: Option<(u64, f32, Rect, Vec<u32>)>,
     /// Where it is kept, if it is; and whether it has changed since.
     pub path: Option<PathBuf>,
     edited: bool,
@@ -861,11 +885,11 @@ impl Studio {
             color: 0xE5484D,
             fill: None,
             size: 1,
+            radius: 8.0,
             face: 0,
             export_scale: 2,
             typing: None,
             version: 0,
-            rendered: None,
             shown: None,
             path: None,
             edited: false,
@@ -930,14 +954,21 @@ impl Studio {
         let mut layout = Layout { view, ..Layout::default() };
         let px = 13;
         let line = Text::line_height(px);
-        // Along the top: the tools, then the zoom and what the picture
-        // can be done with.
-        let side = 30;
-        let mut x = 12;
+        // Along the bottom of the view, floating over it as Figma's do,
+        // the tools; along the top, what the picture can be done with.
+        let (side, gap, pad) = (36, 4, 6);
+        let count = TOOLS.len() as i32;
+        let dock_w = count * side + (count - 1) * gap + 2 * pad;
+        layout.dock = Rect::new(view.x + (view.w - dock_w) / 2, view.bottom() - side - 2 * pad - 16, dock_w, side + 2 * pad);
+        let mut x = layout.dock.x + pad;
         for (tool, ..) in TOOLS {
-            layout.controls.push((Rect::new(x, (TOP - side) / 2, side, side), Control::Tool(tool)));
-            x += side + 2;
+            layout.controls.push((Rect::new(x, layout.dock.y + pad, side, side), Control::Tool(tool)));
+            x += side + gap;
         }
+        layout.controls.push((layout.dock, Control::Panel));
+        let name = self.title().trim_end_matches(" \u{2014} hotshot").to_owned();
+        layout.words.push(((16, (TOP - line) / 2), name, TEXT_COLOR));
+        let side = 30;
         let mut right = self.width - 12;
         for action in [Action::Export, Action::Copy, Action::Save, Action::Capture, Action::Fit] {
             let wide = self.text.width(action.says(), px) + 20;
@@ -1076,10 +1107,13 @@ impl Studio {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
                         fields(layout, &mut y, &[Field::W, Field::H]);
                     }
-                    if shape.turnable() {
-                        fields(layout, &mut y, &[Field::Turn, Field::Opacity]);
-                    } else {
-                        fields(layout, &mut y, &[Field::Opacity]);
+                    match shape.tool {
+                        Tool::Rect => {
+                            fields(layout, &mut y, &[Field::Turn, Field::Radius]);
+                            fields(layout, &mut y, &[Field::Opacity]);
+                        }
+                        _ if shape.turnable() => fields(layout, &mut y, &[Field::Turn, Field::Opacity]),
+                        _ => fields(layout, &mut y, &[Field::Opacity]),
                     }
                     let paintable = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
                     heading(layout, &mut y, if paintable { "Border" } else { "Color" });
@@ -1395,6 +1429,7 @@ impl Studio {
                 let mut shape = Shape::new(tool, self.color, STROKES[self.size], at);
                 if matches!(tool, Tool::Rect | Tool::Ellipse) {
                     (shape.filled, shape.fill) = (self.fill.is_some(), self.fill.unwrap_or(0xFFFFFF));
+                    shape.radius = if tool == Tool::Rect { self.radius } else { 0.0 };
                 }
                 shape.number = self.doc.layers.iter().filter(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.tool == Tool::Counter)).count() as u32 + 1;
                 shape.font_px = FONT_SIZES[self.size];
@@ -2073,6 +2108,14 @@ impl Studio {
 
     fn set_field(&mut self, field: Field, value: f32) {
         match field {
+            // The next rectangle as round as this one is made.
+            Field::Radius if self.picked().is_some_and(|index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.tool == Tool::Rect)) => {
+                self.radius = value.max(0.0);
+                if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.picked().and_then(|index| self.doc.layers.get_mut(index)) {
+                    shape.radius = value.max(0.0);
+                    shape.touch();
+                }
+            }
             Field::ArtW => self.doc.width = (value.round() as i32).clamp(16, 8000),
             Field::ArtH => self.doc.height = (value.round() as i32).clamp(16, 8000),
             Field::Angle => {
@@ -2482,26 +2525,31 @@ impl Studio {
 
     // ---- The picture of the window ----
 
-    /// The artboard as it is shown: drawn again only when it has changed,
-    /// and made smaller only when it or the zoom has.
-    fn shown_artboard(&mut self) -> (i32, i32) {
-        if self.rendered.as_ref().is_none_or(|kept| kept.0 != self.version) {
-            let (wide, high, pixels) = self.doc.render(1.0, &mut self.text);
-            self.rendered = Some((self.version, wide, high, pixels));
-        }
+    /// The artboard as it is shown, drawn at the size it is shown at: the
+    /// part of it in the view and as much again round that, so that a
+    /// little panning needs nothing drawn. Drawn again when it changes,
+    /// when the zoom does, or when the view goes past what was drawn.
+    /// Gives where the artboard's corner is in the window, and how large
+    /// it is shown.
+    fn shown_artboard(&mut self, view: Rect) -> ((i32, i32), i32, i32) {
         let (wide, high) = (((self.doc.width as f32 * self.zoom).round() as i32).max(1), ((self.doc.height as f32 * self.zoom).round() as i32).max(1));
-        if self.zoom < 1.0 && self.shown.as_ref().is_none_or(|kept| (kept.0, kept.1, kept.2) != (self.version, wide, high)) {
-            let Some((_, w, h, pixels)) = &self.rendered else { return (wide, high) };
-            self.shown = Some((self.version, wide, high, crate::pin::sized(pixels, *w, *h, wide, high)));
+        let origin = (view.x + self.pan.0.round() as i32, view.y + self.pan.1.round() as i32);
+        // What of it is in the view, counted from its corner.
+        let seen = view.moved(-origin.0, -origin.1).intersect(Rect::new(0, 0, wide, high));
+        let fresh = self.shown.as_ref().is_some_and(|(version, zoom, part, _)| *version == self.version && *zoom == self.zoom && (seen.is_empty() || part.intersect(seen) == seen));
+        if !fresh && !seen.is_empty() {
+            let part = seen.inflate(view.w.max(view.h) / 2).intersect(Rect::new(0, 0, wide, high));
+            let pixels = self.doc.render_part(self.zoom, part, &mut self.text);
+            self.shown = Some((self.version, self.zoom, part, pixels));
         }
-        (wide, high)
+        (origin, wide, high)
     }
 
     pub fn draw(&mut self, out: &mut [u32]) {
         let (width, height) = (self.width, self.height);
         let layout = self.layout();
         let view = layout.view;
-        let (wide, high) = self.shown_artboard();
+        let (origin, wide, high) = self.shown_artboard(view);
         out.iter_mut().for_each(|pixel| *pixel = VIEW_COLOR);
         // The view: dots on its ground, the artboard on that, over light
         // squares where it is see-through.
@@ -2512,19 +2560,15 @@ impl Studio {
                 out[(y * width + x) as usize] = 0x3A3A3A;
             }
         }
-        let origin = (view.x + self.pan.0.round() as i32, view.y + self.pan.1.round() as i32);
         let shown = Rect::new(origin.0, origin.1, wide, high).intersect(view);
-        let source = if self.zoom < 1.0 { self.shown.as_ref().map(|kept| (kept.1, kept.3.as_slice())) } else { self.rendered.as_ref().map(|kept| (kept.1, kept.3.as_slice())) };
-        if let Some((source_w, pixels)) = source {
-            let full = self.zoom >= 1.0;
-            for y in shown.y..shown.bottom() {
-                let row = &mut out[(y * width + shown.x) as usize..(y * width + shown.right()) as usize];
-                let sy = if full { (((y - origin.1) as f32 + 0.5) / self.zoom) as i32 } else { y - origin.1 };
-                for (at, pixel) in row.iter_mut().enumerate() {
-                    let x = shown.x + at as i32;
-                    let sx = if full { (((x - origin.0) as f32 + 0.5) / self.zoom) as i32 } else { x - origin.0 };
-                    let color = pixels.get((sy * source_w + sx) as usize).copied().unwrap_or(0);
+        if let Some((_, _, part, pixels)) = &self.shown {
+            let drawn = part.moved(origin.0, origin.1).intersect(shown);
+            for y in drawn.y..drawn.bottom() {
+                let row = &mut out[(y * width + drawn.x) as usize..(y * width + drawn.right()) as usize];
+                let from = &pixels[((y - origin.1 - part.y) * part.w + drawn.x - origin.0 - part.x) as usize..][..drawn.w as usize];
+                for (at, (pixel, &color)) in row.iter_mut().zip(from).enumerate() {
                     let alpha = color >> 24;
+                    let x = drawn.x + at as i32;
                     let light = ((x - origin.0) / 10 + (y - origin.1) / 10) % 2 == 0;
                     let ground = if light { 0xFFFFFF } else { 0xE6E6E6 };
                     *pixel = if alpha == 255 { color & 0xFF_FFFF } else { canvas::mix(ground, color & 0xFF_FFFF, alpha + (alpha >> 7)) };
@@ -2643,6 +2687,13 @@ impl Studio {
         canvas.fill(LEFT - 1, TOP, 1, height - TOP, EDGE_COLOR);
         canvas.fill(width - RIGHT, TOP, RIGHT, height - TOP, PANEL_COLOR);
         canvas.fill(width - RIGHT, TOP, 1, height - TOP, EDGE_COLOR);
+        // The bar of tools, on a soft shadow.
+        let dock = layout.dock;
+        for grow in (1..=6).rev() {
+            canvas.round_fill(dock.x - grow, dock.y - grow + 3, dock.w + 2 * grow, dock.h + 2 * grow, 12 + grow, 0x000000, 14);
+        }
+        canvas.round_fill(dock.x, dock.y, dock.w, dock.h, 12, PANEL_COLOR, 256);
+        canvas.round_outline(dock.x, dock.y, dock.w, dock.h, 12, 1, EDGE_COLOR);
         let hover = layout.controls.iter().find(|(rect, control)| rect.contains(self.pointer.0, self.pointer.1) && *control != Control::Panel).map(|(_, control)| *control);
         let chosen = self.chosen();
         let shown = self.picked().map(|index| self.doc.layers[index].clone());
@@ -2804,7 +2855,7 @@ impl Studio {
             if when.elapsed().as_secs_f32() < 3.0 {
                 let note = note.clone();
                 let wide = self.text.width(&note, px) + 24;
-                let (x, y) = (view.x + (view.w - wide) / 2, view.bottom() - 48);
+                let (x, y) = (view.x + (view.w - wide) / 2, layout.dock.y - 44);
                 canvas.round_fill(x, y, wide, 32, 8, 0x000000, 210);
                 self.text.draw(canvas, x + 12, y + (32 - line_high) / 2, px, TEXT_COLOR, &note);
             }
@@ -2814,7 +2865,7 @@ impl Studio {
             if let Some((_, name, key)) = TOOLS.iter().find(|(known, ..)| *known == tool) {
                 let says = format!("{name}  {key}");
                 let wide = self.text.width(&says, px) + 16;
-                let (x, y) = (self.pointer.0 - wide / 2, TOP + 6);
+                let (x, y) = (self.pointer.0 - wide / 2, layout.dock.y - line_high - 16);
                 canvas.round_fill(x.max(4), y, wide, line_high + 8, 6, 0x000000, 220);
                 self.text.draw(canvas, x.max(4) + 8, y + 4, px, TEXT_COLOR, &says);
             }
@@ -3337,6 +3388,22 @@ mod tests {
         studio.pointer_moved(b.0, b.1, Mods::default());
         studio.released();
         write(&mut studio, "c3-arrow");
+        // A rounded box and some text, close up: drawn at that size, sharp.
+        studio.key(Key::Char('r'), Mods::default(), true);
+        let (a, b) = (studio.to_window((180.0, 520.0)), studio.to_window((330.0, 600.0)));
+        studio.pointer_moved(a.0, a.1, Mods::default());
+        studio.pressed(1, 20_000);
+        studio.pointer_moved(b.0, b.1, Mods::default());
+        studio.released();
+        let mut words = Shape::new(Tool::Text, 0x111111, 3.5, (200.0, 540.0));
+        (words.text, words.font_px) = ("Sharp".into(), 26);
+        studio.doc.layers.push(Layer::shape(words));
+        studio.changed();
+        write(&mut studio, "c3b-shapes");
+        let near = studio.to_window((255.0, 560.0));
+        studio.zoom_about(5.0, near);
+        write(&mut studio, "c3c-zoomed");
+        studio.fit();
         studio.selected = vec![0];
         studio.cropping = Some(0);
         write(&mut studio, "c4-crop");
