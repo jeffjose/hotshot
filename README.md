@@ -179,9 +179,9 @@ Zooming in on part of a recording.
 
 ## License
 
-MIT; see `LICENSE`. The app's own icon is the camera from
+MIT; see `LICENSE`. The icons are from
 [Solar](https://www.figma.com/community/file/1166831539721848736)
-(CC BY 4.0); the icons in the bar are drawn for hotshot. The fonts are [Geist](https://vercel.com/font),
+(CC BY 4.0). The fonts are [Geist](https://vercel.com/font),
 [Instrument Serif](https://github.com/Instrument/instrument-serif),
 [Architects Daughter](https://fonts.google.com/specimen/Architects+Daughter),
 [Fira Code](https://github.com/tonsky/FiraCode) and
