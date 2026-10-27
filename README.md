@@ -100,7 +100,7 @@ center.
 
 ## Canvas
 
-`hotshot --canvas [FILE...]` opens a window for making a picture out of
+`hotshot --canvas [FILE...]` (or `hotshot --edit`) opens a window for making a picture out of
 pictures, laid out as Figma is: tools and actions along the top, layers
 down the left, and the properties of whatever is selected down the
 right. With nothing selected, the right panel belongs to the artboard:

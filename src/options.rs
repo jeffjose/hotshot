@@ -41,7 +41,8 @@ What to take:
   -r, --reopen               the last picture again, where it was, with what
                              was drawn on it still to be moved and changed
   -e, --edit                 with any of those: open with that area selected,
-                             to be drawn on, rather than taking it at once
+                             to be drawn on, rather than taking it at once;
+                             by itself, or with files, the same as --canvas
   -D, --delay SEC            wait before freezing the screen
 
 What to do with it:
@@ -836,6 +837,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     options.places.dedup();
     options.settings.places = options.places.iter().map(|place| place.file_name().map_or_else(|| place.display().to_string(), |name| name.to_string_lossy().into_owned())).collect();
     options.settings.place = options.save_to.as_ref().and_then(|wanted| options.places.iter().position(|place| place == wanted)).unwrap_or(0);
+    // --edit with nothing named to take, or with files, is the canvas:
+    // a picture to be made, not one to be taken.
+    if options.edit && !options.record && (options.take == Take::Pick || !options.files.is_empty()) {
+        options.canvas = true;
+    }
     if !options.canvas && !options.files.is_empty() {
         return Err(format!("unexpected argument '{}'", options.files[0].display()));
     }
@@ -1016,6 +1022,9 @@ mod tests {
         assert!(run(&["--history"]).unwrap().history);
         assert_eq!(run(&["-m", "pointer"]).unwrap().take, Take::Monitor(None));
         assert_eq!(run(&["-m1"]).unwrap().take, Take::Monitor(Some(1)));
+        // --edit alone, or with files, is the canvas; with an area, it is not.
+        assert!(run(&["--edit"]).unwrap().canvas && run(&["-e", "a.png"]).unwrap().canvas);
+        assert!(!run(&["-f", "-e"]).unwrap().canvas && run(&["a.png"]).is_err());
     }
 
     #[test]
