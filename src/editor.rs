@@ -118,11 +118,13 @@ pub struct Finish {
     pub pin: bool,
     /// Not a picture at all: the area is what a recording is made of.
     pub record: bool,
+    /// Opened on the canvas, to be made more of, its shapes still shapes.
+    pub canvas: bool,
 }
 
 impl Finish {
     /// Nothing done with it: to be said otherwise a thing at a time.
-    pub const NONE: Finish = Finish { copy: false, save: false, pin: false, record: false };
+    pub const NONE: Finish = Finish { copy: false, save: false, pin: false, record: false, canvas: false };
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2781,6 +2783,7 @@ impl Editor {
             (Key::Char('s'), true) => return self.finish(Finish { save: true, ..Finish::NONE }),
             (Key::Char('p'), true) => return self.finish(Finish { pin: true, ..Finish::NONE }),
             (Key::Char('r'), true) => return self.finish(Finish { record: true, ..Finish::NONE }),
+            (Key::Char('e'), true) => return self.finish(Finish { canvas: true, ..Finish::NONE }),
             (Key::Char('z'), true) if mods.shift => self.redo(),
             (Key::Char('z'), true) => self.undo(),
             (Key::Char('y'), true) => self.redo(),

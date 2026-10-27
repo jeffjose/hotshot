@@ -265,7 +265,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     };
     // Said on the command line, what to do with the picture is also what
     // Enter does.
-    let said = Finish { copy: options.copy, save: options.save || options.output.is_some(), pin: options.pin, record: false };
+    let said = Finish { copy: options.copy, save: options.save || options.output.is_some(), pin: options.pin, ..Finish::NONE };
     if said != Finish::NONE {
         options.settings.enter = said;
     }
@@ -344,6 +344,18 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     if how.record {
         drop(display);
         return recorded(taken.area, screen, &options);
+    }
+    // Opened on the canvas, by a hotshot of its own: the picture as it
+    // was before it was drawn on, and the shapes over it, still shapes.
+    if how.canvas {
+        let (area, pixels, shapes) = taken.keep.clone().unwrap_or((Rect::new(0, 0, taken.width, taken.height), taken.pixels.clone(), String::new()));
+        let doc = studio::from_markup(area, &pixels, &shapes);
+        let dir = output::state_file("pins").ok_or("nowhere to keep it for the canvas")?;
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join(format!("{}-canvas.hotshot", std::process::id()));
+        std::fs::write(&file, doc.write())?;
+        pin::again(&["--canvas".as_ref(), file.as_os_str(), "--forget".as_ref()])?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     // A file is of the kind its name says, or the kind asked for; what

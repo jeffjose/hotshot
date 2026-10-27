@@ -192,6 +192,7 @@ Keys, once an area is selected:
   Enter           copy (or what -c, -s and -o say)     Esc     cancel
   Ctrl+C  copy    Ctrl+S  save    Ctrl+Z  undo    Ctrl+Shift+Z  redo
   Ctrl+P  pin to the screen       Ctrl+R  record this area
+  Ctrl+E  open it on the canvas, its shapes still to be changed
   V move   A arrow   L line   R rectangle   O oval   P pen   H marker
   T text   N counter   B blur   S spotlight   Z zoom   G the next font
   J badges   E emoji (type to search)   W backdrop, room and shadow

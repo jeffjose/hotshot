@@ -418,6 +418,26 @@ fn shortened(path: &Path) -> String {
     }
 }
 
+/// A canvas of a picture from the editor, and the shapes drawn on it,
+/// written as the editor writes them, still to be moved and changed:
+/// the picture on a backdrop, with room round it, and the shapes moved
+/// from where they were on the screen to where it is on the artboard.
+pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str) -> Doc {
+    let room = 80;
+    let mut doc = Doc::new(area.w + 2 * room, area.h + 2 * room);
+    doc.background = Fill::Backdrop(frame::named("aurora").unwrap_or(0));
+    let image = Image::new(area.w, area.h, pixels.iter().map(|pixel| pixel | 0xFF00_0000).collect());
+    let middle = (room as f32 + area.w as f32 / 2.0, room as f32 + area.h as f32 / 2.0);
+    let mut picture = Picture::new(Arc::new(image), "Screenshot".into(), middle);
+    (picture.radius, picture.shadow) = (10.0, frame::SHADOWS.len());
+    doc.layers.push(Layer::picture(picture));
+    for mut shape in shapes.lines().filter_map(Shape::read) {
+        shape.translate((room - area.x) as f32, (room - area.y) as f32);
+        doc.layers.push(Layer::shape(shape));
+    }
+    doc
+}
+
 /// Where some bytes first come in others.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
@@ -2541,7 +2561,12 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     for file in files {
         let bytes = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
         if let Some(read) = Doc::read(&bytes) {
-            (doc, path) = (Some(read), Some(file.clone()));
+            // One the editor handed over is for this once, and is kept
+            // anew where it is saved.
+            if options.forget {
+                let _ = std::fs::remove_file(file);
+            }
+            (doc, path) = (Some(read), (!options.forget).then(|| file.clone()));
             continue;
         }
         let image = Image::open(&bytes).ok_or_else(|| format!("{} is neither a picture nor a canvas", file.display()))?;
@@ -2874,6 +2899,19 @@ mod tests {
         assert_eq!((studio.doc.width, studio.doc.height), (1920, 1080));
         studio.press_control(Control::Ground(Ground::Backdrop), false);
         assert!(matches!(studio.doc.background, Fill::Backdrop(_)));
+    }
+
+    #[test]
+    fn a_picture_from_the_editor_keeps_its_shapes_where_they_were_on_it() {
+        let area = Rect::new(300, 200, 400, 250);
+        let mut arrow = Shape::new(Tool::Arrow, 0xE5484D, 3.5, (310.0, 220.0));
+        arrow.points[1] = (500.0, 300.0);
+        let doc = from_markup(area, &vec![0x123456; 400 * 250], &arrow.write());
+        assert_eq!((doc.width, doc.height, doc.layers.len()), (560, 410, 2));
+        let Kind::Shape(moved) = &doc.layers[1].kind else { panic!("the arrow over the picture") };
+        assert_eq!(moved.points[..2], [(90.0, 100.0), (280.0, 180.0)]);
+        let (_, _, out) = doc.render(1.0, &mut Text::load());
+        assert_eq!(out[300 * 560 + 400], 0xFF123456);
     }
 
     #[test]
