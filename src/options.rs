@@ -89,6 +89,16 @@ and there is no line, button or keys):
       --no-record-pointer    leave the mouse pointer out of it
   -c                         with --record: the file on the clipboard
 
+Making a picture of pictures:
+      --canvas [FILE...]     a window to make one in, as in Figma: pictures
+                             from files, the clipboard (Ctrl+V) or the
+                             screen (Capture), moved, sized, turned,
+                             cropped (double click), rounded and
+                             shadowed, with shapes over them, on a color
+                             or a backdrop. Ctrl+E exports it as a PNG,
+                             Ctrl+C copies it, and Ctrl+S keeps all of it
+                             in a .hotshot file, which --canvas opens
+
 Staying about:
       --tray                 an icon in the panel's tray: a click is
                              hotshot, and its menu the other ways of
@@ -313,6 +323,10 @@ pub struct Options {
     /// Each thing hotshot does tried on this machine, and said to have
     /// worked or not.
     pub check: bool,
+    /// The canvas, in a window of its own, rather than a picture taken;
+    /// and the files to open on it.
+    pub canvas: bool,
+    pub files: Vec<PathBuf>,
     /// The pictures taken before listed, to take one again.
     pub history: bool,
     pub settings: Settings,
@@ -374,6 +388,8 @@ fn defaults() -> Options {
         tray: false,
         menu: false,
         check: false,
+        canvas: false,
+        files: Vec::new(),
         history: false,
         settings: Settings::default(),
         list_monitors: false,
@@ -439,6 +455,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "region" => options.take = Take::Region(parse_region(&value()?)?),
         "again" | "last" | "repeat" => options.take = Take::Again(None),
         "history" => options.history = true,
+        "canvas" => options.canvas = true,
         "reopen" => (options.take, options.edit) = (Take::Reopen, true),
         "edit" => options.edit = true,
         "delay" => options.delay = number(value()?, "delay")?,
@@ -759,7 +776,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
                 flags.push((name.into(), None));
             }
         } else {
-            return Err(format!("unexpected argument '{text}'"));
+            // Files, which the canvas opens.
+            options.files.push(path(&text));
+            continue;
         }
 
         for (name, attached) in flags {
@@ -816,6 +835,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     options.places.dedup();
     options.settings.places = options.places.iter().map(|place| place.file_name().map_or_else(|| place.display().to_string(), |name| name.to_string_lossy().into_owned())).collect();
     options.settings.place = options.save_to.as_ref().and_then(|wanted| options.places.iter().position(|place| place == wanted)).unwrap_or(0);
+    if !options.canvas && !options.files.is_empty() {
+        return Err(format!("unexpected argument '{}'", options.files[0].display()));
+    }
     Ok(Parsed::Run(Box::new(options)))
 }
 

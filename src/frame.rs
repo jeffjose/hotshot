@@ -342,7 +342,7 @@ fn read_color(word: &str) -> Option<u32> {
 
 /// The error function, near enough for a shadow's edge: Abramowitz and
 /// Stegun's, to within a ten-thousandth.
-fn erf(x: f32) -> f32 {
+pub(crate) fn erf(x: f32) -> f32 {
     let t = 1.0 / (1.0 + 0.3275911 * x.abs());
     let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * (-x * x).exp();
     y.copysign(x)
@@ -435,7 +435,7 @@ impl Frame {
 
 /// How far a point, counted from the middle of a rectangle with rounded
 /// corners, is from its edge.
-fn round_box(x: f32, y: f32, half_w: f32, half_h: f32, radius: f32) -> f32 {
+pub(crate) fn round_box(x: f32, y: f32, half_w: f32, half_h: f32, radius: f32) -> f32 {
     let (across, down) = (x.abs() - (half_w - radius), y.abs() - (half_h - radius));
     across.max(0.0).hypot(down.max(0.0)) + across.max(down).min(0.0) - radius
 }

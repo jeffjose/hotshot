@@ -97,6 +97,35 @@ center.
 
 ![A spotlight, and a zoom lens that reaches past the picture](docs/zoom.png)
 
+## Canvas
+
+`hotshot --canvas [FILE...]` opens a window for making a picture out of
+pictures, laid out as Figma is: tools and actions along the top, layers
+down the left, and the properties of whatever is selected down the
+right. With nothing selected, the right panel belongs to the artboard:
+its size (X post, square, 16:9, story, A4, or typed), its background (a
+color, one of the frame box's backdrops, or nothing), and the export
+scale.
+
+Pictures come from files given on the command line, from the clipboard
+(`Ctrl+V`), or from the screen (Capture, or `Ctrl+G`, which hides the
+window while you take one). Drag to move, drag a handle to resize
+(corners keep proportions unless Shift is held), and drag just outside a
+corner to rotate. Every number in the panel can be typed into with a
+double click, or scrubbed by dragging it sideways. Pictures can be
+rounded, shadowed, flipped, faded and cropped: double-click one, or
+press Enter, to crop it. The markup tools draw over everything, with the
+same arrow heads, fills and sketched lines as the editor. Space or the
+middle button pans, Ctrl+scroll zooms, `Ctrl+0` fits the artboard and
+`Ctrl+1` shows it at 100%. Shift-click or drag a box to select several,
+and line them up from the panel.
+
+![The canvas: a screenshot on a backdrop, rounded and shadowed, with an arrow over it and its properties on the right](docs/canvas.png)
+
+`Ctrl+E` exports a PNG to the screenshots folder at 1x, 2x or 3x, `Ctrl+C`
+copies it, and `Ctrl+S` saves everything in a `.hotshot` file, with the
+pictures inside it, which `hotshot --canvas` opens again.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

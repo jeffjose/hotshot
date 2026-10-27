@@ -12,6 +12,7 @@ mod pin;
 mod record;
 mod shapes;
 mod strips;
+mod studio;
 mod text;
 mod tray;
 mod wayland;
@@ -148,6 +149,11 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             let _ = std::fs::remove_file(file);
         }
         clipboard::offer(Display::open()?, png)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The canvas, in its own window.
+    if options.canvas {
+        studio::run(&options.files, &options)?;
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(file) = &options.show {

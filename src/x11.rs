@@ -447,6 +447,12 @@ impl Display {
         Ok(())
     }
 
+    /// The theme's cursor of a shape, for a window of hotshot's own that
+    /// is not one of these.
+    pub fn cursor_of(&self, cursor: Cursor) -> Option<u32> {
+        self.cursors.get(&cursor).copied()
+    }
+
     pub fn set_cursor(&mut self, cursor: Cursor) {
         if self.cursor != Some(cursor) {
             if let Some(&id) = self.cursors.get(&cursor) {
