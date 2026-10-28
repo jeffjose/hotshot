@@ -457,6 +457,8 @@ impl Studio {
                 do_("Export frame", "Ctrl E", Command::ExportFrame),
                 do_("Zoom to frame", "Shift 1", Command::ZoomFrame),
                 Item::Rule,
+                Item::sub("Order", MenuKind::Order),
+                Item::Rule,
                 do_("Delete frame", "Del", Command::DeleteFrame),
             ],
             MenuKind::Color(color) => vec![do_("Select all with this color", "", Command::SelectColor(color)), do_("Replace color\u{2026}", "", Command::ReplaceColor(color)), Item::Rule, do_("Copy hex", "", Command::CopyHex(color))],

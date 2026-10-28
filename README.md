@@ -146,11 +146,25 @@ not to snap, and Shift to keep it to across or down.
 
 As in Figma, a shape drawn, a picture pasted or dropped, or a label put down outside
 every frame is the page's own: drawn on the page, not cut off by a
-frame, listed in the layers above the frames, picked out, moved, styled
+frame, listed in the layers among the frames, picked out, moved, styled
 and undone as a frame's layers are, kept in the file, and left out of
 every export. Drag one onto a frame and let go, or drop its row on the
-frame's row in the list, and it goes into that frame where it was on the
-page; drag a frame's layer off every frame and it goes onto the page.
+middle of the frame's row in the list, and it goes into that frame where
+it was on the page; drag a frame's layer off every frame and it goes
+onto the page.
+
+The page's own layers and its frames are stacked in one order, as
+Figma stacks what is on a page: drawn bottom to top, and clicked through
+the same way, so a frame over a box hides it and takes the click. A new
+frame or a new layer on the page goes on top of everything, a copy of a
+frame just over it. The list of layers shows that order, the topmost
+first; drag a frame's row, or one of the page's own layers, by the top
+or bottom of another row to put it just over or under that. With a frame
+picked out (click its name), or one of the page's own layers, Bring
+forward, Send backward, to front and to back (`Ctrl+]`, `Ctrl+[`, with
+Shift for all the way, or Order in its menu) move it among everything on
+the page. The order is kept in the file; a file from before has its
+frames under the page's own layers, as they were drawn then.
 
 `Ctrl+D` duplicates as Figma does. A frame's first copy goes 100 to its
 right, past any frame already there; a layer's goes 20 to its right, or

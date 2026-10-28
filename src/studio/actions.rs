@@ -259,6 +259,19 @@ impl Studio {
         let Some((x, y, w, h)) = union(&boxes) else { return };
         self.checkpoint();
         chosen.sort_unstable();
+        // On the page, the frame goes where the topmost of them was among
+        // everything on it, as Figma's does: under what was over that.
+        let over = match self.on_page() {
+            true => {
+                let order = self.page_order();
+                let top = order.iter().rposition(|child| matches!(child, Child::Layer(index) if chosen.contains(index))).unwrap_or(0);
+                order[top..].iter().find(|child| !matches!(child, Child::Layer(index) if chosen.contains(index))).map(|&child| match child {
+                    Child::Layer(index) => (true, stacks::layer_id(&self.doc.layers[index]) as usize),
+                    Child::Frame(index) => (false, index),
+                })
+            }
+            false => None,
+        };
         let mut moved = Vec::new();
         for &index in chosen.iter().rev() {
             let mut layer = self.doc.layers.remove(index);
@@ -273,6 +286,18 @@ impl Studio {
         let count = frame.layers.len();
         self.pages[self.page].frames.push(frame);
         let index = self.frame_count() - 1;
+        self.keep_order();
+        let mut order = self.page_order();
+        order.retain(|&child| child != Child::Frame(index));
+        let at = over.and_then(|(layer, which)| {
+            let under = match layer {
+                true => Child::Layer(self.loose().layers.iter().position(|layer| stacks::layer_id(layer) as usize == which)?),
+                false => Child::Frame(which),
+            };
+            order.iter().position(|&child| child == under)
+        });
+        order.insert(at.unwrap_or(order.len()), Child::Frame(index));
+        self.set_page_order(&order);
         self.activate(index);
         self.selected = (0..count).collect();
         self.changed();

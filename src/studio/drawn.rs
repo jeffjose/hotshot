@@ -14,7 +14,13 @@ pub(super) struct Drawn {
     pub part: Rect,
     pub pixels: Vec<u32>,
     pub reaches: Vec<Rect>,
+    /// Which of its layers were drawn, from one up to before another: all
+    /// of a frame's, or the page's own between two frames.
+    pub range: (usize, usize),
 }
+
+/// All of the layers of a frame, as a range of them.
+pub(super) const ALL: (usize, usize) = (0, usize::MAX);
 
 /// The smallest area over both.
 pub(super) fn both(a: Rect, b: Rect) -> Rect {
@@ -98,10 +104,12 @@ impl Studio {
     /// it was last drawn were and are, if that is all that has changed and
     /// what was drawn is at the zoom it is shown at and reaches over what
     /// is seen of it; whether it could be.
-    pub(super) fn redraw_touched(&mut self, index: usize, seen: Rect) -> bool {
+    pub(super) fn redraw_touched(&mut self, index: usize, band: usize, range: (usize, usize), seen: Rect) -> bool {
         let Some((from, upto, list)) = &self.touched else { return false };
-        let Some(drawn) = self.drawn_of(index) else { return false };
+        let Some(drawn) = self.drawn_of(index, band) else { return false };
         let fits = index == self.active
+            && (range == ALL || range == (0, self.doc.layers.len()))
+            && drawn.range == range
             && drawn.stamp == *from
             && self.doc.stamp == *upto
             && same_zoom(drawn.zoom, self.zoom)
@@ -117,22 +125,22 @@ impl Studio {
         let mut now = Vec::with_capacity(list.len());
         for &layer in &list {
             let reach = reach(&self.doc.layers[layer], self.zoom, &mut self.text);
-            damage = both(damage, both(reach, self.drawn_of(index).map_or(Rect::default(), |drawn| drawn.reaches[layer])));
+            damage = both(damage, both(reach, self.drawn_of(index, band).map_or(Rect::default(), |drawn| drawn.reaches[layer])));
             now.push(reach);
         }
-        let Some(drawn) = self.drawn_of(index) else { return false };
+        let Some(drawn) = self.drawn_of(index, band) else { return false };
         let (part, zoom) = (drawn.part, drawn.zoom);
         let damage = damage.intersect(part);
         if !damage.is_empty() {
             let fresh = self.doc.render_part(zoom, damage, &mut self.text);
-            let Some(drawn) = self.drawn_slot(index).as_mut() else { return false };
+            let Some(drawn) = self.drawn_slot(index, band).as_mut() else { return false };
             for row in 0..damage.h {
                 let into = ((damage.y - part.y + row) * part.w + damage.x - part.x) as usize;
                 drawn.pixels[into..into + damage.w as usize].copy_from_slice(&fresh[(row * damage.w) as usize..((row + 1) * damage.w) as usize]);
             }
         }
         let stamp = self.doc.stamp;
-        let Some(drawn) = self.drawn_slot(index).as_mut() else { return false };
+        let Some(drawn) = self.drawn_slot(index, band).as_mut() else { return false };
         for (&layer, reach) in list.iter().zip(now) {
             drawn.reaches[layer] = reach;
         }

@@ -146,6 +146,8 @@ impl Studio {
         self.checkpoint();
         self.pages[self.page].frames.push(copy);
         let index = self.frame_count() - 1;
+        // Just over what it is a copy of, among everything on the page.
+        self.place_new_frame(index, Some(source));
         self.activate(index);
         self.frame_picked = true;
         self.repeat = Some(Repeat::Frame { page: self.page, source, copy: index });

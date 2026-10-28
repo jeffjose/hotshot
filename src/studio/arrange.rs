@@ -198,27 +198,26 @@ impl Studio {
         }
     }
 
+    /// The row of a list the pointer is over, and where it is.
+    fn row_here(&mut self) -> Option<(Rect, Control)> {
+        let (x, y) = self.pointer;
+        self.layout().controls.into_iter().find(|(rect, _)| rect.contains(x, y))
+    }
+
     /// A layer dragged in its list let go: put where the layer under the
     /// pointer was, over it or under it, as one step to undo.
-    /// Let go on a frame's row, it goes into that frame; on a row of the
-    /// page's own layers, onto the page, outside the frames; each where it
-    /// was on the page, as Figma's list moves a layer.
+    /// Let go on the middle of a frame's row, it goes into that frame; on
+    /// a row of the page's own layers, or by the top or the bottom of a
+    /// frame's row, onto the page, just over or under that among
+    /// everything on it, each where it was on the page, as Figma's list
+    /// moves a layer.
     pub(super) fn drop_layer(&mut self, index: usize) {
-        let into = match self.control_at(self.pointer) {
-            Some(Control::Frame(frame)) if frame != self.active => Some(frame),
-            Some(Control::PageLayer(_)) => Some(LOOSE),
-            _ => None,
-        };
-        if let Some(into) = into.filter(|_| index < self.doc.layers.len()) {
-            self.commit_text();
-            self.cropping = None;
-            self.checkpoint();
-            return self.move_layers_to(into, &[index]);
-        }
-        let Some(target) = self.reorder_target() else { return };
-        if target == index || index >= self.doc.layers.len() {
+        if index >= self.doc.layers.len() {
             return;
         }
+        let Some((rect, control)) = self.row_here() else { return };
+        let along = (self.pointer.1 - rect.y) as f32 / rect.h.max(1) as f32;
+        let (over, middle) = (along < 0.5, (0.25..0.75).contains(&along));
         // What is typed into or cropped is known by where it is, which moves.
         let count = self.doc.layers.len();
         self.commit_text();
@@ -226,10 +225,106 @@ impl Studio {
         if self.doc.layers.len() != count {
             return;
         }
+        // Among the page's own things, by what it is let go by there.
+        let by = match control {
+            Control::Frame(frame) if middle => {
+                if frame != self.active {
+                    self.checkpoint();
+                    self.move_layers_to(frame, &[index]);
+                }
+                return;
+            }
+            Control::Frame(frame) => Child::Frame(frame),
+            Control::PageLayer(target) => Child::Layer(target),
+            Control::Layer(target) | Control::Eye(target) | Control::Lock(target) if self.on_page() => Child::Layer(target),
+            _ => return self.reorder_layer(index),
+        };
+        self.checkpoint();
+        // Out of a frame first, onto the page, the row let go by known by
+        // what its layer is called, as the page's own layers grow by one.
+        let by_id = match by {
+            Child::Layer(target) => Some(stacks::layer_id(&self.loose().layers[target])),
+            Child::Frame(_) => None,
+        };
+        let moved = match self.on_page() {
+            true => index,
+            false => {
+                self.move_layers_to(LOOSE, &[index]);
+                match self.selected[..] {
+                    [moved] => moved,
+                    _ => return,
+                }
+            }
+        };
+        let by = match by_id {
+            Some(id) => match self.loose().layers.iter().position(|layer| stacks::layer_id(layer) == id) {
+                Some(target) => Child::Layer(target),
+                None => return,
+            },
+            None => by,
+        };
+        self.move_child(Child::Layer(moved), by, over);
+    }
+
+    /// A layer dragged in its list let go over another of the same frame:
+    /// put where that one was.
+    fn reorder_layer(&mut self, index: usize) {
+        let Some(target) = self.reorder_target() else { return };
+        if target == index || index >= self.doc.layers.len() {
+            return;
+        }
         self.checkpoint();
         let layer = self.doc.layers.remove(index);
         self.doc.layers.insert(target, layer);
         self.selected = vec![target];
         self.changed();
+    }
+
+    /// A frame dragged in the list let go by another frame's row or one of
+    /// the page's own layers: put just over or under it among everything
+    /// on the page, as one step to undo.
+    pub(super) fn drop_frame(&mut self, frame: usize) {
+        let Some((rect, control)) = self.row_here() else { return };
+        let over = self.pointer.1 < rect.y + rect.h / 2;
+        let by = match control {
+            Control::Frame(other) if other != frame => Child::Frame(other),
+            Control::PageLayer(target) => Child::Layer(target),
+            Control::Layer(target) | Control::Eye(target) | Control::Lock(target) if self.on_page() => Child::Layer(target),
+            _ => return,
+        };
+        self.checkpoint();
+        self.move_child(Child::Frame(frame), by, over);
+    }
+}
+
+impl Studio {
+    /// Where what is dragged in the list would go by the row the pointer
+    /// is on: 0 just over it, 1 into it or where it is, 2 just under it.
+    pub(super) fn drop_mark(&self, rect: Rect, control: Control) -> Option<u8> {
+        if !rect.contains(self.pointer.0, self.pointer.1) {
+            return None;
+        }
+        let along = (self.pointer.1 - rect.y) as f32 / rect.h.max(1) as f32;
+        let side = if along < 0.5 { 0 } else { 2 };
+        let on_page = self.on_page();
+        match (self.drag, control) {
+            (Drag::Reorder { moved: true, .. }, Control::Frame(frame)) if (0.25..0.75).contains(&along) => (frame != self.active).then_some(1),
+            (Drag::Reorder { moved: true, .. }, Control::Frame(_) | Control::PageLayer(_)) => Some(side),
+            (Drag::Reorder { moved: true, index, .. }, Control::Layer(target)) if target != index => Some(if on_page { side } else { 1 }),
+            (Drag::ReorderFrame { moved: true, index, .. }, Control::Frame(frame)) if frame != index => Some(side),
+            (Drag::ReorderFrame { moved: true, .. }, Control::PageLayer(_)) => Some(side),
+            (Drag::ReorderFrame { moved: true, .. }, Control::Layer(_)) if on_page => Some(side),
+            _ => None,
+        }
+    }
+
+    /// The mark of where what is dragged in the list would go, on a row.
+    pub(super) fn draw_drop_mark(&self, canvas: &mut Canvas, rect: Rect, control: Control) {
+        match self.drop_mark(rect, control) {
+            Some(1) => canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 2, ACCENT),
+            Some(0) => canvas.fill(rect.x, rect.y - 1, rect.w, 2, ACCENT),
+            Some(_) => canvas.fill(rect.x, rect.bottom() - 1, rect.w, 2, ACCENT),
+            None => {}
+        }
     }
 }
