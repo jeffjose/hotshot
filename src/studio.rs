@@ -1390,6 +1390,8 @@ struct Layout {
     search: Option<Rect>,
     /// The place for a picture in an empty frame.
     empty: Option<Rect>,
+    /// The bar over a picture being cropped.
+    crop_bar: Option<Rect>,
     menus: Vec<(Rect, MenuKind)>,
 }
 
@@ -1800,6 +1802,7 @@ impl Studio {
             }
         }
         self.layout_empty(&mut layout);
+        self.layout_crop_bar(&mut layout);
         self.layout_styles(&mut layout);
         self.layout_search(&mut layout);
         self.layout_menus(&mut layout);
@@ -3999,12 +4002,49 @@ impl Studio {
             line(canvas, whole[side], whole[(side + 1) % 4], 0x8B8D98);
         }
         let corners = picture.corners().map(|corner| self.to_window(corner));
+        // Square to the frame, the rest of the frame dimmed round the crop,
+        // a grid of thirds in it, and how large it is under it.
+        if picture.angle == 0.0 {
+            let crop = Rect::spanning(corners[0], corners[2]);
+            let (a, b) = (self.to_window((0.0, 0.0)), self.to_window((self.doc.width as f32, self.doc.height as f32)));
+            let frame = Rect::new(a.0, a.1, b.0 - a.0, b.1 - a.1);
+            for part in [
+                Rect::new(frame.x, frame.y, frame.w, crop.y - frame.y),
+                Rect::new(frame.x, crop.bottom(), frame.w, frame.bottom() - crop.bottom()),
+                Rect::new(frame.x, crop.y, crop.x - frame.x, crop.h),
+                Rect::new(crop.right(), crop.y, frame.right() - crop.right(), crop.h),
+            ] {
+                let part = part.intersect(frame);
+                if !part.is_empty() {
+                    canvas.round_fill(part.x, part.y, part.w, part.h, 0, 0x000000, 140);
+                }
+            }
+            for third in 1..3 {
+                canvas.round_fill(crop.x + crop.w * third / 3, crop.y, 1, crop.h, 0, 0xFFFFFF, 90);
+                canvas.round_fill(crop.x, crop.y + crop.h * third / 3, crop.w, 1, 0, 0xFFFFFF, 90);
+            }
+            let says = format!("{} \u{d7} {}", picture.crop.2.round() as i32, picture.crop.3.round() as i32);
+            let wide = self.text.width(&says, 11) + 12;
+            let (x, y) = (crop.x + (crop.w - wide) / 2, crop.bottom() + 12);
+            canvas.round_fill(x, y, wide, 18, 4, ACCENT, 256);
+            self.text.draw(canvas, x + 6, y + (18 - Text::line_height(11)) / 2, 11, 0xFFFFFF, &says);
+        }
         for side in 0..4 {
             line(canvas, corners[side], corners[(side + 1) % 4], 0xFFFFFF);
         }
-        for corner in corners {
-            canvas.fill(corner.0 - 6, corner.1 - 6, 12, 12, 0xFFFFFF);
-            canvas.fill(corner.0 - 4, corner.1 - 4, 8, 8, ACCENT);
+        // A bracket at each corner, pointing out along its two sides.
+        for at in 0..4 {
+            let corner = corners[at];
+            for other in [corners[(at + 1) % 4], corners[(at + 3) % 4]] {
+                let (dx, dy) = ((other.0 - corner.0) as f32, (other.1 - corner.1) as f32);
+                let length = dx.hypot(dy).max(1.0);
+                let reach = 16.0f32.min(length / 3.0);
+                let to = (corner.0 + (dx / length * reach) as i32, corner.1 + (dy / length * reach) as i32);
+                for thick in -1..=1 {
+                    line(canvas, (corner.0 + thick, corner.1), (to.0 + thick, to.1), 0xFFFFFF);
+                    line(canvas, (corner.0, corner.1 + thick), (to.0, to.1 + thick), 0xFFFFFF);
+                }
+            }
         }
     }
 
@@ -4019,7 +4059,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock), layout.flyout, layout.popover, layout.styles, layout.search].into_iter().flatten() {
+        for place in [Some(layout.dock), layout.flyout, layout.popover, layout.styles, layout.search, layout.crop_bar].into_iter().flatten() {
             for grow in (1..=6).rev() {
                 canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 12 + grow, 0x000000, 14);
             }
