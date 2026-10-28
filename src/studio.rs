@@ -4239,6 +4239,11 @@ impl Studio {
             let shown = Rect::new(origin.0, origin.1, wide, high).intersect(view);
             let Some(Some((_, _, part, pixels))) = self.shown.get(index) else { continue };
             let drawn = part.moved(origin.0, origin.1).intersect(shown);
+            // Beside what is shown, nothing; its corner may be past the end
+            // of what was drawn, which no row reaches to.
+            if drawn.is_empty() {
+                continue;
+            }
             for y in drawn.y..drawn.bottom() {
                 let row = &mut out[(y * width + drawn.x) as usize..(y * width + drawn.right()) as usize];
                 let from = &pixels[((y - origin.1 - part.y) * part.w + drawn.x - origin.0 - part.x) as usize..][..drawn.w as usize];
@@ -6185,6 +6190,23 @@ mod tests {
                 studio.draw(&mut out);
             }
         }
+    }
+
+    #[test]
+    fn a_frame_beside_the_view_is_drawn_as_nothing() {
+        let mut studio = studio();
+        studio.resize(1776, 1540);
+        studio.new_frame((1000.0, 0.0), (800.0, 600.0));
+        studio.fit();
+        let mut out = vec![0u32; 1776 * 1540];
+        // Both drawn, then the view moved so the second is wholly to the
+        // right of it, level with it: what was drawn of it is kept, and
+        // shown as nothing.
+        studio.draw(&mut out);
+        studio.pan.0 -= 3000.0;
+        studio.draw(&mut out);
+        studio.pan.0 += 6000.0;
+        studio.draw(&mut out);
     }
     #[test]
     fn the_wheel_zooms_at_once_and_keeps_the_point_under_the_pointer() {
