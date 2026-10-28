@@ -1,3 +1,14 @@
+/// Said on stderr, with the time since hotshot started, when debugging
+/// (`--debug`, `--verbose` or `HOTSHOT_DEBUG=1`); otherwise nothing, and
+/// what it would say is not even put together.
+macro_rules! debug {
+    ($($what:tt)*) => {
+        if crate::debugging() {
+            crate::debug_line(format_args!($($what)*));
+        }
+    };
+}
+
 mod bench;
 mod canvas;
 mod check;
@@ -40,8 +51,22 @@ pub fn version() -> String {
     format!("{}-{sha}{dirty}", env!("CARGO_PKG_VERSION"))
 }
 
+static DEBUGGING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Whether what hotshot does is said as it does it.
+pub fn debugging() -> bool {
+    DEBUGGING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A line of what hotshot is doing, timed from when it started.
+pub fn debug_line(what: std::fmt::Arguments) {
+    let since = STARTED.get_or_init(Instant::now).elapsed();
+    eprintln!("hotshot: {since:>9.1?} {what}");
+}
+
 fn main() -> ExitCode {
-    let started = Instant::now();
+    let started = *STARTED.get_or_init(Instant::now);
     let options = match options::parse(std::env::args_os().skip(1)) {
         Ok(Parsed::Run(options)) => *options,
         Ok(Parsed::Help) => {
@@ -71,12 +96,8 @@ fn main() -> ExitCode {
 }
 
 fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
-    let debug = options.debug;
-    let trace = |what: &str| {
-        if debug {
-            eprintln!("hotshot: {:>7.1?} {what}", started.elapsed());
-        }
-    };
+    DEBUGGING.store(options.debug, std::sync::atomic::Ordering::Relaxed);
+    let trace = |what: &str| debug!("{what}");
     // The font is read while the screen is: neither waits on the other,
     // and the first frame, which has no words in it, on neither.
     let font = std::thread::spawn(Text::load);
@@ -355,6 +376,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         // keeping.
         let file = home::fresh_file(&home::drafts(), "Capture");
         std::fs::write(&file, doc.write())?;
+        debug!("capture kept as {} for the canvas", file.display());
         pin::again(&["--canvas".as_ref(), file.as_os_str()])?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -378,8 +400,15 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         // Into the folder Save was last pointed at, of those there are.
         let dir = options.places.get(taken.place).unwrap_or(&options.dir);
         match &options.output {
-            Some(path) => output::save_as(path, file)?,
-            None => println!("{}", output::save(dir, &options.filename, format.ending(), file)?.display()),
+            Some(path) => {
+                output::save_as(path, file)?;
+                debug!("saved {}", path.display());
+            }
+            None => {
+                let saved = output::save(dir, &options.filename, format.ending(), file)?;
+                debug!("saved {}", saved.display());
+                println!("{}", saved.display());
+            }
         }
         trace("saved");
     }
@@ -593,7 +622,9 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
                 }
                 Input::Press(1, x, y, mods, time) => {
                     editor.pointer_moved(x, y, mods);
-                    editor.pressed(time)
+                    let outcome = editor.pressed(time);
+                    debug!("capture click at {x},{y} -> {outcome:?}");
+                    outcome
                 }
                 Input::Press(3, x, y, mods, _) => {
                     editor.pointer_moved(x, y, mods);
@@ -607,7 +638,11 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
                     editor.pointer_moved(x, y, mods);
                     editor.released()
                 }
-                Input::Key(key, mods) => editor.key(key, mods),
+                Input::Key(key, mods) => {
+                    let outcome = editor.key(key, mods);
+                    debug!("capture key {key:?} {mods:?} -> {outcome:?}");
+                    outcome
+                }
                 // Whatever was over the window has gone: all of it
                 // again, as far as it has been read.
                 Input::Expose => {

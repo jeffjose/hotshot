@@ -185,7 +185,8 @@ Other:
       --monitors             list the monitors and quit
       --benchmark            freeze the screen, drag, draw and encode by itself,
                              timing each, print the figures and quit
-      --debug                print how long each step of starting up took
+      --debug, --verbose     print each step of starting up, and what is
+                             pressed, opened, saved and exported, timed
                              (also HOTSHOT_DEBUG=1)
       --default-config       print a config file with every setting in it
   -h, --help                 show this help
@@ -660,7 +661,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         }
         "monitors" => options.list_monitors = true,
         "benchmark" => options.benchmark = true,
-        "debug" => options.debug = true,
+        "debug" | "verbose" => options.debug = true,
         _ => return Err(format!("unknown option {name}")),
     }
     Ok(())

@@ -1687,7 +1687,9 @@ impl Studio {
     }
 
     fn say(&mut self, what: impl Into<String>) {
-        self.note = Some((what.into(), std::time::Instant::now()));
+        let what = what.into();
+        debug!("canvas says: {what}");
+        self.note = Some((what, std::time::Instant::now()));
         self.dirty = true;
     }
 
@@ -3744,6 +3746,7 @@ impl Studio {
                 let name = format!("{stem}{}.{}", size.suffix, size.format.ending());
                 let path = dir.join(name);
                 std::fs::write(&path, bytes).map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+                debug!("canvas exported {}", path.display());
                 written.push(path);
             }
         }
@@ -3792,6 +3795,7 @@ impl Studio {
                 if loud {
                     self.say(format!("Saved {}", shortened(&path)));
                 }
+                debug!("canvas saved {}", path.display());
                 (self.path, self.edited) = (Some(path), false);
             }
             Err(error) => self.say(format!("Could not save: {error}")),
@@ -4889,6 +4893,7 @@ enum Shown {
 /// path; with pictures, a new frame just the size of the first of them,
 /// with nothing behind it, and them in it.
 fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: PathBuf, text: Text, size: (i32, i32), options: &crate::options::Options) -> Studio {
+    debug!("canvas opens {} ({}, {} pictures to add)", path.display(), if pages.is_some() { "pages read" } else { "new" }, pictures.len());
     // The first picture is the new frame, when there is no file of pages.
     let fresh = !pictures.is_empty();
     let first = (pages.is_none() && fresh).then(|| pictures.remove(0));
@@ -5004,8 +5009,14 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     time = press.time;
                     moved(&mut screen, (i32::from(press.event_x), i32::from(press.event_y), crate::x11::mods(press.state.into())));
                     match &mut screen {
-                        Shown::Home(home) => homeward = home.pressed(press.detail, press.time),
-                        Shown::Studio(studio) => outcome = studio.pressed(press.detail, press.time),
+                        Shown::Home(home) => {
+                            homeward = home.pressed(press.detail, press.time);
+                            debug!("home button {} at {},{} -> {homeward:?}", press.detail, press.event_x, press.event_y);
+                        }
+                        Shown::Studio(studio) => {
+                            outcome = studio.pressed(press.detail, press.time);
+                            debug!("canvas button {} at {},{} -> {outcome:?}", press.detail, press.event_x, press.event_y);
+                        }
                     }
                 }
                 Event::ButtonRelease(release) if release.detail <= 3 => {
@@ -5022,9 +5033,17 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     time = press.time;
                     let key = display.key(press.detail, state);
                     match &mut screen {
-                        Shown::Home(home) if down => homeward = home.key(key, crate::x11::mods(state)),
+                        Shown::Home(home) if down => {
+                            homeward = home.key(key, crate::x11::mods(state));
+                            debug!("home key {key:?} {:?} -> {homeward:?}", crate::x11::mods(state));
+                        }
                         Shown::Home(_) => {}
-                        Shown::Studio(studio) => outcome = studio.key(key, crate::x11::mods(state), down),
+                        Shown::Studio(studio) => {
+                            outcome = studio.key(key, crate::x11::mods(state), down);
+                            if down {
+                                debug!("canvas key {key:?} {:?} -> {outcome:?}", crate::x11::mods(state));
+                            }
+                        }
                     }
                 }
                 Event::Expose(_) => match &mut screen {
