@@ -2261,6 +2261,9 @@ impl Studio {
             1 => {}
             _ => return Outcome::Continue,
         }
+        if self.click_away(at_window) {
+            return Outcome::Continue;
+        }
         if self.typing.is_some() && self.control_at(at_window) != self.typing.as_ref().map(|(field, _)| Control::Field(*field)) {
             self.commit_typing();
         }
@@ -2342,6 +2345,33 @@ impl Studio {
             }
         }
         Outcome::Continue
+    }
+
+    /// A click off an open list, off the list of a group of tools, or off
+    /// the grid of styles: that closed, and the click does nothing else,
+    /// as Figma's do. A group's own button still opens or closes its list.
+    fn click_away(&mut self, at: (i32, i32)) -> bool {
+        if self.menu.is_none() && self.flyout.is_none() && !self.styling {
+            return false;
+        }
+        let layout = self.layout();
+        let inside = |rect: &Rect| rect.contains(at.0, at.1);
+        let control = layout.controls.iter().find(|(rect, _)| inside(rect)).map(|(_, control)| *control);
+        let mut closed = false;
+        if self.menu.is_some() && !layout.menus.iter().any(|(rect, _)| inside(rect)) {
+            self.menu = None;
+            closed = true;
+        }
+        if self.flyout.is_some() && !layout.flyout.is_some_and(|rect| inside(&rect)) && !matches!(control, Some(Control::Group(_))) {
+            self.flyout = None;
+            closed = true;
+        }
+        if self.styling && !layout.styles.is_some_and(|rect| inside(&rect)) {
+            self.styling = false;
+            closed = true;
+        }
+        self.dirty |= closed;
+        closed
     }
 
     fn press_select(&mut self, at: (f32, f32), at_window: (i32, i32), double: bool) {
@@ -3763,7 +3793,11 @@ impl Studio {
             }
             (Key::Delete | Key::Backspace, _) if self.frame_picked && self.chosen().is_empty() => self.delete_frame(),
             (Key::Delete | Key::Backspace, _) => self.delete(),
+            // Esc closes what is open over the page before it lets go of
+            // what is picked out: a list, a group's list, the colors.
             (Key::Escape, _) if self.menu.is_some() => self.menu = None,
+            (Key::Escape, _) if self.flyout.is_some() => self.flyout = None,
+            (Key::Escape, _) if self.palette.is_some() || self.eyedropping => (self.palette, self.eyedropping) = (None, false),
             (Key::Escape, _) => {
                 if self.cropping.take().is_none() {
                     self.selected.clear();
@@ -5356,7 +5390,9 @@ mod tests {
         studio.released();
         let Kind::Shape(shape) = &studio.doc.layers[0].kind else { panic!() };
         assert_eq!((shape.filled, shape.fill), (true, 0xFFE629));
-        // With nothing picked out, the panel is the artboard's.
+        // With nothing picked out, the panel is the artboard's: the first
+        // Esc closes the colors, the second lets go of the box.
+        studio.key(Key::Escape, Mods::default(), true);
         studio.key(Key::Escape, Mods::default(), true);
         // Its size from the list of them, as Figma has it.
         assert!(studio.layout().controls.iter().any(|(_, control)| *control == Control::Menu(MenuKind::Sizes)));
@@ -5560,6 +5596,58 @@ mod tests {
         assert!(matches!(studio.menu, Some(MenuState { kind: MenuKind::Context, .. })) && studio.selected.len() == 3);
         let items = studio.menu_items(MenuKind::Context);
         assert!(items.iter().any(|item| matches!(item, menu::Item::Entry { sub: Some(MenuKind::Order), .. })));
+    }
+
+    #[test]
+    fn a_click_off_an_open_list_closes_it_and_does_nothing_else_and_esc_closes_it() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (100.0, 100.0));
+        (boxed.points[1], boxed.filled) = ((200.0, 200.0), true);
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.fit();
+        let on_box = studio.to_window((150.0, 150.0));
+        let empty = studio.to_window((600.0, 500.0));
+        let click = |studio: &mut Studio, at: (i32, i32)| {
+            studio.pointer_moved(at.0, at.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            studio.released();
+        };
+        // The right click's menu, closed by a click on the box: the box
+        // is not picked out by it.
+        studio.right_click(empty);
+        assert!(studio.menu.is_some() && studio.selected.is_empty());
+        click(&mut studio, on_box);
+        assert!(studio.menu.is_none() && studio.selected.is_empty());
+        // Picked out, and the menu closed by a click off it: still picked out.
+        studio.right_click(on_box);
+        assert_eq!(studio.selected, vec![0]);
+        click(&mut studio, empty);
+        assert_eq!((studio.menu.is_none(), studio.selected.clone()), (true, vec![0]));
+        // The zoom's list, closed by its own button.
+        let zoom = studio.control_rect(Control::Zoom).unwrap().center();
+        click(&mut studio, zoom);
+        assert!(matches!(studio.menu, Some(MenuState { kind: MenuKind::Zoom, .. })));
+        click(&mut studio, zoom);
+        assert!(studio.menu.is_none());
+        // A group's list, closed by a click on the page, which draws nothing.
+        studio.flyout = Some(0);
+        click(&mut studio, empty);
+        assert_eq!((studio.flyout, studio.doc.layers.len()), (None, 1));
+        // The grid of styles, closed by a click off it.
+        studio.key(Key::Char('s'), Mods::default(), true);
+        assert!(studio.styling);
+        click(&mut studio, empty);
+        assert_eq!((studio.styling, studio.selected.clone()), (false, vec![0]));
+        // Esc closes the list, then the colors, before letting go of the box.
+        studio.right_click(on_box);
+        studio.palette = Some(Paint::Line);
+        studio.key(Key::Escape, Mods::default(), true);
+        assert!(studio.menu.is_none() && studio.palette.is_some());
+        studio.key(Key::Escape, Mods::default(), true);
+        assert_eq!((studio.palette, studio.selected.clone()), (None, vec![0]));
+        studio.key(Key::Escape, Mods::default(), true);
+        assert!(studio.selected.is_empty());
     }
 
     #[test]
