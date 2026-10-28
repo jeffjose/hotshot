@@ -1174,6 +1174,10 @@ enum Control {
     Stuck(u8),
     /// A part of the color picker: its square, its strips, its dropper.
     Picker(u8),
+    /// The arrow that opens a color of the selection to its layers, and
+    /// one of those layers, with what of it the color colors.
+    ColorOpen(u32),
+    ColorLayer(usize, &'static str),
     /// The strip a gradient is shown on, its stops at its ends.
     GradientBar,
     /// A part of a panel that is no control.
@@ -1505,6 +1509,8 @@ pub struct Studio {
     gaps: Vec<snap::Gap>,
     /// Whether Shift+1 last fitted the frame, to fit what is picked out next.
     fitted_frame: bool,
+    /// The color of the selection opened to its layers, if one is.
+    color_open: Option<u32>,
     dirty: bool,
 }
 
@@ -1572,6 +1578,7 @@ impl Studio {
             preview: None,
             gaps: Vec::new(),
             fitted_frame: false,
+            color_open: None,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -2430,6 +2437,8 @@ impl Studio {
                 self.flyout = None;
                 self.set_tool(tool);
             }
+            Control::ColorOpen(color) => self.color_open = if self.color_open == Some(color) { None } else { Some(color) },
+            Control::ColorLayer(index, _) => self.selected = vec![index],
             Control::GradientBar => {
                 // The stop nearer where it was pressed, to color.
                 let rect = self.control_rect(control).unwrap_or_default();
@@ -3789,8 +3798,18 @@ impl Studio {
         if let Some(index) = self.hovered.filter(|index| !self.selected.contains(index) && *index < self.doc.layers.len()) {
             self.outline(&mut canvas, index, 0x7A93EA);
         }
+        // A color of the selection hovered in the panel: the layers in it
+        // ringed, and the rest of the frame dimmed.
+        let lit: Vec<usize> = match layout.controls.iter().find(|(rect, _)| rect.contains(self.pointer.0, self.pointer.1)).map(|(_, control)| *control) {
+            Some(Control::ColorField(Paint::Recolor(color)) | Control::ColorOpen(color)) => self.color_uses(color).into_iter().map(|(index, _)| index).collect(),
+            Some(Control::ColorLayer(index, _)) => vec![index],
+            _ => Vec::new(),
+        };
+        if !lit.is_empty() {
+            self.dim_except(&mut canvas, &lit);
+        }
         // While a change is previewed, what it changes is shown bare.
-        let previewing = self.preview.is_some();
+        let previewing = self.preview.is_some() || !lit.is_empty();
         for index in self.chosen().into_iter().filter(|_| !previewing) {
             self.outline(&mut canvas, index, ACCENT);
         }
@@ -4123,6 +4142,30 @@ impl Studio {
                         other => (other.label(), false),
                     };
                     field_text(&mut self.text, canvas, rect, label, icon, &value, DIM_TEXT_COLOR);
+                }
+                Control::ColorOpen(color) => {
+                    let open = self.color_open == Some(color);
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
+                    self.text.draw_centered(canvas, cx, cy, 10, if open || hovered { TEXT_COLOR } else { DIM_TEXT_COLOR }, if open { icons::DOWN } else { icons::RIGHT });
+                }
+                Control::ColorLayer(index, role) => {
+                    if hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+                    }
+                    if let Some(layer) = self.doc.layers.get(index) {
+                        let icon = match &layer.kind {
+                            Kind::Picture(_) => icons::PICTURE,
+                            Kind::Shape(shape) => match shape.tool {
+                                Tool::Badge => icons::BADGE,
+                                tool => tool_icon(tool),
+                            },
+                        };
+                        let name: String = layer.name().chars().take(22).collect();
+                        self.text.draw_centered(canvas, rect.x + 30, cy, 13, DIM_TEXT_COLOR, icon);
+                        self.text.draw(canvas, rect.x + 44, cy - line_high / 2, px, TEXT_COLOR, &name);
+                        let wide = self.text.width(role, 11);
+                        self.text.draw(canvas, rect.right() - 8 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, role);
+                    }
                 }
                 Control::GradientBar => {
                     if let Fill::Gradient(from, to, _) = self.doc.background {
@@ -4747,6 +4790,24 @@ mod tests {
         studio.act(Action::Turn(90));
         let Kind::Picture(small) = studio.doc.layers[0].kind.clone() else { panic!() };
         assert!((small.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4 && (small.cx, small.cy) == (400.0, 300.0));
+    }
+
+    #[test]
+    fn the_colors_of_the_selection_are_each_once_with_the_layers_that_use_them() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 2.0, (0.0, 0.0));
+        (boxed.points[1], boxed.filled, boxed.fill) = ((50.0, 50.0), true, 0xE5484D);
+        let arrow = Shape::new(Tool::Arrow, 0xE5484D, 2.0, (100.0, 0.0));
+        let mut words = Shape::new(Tool::Text, 0x1A1A1A, 2.0, (0.0, 100.0));
+        words.text = "hi".into();
+        studio.doc.layers = vec![Layer::shape(boxed), Layer::shape(arrow), Layer::shape(words)];
+        studio.selected = vec![0, 1, 2];
+        // The box's line and fill are one color: it counts once.
+        assert_eq!(studio.selection_colors(), vec![(0xE5484D, 2), (0x1A1A1A, 1)]);
+        assert_eq!(studio.color_uses(0xE5484D), vec![(0, "stroke"), (0, "fill"), (1, "stroke")]);
+        assert_eq!(studio.color_uses(0x1A1A1A), vec![(2, "text")]);
+        studio.paint(Paint::Recolor(0xE5484D), Some(0xFFC53D));
+        assert_eq!(studio.selection_colors(), vec![(0xFFC53D, 2), (0x1A1A1A, 1)]);
     }
 
     #[test]

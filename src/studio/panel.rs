@@ -256,12 +256,18 @@ impl Studio {
                 rows.tools(&mut self.text, &[&to_frame[..3], &to_frame[3..]], actions(&[Action::ToFrame(6)]));
                 rows.section("Turn", "", None);
                 rows.grid(&mut self.text, actions(&[Action::Turn(-90), Action::Turn(90), Action::Turn(180), Action::FlipAcross]), 4);
-                // once for all of them.
+                // Every color among them, once, with how many layers use
+                // it: changed at once for all of them, or opened to them.
                 let colors = self.selection_colors();
                 if !colors.is_empty() {
                     rows.section("Colors in the selection", "", None);
                     for &(color, _) in colors.iter().take(8) {
-                        rows.wide(Control::ColorField(Paint::Recolor(color)));
+                        rows.split(&[(Control::ColorField(Paint::Recolor(color)), 0), (Control::ColorOpen(color), FIELD_H)]);
+                        if self.color_open == Some(color) {
+                            for (index, role) in self.color_uses(color) {
+                                rows.wide(Control::ColorLayer(index, role));
+                            }
+                        }
                     }
                 }
                 rows.section("Together", "", None);
@@ -408,26 +414,49 @@ impl Studio {
         rows.chips(&mut self.text, items);
     }
 
-    /// The colors of the shapes picked out, each with how many have it,
-    /// the commonest first.
+    /// The colors of the shapes picked out, each once with how many
+    /// layers use it, the commonest first.
     pub(super) fn selection_colors(&self) -> Vec<(u32, usize)> {
-        let mut found: Vec<(u32, usize)> = Vec::new();
+        let mut found: Vec<(u32, Vec<usize>)> = Vec::new();
         for index in self.chosen() {
-            if let Kind::Shape(shape) = &self.doc.layers[index].kind {
-                let mut colors = vec![shape.color];
-                if shape.filled && matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
-                    colors.push(shape.fill);
-                }
-                for color in colors {
-                    match found.iter_mut().find(|(known, _)| *known == color) {
-                        Some((_, count)) => *count += 1,
-                        None => found.push((color, 1)),
-                    }
+            for (color, _) in self.colors_of(index) {
+                match found.iter_mut().find(|(known, _)| *known == color) {
+                    Some((_, layers)) if layers.contains(&index) => {}
+                    Some((_, layers)) => layers.push(index),
+                    None => found.push((color, vec![index])),
                 }
             }
         }
+        let mut found: Vec<(u32, usize)> = found.into_iter().map(|(color, layers)| (color, layers.len())).collect();
         found.sort_by(|a, b| b.1.cmp(&a.1));
         found
+    }
+
+    /// The colors a layer is in, each with what it colors: its line, its
+    /// fill, its letters, its pill.
+    pub(super) fn colors_of(&self, index: usize) -> Vec<(u32, &'static str)> {
+        let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return Vec::new() };
+        match shape.tool {
+            Tool::Rect | Tool::Ellipse => {
+                let mut colors = Vec::new();
+                if shape.border || !shape.filled {
+                    colors.push((shape.color, "stroke"));
+                }
+                if shape.filled {
+                    colors.push((shape.fill, "fill"));
+                }
+                colors
+            }
+            Tool::Text if shape.style & shapes::BOXED != 0 => vec![(shape.color, "pill")],
+            Tool::Text => vec![(shape.color, "text")],
+            Tool::Counter | Tool::Badge => vec![(shape.color, "fill")],
+            _ => vec![(shape.color, "stroke")],
+        }
+    }
+
+    /// The layers picked out that use a color, each with what it colors.
+    pub(super) fn color_uses(&self, color: u32) -> Vec<(usize, &'static str)> {
+        self.chosen().into_iter().flat_map(|index| self.colors_of(index).into_iter().filter(move |(known, _)| *known == color).map(move |(_, role)| (index, role))).collect()
     }
 }
 
@@ -514,6 +543,40 @@ impl Studio {
             }
             MenuKind::Format(index) => (menu::Look::Plain, self.doc.exports.get(index).map_or("PNG".to_owned(), |size| size.format.ending().to_ascii_uppercase()), String::new()),
             _ => (menu::Look::Plain, String::new(), String::new()),
+        }
+    }
+}
+
+impl Studio {
+    /// The frame dimmed but where some layers are, and those ringed.
+    pub(super) fn dim_except(&mut self, canvas: &mut Canvas, layers: &[usize]) {
+        let (a, b) = (self.to_window((0.0, 0.0)), self.to_window((self.doc.width as f32, self.doc.height as f32)));
+        let count = self.doc.layers.len();
+        let holes: Vec<Rect> = layers
+            .iter()
+            .filter(|&&index| index < count)
+            .map(|&index| {
+                let (x, y, w, h) = self.doc.layers[index].bounds(&mut self.text);
+                let (p, q) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
+                Rect::new(p.0, p.1, q.0 - p.0, q.1 - p.1).inflate(4)
+            })
+            .collect();
+        for y in a.1.max(0)..b.1.min(canvas.height) {
+            let mut x = a.0.max(0);
+            let end = b.0.min(canvas.width);
+            while x < end {
+                match holes.iter().filter(|hole| y >= hole.y && y < hole.bottom() && x < hole.right() && hole.right() > x && hole.x <= x).map(|hole| hole.right()).max() {
+                    Some(past) => x = past,
+                    None => {
+                        let next = holes.iter().filter(|hole| y >= hole.y && y < hole.bottom() && hole.x > x).map(|hole| hole.x).min().unwrap_or(end).min(end);
+                        canvas.round_fill(x, y, next - x, 1, 0, 0x1E1E1E, 150);
+                        x = next;
+                    }
+                }
+            }
+        }
+        for hole in holes {
+            canvas.round_outline(hole.x, hole.y, hole.w, hole.h, 4, 2, ACCENT);
         }
     }
 }
