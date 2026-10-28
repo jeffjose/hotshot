@@ -683,6 +683,18 @@ impl Studio {
     }
 
     pub(super) fn run_menu(&mut self, act: MenuAct) -> Outcome {
+        // Remembered for Ctrl+K, by what it says there, asked before it is
+        // done; a button and a window remember themselves.
+        let says = match act {
+            MenuAct::Act(_) | MenuAct::Window(_) | MenuAct::Nothing => None,
+            _ => self.says_of(act),
+        };
+        let outcome = self.run_menu_now(act);
+        self.remember(says);
+        outcome
+    }
+
+    fn run_menu_now(&mut self, act: MenuAct) -> Outcome {
         match act {
             MenuAct::Nothing => {}
             MenuAct::Face(face) => {

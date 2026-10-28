@@ -116,6 +116,16 @@ impl Studio {
     /// Everything that can be found, before what was typed narrows it.
     fn everything(&mut self) -> Vec<Hit> {
         let mut hits: Vec<Hit> = FOUND_TOOLS.iter().enumerate().map(|(at, (says, key, _))| Hit { heading: "TOOLS", says: (*says).to_owned(), hint: (*key).to_owned(), found: Found::Tool(at) }).collect();
+        for (says, keys, act) in self.acts() {
+            hits.push(Hit { heading: "ACTIONS", says, hint: keys.into_owned(), found: Found::Act(act) });
+        }
+        self.found_besides(hits)
+    }
+
+    /// What can be done now, each with what it says, its keys, and what
+    /// doing it is: what the menus have, the windows and styles for what is
+    /// picked out, and what the panel's buttons do to it.
+    pub(super) fn acts(&mut self) -> Vec<(String, std::borrow::Cow<'static, str>, MenuAct)> {
         let mut acts: Vec<(String, std::borrow::Cow<'static, str>, MenuAct)> = Vec::new();
         let gather = |items: Vec<menu::Item>, acts: &mut Vec<(String, std::borrow::Cow<'static, str>, MenuAct)>| {
             for item in items {
@@ -142,9 +152,17 @@ impl Studio {
                 acts.push((format!("Style: {name}"), "".into(), MenuAct::Style(at as u8)));
             }
         }
-        for (says, keys, act) in acts {
-            hits.push(Hit { heading: "ACTIONS", says, hint: keys.into_owned(), found: Found::Act(act) });
+        for (says, keys, act) in self.named_actions() {
+            if !acts.iter().any(|(known, ..)| *known == says) {
+                acts.push((says, keys.into(), act));
+            }
         }
+        acts
+    }
+
+    /// The layers, pages, frames and files found, after what is found
+    /// already.
+    fn found_besides(&mut self, mut hits: Vec<Hit>) -> Vec<Hit> {
         // The layers worked in, and the page's own, outside the frames,
         // said to be the page's.
         let where_ = if self.on_page() { self.pages[self.page].name.clone() } else { self.doc.name.clone() };
@@ -191,17 +209,28 @@ impl Studio {
             Found::Tool(at) => !typed.is_empty() && FOUND_TOOLS[at].2.split(' ').any(|word| !word.is_empty() && word.starts_with(&typed)),
             _ => false,
         };
-        let tool_unasked = |hit: &Hit| matches!(hit.found, Found::Tool(_)) && typed.is_empty();
-        let mut hits: Vec<Hit> = self.everything().into_iter().filter(|hit| wanted(hit) && !tool_unasked(hit) && (matched(&hit.says, search.typed.trim()).is_some() || also(hit))).collect();
-        // The tools first, then what can be done, then the rest; those that
-        // begin with what was typed first, each heading kept.
+        // Nothing typed: what was done lately and most first, and what can
+        // be done listed under them once only.
+        let remembered = if typed.is_empty() && search.tab <= 1 { self.remembered_hits() } else { Vec::new() };
+        let mut hits: Vec<Hit> = self.everything().into_iter().filter(|hit| wanted(hit) && (matched(&hit.says, search.typed.trim()).is_some() || also(hit))).filter(|hit| !remembered.iter().any(|known| known.says == hit.says)).collect();
+        // The tools first, then what can be done, then the rest; within
+        // each, what was used lately and often, then what begins with what
+        // was typed, each heading kept.
         let rank = |heading: &str| match heading {
             "TOOLS" => 0,
             "ACTIONS" => 1,
             _ => 2,
         };
-        hits.sort_by_key(|hit| (rank(hit.heading), hit.heading, !hit.says.to_lowercase().starts_with(&typed)));
-        hits
+        let used: Vec<f32> = hits.iter().map(|hit| if matches!(hit.found, Found::Act(_)) { self.used(&hit.says) } else { 0.0 }).collect();
+        let mut order: Vec<usize> = (0..hits.len()).collect();
+        order.sort_by(|&a, &b| {
+            let key = |at: usize| (rank(hits[at].heading), hits[at].heading, std::cmp::Reverse((used[at] * 1000.0) as i64), !hits[at].says.to_lowercase().starts_with(&typed));
+            key(a).cmp(&key(b))
+        });
+        let mut sorted: Vec<Hit> = remembered;
+        sorted.extend(order.into_iter().map(|at| hits[at].clone()));
+        hits.clear();
+        sorted
     }
 
     /// A key while the search is open: typed into it, moved through it,

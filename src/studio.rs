@@ -45,6 +45,7 @@ mod place;
 /// The smallest the canvas and the projects are drawn.
 pub const MIN_SIZE: (i32, i32) = place::MIN;
 mod preview;
+mod recent;
 mod rulers;
 mod snap;
 mod stacks;
@@ -2169,6 +2170,10 @@ pub struct Studio {
     /// laying the stacks out moved anything the last time anything changed.
     stack_hovered: Option<u32>,
     stacks_moved: bool,
+    /// What was done lately, for Ctrl+K to list first and Ctrl+Shift+K to
+    /// do again; and the file it is kept in, which a test has none of.
+    commands: Vec<recent::Done>,
+    commands_file: Option<PathBuf>,
     dirty: bool,
 }
 
@@ -2278,6 +2283,8 @@ impl Studio {
             crop_chrome: None,
             stack_hovered: None,
             stacks_moved: false,
+            commands: Vec::new(),
+            commands_file: None,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -3661,7 +3668,11 @@ impl Studio {
                 let at = (place.x - 8 - 280, place.y - 6);
                 self.menu = Some(MenuState { kind, at, sub: None });
             }
-            Control::Window(which) => self.put_window(chrome::CHOICES[usize::from(which).min(chrome::CHOICES.len() - 1)]),
+            Control::Window(which) => {
+                let says = self.says_of(menu::MenuAct::Window(which));
+                self.put_window(chrome::CHOICES[usize::from(which).min(chrome::CHOICES.len() - 1)]);
+                self.remember(says);
+            }
             Control::WindowTheme(which) => self.put_window_theme(chromes::THEMES[usize::from(which).min(2)]),
             Control::WindowBar(swap) => self.put_window_bar(swap),
             Control::WindowShadow(shadow) => self.put_window_shadow(shadow.min(OWN_SHADOW)),
@@ -3963,6 +3974,14 @@ impl Studio {
     }
 
     fn act(&mut self, action: Action) -> Outcome {
+        // Remembered for Ctrl+K, by what it says there.
+        let says = self.says_of(menu::MenuAct::Act(action));
+        let outcome = self.act_now(action);
+        self.remember(says);
+        outcome
+    }
+
+    fn act_now(&mut self, action: Action) -> Outcome {
         self.dirty = true;
         match action {
             Action::Export => self.export(),
@@ -5143,16 +5162,18 @@ impl Studio {
             (Key::Char('z'), true) => self.undo(),
             (Key::Char('y'), true) => self.redo(),
             (Key::Char('a'), true) => self.selected = (0..self.doc.layers.len()).filter(|&index| !self.doc.layers[index].locked).collect(),
-            (Key::Char('d'), true) => self.duplicate(),
+            (Key::Char('d'), true) => drop(self.run_menu(menu::MenuAct::Do(menu::Command::Duplicate))),
             (Key::Char('c'), true) if mods.shift => self.copy(),
             (Key::Char('c'), true) if !self.chosen().is_empty() => self.copy_layers(),
             (Key::Char('c'), true) => self.copy(),
+            // Ctrl+Shift+K does again what was last done; Ctrl+K searches.
+            (Key::Char('k'), true) if mods.shift => return self.again(),
             (Key::Char('k'), true) => self.open_palette(),
             (Key::Char('e'), true) if mods.shift => drop(self.run_command(menu::Command::ExportPage)),
             (Key::Char('v'), true) if !self.copied.is_empty() && !mods.shift => self.paste_layers(),
             (Key::Char('v'), true) => return Outcome::Paste,
             (Key::Char('s'), true) => self.save(true),
-            (Key::Char('e'), true) => self.export(),
+            (Key::Char('e'), true) => drop(self.run_menu(menu::MenuAct::Do(menu::Command::ExportFrame))),
             // The keys the menus say: Ctrl+Alt+G frames what is picked out,
             // Ctrl+Shift+H and L hide and lock it.
             (Key::Char('g'), true) if mods.alt => drop(self.act(Action::FrameThem)),
@@ -6484,8 +6505,10 @@ fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: Pa
     studio.path = Some(path);
     studio.convert = options.convert;
     (studio.left_open, studio.right_open) = kept_panels();
-    // Boxes drawn as the last were set to be, in any file.
+    // Boxes drawn as the last were set to be, in any file; and what was
+    // done lately, in any, for Ctrl+K.
     studio.recall_shape_style();
+    studio.recall_commands();
     if !studio.left_open || !studio.right_open {
         studio.fit();
     }
@@ -7452,10 +7475,11 @@ mod tests {
         find(&mut studio, "crop");
         studio.key(Key::Enter, Mods::default(), true);
         assert_eq!(studio.cropping, Some(0));
-        // Nothing typed lists no tools.
+        // Nothing typed lists the tools after what was done lately, which
+        // here is nothing.
         studio.key(Key::Escape, Mods::default(), true);
         studio.key(Key::Char('k'), ctrl, true);
-        assert!(!studio.hits().iter().any(|hit| matches!(hit.found, search::Found::Tool(_))));
+        assert!(matches!(studio.hits().first().map(|hit| &hit.found), Some(search::Found::Tool(_))));
     }
 
     #[test]

@@ -276,7 +276,14 @@ hover one to see who uses it. `S` with a shape selected opens Style
 Mode, ten styles from its own color picked with Q W E R T / A S D G H.
 `Ctrl+K` searches tools, actions, layers, pages, frames and files: type
 "rect" or "box", "oval", "pen", "zoom lens", "emoji", "frame" or "crop"
-and the tool is listed with its key, taken up with Enter. Every
+and the tool is listed with its key, taken up with Enter. It remembers:
+opened with nothing typed it lists what was done lately, with what to
+("Window: macOS", "Align middles") and how long ago, then what is done
+most, with its keys and how many times, then the tools; and what is
+typed finds what was used lately and often first. `Ctrl+Shift+K` does
+the last of them again to what is picked out now, as one step to undo,
+saying what it did. What was done is kept among hotshot's state, the
+last fifty with how often each, never in the file. Every
 menu is gone through with the arrow keys and Enter as it is. A color
 right clicked in the panel copies its hex, and a file or project right
 clicked on the projects its path; an export size right clicked is
