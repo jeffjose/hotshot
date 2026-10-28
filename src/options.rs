@@ -153,8 +153,14 @@ Look:
                              (sans, the default), instrument-serif (serif),
                              architects-daughter (hand), fira-code (mono)
                              or anton (impact), which is for captions
-      --window-frame KIND    show the picture in a window: browser, mac,
-                             terminal or desktop; none, the usual
+      --window-frame KIND    show the picture in a window: macos (or mac),
+                             windows, gnome, kde, ubuntu, browser, terminal
+                             or desktop; none, the usual. A window taken
+                             loses its own title bar under it
+      --window-theme HOW     that window auto (as dark as the picture),
+                             light or dark
+      --window-bar HOW       swap (the default): a window's own title bar
+                             comes off under the one chosen; keep: stays
       --backdrop NAME        set the picture on a backdrop: aurora, orchid,
                              sorbet, glacier, dusk, graphite or any other
                              of the forty the box of them names (W, then
@@ -237,7 +243,9 @@ Keys, once an area is selected:
   The frame shows round the selection: drag beside the picture to make
   it wider, above or below it to make it taller, and the dot inside its
   corner to round its corners; click it for the backdrops, a photograph
-  nobody chose, and the shadow.
+  nobody chose, the shadow, and the window it is in, which 1 to 8 choose
+  while the box is open: macOS, Windows, GNOME, KDE, Ubuntu, a browser,
+  a terminal or none, a window clicked losing its own title bar under it.
   A tool with a mark in the corner of its button has more ways than one
   of drawing: press the mark, or the tool again, for the list.
   Text being typed or picked out has a bar over it: heavy (Ctrl+B),
@@ -475,7 +483,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size", "convert", "export", "frame", "scale"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "window-theme", "window-bar", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size", "convert", "export", "frame", "scale"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -649,12 +657,19 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         }
         "window-frame" => {
             let text = value()?;
-            let wanted = text.to_ascii_lowercase();
-            options.settings.frame.window = frame::WINDOWS
-                .iter()
-                .find(|(window, name)| name.to_ascii_lowercase().starts_with(&wanted) || (wanted == "none" && *window == frame::Window::None))
-                .map(|(window, _)| *window)
-                .ok_or(format!("invalid window '{text}', expected browser, mac, terminal, desktop or none"))?;
+            options.settings.frame.window = crate::chrome::Style::named(&text).ok_or(format!("invalid window '{text}', expected macos, windows, gnome, kde, ubuntu, browser, terminal, desktop or none"))?;
+        }
+        "window-theme" => {
+            let text = value()?;
+            options.settings.frame.theme = crate::chrome::Theme::named(&text).ok_or(format!("invalid window theme '{text}', expected auto, light or dark"))?;
+        }
+        "window-bar" => {
+            let text = value()?;
+            options.settings.keep_bar = match text.to_ascii_lowercase().as_str() {
+                "swap" | "off" => false,
+                "keep" | "own" => true,
+                _ => return Err(format!("invalid window bar '{text}', expected swap or keep")),
+            };
         }
         "zoom" => {
             let text = value()?;
@@ -754,6 +769,9 @@ pub fn remember_tools(settings: &Settings, save_to: Option<&std::path::Path>) {
     if let Some(folder) = save_to {
         text += &format!("save-to = \"{}\"\n", folder.display());
     }
+    // But for the window round it, which once chosen is wanted again: a
+    // window's own bar is not what most want to show.
+    text += &format!("window-frame = \"{}\"\nwindow-theme = \"{}\"\n", settings.frame.window.word(), settings.frame.theme.word());
     let _ = std::fs::write(file, text);
 }
 
@@ -852,6 +870,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
                 // taken at once has the corners the config file and the
                 // command line say, which is usually square.
                 now.corners = kept.corners;
+                // And the window chosen last, once one has been.
+                if text.contains("window-frame") {
+                    (now.frame.window, now.frame.theme) = (kept.frame.window, kept.frame.theme);
+                }
             }
         }
     }
@@ -1172,6 +1194,14 @@ mod tests {
         read_config(&mut options, "window-frame = \"terminal\"").unwrap();
         assert_eq!(options.settings.frame.window, frame::Window::Terminal);
         assert!(read_config(&mut options, "window-frame = \"tv\"").is_err());
+        // The old names still work, "mac" being macOS; and the new ones.
+        read_config(&mut options, "window-frame = \"mac\"").unwrap();
+        assert_eq!(options.settings.frame.window, crate::chrome::Style::Mac);
+        read_config(&mut options, "window-frame = \"macos\"\nwindow-theme = \"dark\"\nwindow-bar = \"keep\"").unwrap();
+        assert_eq!((options.settings.frame.window, options.settings.frame.theme, options.settings.keep_bar), (crate::chrome::Style::Mac, crate::chrome::Theme::Dark, true));
+        read_config(&mut options, "window-frame = \"windows\"").unwrap();
+        assert_eq!(options.settings.frame.window, crate::chrome::Style::Windows);
+        assert!(read_config(&mut options, "window-theme = \"pink\"").is_err());
         read_config(&mut options, "windows = \"bright\"").unwrap();
         assert_eq!(options.settings.windows, Windows::Bright);
         assert!(read_config(&mut options, "windows = \"dim\"").is_err());

@@ -13,6 +13,7 @@ mod avif;
 mod bench;
 mod canvas;
 mod check;
+mod chrome;
 mod convert;
 mod clipboard;
 mod cursors;
@@ -276,11 +277,15 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // A window by its number in a list, or by its title: found here,
     // and taken as its own picture where the display will give one.
     let mut chosen: Option<(Option<u32>, Rect)> = None;
+    // And the window taken, if one is: where it is with its frame, how far
+    // in from each side of that it is, and what it is called.
+    let mut framing: Option<(Rect, [i32; 4], String)> = None;
     if matches!(options.take, Take::Choose | Take::Titled(_)) {
         let windows = display.titled();
         chosen = Some(match &options.take {
             Take::Titled(wanted) => {
-                let found = windows.iter().find(|(_, title, _)| title.to_lowercase().contains(&wanted.to_lowercase())).ok_or_else(|| format!("no window has '{wanted}' in its title"))?;
+                let found = windows.iter().find(|(_, title, ..)| title.to_lowercase().contains(&wanted.to_lowercase())).ok_or_else(|| format!("no window has '{wanted}' in its title"))?;
+                framing = Some((found.2, found.3, found.1.clone()));
                 (Some(found.0), found.2.intersect(screen))
             }
             // The list: the whole screen first, then each display where
@@ -293,7 +298,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                 if monitors.len() > 1 {
                     list.extend(monitors.iter().enumerate().map(|(number, monitor)| (format!("Display {}", number + 1), None, *monitor)));
                 }
-                list.extend(windows.iter().map(|(window, title, place)| (title.clone(), Some(*window), *place)));
+                list.extend(windows.iter().map(|(window, title, place, _)| (title.clone(), Some(*window), *place)));
                 for (number, (name, _, place)) in list.iter().enumerate() {
                     eprintln!("{:>3}  {:<56.56}  {} x {}", number + 1, name, place.w, place.h);
                 }
@@ -302,6 +307,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                 std::io::stdin().read_line(&mut typed)?;
                 let number: usize = typed.trim().parse().map_err(|_| "that is not one of the numbers")?;
                 let (_, window, place) = list.get(number.wrapping_sub(1)).ok_or("that is not one of the numbers")?;
+                framing = windows.iter().find(|found| Some(found.0) == *window).map(|found| (found.2, found.3, found.1.clone()));
                 options.edit = true;
                 (*window, place.intersect(screen))
             }
@@ -324,7 +330,11 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             Some(Some(last.intersect(screen)).filter(|area| !area.is_empty()).ok_or("the area of that picture is no longer on the screen")?)
         }
         Take::Choose | Take::Titled(_) => chosen.map(|(_, place)| place).filter(|place| !place.is_empty()),
-        Take::Window => Some(display.active_window().map(|window| window.intersect(screen)).filter(|window| !window.is_empty()).ok_or("no window has the keyboard")?),
+        Take::Window => {
+            let (window, place, insets) = display.active_window().filter(|(_, place, _)| !place.intersect(screen).is_empty()).ok_or("no window has the keyboard")?;
+            framing = Some((place, insets, display.title_of(window)));
+            Some(place.intersect(screen))
+        }
         Take::Monitor(number) => {
             let monitors = display.monitors();
             let pointer = display.pointer();
@@ -354,7 +364,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             // had; anything else, and a window with none, is that much
             // of the screen.
             let own = chosen.and_then(|(window, _)| window).and_then(|window| display.window_picture(window));
-            let (area, mut pixels) = match own {
+            let (mut area, mut pixels) = match own {
                 Some((wide, high, pixels)) => (Rect::new(area.x, area.y, wide, high), pixels),
                 None => {
                     let shot = read_screen(&mut display)?;
@@ -368,8 +378,28 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             // Corners as round as the editor would have made them, and
             // the frame it would have set the picture in.
             let scale = editor::scale_for(display.height);
-            let round = ((options.plain_corners * scale).round() as i32).clamp(0, area.w.min(area.h) / 2);
             let frame = options.settings.frame;
+            // A window taken: its own title bar and borders, where the
+            // window manager drew them, taken off for a window of hotshot's
+            // to go round it; or, with none, kept and noted in the file,
+            // for the canvas to take off when it puts one round it.
+            let (mut title, mut insets) = (String::new(), None);
+            if let Some((place, [l, r, t, b], said)) = &framing {
+                let inner = Rect::new(place.x + l, place.y + t, place.w - l - r, place.h - t - b);
+                // The window's own picture is the whole of it; one read off
+                // the screen, as much of it as is on the screen.
+                let within = if (area.w, area.h) == (place.w, place.h) { [*l, *r, *t, *b] } else { chrome::insets_within(area, inner.intersect(area)) };
+                title = said.clone();
+                let [l, r, t, b] = within;
+                if frame.window != frame::Window::None && !options.settings.keep_bar && within.iter().any(|&side| side > 0) && area.w > l + r && area.h > t + b {
+                    let bare = Rect::new(l, t, area.w - l - r, area.h - t - b);
+                    pixels = canvas::crop(&pixels, area.w, bare);
+                    area = Rect::new(area.x + l, area.y + t, bare.w, bare.h);
+                } else if within.iter().any(|&side| side > 0) {
+                    insets = Some(within);
+                }
+            }
+            let round = ((options.plain_corners * scale).round() as i32).clamp(0, area.w.min(area.h) / 2);
             let (mut width, mut height, mut alpha) = (area.w, area.h, round > 0);
             if round > 0 || !frame.is_plain() {
                 canvas::round_alpha(&mut pixels, area.w, round);
@@ -388,14 +418,18 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
                     }
                     (true, false) => options.settings.photo.as_ref().and_then(|file| std::fs::read(file).ok()).and_then(|bytes| frame::open(&bytes)),
                 };
-                (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, photo.as_ref());
+                let mut text = font.join().ok();
+                (width, height, pixels) = frame::set(frame, &pixels, area.w, area.h, round, scale, photo.as_ref(), &title, text.as_mut());
                 alpha = frame.is_clear() || (frame.backdrop == frame::Backdrop::Photo && photo.is_none());
             }
             // On a photograph only where there was one to be had.
             let mark = photo.as_ref().map(history::photo_mark);
             let backdrop = if frame.backdrop == frame::Backdrop::Photo && mark.is_none() { frame::Backdrop::None } else { frame.backdrop };
             let recipe = history::Recipe { area, corners: options.plain_corners, frame: frame::Frame { backdrop, ..frame }, pointer: options.pointer, photo: mark };
-            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None, recipe, photo }
+            // What the canvas is to know of a window, kept in a plain
+            // picture of it: with a window round it, it knows nothing.
+            let notes = if frame.is_plain() { chrome::Notes { insets, title, scale } } else { chrome::Notes::default() };
+            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None, recipe, photo, canvas_notes: notes.clone(), notes }
         }
         (named, _) => match pick(&mut display, named, reopened, again_photo, arrow, &options, font, &trace)? {
             Some(taken) => taken,
@@ -420,7 +454,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // was before it was drawn on, and the shapes over it, still shapes.
     if how.canvas {
         let (area, pixels, shapes) = taken.keep.clone().unwrap_or((Rect::new(0, 0, taken.width, taken.height), taken.pixels.clone(), String::new()));
-        let doc = studio::from_markup(area, &pixels, &shapes);
+        let doc = studio::from_markup(area, &pixels, &shapes, &taken.canvas_notes);
         // Kept as a file in Drafts, which the canvas opens and goes on
         // keeping.
         let file = home::fresh_file(&home::drafts(), "Capture");
@@ -435,7 +469,8 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     let named = options.output.as_ref().and_then(|file| file.extension()).and_then(|ending| output::Format::named(&ending.to_string_lossy())).map(|format| format.as_set(&options.convert));
     let format = named.unwrap_or(options.format);
     let pack = |format| output::pack(format, &options.convert, taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha);
-    let png = if how.copy || how.pin || format == output::Format::Png { pack(output::Format::Png)? } else { Vec::new() };
+    // A PNG of a window keeps what the canvas is to know of it.
+    let png = if how.copy || how.pin || format == output::Format::Png { output::noted(pack(output::Format::Png)?, &taken.notes.write()) } else { Vec::new() };
     trace("packed");
     // Left on the screen where it was taken, its frame round where the
     // area was: by a hotshot of its own, which outlives this one.
@@ -523,6 +558,10 @@ struct Taken {
     /// photograph it is set on, to be kept for that.
     recipe: history::Recipe,
     photo: Option<frame::Photo>,
+    /// What a plain picture of a window knows of it, kept in its file; and
+    /// what the canvas is told of it, opened there.
+    notes: chrome::Notes,
+    canvas_notes: chrome::Notes,
 }
 
 /// Freezes the screen and lets an area be dragged out and drawn on.
@@ -551,7 +590,8 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     // they are read a strip at a time, the editor up and answering the
     // pointer from the first of them. Otherwise all at once, and then
     // the window.
-    let (monitors, windows, pointer) = (display.monitors(), display.windows(), display.pointer());
+    let (monitors, framed, pointer) = (display.monitors(), display.window_frames(), display.pointer());
+    let windows: Vec<Rect> = framed.iter().map(|(place, _)| *place).collect();
     let (width, height) = (display.width, display.height);
     let mut shot = display.buffer();
     let mut frame = display.buffer();
@@ -595,6 +635,7 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     let shot = Shot { width, height, pixels: Box::new(shot) };
     let text = font.join().map_err(|_| "the font could not be read")?;
     let mut editor = Editor::new(shot, dimmed, monitors, windows, options.settings.clone(), text);
+    editor.set_frames(framed);
     editor.pointer_moved(pointer.0, pointer.1, editor::Mods::default());
     if let Some(arrow) = arrow {
         editor.set_pointer(arrow, options.pointer);
@@ -641,7 +682,7 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
         // What the windows are called, for the bar of a window round the
         // picture: asked once the screen is up and read, not to keep it.
         if !titled && !first && strips.done() {
-            editor.set_titles(display.titled().into_iter().map(|(_, title, place)| (place, title)).collect());
+            editor.set_titles(display.titled().into_iter().map(|(_, title, place, _)| (place, title)).collect());
             titled = true;
         }
         display.set_cursor(editor.cursor());
@@ -725,5 +766,9 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     }
     let (place, keep) = (editor.place(), editor.keepsake());
     let (recipe, photo) = (editor.recipe(), editor.photo().cloned());
-    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, keep, recipe: history::Recipe { area, ..recipe }, photo })))
+    // What the canvas is to know of the window taken, if it is one; and
+    // what a file of it is, of a plain picture of it.
+    let canvas_notes = editor.notes();
+    let notes = if editor.is_plain() { canvas_notes.clone() } else { chrome::Notes::default() };
+    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, keep, recipe: history::Recipe { area, ..recipe }, photo, notes, canvas_notes })))
 }

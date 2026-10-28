@@ -128,6 +128,13 @@ impl Studio {
             let items = self.menu_items(kind);
             gather(items, &mut acts);
         }
+        // The windows, for a picture picked out: "mac", "windows" or
+        // "gnome" typed put that one round it.
+        if self.chosen().iter().any(|&index| matches!(self.doc.layers[index].kind, Kind::Picture(_))) {
+            for (at, style) in chrome::CHOICES.iter().enumerate() {
+                acts.push((format!("Window: {}", style.long()), "", MenuAct::Window(at as u8)));
+            }
+        }
         if self.styles_apply() {
             for (at, name) in style::STYLE_NAMES.iter().enumerate() {
                 acts.push((format!("Style: {name}"), "", MenuAct::Style(at as u8)));

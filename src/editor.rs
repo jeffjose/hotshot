@@ -226,11 +226,14 @@ pub struct Settings {
     pub tool: Tool,
     pub heads: [bool; 2],
     pub square: bool,
+    /// Whether a window clicked keeps its own title bar under the one
+    /// chosen for it, rather than having it taken off.
+    pub keep_bar: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, fill: None, border: None, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, fill: None, border: None, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false, keep_bar: false }
     }
 }
 
@@ -381,6 +384,9 @@ const GUIDE_COLOR: u32 = 0xF24822;
 const BACKDROP_ACROSS: i32 = 8;
 const BACKDROP_KINDS: [(&str, usize); 3] = [("Mesh", 16), ("Gradient", 16), ("Plain", 8)];
 
+/// What the row of windows in the frame box is called, over it.
+const WINDOW_ROW: &str = "Window";
+
 /// A thing to be chosen in a box that hangs from the bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Cell {
@@ -414,7 +420,7 @@ enum Cell {
     /// One of the folders Save can save to.
     Place(usize),
     /// One of the windows the picture can be in, by where it is in
-    /// `frame::WINDOWS`.
+    /// `chrome::CHOICES`.
     Window(usize),
 }
 
@@ -703,6 +709,10 @@ pub struct Editor {
     /// What the windows are called, and where they are, once known: for
     /// the bar of the window a picture is set in.
     titles: Vec<(Rect, String)>,
+    /// Where each window is with the frame the window manager drew round
+    /// it, and how far in from each side of that the window itself is:
+    /// its title bar and borders, to be taken off for a window of its own.
+    frames: Vec<(Rect, [i32; 4])>,
     settings: Settings,
     text: Text,
 
@@ -1048,6 +1058,7 @@ impl Editor {
             monitors: if monitors.is_empty() { vec![screen] } else { monitors },
             windows,
             titles: Vec::new(),
+            frames: Vec::new(),
             color: settings.color,
             corners: settings.corners,
             // Filled to begin with, as the config file may say: unless it
@@ -1172,7 +1183,7 @@ impl Editor {
     pub fn select(&mut self, area: Rect) {
         let area = area.intersect(self.screen());
         if !area.is_empty() {
-            self.selection = Some(area);
+            self.selection = Some(self.bare(area));
             self.window = None;
             self.dirty = true;
         }
@@ -1428,10 +1439,14 @@ impl Editor {
                     for index in 1..frame::SHADOWS.len() {
                         cells.push((Rect::new((index as i32 - 1) * side, down, side, side), Cell::Shade(index)));
                     }
-                    // And the window it is in, if any: none, a browser,
-                    // a Mac's, a terminal, a desktop's.
+                    // And the window it is in, under what that row is: a
+                    // Mac's, Windows', GNOME's, KDE's, Ubuntu's, a
+                    // browser's, a terminal's, or none; 1 to 8 while the
+                    // box is open.
                     let down = down + side + pad / 2;
-                    for index in 0..frame::WINDOWS.len() {
+                    layout.captions.push(((pad / 2, down + pad / 4), WINDOW_ROW));
+                    let down = down + Text::line_height(px) + pad / 2;
+                    for index in 0..crate::chrome::CHOICES.len() {
                         cells.push((Rect::new(index as i32 * side, down, side, side), Cell::Window(index)));
                     }
                     (across, down + side)
@@ -2604,7 +2619,7 @@ impl Editor {
             // A click with nothing dragged out takes the window under it.
             Drag::Select { begun: false, .. } => {
                 if let (None, Some(window)) = (self.selection, self.window.take()) {
-                    self.selection = Some(window);
+                    self.selection = Some(self.bare(window));
                 }
             }
             Drag::Select { before, .. } => {
@@ -2903,6 +2918,8 @@ impl Editor {
                     self.corners = at.map_or(0.0, |at| CORNERS[(at + 1) % CORNERS.len()]);
                 }
                 'i' => (self.pipette, self.popup) = (!self.pipette, None),
+                // With the frame box open, 1 to 8 are its windows.
+                '1'..='8' if self.flyout == Some(Button::Frame) => self.choose(Cell::Window(letter as usize - '1' as usize)),
                 '1'..='4' => self.set_size(letter as usize - '1' as usize),
                 '[' => self.scrolled(false),
                 ']' => self.scrolled(true),
@@ -3616,7 +3633,7 @@ impl Editor {
             }
             Cell::Shadow => self.frame.shadow = if self.frame.shadow.on() { Shadow::NONE } else { Shadow::named(frame::SHADOW).expect("the usual shadow is one of them") },
             Cell::Shade(which) => self.frame.shadow = Shadow::of_preset(which),
-            Cell::Window(which) => self.frame.window = frame::WINDOWS[which.min(frame::WINDOWS.len() - 1)].0,
+            Cell::Window(which) => self.set_window(crate::chrome::CHOICES[which.min(crate::chrome::CHOICES.len() - 1)]),
             Cell::More => self.more = !self.more,
             // Asked for here, fetched by whoever has the network, and
             // set behind the picture when it comes.
@@ -3780,10 +3797,8 @@ impl Editor {
                 pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
             }
             let picture = std::mem::take(&mut pixels);
-            (wide, high, pixels) = frame::set(self.frame, &picture, area.w, area.h, self.corner_radius(), self.scale(), self.photo.as_ref());
-            if let Some(title) = self.title() {
-                frame::title(self.frame, &mut pixels, wide, &picture, (area.w, area.h), self.scale(), &title, &mut self.text);
-            }
+            let title = self.title().unwrap_or_default();
+            (wide, high, pixels) = frame::set(self.frame, &picture, area.w, area.h, self.corner_radius(), self.scale(), self.photo.as_ref(), &title, Some(&mut self.text));
             clear = self.frame.is_clear() || (self.frame.backdrop == Backdrop::Photo && self.photo.is_none());
         }
         // A zoom may reach past the selection, and past the frame: the
@@ -3946,10 +3961,7 @@ impl Editor {
                 // see-through, which is what its window's bar is made to
                 // go with.
                 let under: Vec<u32> = canvas::crop(&self.shot.pixels, self.shot.width, area).iter().map(|pixel| pixel & 0xFF_FFFF).collect();
-                let (wide, _, mut pixels) = frame::set(self.frame, &under, area.w, area.h, radius, scale, self.photo.as_ref());
-                if let Some(title) = &title {
-                    frame::title(self.frame, &mut pixels, wide, &under, (area.w, area.h), scale, title, &mut self.text);
-                }
+                let (wide, _, pixels) = frame::set(self.frame, &under, area.w, area.h, radius, scale, self.photo.as_ref(), title.as_deref().unwrap_or(""), Some(&mut self.text));
                 self.surround = Some((made_from, wide, pixels));
             }
             if let Some((_, wide, pixels)) = &self.surround {
@@ -4263,31 +4275,13 @@ impl Editor {
                     },
                     // No window: crossed out, as no backdrop is. A window:
                     // a small one, its bar over it, lights or buttons on it.
-                    Cell::Window(0) => {
-                        canvas.round_outline(inner.x, inner.y, inner.w, inner.h, pad / 2, 1, DIM_TEXT_COLOR);
-                        self.text.draw_centered(&mut canvas, cx, cy, px, DIM_TEXT_COLOR, icons::CLOSE);
-                    }
-                    Cell::Window(which) => {
-                        let window = frame::WINDOWS[which.min(frame::WINDOWS.len() - 1)].0;
-                        let small = inner.inflate(-(px as i32 / 6).max(1));
-                        let (body, top) = if window == frame::Window::Terminal { (0x16171A, 0x2B2D31) } else { (0xFFFFFF, 0xD9DBE0) };
-                        let bar = (small.h / 3).max(4);
-                        canvas.round_fill(small.x, small.y, small.w, small.h, pad / 3, body, 256);
-                        canvas.round_fill(small.x, small.y, small.w, bar + pad / 3, pad / 3, top, 256);
-                        canvas.fill(small.x, small.y + bar, small.w, pad / 3, body);
-                        let dot = (bar / 5).max(1);
-                        match window {
-                            frame::Window::Desktop => canvas.fill(small.right() - 3 * dot - 2, small.y + bar / 2 - dot / 2, 2 * dot, dot.max(1), 0x4A4D57),
-                            _ => {
-                                for (at, light) in [(0, 0xFF5F57), (1, 0xFEBC2E), (2, 0x28C840)] {
-                                    canvas.disc(small.x + 2 * dot + at * 3 * dot, small.y + bar / 2, dot, light, 256);
-                                }
-                                if window == frame::Window::Browser {
-                                    canvas.round_fill(small.x + small.w / 2 - small.w / 6, small.y + bar / 4, small.w / 2, bar / 2, bar / 4, 0xFFFFFF, 256);
-                                }
-                            }
+                    Cell::Window(which) => match crate::chrome::CHOICES[which.min(crate::chrome::CHOICES.len() - 1)] {
+                        frame::Window::None => {
+                            canvas.round_outline(inner.x, inner.y, inner.w, inner.h, pad / 2, 1, DIM_TEXT_COLOR);
+                            self.text.draw_centered(&mut canvas, cx, cy, px, DIM_TEXT_COLOR, icons::CLOSE);
                         }
-                    }
+                        style => draw_window_cell(&mut canvas, inner.inflate(-(px as i32 / 6).max(1)), style, (pad / 3).max(2)),
+                    },
                     Cell::Dice => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::DICE),
                     Cell::Own => self.text.draw_centered(&mut canvas, cx, cy, px * 5 / 4, TEXT_COLOR, icons::FRAME),
                     // A square with its shadow under it.
@@ -4377,7 +4371,7 @@ impl Editor {
                     Cell::Dice | Cell::Own => false,
                     Cell::Shadow => self.frame.shadow.on(),
                     Cell::Shade(which) => self.frame.shadow == Shadow::of_preset(which),
-                    Cell::Window(which) => self.frame.window == frame::WINDOWS[which].0,
+                    Cell::Window(which) => self.frame.window == crate::chrome::CHOICES[which.min(crate::chrome::CHOICES.len() - 1)],
                     _ => false,
                 };
                 if on {
@@ -4389,6 +4383,20 @@ impl Editor {
             // under the pointer is called, or the one chosen.
             for (index, &((x, y), kind)) in layout.captions.iter().enumerate() {
                 self.text.draw(&mut canvas, x, y, px * 7 / 8, DIM_TEXT_COLOR, kind);
+                // Over the windows, the one under the pointer, or the one
+                // chosen, by its name and its key.
+                if kind == WINDOW_ROW {
+                    let style = match self.hover {
+                        Target::Cell(Cell::Window(which)) => Some(which),
+                        _ => crate::chrome::CHOICES.iter().position(|&style| style == self.frame.window && style != frame::Window::None),
+                    };
+                    if let Some(which) = style {
+                        let name = format!("{}  {}", crate::chrome::CHOICES[which.min(7)].long(), which + 1);
+                        let wide = self.text.width(&name, px * 7 / 8);
+                        self.text.draw(&mut canvas, flyout.right() - pad - wide, y, px * 7 / 8, TEXT_COLOR, &name);
+                    }
+                    continue;
+                }
                 let named = match (self.hover, self.frame.backdrop) {
                     (Target::Cell(Cell::Backdrop(which)), _) if which > 0 => Some(which - 1),
                     (_, Backdrop::Gradient(which)) => Some(which),
@@ -4903,6 +4911,69 @@ impl Editor {
         (self.titles, self.dirty) = (titles, true);
     }
 
+    /// Where each window is with its frame, and how far in from each side
+    /// of that the window itself is, the topmost first: as much of each as
+    /// is on the screen.
+    pub fn set_frames(&mut self, frames: Vec<(Rect, [i32; 4])>) {
+        let screen = self.screen();
+        self.frames = frames
+            .into_iter()
+            .filter_map(|(place, [l, r, t, b])| {
+                let shown = place.intersect(screen);
+                let inner = Rect::new(place.x + l, place.y + t, place.w - l - r, place.h - t - b).intersect(screen);
+                (!shown.is_empty() && !inner.is_empty()).then(|| (shown, crate::chrome::insets_within(shown, inner)))
+            })
+            .collect();
+    }
+
+    /// The frame the window manager drew round a part of the screen that
+    /// is a window with its frame, title bar and all: how far in from
+    /// each side the window is. None for any other part.
+    fn wm_frame(&self, area: Rect) -> Option<[i32; 4]> {
+        self.frames.iter().find(|(place, _)| *place == area).map(|(_, insets)| *insets).filter(|insets| insets.iter().any(|&side| side > 0))
+    }
+
+    /// A window as it is taken: without its own title bar and borders when
+    /// a window of hotshot's is to go round it, as one picked with a click
+    /// is; with them otherwise, or when the config says to keep them.
+    fn bare(&self, area: Rect) -> Rect {
+        match (self.frame.window != frame::Window::None && !self.settings.keep_bar, self.wm_frame(area)) {
+            (true, Some([l, r, t, b])) => Rect::new(area.x + l, area.y + t, area.w - l - r, area.h - t - b),
+            _ => area,
+        }
+    }
+
+    /// A window chosen to show the picture in. A selection that is a
+    /// window with its frame loses the frame, the window's own bar coming
+    /// off as the one chosen goes on; and with none chosen, a window that
+    /// lost its frame has it back.
+    fn set_window(&mut self, style: frame::Window) {
+        self.frame.window = style;
+        let Some(area) = self.selection else { return };
+        let framed = self.frames.iter().find(|(place, insets)| insets.iter().any(|&side| side > 0) && Rect::new(place.x + insets[0], place.y + insets[2], place.w - insets[0] - insets[1], place.h - insets[2] - insets[3]) == area);
+        match (style, framed) {
+            (frame::Window::None, Some(&(place, _))) => self.selection = Some(place),
+            (frame::Window::None, None) => {}
+            _ => self.selection = Some(self.bare(area)),
+        }
+        self.dirty = true;
+    }
+
+    /// Whether the picture is set in nothing: no backdrop, room, shadow or
+    /// window.
+    pub fn is_plain(&self) -> bool {
+        self.frame.is_plain()
+    }
+
+    /// What a picture of the selection knows of the window it is, for the
+    /// canvas to put a window of its own round it: the window manager's
+    /// frame still on it, where it is, what the window is called, and how
+    /// large a pixel of the screen is.
+    pub fn notes(&self) -> crate::chrome::Notes {
+        let insets = self.selection.and_then(|area| self.wm_frame(area));
+        crate::chrome::Notes { insets, title: self.title().unwrap_or_default(), scale: self.scale() }
+    }
+
     /// What the window the selection is of is called: the topmost one
     /// that is most of what is selected, and not much more.
     fn title(&self) -> Option<String> {
@@ -5011,6 +5082,29 @@ fn from_hsv((hue, saturation, value): (f32, f32, f32)) -> u32 {
         (v.clamp(0.0, 1.0) * 255.0).round() as u32
     };
     part(5.0) << 16 | part(3.0) << 8 | part(1.0)
+}
+
+/// A window of one of the kinds there are, small, filling a rectangle:
+/// drawn whole at the size of a small window and made smaller, so that it
+/// is that window in little, its bar, lights and buttons where they go.
+pub fn draw_window_cell(canvas: &mut Canvas, place: Rect, style: frame::Window, radius: i32) {
+    if place.w < 4 || place.h < 4 {
+        return;
+    }
+    let (wide, high) = (176, 120);
+    let dark = style == frame::Window::Terminal;
+    let mut pixels = vec![0xFF00_0000 | crate::chrome::body(style, dark); (wide * high) as usize];
+    let bar = crate::chrome::Bar { style, dark, title: "", address: "" };
+    crate::chrome::draw_bar(&mut pixels, (wide, high), (0.0, 0.0), (wide as f32, style.bar()), 1.0, bar, None);
+    let small = crate::pin::sized(&pixels, wide, high, place.w, place.h);
+    let (half_w, half_h) = (place.w as f32 / 2.0, place.h as f32 / 2.0);
+    for y in 0..place.h {
+        for x in 0..place.w {
+            let away = frame::round_box(x as f32 + 0.5 - half_w, y as f32 + 0.5 - half_h, half_w, half_h, radius as f32);
+            let cover = ((0.5 - away).clamp(0.0, 1.0) * 255.0) as u8;
+            canvas.blend(place.x + x, place.y + y, small[(y * place.w + x) as usize] & 0xFF_FFFF, cover);
+        }
+    }
 }
 
 /// A lighter tint of a color, for thin lines that the color itself
@@ -5950,6 +6044,41 @@ mod tests {
     }
 
     #[test]
+    fn a_window_clicked_loses_its_own_bar_under_a_window_chosen_with_w_then_a_number() {
+        let mut editor = editor(1600, 900);
+        // The top window has a frame 24 high over it and 2 round it.
+        editor.set_frames(vec![(Rect::new(500, 300, 700, 500), [2, 2, 24, 2]), (Rect::new(100, 80, 600, 400), [0, 0, 0, 0])]);
+        click(&mut editor, (900, 600), 1000);
+        let framed = Rect::new(500, 300, 700, 500);
+        assert_eq!(editor.selection(), Some(framed));
+        assert_eq!(editor.notes().insets, Some([2, 2, 24, 2]));
+        // W, then 1: macOS round it, its own bar and borders off.
+        editor.key(Key::Char('w'), PLAIN);
+        let row = editor.layout().cells.iter().filter(|(_, cell)| matches!(cell, Cell::Window(_))).count();
+        assert_eq!(row, crate::chrome::CHOICES.len());
+        editor.key(Key::Char('1'), PLAIN);
+        let bare = Rect::new(502, 324, 696, 474);
+        assert_eq!((editor.frame.window, editor.selection()), (crate::chrome::Style::Mac, Some(bare)));
+        assert_eq!(editor.notes().insets, None, "nothing of its own left to take off");
+        // The picture: the bar over what is in the window, as tall as the
+        // Mac's at this scale, and the window's contents under it.
+        let (area, wide, high, pixels, _) = editor.framed().expect("a picture");
+        assert_eq!((area.w, area.h), (696, 474));
+        let room = editor.frame.room(editor.scale());
+        assert_eq!((wide, high), (696 + 2 * room.0, 474 + 2 * room.1));
+        let bar = editor.frame.bar(editor.scale());
+        let light = pixels[((room.1 - bar / 2) * wide + room.0 + (15.5 * editor.scale()) as i32) as usize] & 0xFF_FFFF;
+        assert_eq!(light, 0xFF5F57);
+        // 8 is none: the window's own bar is back.
+        editor.key(Key::Char('8'), PLAIN);
+        assert_eq!((editor.frame.window, editor.selection()), (crate::chrome::Style::None, Some(framed)));
+        // Kept, its own bar stays on under one.
+        editor.settings.keep_bar = true;
+        editor.key(Key::Char('3'), PLAIN);
+        assert_eq!((editor.frame.window, editor.selection()), (crate::chrome::Style::Gnome, Some(framed)));
+    }
+
+    #[test]
     fn the_frame_shows_round_the_selection_and_is_dragged_wider() {
         let mut editor = editor(1600, 900);
         drag(&mut editor, (400, 300), (799, 599));
@@ -5961,7 +6090,7 @@ mod tests {
         assert_eq!(backdrops(&mut editor), FIRST.len());
         let dots = editor.layout().cells.iter().find(|(_, cell)| *cell == Cell::More).map(|(rect, _)| rect.center()).unwrap();
         click(&mut editor, dots, 1000);
-        assert_eq!((backdrops(&mut editor), editor.layout().captions.len(), editor.flyout), (BACKDROPS.len(), 3, Some(Button::Frame)));
+        assert_eq!((backdrops(&mut editor), editor.layout().captions.len(), editor.flyout), (BACKDROPS.len(), 4, Some(Button::Frame)));
         let slate = frame::named("slate").unwrap();
         let cell = editor.layout().cells.iter().find(|(_, cell)| *cell == Cell::Backdrop(slate + 1)).map(|(rect, _)| rect.center()).unwrap();
         click(&mut editor, cell, 2000);

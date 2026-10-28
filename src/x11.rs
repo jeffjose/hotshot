@@ -555,8 +555,9 @@ impl Display {
     }
 
     /// Where each of some windows is on the screen, borders and title
-    /// bar included, for those that are showing.
-    fn places(&self, windows: &[Window]) -> Vec<Rect> {
+    /// bar included, for those that are showing; and how far in from each
+    /// side of that the window itself is, left, right, top and bottom.
+    fn places(&self, windows: &[Window]) -> Vec<(Rect, [i32; 4])> {
         let frame = self.atom("_NET_FRAME_EXTENTS");
         let shadow = self.atom("_GTK_FRAME_EXTENTS");
         let kind = self.atom("_NET_WM_WINDOW_TYPE");
@@ -597,12 +598,8 @@ impl Display {
             // wanted; a shadow the program draws for itself is inside
             // it, and is not.
             let [left, right, top, bottom] = [frame[0] - shadow[0], frame[1] - shadow[1], frame[2] - shadow[2], frame[3] - shadow[3]];
-            places.push(Rect::new(
-                i32::from(origin.dst_x) - left,
-                i32::from(origin.dst_y) - top,
-                i32::from(geometry.width) + left + right,
-                i32::from(geometry.height) + top + bottom,
-            ));
+            let place = Rect::new(i32::from(origin.dst_x) - left, i32::from(origin.dst_y) - top, i32::from(geometry.width) + left + right, i32::from(geometry.height) + top + bottom);
+            places.push((place, [left, right, top, bottom].map(|side| side.max(0))));
         }
         places
     }
@@ -619,24 +616,36 @@ impl Display {
 
     /// The windows on the screen, the topmost first.
     pub fn windows(&self) -> Vec<Rect> {
+        self.window_frames().into_iter().map(|(place, _)| place).collect()
+    }
+
+    /// The same, each with how far in from each side of it the window is
+    /// inside the frame the window manager drew round it: its title bar
+    /// and borders.
+    pub fn window_frames(&self) -> Vec<(Rect, [i32; 4])> {
         let mut places = self.places(&self.listed("_NET_CLIENT_LIST_STACKING"));
         places.reverse();
         places
     }
 
-    /// The windows on the screen that are showing, the topmost first,
-    /// each with what it is called and where it is.
-    pub fn titled(&self) -> Vec<(Window, String, Rect)> {
+    /// What a window is called.
+    pub fn title_of(&self, window: Window) -> String {
         let (name, utf8) = (self.atom("_NET_WM_NAME"), self.atom("UTF8_STRING"));
+        let said = |property: Atom, kind: Atom| {
+            let reply = self.conn.get_property(false, window, property, kind, 0, 1024).ok()?.reply().ok()?;
+            Some(String::from_utf8_lossy(&reply.value).into_owned()).filter(|title| !title.is_empty())
+        };
+        said(name, utf8).or_else(|| said(AtomEnum::WM_NAME.into(), AtomEnum::STRING.into())).unwrap_or_else(|| "(no title)".to_owned())
+    }
+
+    /// The windows on the screen that are showing, the topmost first,
+    /// each with what it is called, where it is, and how far in from each
+    /// side of that it is inside its frame.
+    pub fn titled(&self) -> Vec<(Window, String, Rect, [i32; 4])> {
         let mut found = Vec::new();
         for window in self.listed("_NET_CLIENT_LIST_STACKING").into_iter().rev() {
-            let Some(place) = self.places(&[window]).into_iter().next() else { continue };
-            let said = |property: Atom, kind: Atom| {
-                let reply = self.conn.get_property(false, window, property, kind, 0, 1024).ok()?.reply().ok()?;
-                Some(String::from_utf8_lossy(&reply.value).into_owned()).filter(|title| !title.is_empty())
-            };
-            let title = said(name, utf8).or_else(|| said(AtomEnum::WM_NAME.into(), AtomEnum::STRING.into())).unwrap_or_else(|| "(no title)".to_owned());
-            found.push((window, title, place));
+            let Some((place, insets)) = self.places(&[window]).into_iter().next() else { continue };
+            found.push((window, self.title_of(window), place, insets));
         }
         found
     }
@@ -674,10 +683,12 @@ impl Display {
         whole.then_some((i32::from(size.width), i32::from(size.height), pixels))
     }
 
-    /// The window that has the keyboard.
-    pub fn active_window(&self) -> Option<Rect> {
+    /// The window that has the keyboard: which it is, where it is with its
+    /// frame, and how far in from each side of that it is.
+    pub fn active_window(&self) -> Option<(Window, Rect, [i32; 4])> {
         let active: Vec<Window> = self.listed("_NET_ACTIVE_WINDOW").into_iter().filter(|&window| window != NONE).collect();
-        self.places(&active).into_iter().next()
+        let (place, insets) = self.places(&active).into_iter().next()?;
+        Some((active[0], place, insets))
     }
 
     /// The text on the clipboard, if there is any and whoever has it

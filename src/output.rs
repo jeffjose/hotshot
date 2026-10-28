@@ -35,6 +35,70 @@ pub fn encode(width: u32, height: u32, pixels: &[u32], alpha: bool) -> Result<Ve
     Ok(png)
 }
 
+/// What a note of hotshot's in a PNG is called.
+const NOTE: &[u8] = b"hotshot";
+
+/// The CRC that ends each chunk of a PNG, over its kind and what is in it.
+fn crc(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { 0xEDB8_8320 ^ (crc >> 1) } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// A PNG with a note of hotshot's in it, as international text after its
+/// header: what a capture of a window knows of where it came from, for
+/// the canvas to read when it is opened there. Any other reader passes it
+/// over.
+pub fn noted(png: Vec<u8>, note: &str) -> Vec<u8> {
+    // The signature, then the header: 8 bytes, and 25 of the header's.
+    if note.is_empty() || png.len() < 33 || &png[12..16] != b"IHDR" {
+        return png;
+    }
+    let mut data = NOTE.to_vec();
+    data.extend_from_slice(&[0, 0, 0, 0, 0]);
+    data.extend_from_slice(note.as_bytes());
+    let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+    let mut body = b"iTXt".to_vec();
+    body.extend_from_slice(&data);
+    chunk.extend_from_slice(&body);
+    chunk.extend_from_slice(&crc(&body).to_be_bytes());
+    let mut out = png[..33].to_vec();
+    out.extend_from_slice(&chunk);
+    out.extend_from_slice(&png[33..]);
+    out
+}
+
+/// The note of hotshot's in a PNG, if it has one: looked for in the
+/// chunks before its pixels.
+pub fn note_of(png: &[u8]) -> Option<String> {
+    let mut at = 8;
+    while at + 8 <= png.len() {
+        let length = u32::from_be_bytes(png[at..at + 4].try_into().ok()?) as usize;
+        let kind = &png[at + 4..at + 8];
+        let data = png.get(at + 8..at + 8 + length)?;
+        if kind == b"IDAT" {
+            return None;
+        }
+        if kind == b"iTXt" && data.starts_with(NOTE) && data.get(NOTE.len()) == Some(&0) {
+            // After the keyword: whether and how it is packed, its
+            // language, and its keyword translated, the last two empty.
+            let mut rest = &data[NOTE.len() + 3..];
+            for _ in 0..2 {
+                let end = rest.iter().position(|&byte| byte == 0)?;
+                rest = &rest[end + 1..];
+            }
+            return String::from_utf8(rest.to_vec()).ok();
+        }
+        at += 12 + length;
+    }
+    None
+}
+
 /// What kind of file a picture is saved as. JPEG XL and WebP each come
 /// two ways, every pixel kept or smaller and nearly the same, listed as
 /// two kinds since they are chosen between as two.
@@ -297,6 +361,16 @@ pub fn save_as(path: &Path, png: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_note_in_a_png_is_read_back_and_the_png_still_reads() {
+        let png = encode(4, 2, &[0xFF11_2233; 8], false).unwrap();
+        assert_eq!(note_of(&png), None);
+        let noted = noted(png, "insets 0 0 24 0\ntitle Größe \u{2014} Acme\n");
+        assert_eq!(note_of(&noted).as_deref(), Some("insets 0 0 24 0\ntitle Größe \u{2014} Acme\n"));
+        let (w, h, pixels) = crate::pin::read(&noted).or_else(|| crate::frame::open(&noted).map(|photo| (photo.width, photo.height, photo.pixels))).expect("still a PNG");
+        assert_eq!((w, h, pixels[0] & 0xFF_FFFF), (4, 2, 0x11_2233));
+    }
 
     #[test]
     fn a_png_has_the_pixels_it_was_made_from() {

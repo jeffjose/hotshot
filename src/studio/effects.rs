@@ -625,7 +625,7 @@ mod tests {
         let mut arrow = Shape::new(Tool::Arrow, 0xE5484D, 3.5, (10.0, 10.0));
         arrow.points[1] = (60.0, 60.0);
         let lit = spotlight((20.0, 20.0), (50.0, 50.0));
-        let doc = from_markup(Rect::new(0, 0, 100, 100), &vec![0x123456; 100 * 100], &format!("{}\n{}", arrow.write(), lit.write()));
+        let doc = from_markup(Rect::new(0, 0, 100, 100), &vec![0x123456; 100 * 100], &format!("{}\n{}", arrow.write(), lit.write()), &chrome::Notes::default());
         let names: Vec<String> = doc.layers.iter().map(Layer::name).collect();
         assert_eq!(names, ["Screenshot", "Spotlight", "Arrow"]);
     }

@@ -90,9 +90,16 @@
 # sizes ("2xs", "xs", "sm", "md", "lg", "xl", "2xl"), or CSS's
 # box-shadow, in quotes, as "0 10px 15px -3px rgb(0 0 0 / 0.1)".
 # shadow = false
-# A window round the picture, inside the frame: "browser", "mac",
-# "terminal", "desktop" or "none". Its bar is dark over a dark picture.
+# A window round the picture, inside the frame: "macos" (or "mac"),
+# "windows", "gnome", "kde", "ubuntu", "browser", "terminal", "desktop"
+# or "none". A window clicked loses its own title bar and borders under
+# it, unless window-bar is "keep". The one chosen last in the frame box
+# (W, then 1 to 8) is kept for next time.
 # window-frame = "none"
+# Whether that window is "light", "dark", or "auto": as dark as what is
+# in it.
+# window-theme = "auto"
+# window-bar = "swap"
 
 # How things are drawn to begin with: how opaque, in percent; lines and
 # arrows in dashes; which ends of an arrow have heads ("end", "start",

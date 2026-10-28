@@ -29,6 +29,7 @@ cp assets/hotshot.svg ~/.local/share/icons/hicolor/scalable/apps/
 hotshot                # freeze the screen and pick an area
 hotshot -f             # capture the whole screen and save it immediately
 hotshot -w -c          # copy the active window to the clipboard
+hotshot -w --window-frame macos   # the active window, its own title bar swapped for a Mac's
 hotshot -g 0,0,800,600 -o shot.png
 hotshot --again        # capture the last screenshot again, with the same corners, frame and backdrop
 hotshot --history      # list earlier screenshots and pick one to capture again
@@ -72,7 +73,7 @@ the whole screen. Then:
 | `S` | spotlight |
 | `Z` | zoom lens |
 | `J` `E` | the library: labels, status dots, key caps, tooltips, sticky notes, pins and the rest; and emoji, all searchable |
-| `W` | frame: one of forty backdrops, with padding, a shadow, and a browser, Mac, terminal or desktop window round the picture, with the title of the window you took in its bar |
+| `W` | frame: one of forty backdrops, with padding, a shadow, and a window round the picture (`1`-`8` while it is open): macOS, Windows 11, GNOME, KDE Plasma, Ubuntu, a browser, a terminal or none, light or dark as the picture is, with the title of the window you took in its bar; a window clicked loses its own title bar under it |
 | `M` | show or hide the mouse pointer in the screenshot |
 | `C` `I` | colors, color picker |
 | `F` | fill a rectangle or oval, or not |
@@ -189,6 +190,22 @@ time it is pressed the largest box of lines inside, the window, its
 pane, the cards in it, saying "Tight · 2 of 5" as it goes; Shift+Tight
 goes back out. Double-click inside the crop to fit it round the box of
 lines clicked in, and again for the box round that.
+
+A picture's Window section puts it in a window drawn by hotshot, at any
+size and in exports at any scale: macOS, Windows 11, GNOME (Adwaita),
+KDE Plasma (Breeze), Ubuntu (Yaru), a browser with a tab and an address
+to type, a terminal, or none, each light or dark, or Auto, as dark as
+what is in it. Hover a chip to see it on the canvas, as with the other
+chips. A window captured knows where its own title bar and borders were,
+from the window manager as it was taken, and they come off under the
+window chosen (Bar: Swap), or stay with nothing drawn (Keep own); for a
+pasted picture or an older capture the bar is looked for in its pixels.
+Its title is the window's own, and can be typed over; its shadow is the
+system's, none, or the picture's own from Effects. A picture being
+cropped shows all of itself, its own bar too, and is in its window again
+once it is done. `Ctrl+K` "mac", "windows", "gnome" and the rest put
+that window round what is picked out, and the window chosen last is put
+round the next window captured.
 The markup tools draw over everything, with the
 same arrow heads, fills and sketched lines as the editor. Space or the
 middle button pans, Ctrl+scroll zooms, `Ctrl+0` fits the artboard and

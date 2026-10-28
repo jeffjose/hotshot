@@ -317,10 +317,10 @@ impl Studio {
             }
             MenuKind::Window => {
                 let now = match &picked {
-                    Some(Kind::Picture(picture)) => picture.window,
-                    _ => frame::Window::None,
+                    Some(Kind::Picture(picture)) => picture.chrome.as_ref().map(|chrome| chrome.style),
+                    _ => None,
                 };
-                frame::WINDOWS.iter().enumerate().map(|(which, (window, says))| Item::entry(*says, "", MenuAct::Window(which as u8)).on(*window == now)).collect()
+                chrome::CHOICES.iter().enumerate().map(|(which, style)| Item::entry(style.long(), "", MenuAct::Window(which as u8)).on(Some(*style) == now)).collect()
             }
             MenuKind::Shadows => {
                 let now = match &picked {
@@ -357,6 +357,7 @@ impl Studio {
                         items.push(Item::entry("Flip across", "Shift H", MenuAct::Act(Action::FlipAcross)));
                         items.push(Item::entry("Flip down", "Shift V", MenuAct::Act(Action::FlipDown)));
                         items.push(Item::entry("Actual size", "", MenuAct::Act(Action::Actual)));
+                        items.push(Item::sub("Window", MenuKind::Window));
                     } else if matches!(picked, Some(Kind::Shape(_))) {
                         items.push(Item::sub("Apply style", MenuKind::Styles));
                         items.push(Item::Rule);

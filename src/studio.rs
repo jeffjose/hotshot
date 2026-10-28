@@ -15,6 +15,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::canvas::{self, Canvas, Rect};
+use crate::chrome;
 use crate::editor::{Cursor, Key, Mods, PALETTE};
 use crate::frame::{self, Shadow, BACKDROPS};
 use crate::shapes::{self, Shape, Tool};
@@ -22,6 +23,7 @@ use crate::text::{icons, Text, FACES};
 
 mod actions;
 mod arrange;
+mod chromes;
 mod corners;
 mod crop_bar;
 mod crop_snap;
@@ -301,10 +303,46 @@ pub struct Picture {
     /// How much lighter, more contrasted and more colorful it is shown,
     /// each from -1 to 1, nothing at 0.
     pub adjust: [f32; 3],
-    /// A window drawn round it, its bar over the top of it; and what the
-    /// window is called, in its bar.
-    pub window: frame::Window,
+    /// A window drawn round it, its bar over the top of it, once one has
+    /// been chosen; and what the window is called, in its bar.
+    pub chrome: Option<Chrome>,
     pub title: String,
+    /// How far in from each side of it, in its own pixels, the frame the
+    /// window manager drew round the window it is of went: its own title
+    /// bar and borders, to come off under a window of hotshot's. None
+    /// until known, from the capture or looked for in it; nothing at all
+    /// for a picture that is no window.
+    pub insets: Option<[i32; 4]>,
+    /// How many of its pixels a pixel of a screen 1080 high was, for its
+    /// window's bar to be as large on it as its own was.
+    pub screen_scale: f32,
+}
+
+/// A window drawn round a picture: which, light or dark, whether the
+/// picture's own title bar comes off under it, whose shadow it casts, and
+/// a browser's address.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Chrome {
+    pub style: chrome::Style,
+    pub theme: chrome::Theme,
+    /// Whether the window's own bar and borders come off and this one goes
+    /// on: "Keep own" leaves its own on and draws nothing.
+    pub swap: bool,
+    /// The shadow: the system's for such a window, none, or the picture's
+    /// own as its effects set it.
+    pub shadow: u8,
+    pub address: String,
+}
+
+/// The shadows a window casts: the system's, none, or the picture's own.
+pub const SYSTEM_SHADOW: u8 = 0;
+pub const NO_SHADOW: u8 = 1;
+pub const OWN_SHADOW: u8 = 2;
+
+impl Chrome {
+    pub fn new(style: chrome::Style) -> Chrome {
+        Chrome { style, theme: chrome::Theme::Auto, swap: true, shadow: SYSTEM_SHADOW, address: String::new() }
+    }
 }
 
 /// A picture's `shadow` when its shadow is set number by number.
@@ -317,7 +355,10 @@ const DROP: frame::Layer = frame::Layer { x: 0, y: 50, blur: 100, spread: -24, c
 impl Picture {
     pub fn new(image: Arc<Image>, name: String, at: (f32, f32)) -> Picture {
         let (w, h) = (image.width() as f32, image.height() as f32);
-        Picture { image, name, cx: at.0, cy: at.1, w, h, angle: 0.0, crop: (0.0, 0.0, w, h), radius: 0.0, corners: None, shadow: 0, opacity: 256, flip: (false, false), id: shapes::fresh_id(), drop: DROP, adjust: [0.0; 3], window: frame::Window::None, title: String::new() }
+        // A capture of a window says what it knows of it in its file.
+        let notes = crate::output::note_of(&image.png).map(|note| chrome::Notes::read(&note)).unwrap_or_default();
+        let screen_scale = if notes.scale > 0.0 { notes.scale } else { 1.0 };
+        Picture { image, name, cx: at.0, cy: at.1, w, h, angle: 0.0, crop: (0.0, 0.0, w, h), radius: 0.0, corners: None, shadow: 0, opacity: 256, flip: (false, false), id: shapes::fresh_id(), drop: DROP, adjust: [0.0; 3], chrome: None, title: notes.title, insets: notes.insets, screen_scale }
     }
 
     /// The radius of each of its corners: top left, top right, bottom
@@ -333,14 +374,6 @@ impl Picture {
         self.corners = radii.iter().any(|&radius| radius != radii[0]).then_some(radii);
     }
 
-    /// How tall the bar of its window is, in pixels of the artboard: none
-    /// without a window.
-    fn bar(&self) -> f32 {
-        match self.window {
-            frame::Window::None => 0.0,
-            _ => (self.w * 0.04).clamp(18.0, 44.0).min(self.h / 3.0),
-        }
-    }
 
     /// A point of the artboard as a point of the picture unturned, from
     /// its middle.
@@ -743,9 +776,14 @@ impl Doc {
                     if picture.adjust != [0.0; 3] {
                         *out += &format!("adjust {} {} {}\n", picture.adjust[0], picture.adjust[1], picture.adjust[2]);
                     }
-                    if picture.window != frame::Window::None {
-                        let which = frame::WINDOWS.iter().position(|(window, _)| *window == picture.window).unwrap_or(0);
-                        *out += &format!("window {which} {}\n", one_line(&picture.title));
+                    if let Some(chrome) = &picture.chrome {
+                        *out += &format!("chrome {} {} {} {} {}\n", chrome.style.word(), chrome.theme.word(), u8::from(chrome.swap), chrome.shadow, one_line(&chrome.address));
+                    }
+                    if !picture.title.is_empty() {
+                        *out += &format!("title {}\n", one_line(&picture.title));
+                    }
+                    if let Some([l, r, t, b]) = picture.insets {
+                        *out += &format!("insets {l} {r} {t} {b} {}\n", picture.screen_scale);
                     }
                 }
                 Kind::Shape(shape) => *out += &format!("shape {flags} {}\n", shape.write()),
@@ -789,7 +827,7 @@ impl Doc {
                 self.layers.push(Layer { kind: Kind::Picture(picture), hidden, locked, named: None });
             }
             // What a picture has besides, on lines after its own.
-            "drop" | "adjust" | "window" | "corners" => {
+            "drop" | "adjust" | "window" | "corners" | "chrome" | "title" | "insets" => {
                 let Some(Layer { kind: Kind::Picture(picture), .. }) = self.layers.last_mut() else { return None };
                 match line.split(' ').next()? {
                     "corners" => {
@@ -807,8 +845,25 @@ impl Doc {
                             *value = words.next()?.parse::<f32>().ok()?.clamp(-1.0, 1.0);
                         }
                     }
+                    "chrome" => {
+                        let style = chrome::Style::named(words.next()?)?;
+                        let theme = chrome::Theme::named(words.next()?)?;
+                        let swap = words.next()? == "1";
+                        let shadow = words.next()?.parse::<u8>().ok()?.min(OWN_SHADOW);
+                        picture.chrome = Some(Chrome { style, theme, swap, shadow, address: words.collect::<Vec<_>>().join(" ") });
+                    }
+                    "title" => picture.title = line["title ".len().min(line.len())..].to_owned(),
+                    "insets" => {
+                        let mut number = || words.next().and_then(|word| word.parse::<f32>().ok()).filter(|value| value.is_finite());
+                        picture.insets = Some([number()?, number()?, number()?, number()?].map(|side| side.max(0.0) as i32));
+                        picture.screen_scale = number().filter(|scale| *scale > 0.0).unwrap_or(1.0);
+                    }
+                    // A window as files had it before there were more of
+                    // them: none, a browser, a Mac's, a terminal or a
+                    // desktop's, by number, and its title after.
                     _ => {
-                        picture.window = frame::WINDOWS.get(words.next()?.parse::<usize>().ok()?)?.0;
+                        let style = [chrome::Style::None, chrome::Style::Browser, chrome::Style::Mac, chrome::Style::Terminal, chrome::Style::Desktop].get(words.next()?.parse::<usize>().ok()?).copied()?;
+                        picture.chrome = (style != chrome::Style::None).then(|| Chrome { shadow: OWN_SHADOW, ..Chrome::new(style) });
                         picture.title = words.collect::<Vec<_>>().join(" ");
                     }
                 }
@@ -942,7 +997,7 @@ fn shortened(path: &Path) -> String {
 /// the picture just as it was taken, in a frame just its size with nothing
 /// behind it, and the shapes moved from where they were on the screen to
 /// where it is in the frame.
-pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str) -> Doc {
+pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str, notes: &chrome::Notes) -> Doc {
     let mut doc = Doc::new(area.w, area.h);
     // Exported at its own size, pixel for pixel, as a screenshot is wanted.
     (doc.background, doc.exports) = (Fill::None, vec![ExportSize::new(1.0)]);
@@ -951,7 +1006,17 @@ pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str) -> Doc {
     let drawn: Vec<Shape> = shapes.lines().filter_map(Shape::read).collect();
     let image = Image::new(area.w, area.h, pixels.iter().map(|pixel| pixel | 0xFF00_0000).collect());
     let middle = (area.w as f32 / 2.0, area.h as f32 / 2.0);
-    let picture = Picture::new(Arc::new(image), "Screenshot".into(), middle);
+    let mut picture = Picture::new(Arc::new(image), "Screenshot".into(), middle);
+    // A window knows its title, where its own bar is, and how large a
+    // pixel of its screen was; and is put in the window chosen last, if
+    // one has been.
+    (picture.title, picture.insets) = (notes.title.clone(), notes.insets);
+    if notes.scale > 0.0 {
+        picture.screen_scale = notes.scale;
+    }
+    if let (Some(style), true) = (chromes::kept_window(), notes.insets.is_some()) {
+        picture.set_chrome(Some(Chrome::new(style)));
+    }
     doc.layers.push(Layer::picture(picture));
     // Spotlights first, just over the picture: in capture mode they darken
     // the picture and not what is drawn on it.
@@ -1005,7 +1070,8 @@ fn over(under: u32, color: u32, amount: f32) -> u32 {
 
 /// A picture drawn onto the artboard at `times` its size: its shadow, then
 /// it, each pixel of it from the four nearest of the copy of it of about
-/// the size it is shown at, kept to its rounded corners.
+/// the size it is shown at, kept to its rounded corners; and the window
+/// round it, if it is in one, its bar over the top of it.
 fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text: &mut Text) {
     let (wide, high) = (part.w, part.h);
     let mut at = picture.clone();
@@ -1014,15 +1080,19 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
     let picture = &at;
     let custom = [picture.drop];
     let preset = Shadow::of_preset(picture.shadow.saturating_sub(1));
-    let layers = match picture.shadow {
-        0 => &[][..],
-        CUSTOM_SHADOW => &custom[..],
-        _ => preset.layers(),
-    };
     // Tailwind's shadows are for a page seen at its size; an artboard is
     // most often seen at half its own, and its shadows are twice as large.
-    // One set number by number is in pixels of the artboard.
-    let lift = if picture.shadow == CUSTOM_SHADOW { times } else { times * SHADOW_SIZE };
+    // One set number by number is in pixels of the artboard. A window's
+    // own is in pixels of the screen it was on, as large as its bar is.
+    let (layers, lift) = match picture.chrome.as_ref().map(|chrome| chrome.shadow) {
+        Some(SYSTEM_SHADOW) => (picture.system_shadow(), picture.screen_scale * picture.content_scale()),
+        Some(NO_SHADOW) => (&[][..], 1.0),
+        _ => match picture.shadow {
+            0 => (&[][..], 1.0),
+            CUSTOM_SHADOW => (&custom[..], times),
+            _ => (preset.layers(), times * SHADOW_SIZE),
+        },
+    };
     // How far out from it anything of it goes: its shadow's reach.
     let reach = layers.iter().map(|layer| (f32::from(layer.blur) * 1.5 + f32::from(layer.spread) + f32::from(layer.x.abs().max(layer.y.abs()))) * lift).fold(0.0f32, f32::max);
     let corners = picture.corners();
@@ -1035,20 +1105,41 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
         return;
     }
     let (hw, hh) = (picture.w / 2.0, picture.h / 2.0);
-    // A window's bar over the top of it, and the picture in what is left.
-    let bar = picture.bar() * times;
-    let radii = picture.radii().map(|radius| if bar > 0.0 { radius.max(10.0 * times) } else { radius }.clamp(0.0, hw.min(hh)));
-    let (cx, cy, cw, ch) = picture.crop;
+    // A window's bar over the top of it, and the picture in what is left;
+    // its corners as round as the window's are, at least.
+    let style = picture.drawn_style();
+    let bar = picture.bar();
+    let least = picture.window_radius();
+    let radii = picture.radii().map(|radius| radius.max(least).clamp(0.0, hw.min(hh)));
+    let (cx, cy, cw, ch) = picture.shown_crop();
     let level = picture.image.level(cw / picture.w);
     let (lw, lh, pixels) = (level.0, level.1, &level.2);
     let (ratio_x, ratio_y) = (lw as f32 / picture.image.width() as f32, lh as f32 / picture.image.height() as f32);
     let opacity = picture.opacity as f32 / 256.0;
-    let dark = picture.window == frame::Window::Terminal || (bar > 0.0 && frame::darkish(pixels, lw, lh));
-    let bar_scale = bar / 30.0;
     let adjusted = picture.adjust != [0.0; 3];
     // Each pixel of it shown as many: drawn as hard squares, as Figma
     // shows a screenshot zoomed far in, rather than smoothed between.
     let hard = (picture.w / cw.max(1e-3)).min(picture.h / ch.max(1e-3)) >= HARD_PIXELS;
+    // The bar, drawn once: square to the artboard, just the part of it
+    // that is here, pixel for pixel; turned, all of it, to be sampled as
+    // the picture is.
+    let bar_drawn = (bar > 0.0).then(|| {
+        let chrome = picture.chrome.clone().unwrap_or_else(|| Chrome::new(style));
+        let drawn = chrome::Bar { style, dark: chrome::is_dark(style, chrome.theme, pixels, lw, lh), title: &picture.title, address: &chrome.address };
+        let scale = bar / style.bar();
+        if picture.angle == 0.0 {
+            let (x0, y0) = (picture.cx - hw, picture.cy - hh);
+            let place = Rect::new(x0.floor() as i32, y0.floor() as i32, picture.w.ceil() as i32 + 2, bar.ceil() as i32 + 2).intersect(area);
+            let mut drawn_pixels = vec![0xFF00_0000; (place.w.max(0) * place.h.max(0)) as usize];
+            chrome::draw_bar(&mut drawn_pixels, (place.w, place.h), (x0 - place.x as f32, y0 - place.y as f32), (picture.w, bar), scale, drawn, Some(text));
+            (place, 0.0, drawn_pixels)
+        } else {
+            let fine = (4096.0 / picture.w).min(1.0);
+            let (bw, bh) = ((picture.w * fine).ceil() as i32, (bar * fine).ceil() as i32);
+            let drawn_pixels = chrome::bar_pixels(bw, bh, scale * fine, drawn, Some(text));
+            (Rect::new(0, 0, bw, bh), fine, drawn_pixels)
+        }
+    });
     out[(area.y * wide) as usize..(area.bottom() * wide) as usize].par_chunks_mut(wide as usize).enumerate().for_each(|(row, line)| {
         let y = area.y + row as i32;
         for x in area.x..area.right() {
@@ -1068,8 +1159,12 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
             let cover = (0.5 - inside).clamp(0.0, 1.0);
             if cover > 0.0 {
                 if ly + hh < bar {
-                    let color = frame::window_bar(picture.window, dark, lx + hw, ly + hh, picture.w, bar, bar_scale);
-                    pixel = over(pixel, color, cover * opacity);
+                    let color = match &bar_drawn {
+                        Some((place, fine, drawn)) if *fine == 0.0 => drawn.get(((y - place.y) * place.w + x - place.x) as usize).copied().unwrap_or(0xFF00_0000),
+                        Some((place, fine, drawn)) => sample(drawn, place.w, place.h, (lx + hw) * fine - 0.5, (ly + hh) * fine - 0.5),
+                        None => 0xFF00_0000,
+                    };
+                    pixel = over(pixel, color & 0xFF_FFFF, cover * opacity);
                 } else {
                     // Where in the picture's own pixels, flipped if it is.
                     let (mut u, mut v) = ((lx + hw) / picture.w, (ly + hh - bar) / (picture.h - bar));
@@ -1093,25 +1188,6 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
             line[x as usize] = pixel;
         }
     });
-    // What the window is called, in the middle of its bar, square to the
-    // artboard only.
-    if bar >= 12.0 && !picture.title.is_empty() && picture.angle == 0.0 {
-        let px = ((bar * 0.42).round() as u32).max(7);
-        let (mid_x, mid_y) = ((picture.cx).round() as i32, (picture.cy - hh + bar / 2.0).round() as i32);
-        let band = Rect::new((picture.cx - hw) as i32 + (bar * 2.6) as i32, (picture.cy - hh) as i32, (picture.w - bar * 5.2).max(0.0) as i32, bar.ceil() as i32).intersect(Rect::new(0, 0, wide, high));
-        if !band.is_empty() {
-            let ink = if dark { 0xC9CCD3 } else { 0x4A4D57 };
-            let mut canvas = Canvas::new(out, wide, high);
-            canvas.set_clip(band);
-            text.draw_centered(&mut canvas, mid_x, mid_y, px, ink, &picture.title);
-            // Drawing on it left its pixels without how opaque they are.
-            for y in band.y..band.bottom() {
-                for pixel in &mut out[(y * wide + band.x) as usize..(y * wide + band.right()) as usize] {
-                    *pixel |= 0xFF00_0000;
-                }
-            }
-        }
-    }
 }
 
 /// A color of a picture made lighter or darker, more or less contrasted,
@@ -1475,9 +1551,15 @@ enum Control {
     MenuRow(u8, u16),
     Menu(MenuKind),
     /// One of the windows a picture can be set in, by where it is in
-    /// `frame::WINDOWS`; a name to type, in a field; and what an end of a
+    /// `chrome::CHOICES`; whether it is light, dark or as the picture is,
+    /// by where that is in `chromes::THEMES`; whether its own bar is
+    /// swapped for it; and its shadow, the system's, none or the
+    /// picture's own. A name to type, in a field; and what an end of a
     /// line is stuck to.
     Window(u8),
+    WindowTheme(u8),
+    WindowBar(bool),
+    WindowShadow(u8),
     Entry(Naming),
     Stuck(u8),
     /// A part of the color picker: its square, its strips, its dropper.
@@ -1756,6 +1838,8 @@ enum Naming {
     /// the file of one of the frame's export sizes ends in.
     Title(usize),
     Suffix(usize),
+    /// The address in a picture's browser, by its layer.
+    Address(usize),
     /// A picture's name, in the list of layers; and what the list of
     /// layers is narrowed to.
     Layer(usize),
@@ -1961,6 +2045,9 @@ pub struct Studio {
     /// Where the pill saying how large what is picked out is was drawn
     /// last, for what is said along the bottom to keep off it.
     pill: Option<Rect>,
+    /// The window of the picture being cropped, by what the picture is
+    /// called: off it while it is cropped, and put back after.
+    crop_chrome: Option<(u32, Chrome)>,
     dirty: bool,
 }
 
@@ -2063,6 +2150,7 @@ impl Studio {
             frame_sizes: Vec::new(),
             pressed_at: 0,
             pill: None,
+            crop_chrome: None,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -2165,6 +2253,7 @@ impl Studio {
     pub fn gathered(&self) -> Vec<Page> {
         let mut pages = self.pages.clone();
         pages[self.page].frames[self.active] = self.doc.clone();
+        self.put_back_crop_window(&mut pages);
         pages
     }
 
@@ -2758,6 +2847,7 @@ impl Studio {
     }
 
     pub fn pointer_moved(&mut self, x: i32, y: i32, mods: Mods) {
+        self.crop_window();
         let mods = self.steady_mods(mods);
         (self.pointer, self.mods) = ((x, y), mods);
         self.pointer_cursor = self.pointer_shape();
@@ -2899,6 +2989,7 @@ impl Studio {
     }
 
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
+        self.crop_window();
         self.end_preview();
         self.menu_row = None;
         // The window of what was written closes with a click off it.
@@ -3258,18 +3349,18 @@ impl Studio {
                 let at = (place.x - 8 - 280, place.y - 6);
                 self.menu = Some(MenuState { kind, at, sub: None });
             }
-            Control::Window(which) => {
-                let window = frame::WINDOWS[usize::from(which).min(frame::WINDOWS.len() - 1)].0;
-                self.restyle(|layer| {
-                    if let Kind::Picture(picture) = &mut layer.kind {
-                        picture.window = window;
-                    }
-                });
-            }
+            Control::Window(which) => self.put_window(chrome::CHOICES[usize::from(which).min(chrome::CHOICES.len() - 1)]),
+            Control::WindowTheme(which) => self.put_window_theme(chromes::THEMES[usize::from(which).min(2)]),
+            Control::WindowBar(swap) => self.put_window_bar(swap),
+            Control::WindowShadow(shadow) => self.put_window_shadow(shadow.min(OWN_SHADOW)),
             Control::Entry(naming) => {
                 let now = match naming {
                     Naming::Title(index) => match self.doc.layers.get(index).map(|layer| &layer.kind) {
                         Some(Kind::Picture(picture)) => picture.title.clone(),
+                        _ => String::new(),
+                    },
+                    Naming::Address(index) => match self.doc.layers.get(index).map(|layer| &layer.kind) {
+                        Some(Kind::Picture(picture)) => picture.chrome.as_ref().map_or(String::new(), |chrome| chrome.address.clone()),
                         _ => String::new(),
                     },
                     Naming::Suffix(index) => self.doc.exports.get(index).map_or(String::new(), |size| size.suffix.clone()),
@@ -3621,6 +3712,7 @@ impl Studio {
     }
 
     pub fn released(&mut self) {
+        self.crop_window();
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.dirty = true;
         // A handle, a crop or a number taken hold of and let go of where it
@@ -4210,6 +4302,13 @@ impl Studio {
                     picture.title = typed;
                 }
             }
+            Naming::Address(index) => {
+                if let Some(Layer { kind: Kind::Picture(picture), .. }) = self.doc.layers.get_mut(index) {
+                    if let Some(chrome) = &mut picture.chrome {
+                        chrome.address = typed;
+                    }
+                }
+            }
             Naming::Hex | Naming::Filter => {}
             Naming::Layer(index) => {
                 if let Some(layer) = self.doc.layers.get_mut(index) {
@@ -4347,6 +4446,7 @@ impl Studio {
         let most = (self.doc.width as f32 * 0.9 / picture.w).min(self.doc.height as f32 * 0.9 / picture.h).min(1.0);
         (picture.w, picture.h) = (picture.w * most, picture.h * most);
         self.doc.layers.push(Layer::picture(picture));
+        self.window_as_last(self.doc.layers.len() - 1);
         self.selected = vec![self.doc.layers.len() - 1];
         self.tool = Tool::Select;
         self.changed();
@@ -4498,6 +4598,7 @@ impl Studio {
     // ---- The keys ----
 
     pub fn key(&mut self, key: Key, mods: Mods, down: bool) -> Outcome {
+        self.crop_window();
         if down {
             self.end_preview();
         }
@@ -4871,6 +4972,7 @@ impl Studio {
     /// The window drawn, a frame drawn sharp given up whenever `stop` says
     /// something has come that it should be given up for.
     pub fn draw_stopping(&mut self, out: &mut [u32], stop: &mut dyn FnMut() -> bool) {
+        self.crop_window();
         let (width, height) = (self.width, self.height);
         let layout = self.layout();
         let view = layout.view;
@@ -5693,8 +5795,12 @@ impl Studio {
                         canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 1, if typing.is_some() { ACCENT } else { 0x555555 });
                     }
                     let (label, now) = match naming {
-                        Naming::Title(index) => ("Title", match self.doc.layers.get(index).map(|layer| &layer.kind) {
+                        Naming::Title(index) => ("", match self.doc.layers.get(index).map(|layer| &layer.kind) {
                             Some(Kind::Picture(picture)) => picture.title.clone(),
+                            _ => String::new(),
+                        }),
+                        Naming::Address(index) => ("", match self.doc.layers.get(index).map(|layer| &layer.kind) {
+                            Some(Kind::Picture(picture)) => picture.chrome.as_ref().map_or(String::new(), |chrome| chrome.address.clone()),
                             _ => String::new(),
                         }),
                         Naming::Suffix(index) => ("", self.doc.exports.get(index).map_or(String::new(), |size| size.suffix.clone())),
@@ -5717,6 +5823,8 @@ impl Studio {
                             // file's name ends in all the same.
                             let faint = match naming {
                                 Naming::Filter => "Filter layers".to_owned(),
+                                Naming::Title(_) => "No title".to_owned(),
+                                Naming::Address(_) => "example.com".to_owned(),
                                 Naming::Suffix(index) => self.doc.exports.get(index).map(ExportSize::file_suffix).filter(|suffix| !suffix.is_empty()).unwrap_or_else(|| "suffix".to_owned()),
                                 _ if label.is_empty() => "suffix".to_owned(),
                                 _ => "none".to_owned(),
@@ -5778,7 +5886,7 @@ impl Studio {
                         Control::Shadow(which) => matches!(&shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.shadow == which),
                         Control::Action(Action::Halo) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.halo),
                         Control::Action(Action::Crop) => self.cropping.is_some(),
-                        Control::Window(which) => matches!(&shown, Some(Layer { kind: Kind::Picture(picture), .. }) if frame::WINDOWS[usize::from(which).min(frame::WINDOWS.len() - 1)].0 == picture.window),
+                        Control::Window(_) | Control::WindowTheme(_) | Control::WindowBar(_) | Control::WindowShadow(_) => self.window_chip_on(control, &shown),
                         Control::Action(action) => self.action_on(action, &shown),
                         _ => false,
                     };
@@ -7052,7 +7160,7 @@ mod tests {
         let area = Rect::new(300, 200, 400, 250);
         let mut arrow = Shape::new(Tool::Arrow, 0xE5484D, 3.5, (310.0, 220.0));
         arrow.points[1] = (500.0, 300.0);
-        let doc = from_markup(area, &vec![0x123456; 400 * 250], &arrow.write());
+        let doc = from_markup(area, &vec![0x123456; 400 * 250], &arrow.write(), &chrome::Notes::default());
         // In a frame just its size, with nothing behind it.
         assert_eq!((doc.width, doc.height, doc.layers.len(), doc.background), (400, 250, 2, Fill::None));
         let Kind::Shape(moved) = &doc.layers[1].kind else { panic!("the arrow over the picture") };
@@ -7176,7 +7284,7 @@ mod tests {
     fn a_frame_made_for_a_picture_exports_it_pixel_for_pixel() {
         let frame = framed(checker(120, 80), "pic");
         assert_eq!(frame.exports.iter().map(|size| size.times).collect::<Vec<_>>(), vec![1.0]);
-        let captured = from_markup(Rect::new(10, 10, 120, 80), &vec![0xFF0000FF; 120 * 80], "");
+        let captured = from_markup(Rect::new(10, 10, 120, 80), &vec![0xFF0000FF; 120 * 80], "", &chrome::Notes::default());
         assert_eq!(captured.exports.iter().map(|size| size.times).collect::<Vec<_>>(), vec![1.0]);
         // What is copied is at the size it is exported at.
         let mut studio = Studio::with_pages(vec![Page { name: "Page 1".into(), frames: vec![frame] }], Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
@@ -7306,19 +7414,19 @@ mod tests {
         let mut doc = Doc::new(300, 200);
         let mut picture = Picture::new(Arc::new(checker(200, 120)), "pic".into(), (150.0, 100.0));
         (picture.shadow, picture.drop) = (CUSTOM_SHADOW, frame::Layer { x: 4, y: 20, blur: 30, spread: -2, color: 0x80102030 });
-        (picture.adjust, picture.window, picture.title) = ([0.5, -0.25, 1.0], frame::Window::Mac, "main.rs".into());
+        (picture.adjust, picture.chrome, picture.title) = ([0.5, -0.25, 1.0], Some(Chrome::new(chrome::Style::Mac)), "main.rs".into());
         doc.layers.push(Layer::picture(picture));
         let mut tuned = crate::convert::Settings::default();
         tuned.avif.quality = 70.0;
         doc.exports = vec![ExportSize { times: 1.0, suffix: String::new(), format: crate::output::Format::Png, tuned: None }, ExportSize { times: 3.0, suffix: "@3x".into(), format: crate::output::Format::Webp, tuned: None }, ExportSize { times: 2.0, suffix: String::new(), format: crate::output::Format::Avif, tuned: Some(tuned) }];
         let back = Doc::read(&doc.write()).expect("read back");
         let Kind::Picture(read) = &back.layers[0].kind else { panic!() };
-        assert_eq!((read.shadow, read.drop, read.adjust, read.window, read.title.as_str()), (CUSTOM_SHADOW, frame::Layer { x: 4, y: 20, blur: 30, spread: -2, color: 0x80102030 }, [0.5, -0.25, 1.0], frame::Window::Mac, "main.rs"));
+        assert_eq!((read.shadow, read.drop, read.adjust, read.chrome.clone(), read.title.as_str()), (CUSTOM_SHADOW, frame::Layer { x: 4, y: 20, blur: 30, spread: -2, color: 0x80102030 }, [0.5, -0.25, 1.0], Some(Chrome::new(chrome::Style::Mac)), "main.rs"));
         assert_eq!(back.exports, doc.exports);
         // The window's bar is over the top of it, and lighter is lighter.
         let (_, _, out) = back.render(1.0, &mut text);
         let top = out[(40 + 4) * 300 + 150];
-        assert!(top & 0xFF_FFFF == 0xE8E9EC || top & 0xFF_FFFF == 0x2B2D31, "{top:08x}");
+        assert!(top & 0xFF_FFFF == 0xECECEE || top & 0xFF_FFFF == 0x2B2B30, "{top:08x}");
         assert!(adjust(0xFF808080, [0.5, 0.0, 0.0]) & 0xFF > 0x80 && adjust(0xFFFF0000, [0.0, 0.0, -1.0]) & 0xFF == (adjust(0xFFFF0000, [0.0, 0.0, -1.0]) >> 8) & 0xFF);
     }
 

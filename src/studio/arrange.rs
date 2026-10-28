@@ -145,7 +145,11 @@ fn match_look(layer: &mut Layer, like: &Layer) {
     match_shadow(layer, like);
     match (&mut layer.kind, &like.kind) {
         (Kind::Picture(picture), Kind::Picture(other)) => {
-            (picture.opacity, picture.window, picture.adjust) = (other.opacity, other.window, other.adjust);
+            (picture.opacity, picture.adjust) = (other.opacity, other.adjust);
+            if picture.chrome != other.chrome {
+                picture.find_insets();
+                picture.set_chrome(other.chrome.clone());
+            }
         }
         (Kind::Shape(shape), Kind::Shape(other)) => {
             (shape.color, shape.opacity, shape.stroke) = (other.color, other.opacity, other.stroke);

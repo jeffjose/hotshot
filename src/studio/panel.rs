@@ -8,6 +8,8 @@ use super::*;
 /// How high a field is, and how far down the next row begins.
 pub(super) const FIELD_H: i32 = 26;
 const ROW_STEP: i32 = 32;
+/// How much of a row the word at its left takes, saying what it is for.
+const LABEL_W: i32 = 54;
 
 /// The rows of the panel as they are laid out, down from `y`.
 pub(super) struct Rows<'a> {
@@ -122,6 +124,30 @@ impl Rows<'_> {
         self.y += ROW_STEP;
     }
 
+    /// What a row is for, at its left, and chips after it, each as wide
+    /// as what it says, as tabs are.
+    pub fn labeled(&mut self, text: &mut Text, label: &str, items: Vec<(String, Control)>) {
+        let line = Text::line_height(12);
+        self.layout.words.push(((self.left, self.y + (FIELD_H - Text::line_height(11)) / 2), label.to_owned(), DIM_TEXT_COLOR, 11));
+        let mut x = self.left + LABEL_W;
+        for (says, control) in items {
+            let wide = text.width(&says, 12) + 16;
+            self.layout.controls.push((Rect::new(x, self.y, wide, FIELD_H), control));
+            self.layout.words.push(((x + 8, self.y + (FIELD_H - line) / 2), says, TEXT_COLOR, 12));
+            x += wide + 4;
+        }
+        self.y += ROW_STEP;
+    }
+
+    /// What a row is for, at its left, and one control taking the rest.
+    pub fn labeled_wide(&mut self, label: &str, control: Control) -> Rect {
+        self.layout.words.push(((self.left, self.y + (FIELD_H - Text::line_height(11)) / 2), label.to_owned(), DIM_TEXT_COLOR, 11));
+        let place = Rect::new(self.left + LABEL_W, self.y, self.inner - LABEL_W, FIELD_H);
+        self.layout.controls.push((place, control));
+        self.y += ROW_STEP;
+        place
+    }
+
     /// A small heading in capitals, over a row.
     pub fn label(&mut self, says: &str) {
         self.layout.words.push(((self.left, self.y), says.to_owned(), DIM_TEXT_COLOR, 10));
@@ -210,11 +236,7 @@ impl Studio {
                     for field in [Field::Exposure, Field::Contrast, Field::Saturation] {
                         rows.wide(Control::Field(field));
                     }
-                    rows.section("Window", "round the picture", None);
-                    rows.wide(Control::Menu(MenuKind::Window));
-                    if picture.window != frame::Window::None {
-                        rows.wide(Control::Entry(Naming::Title(index)));
-                    }
+                    self.window_section(&mut rows, index, &picture);
                     self.effects_section(&mut rows, picture.shadow != 0);
                     self.layer_section(&mut rows);
                 }
@@ -571,11 +593,10 @@ impl Studio {
             MenuKind::Hand => (menu::Look::Plain, if shape.is_some_and(|shape| shape.sketch) { "By hand" } else { "Clean" }.to_owned(), String::new()),
             MenuKind::Window => {
                 let window = self.picked().and_then(|index| match &self.doc.layers[index].kind {
-                    Kind::Picture(picture) => Some(picture.window),
+                    Kind::Picture(picture) => picture.chrome.as_ref().map(|chrome| chrome.style),
                     Kind::Shape(_) => None,
                 });
-                let name = frame::WINDOWS.iter().find(|(known, _)| Some(*known) == window).map_or("No window", |(_, name)| name);
-                (menu::Look::Plain, name.to_owned(), String::new())
+                (menu::Look::Plain, window.unwrap_or_default().long().to_owned(), String::new())
             }
             MenuKind::Shadows => {
                 let (preset, drop) = match self.picked().map(|index| &self.doc.layers[index]) {

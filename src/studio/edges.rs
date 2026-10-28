@@ -320,9 +320,57 @@ fn content(w: usize, h: usize, pixels: &[u32]) -> Sides {
     (l as f32, t as f32, r as f32, b as f32)
 }
 
+/// How tall the title bar a window manager drew over a window is, in a
+/// picture of the window taken with it, when nothing said so as it was
+/// taken: the first line from near its top that goes across all of it,
+/// with a band over it mostly of one color, the bar's own, the title and
+/// the buttons on it being the rest. None in a picture with no such bar.
+pub(super) fn title_bar(width: i32, height: i32, pixels: &[u32]) -> Option<i32> {
+    let (w, h) = (width.max(0) as usize, height.max(0) as usize);
+    if w < 64 || h < 48 || pixels.len() < w * h {
+        return None;
+    }
+    let lowest = (h / 3).min(90);
+    for y in 12..=lowest {
+        let (over, row) = (&pixels[(y - 1) * w..y * w], &pixels[y * w..(y + 1) * w]);
+        let sharp = over.iter().zip(row).filter(|(a, b)| differ(**a, **b) > SHARP).count();
+        if sharp * 10 < w * 9 {
+            continue;
+        }
+        // The band over it: the color most of it is, and how much of it
+        // that is, and that its edge is not merely a line inside a page.
+        let band = &pixels[w..(y - 1) * w];
+        let ground = pixels[w + w / 2];
+        let same = band.iter().step_by(3).filter(|&&pixel| differ(pixel, ground) <= MARGIN).count();
+        if same * 3 * 10 >= band.len() * 6 {
+            return Some(y as i32);
+        }
+        return None;
+    }
+    None
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_bar_drawn_over_a_window_is_found_and_none_where_there_is_none() {
+        // A dark gray bar 24 high with a light title in it and buttons, over
+        // a white window with a card in it.
+        let (w, h) = (400, 300);
+        let mut pixels = card_picture(w, h, (40, 60, 360, 260), (60, 80, 200, 140));
+        for y in 0..24 {
+            for x in 0..w {
+                let title = (150..230).contains(&x) && (8..16).contains(&y) && x % 3 == 0;
+                let button = x > w - 60 && (6..18).contains(&y) && x % 20 < 10;
+                pixels[(y * w + x) as usize] = if title || button { 0xFFD4_D4D4 } else { 0xFF3C_3F41 };
+            }
+        }
+        assert_eq!(title_bar(w, h, &pixels), Some(24));
+        let plain = card_picture(w, h, (40, 60, 360, 260), (60, 80, 200, 140));
+        assert_eq!(title_bar(w, h, &plain), None);
+    }
 
     /// A picture `w` by `h` of a light gray, with a white card in it from
     /// `card`, edged in a darker gray a pixel wide, and in the card a
