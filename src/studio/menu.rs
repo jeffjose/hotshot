@@ -37,6 +37,11 @@ pub(super) enum MenuKind {
     Shadows,
     /// The styles of Style Mode.
     Styles,
+    /// What can be done with a layer, a frame, and a color of the
+    /// selection, right clicked in the panels.
+    Layer(usize),
+    Frame(usize),
+    Color(u32),
 }
 
 /// An open list: where it hangs from, and the one open beside it.
@@ -120,6 +125,21 @@ pub(super) enum Command {
     RenamePage(usize),
     DuplicatePage(usize),
     DeletePage(usize),
+    /// A picture off the clipboard, whatever layers were copied; and a
+    /// layer named or typed into, by where it is.
+    PastePicture,
+    RenameLayer(usize),
+    EditText(usize),
+    /// The frame worked in named, copied beside itself, done away with,
+    /// and fitted to the view.
+    RenameFrame,
+    DuplicateFrame,
+    DeleteFrame,
+    ZoomFrame,
+    /// Every layer with a color in it picked out; and that color, to be
+    /// another in what is picked out.
+    SelectColor(u32),
+    ReplaceColor(u32),
 }
 
 /// The sizes a frame can be, by what each is for.
@@ -335,7 +355,13 @@ impl Studio {
                     items.push(do_("Show / hide", "Ctrl Shift H", Command::ToggleHide));
                     items.push(do_("Lock / unlock", "Ctrl Shift L", Command::ToggleLock));
                 } else {
+                    if !self.copied.is_empty() {
+                        items.push(do_("Paste picture", "Ctrl Shift V", Command::PastePicture));
+                    }
                     items.push(do_("Select all", "Ctrl A", Command::SelectAll));
+                    items.push(Item::Rule);
+                    items.push(do_("Zoom to fit", "Ctrl 0", Command::ZoomFit));
+                    items.push(do_("Rulers", "Shift R", Command::Rulers).on(self.rulers));
                     items.push(Item::Rule);
                     items.push(do_("Capture the screen", "Ctrl G", Command::Capture));
                 }
@@ -361,7 +387,46 @@ impl Studio {
             MenuKind::MainSub(2) => vec![do_("Zoom in", "Ctrl +", Command::ZoomIn), do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut), do_("Zoom to fit", "Ctrl 0", Command::ZoomFit), do_("Zoom to selection", "Shift 2", Command::ZoomSelection), do_("Actual size", "Ctrl 1", Command::Zoom(100)), Item::Rule, do_("Rulers", "Shift R", Command::Rulers).on(self.rulers)],
             MenuKind::MainSub(3) => vec![Item::sub("Order", MenuKind::Order), Item::entry("Frame selection", "Ctrl Alt G", MenuAct::Act(Action::FrameThem)), Item::Rule, Item::entry("Flip across", "Shift H", MenuAct::Act(Action::FlipAcross)), Item::entry("Flip down", "Shift V", MenuAct::Act(Action::FlipDown)), Item::entry("Crop", "Enter", MenuAct::Act(Action::Crop)), Item::Rule, do_("Show / hide", "Ctrl Shift H", Command::ToggleHide), do_("Lock / unlock", "Ctrl Shift L", Command::ToggleLock)],
             MenuKind::MainSub(_) => vec![do_("Capture the screen", "Ctrl G", Command::Capture), do_("Paste a picture", "Ctrl V", Command::Paste)],
-            MenuKind::Page(page) => vec![do_("Rename", "Double-click", Command::RenamePage(page)), do_("Duplicate page", "", Command::DuplicatePage(page)), do_("Export every frame", "", Command::ExportPage), Item::Rule, do_("Delete page", "", Command::DeletePage(page))],
+            MenuKind::Page(page) => vec![do_("Rename", "Double-click", Command::RenamePage(page)), do_("Duplicate page", "", Command::DuplicatePage(page)), do_("Export every frame", "Ctrl Shift E", Command::ExportPage), Item::Rule, do_("New page", "", Command::NewPage), Item::Rule, do_("Delete page", "", Command::DeletePage(page))],
+            MenuKind::Layer(index) => {
+                let layer = self.doc.layers.get(index);
+                let (hidden, locked) = layer.map_or((false, false), |layer| (layer.hidden, layer.locked));
+                let mut items = Vec::new();
+                match layer.map(|layer| &layer.kind) {
+                    Some(Kind::Picture(_)) => items.push(do_("Rename", "Double-click", Command::RenameLayer(index))),
+                    Some(Kind::Shape(shape)) if matches!(shape.tool, Tool::Text | Tool::Badge) => items.push(do_("Edit text", "Enter", Command::EditText(index))),
+                    _ => {}
+                }
+                if !items.is_empty() {
+                    items.push(Item::Rule);
+                }
+                items.push(do_("Copy", "Ctrl C", Command::Copy));
+                items.push(do_("Paste", "Ctrl V", Command::Paste));
+                items.push(do_("Duplicate", "Ctrl D", Command::Duplicate));
+                items.push(Item::Rule);
+                items.push(Item::sub("Order", MenuKind::Order));
+                if self.chosen().len() > 1 {
+                    items.push(Item::entry("Frame selection", "Ctrl Alt G", MenuAct::Act(Action::FrameThem)));
+                }
+                if let Some(Kind::Shape(shape)) = layer.map(|layer| &layer.kind) {
+                    items.push(do_("Select same color", "", Command::SelectColor(style::main_color(shape))));
+                }
+                items.push(Item::Rule);
+                items.push(do_(if hidden { "Show" } else { "Hide" }, "Ctrl Shift H", Command::ToggleHide));
+                items.push(do_(if locked { "Unlock" } else { "Lock" }, "Ctrl Shift L", Command::ToggleLock));
+                items.push(Item::Rule);
+                items.push(do_("Delete", "Del", Command::Delete));
+                items
+            }
+            MenuKind::Frame(_) => vec![
+                do_("Rename", "Double-click", Command::RenameFrame),
+                do_("Duplicate frame", "", Command::DuplicateFrame),
+                do_("Export frame", "Ctrl E", Command::ExportFrame),
+                do_("Zoom to frame", "Shift 1", Command::ZoomFrame),
+                Item::Rule,
+                do_("Delete frame", "Del", Command::DeleteFrame),
+            ],
+            MenuKind::Color(color) => vec![do_("Select all with this color", "", Command::SelectColor(color)), do_("Replace color\u{2026}", "", Command::ReplaceColor(color))],
             MenuKind::Zoom => vec![
                 do_("Zoom in", "Ctrl +", Command::ZoomIn),
                 do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut),
@@ -672,6 +737,32 @@ impl Studio {
             Command::RenamePage(page) => self.renaming = Some((Naming::Page(page), self.pages[page].name.clone())),
             Command::DuplicatePage(page) => self.duplicate_page(page),
             Command::DeletePage(page) => self.delete_page(page),
+            Command::PastePicture => return Outcome::Paste,
+            Command::RenameLayer(index) => {
+                if let Some(Kind::Picture(picture)) = self.doc.layers.get(index).map(|layer| &layer.kind) {
+                    self.renaming = Some((Naming::Layer(index), picture.name.clone()));
+                }
+            }
+            Command::EditText(index) => {
+                if index < self.doc.layers.len() {
+                    self.checkpoint();
+                    self.selected = vec![index];
+                    self.edit_text(index);
+                }
+            }
+            Command::RenameFrame => self.renaming = Some((Naming::Frame, self.doc.name.clone())),
+            Command::DuplicateFrame => self.duplicate_frame(),
+            Command::DeleteFrame => self.delete_frame(),
+            Command::ZoomFrame => self.fit(),
+            Command::SelectColor(color) => {
+                self.selected = (0..self.doc.layers.len())
+                    .filter(|&index| {
+                        let layer = &self.doc.layers[index];
+                        !layer.hidden && !layer.locked && matches!(&layer.kind, Kind::Shape(shape) if shape.color == color || shape.filled && shape.fill == color)
+                    })
+                    .collect();
+            }
+            Command::ReplaceColor(color) => self.open_picker(Paint::Recolor(color)),
         }
         Outcome::Continue
     }

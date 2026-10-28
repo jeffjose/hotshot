@@ -350,6 +350,22 @@ impl Studio {
         self.changed();
     }
 
+    /// The frame worked in copied, to the right of it, and the copy worked
+    /// in.
+    pub(super) fn duplicate_frame(&mut self) {
+        self.commit_name();
+        self.commit_text();
+        let mut copy = self.doc.clone();
+        copy.name = format!("{} copy", copy.name);
+        copy.x = self.doc.x + self.doc.width as f32 + 80.0;
+        self.checkpoint();
+        self.pages[self.page].frames.push(copy);
+        let index = self.frame_count() - 1;
+        self.activate(index);
+        self.frame_picked = true;
+        self.changed();
+    }
+
     /// A page done away with, where there are others.
     pub(super) fn delete_page(&mut self, page: usize) {
         if self.pages.len() < 2 || page >= self.pages.len() {
@@ -393,13 +409,42 @@ impl Studio {
     /// with that; on nothing, what can be done anyway.
     pub(super) fn right_click(&mut self, at: (i32, i32)) -> Outcome {
         // Whatever else is open closes, and what is being typed is kept.
-        let control = self.control_at(at);
+        let mut control = self.control_at(at);
         self.commit_typing();
         self.commit_name();
         (self.menu, self.flyout, self.palette, self.styling, self.eyedropping) = (None, None, None, false, false);
         self.dirty = true;
-        if let Some(Control::Page(page)) = control {
-            self.menu = Some(MenuState { kind: MenuKind::Page(page), at, sub: None });
+        // A row of the layers ends the typing of text, which may take a
+        // row away: the row is found again after.
+        if matches!(control, Some(Control::Layer(_) | Control::Eye(_) | Control::Lock(_) | Control::ColorLayer(..) | Control::Frame(_))) && self.editing.is_some() {
+            self.commit_text();
+            control = self.control_at(at);
+        }
+        // A row right clicked is picked out first, as Figma does, and its
+        // menu opens.
+        let kind = match control {
+            Some(Control::Page(page)) => {
+                self.go_to_page(page);
+                Some(MenuKind::Page(page))
+            }
+            Some(Control::Layer(index) | Control::Eye(index) | Control::Lock(index) | Control::ColorLayer(index, _)) => {
+                if !self.selected.contains(&index) {
+                    self.selected = vec![index];
+                }
+                self.frame_picked = false;
+                Some(MenuKind::Layer(index))
+            }
+            Some(Control::Frame(index)) => {
+                self.activate(index);
+                (self.frame_picked, self.tool, self.framing) = (true, Tool::Select, false);
+                self.selected.clear();
+                Some(MenuKind::Frame(index))
+            }
+            Some(Control::ColorField(Paint::Recolor(color)) | Control::ColorOpen(color)) => Some(MenuKind::Color(color)),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            self.menu = Some(MenuState { kind, at, sub: None });
             return Outcome::Continue;
         }
         // Over the bar of tools, or anything else that floats on the page,

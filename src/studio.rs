@@ -6288,6 +6288,64 @@ mod tests {
         }
     }
 
+    /// The row of the open list that says something, chosen.
+    fn choose(studio: &mut Studio, says: &str) -> Outcome {
+        let kind = studio.menu.expect("a list is open").kind;
+        let row = studio.menu_items(kind).iter().position(|item| matches!(item, menu::Item::Entry { says: known, .. } if known == says)).unwrap_or_else(|| panic!("no {says} in {kind:?}"));
+        studio.press_menu(0, row as u16)
+    }
+
+    #[test]
+    fn the_rows_of_the_panels_and_the_page_have_menus_that_pick_out_what_is_right_clicked() {
+        let mut studio = studio();
+        for at in [100.0, 300.0] {
+            let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (at, 100.0));
+            boxed.points[1] = (at + 50.0, 150.0);
+            studio.doc.layers.push(Layer::shape(boxed));
+        }
+        let mut other = Shape::new(Tool::Rect, 0x3E63DD, 3.5, (500.0, 100.0));
+        other.points[1] = (550.0, 150.0);
+        studio.doc.layers.push(Layer::shape(other));
+        studio.fit();
+        // A layer's row: picked out by the right click, and hidden from it.
+        let row = studio.control_rect(Control::Layer(1)).unwrap().center();
+        studio.right_click(row);
+        assert_eq!((studio.menu.map(|menu| menu.kind), studio.selected.clone()), (Some(MenuKind::Layer(1)), vec![1]));
+        choose(&mut studio, "Hide");
+        assert!(studio.doc.layers[1].hidden && studio.menu.is_none());
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        // Its color, and everything else in it.
+        studio.right_click(row);
+        choose(&mut studio, "Select same color");
+        assert_eq!(studio.selected, vec![0, 1]);
+        // The same from a color of several picked out.
+        studio.selected = vec![0, 2];
+        let swatch = studio.control_rect(Control::ColorOpen(0xE5484D)).unwrap().center();
+        studio.right_click(swatch);
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Color(0xE5484D)));
+        choose(&mut studio, "Select all with this color");
+        assert_eq!(studio.selected, vec![0, 1]);
+        // The page, empty: zoom and rulers.
+        let empty = studio.to_window((700.0, 500.0));
+        studio.right_click(empty);
+        assert!(studio.selected.is_empty());
+        choose(&mut studio, "Rulers");
+        assert!(studio.rulers);
+        // A page's row: a new page.
+        let page = studio.control_rect(Control::Page(0)).unwrap().center();
+        studio.right_click(page);
+        choose(&mut studio, "New page");
+        assert_eq!((studio.pages.len(), studio.page), (2, 1));
+        studio.commit_name();
+        // A frame's row: picked out, and copied beside itself.
+        let frame = studio.control_rect(Control::Frame(0)).unwrap().center();
+        studio.right_click(frame);
+        assert!(studio.frame_picked && matches!(studio.menu, Some(MenuState { kind: MenuKind::Frame(0), .. })));
+        choose(&mut studio, "Duplicate frame");
+        assert_eq!((studio.frame_count(), studio.active), (2, 1));
+        assert!(studio.doc.name.ends_with("copy") && studio.doc.x > studio.frame(0).x);
+    }
+
     #[test]
     fn a_gradient_goes_the_way_it_is_turned_and_is_kept() {
         let mut text = Text::load();
