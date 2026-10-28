@@ -563,7 +563,12 @@ ids and tags, a merge a ring, a highlight a square and a reversal
 crossed; and a quadrant chart is its four quadrants in shades of one
 color with their names, its axes' ends along its sides and its points,
 in their own colors and sizes if given, with their names. Each with
-its title over it. `Ctrl+K` Copy as Mermaid puts what is
+its title over it. Every kind is drawn in the board's look, Rounded,
+Sketchy or Clean, on its ground, light, dark gray or black, the colors
+a diagram tells its parts apart by turning to their own shades for the
+dark and the paper under its words to the ground's; every box is as
+large as its words need in either face, so none spill out. Nothing is
+a picture: each part is a board shape. `Ctrl+K` Copy as Mermaid puts what is
 picked out, or the board, on the clipboard as a flowchart, or as a
 sequence diagram for a sequence, and writes it beside the file as an
 `.mmd`; Copy as Mermaid mind map does a map from the box picked out.

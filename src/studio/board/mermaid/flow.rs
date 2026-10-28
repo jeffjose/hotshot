@@ -984,6 +984,7 @@ mod tests {
         let shop = shapes.iter().find(|shape| shape.text == "The shop").unwrap().id;
         assert_eq!(studio.inside(shop).len(), 2);
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
         assert_labels_clear(&mut studio);
         assert_hugs(&mut studio, 60.0);
         // Written back: the same nodes and edges, read again.
@@ -1019,6 +1020,7 @@ mod tests {
         assert!(shapes.iter().any(|shape| shape.ends[1] == shapes::CROSS_HEAD && shape.heads[1]));
         assert!(shapes.iter().any(|shape| shape.ends[1] == shapes::RING_HEAD && shape.heads[1]));
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
         assert_labels_clear(&mut studio);
         assert_hugs(&mut studio, 60.0);
     }

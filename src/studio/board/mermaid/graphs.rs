@@ -618,6 +618,7 @@ mod tests {
         assert!(frame("Animal").1 + frame("Animal").3 <= frame("Duck").1);
         assert!(shapes.iter().any(|shape| shape.text == "1" && shape.tool == Tool::Text), "how many, at the end");
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
         assert_labels_clear(&mut studio);
     }
 
@@ -642,6 +643,7 @@ mod tests {
         let shapes = shapes_of(&studio);
         assert!(shapes.iter().any(|shape| shape.tool == Tool::Ellipse && shape.form == shapes::FORM_DOUBLE && shape.filled), "an end");
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
         assert_labels_clear(&mut studio);
         assert_hugs(&mut studio, 60.0);
     }
@@ -665,6 +667,7 @@ mod tests {
         assert!(studio.bring_mermaid(ENTITIES));
         assert_eq!(shapes_of(&studio).iter().filter(|shape| shape.form == shapes::FORM_TABLE).count(), 5);
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
         assert_labels_clear(&mut studio);
     }
 }

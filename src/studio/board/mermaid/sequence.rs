@@ -867,6 +867,7 @@ mod tests {
         let level = |name: &str| now.iter().find(|shape| shape.text == name).unwrap().points[0].1;
         assert!(level("Bye") < level("Hello John, how are you?"), "reordered: {:?} {:?} {:?} {:?}", level("Bye"), level("Hello John, how are you?"), (mid, hello_y), studio.selected);
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
         // Written back as a sequence diagram.
         studio.selected.clear();
         let text = studio.to_mermaid(false);
@@ -914,6 +915,7 @@ mod tests {
         let bar = shapes.iter().find(|shape| shape.region == BUSY).unwrap().frame();
         assert!(bar.1 <= level("POST /login") && bar.1 + bar.3 >= level("done"));
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
         assert_labels_clear(&mut studio);
         assert_hugs(&mut studio, 40.0);
         // Its box hugs it: as tall as down to the feet and room.

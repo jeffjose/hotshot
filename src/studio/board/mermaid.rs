@@ -593,6 +593,27 @@ pub(in crate::studio) mod check {
         }
     }
 
+    /// Every box's words inside it, in the board's lettering and in the
+    /// plain face the clean look draws them in.
+    pub(in crate::studio) fn assert_words_fit(studio: &mut Studio) {
+        for layer in studio.doc.layers.clone() {
+            let Kind::Shape(shape) = &layer.kind else { continue };
+            if !matches!(shape.tool, Tool::Rect | Tool::Ellipse) || shape.text.is_empty() {
+                continue;
+            }
+            let (x, y, w, h) = shape.frame();
+            for face in [LETTERING, 0] {
+                let mut drawn = shape.clone();
+                drawn.face = face;
+                let (lines, high) = drawn.label_lines(&mut studio.text);
+                for (line, left, top, wide) in lines {
+                    let inside = left >= x - 0.5 && left + wide as f32 <= x + w + 0.5 && top >= y - 0.5 && top + high as f32 <= y + h + 2.0;
+                    assert!(inside, "{line:?} of {:?} in face {face} at {:?} is out of {:?}", shape.text, (left, top, wide, high), (x, y, w, h));
+                }
+            }
+        }
+    }
+
     /// Words that should be clear of every box but the one they are in.
     pub(in crate::studio) fn assert_labels_clear(studio: &mut Studio) {
         let all = placed(studio);

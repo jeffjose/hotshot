@@ -16,7 +16,7 @@ pub(in crate::studio) const PAPERS: [(u32, u32); 3] = [(shapes::PAPER, 0xD8D6CF)
 
 /// A board's colors and their shades on the dark: its line colors, its
 /// fills, a note's edge, white and the paper.
-const DARK: [(u32, u32); 13] = [
+const DARK: [(u32, u32); 33] = [
     (0x1E1E1E, 0xE6E6E6),
     (0xE03131, 0xFF8787),
     (0x2F9E44, 0x8CE99A),
@@ -30,6 +30,28 @@ const DARK: [(u32, u32); 13] = [
     (0xE5DBFF, 0x2F2454),
     (0xFFFFFF, 0x2B2B2B),
     (0x000000, 0xE6E6E6),
+    // The stronger colors a diagram tells its parts apart by, deeper;
+    // its paler fills and grays, darker; its other lines, lighter.
+    (0x74C0FC, 0x1C7ED6),
+    (0xFFD43B, 0xE8A900),
+    (0x8CE99A, 0x37B24D),
+    (0xFFA8A8, 0xE03131),
+    (0xB197FC, 0x7048E8),
+    (0x66D9E8, 0x1098AD),
+    (0xFFC078, 0xF76707),
+    (0xFAA2C1, 0xD6336C),
+    (0xC5F6FA, 0x0B3A40),
+    (0xFFE8CC, 0x4A2A0A),
+    (0xFFDEEB, 0x4A1830),
+    (0xE7F5FF, 0x0C2742),
+    (0xF3F9FF, 0x0A1D30),
+    (0xF1F3F5, 0x2E2E2E),
+    (0xE9ECEF, 0x3A3F44),
+    (0xCED4DA, 0x495057),
+    (0x7048E8, 0xB197FC),
+    (0x0C8599, 0x66D9E8),
+    (0xE8590C, 0xFFA94D),
+    (0xC2255C, 0xF783AC),
 ];
 
 /// A color as a ground shows it: on the dark, its shade there if it is one
@@ -82,7 +104,8 @@ pub(in crate::studio) fn dress(shape: &mut Shape, look: u8, ground: u8, times: f
     if ground > 0 {
         shape.color = shade(shape.color, ground);
         shape.fill = shade(shape.fill, ground);
-        shape.paper = PAPERS[usize::from(ground.min(2))].0;
+        // Black kept a hair off nought, which says the light paper.
+        shape.paper = PAPERS[usize::from(ground.min(2))].0.max(1);
     }
     shape.touch();
 }

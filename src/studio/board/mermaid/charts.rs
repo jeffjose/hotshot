@@ -1097,6 +1097,7 @@ mod tests {
             assert!(done.0 < active.0 && done.1 < active.1);
         }
         assert_labels_clear_of_bars(&mut studio);
+        assert_words_fit(&mut studio);
     }
 
     /// No words over another's, nor over a bar but their own.
@@ -1124,6 +1125,7 @@ mod tests {
         assert!(shapes.iter().any(|shape| shape.text == "46%"));
         assert!(shapes.iter().any(|shape| shape.text == "Key elements in Product X"));
         assert_labels_clear_of_bars(&mut studio);
+        assert_words_fit(&mut studio);
     }
 
     #[test]
@@ -1139,6 +1141,7 @@ mod tests {
         assert!(frame("Spotify").1 > frame("Twitter").1, "a line of its own goes on the period before");
         assert!(frame("Early").0 <= frame("2002").0 && frame("Early").0 + frame("Early").2 >= frame("2004").0 + frame("2004").2, "a section over its periods");
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
     }
 
     #[test]
@@ -1155,6 +1158,7 @@ mod tests {
         assert!(shapes.iter().any(|shape| shape.text == "Cat" && shape.tool == Tool::Text), "who, in the key");
         assert!(shapes.iter().any(|shape| shape.text == "Go to work" && shape.tool == Tool::Rect));
         assert_labels_clear_of_bars(&mut studio);
+        assert_words_fit(&mut studio);
     }
 
     #[test]
@@ -1176,6 +1180,7 @@ mod tests {
         assert!((middle("Origins") - root).signum() != (middle("Tools") - root).signum() || (middle("Research") - root).signum() != (middle("Tools") - root).signum(), "both sides");
         assert!((middle("Long history") - root).abs() > (middle("Origins") - root).abs(), "children further out");
         assert_clear(&mut studio);
+        assert_words_fit(&mut studio);
         // Still a map: written back as one.
         let at = studio.doc.layers.iter().position(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.text == "mindmap")).unwrap();
         studio.selected = vec![at];
@@ -1196,6 +1201,7 @@ mod tests {
         // A line from develop's last into the merge, round a corner.
         assert!(shapes.iter().any(|shape| shape.tool == Tool::Line && shape.points.len() == 4));
         assert_labels_clear_of_bars(&mut studio);
+        assert_words_fit(&mut studio);
     }
 
     #[test]
@@ -1211,5 +1217,6 @@ mod tests {
         let dot = shapes.iter().find(|shape| shape.tool == Tool::Ellipse && shape.color == STROKES[1]).unwrap();
         assert!((dot.frame().2 - 24.0).abs() < 0.1, "its own color and size");
         assert_labels_clear_of_bars(&mut studio);
+        assert_words_fit(&mut studio);
     }
 }
