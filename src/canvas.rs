@@ -104,6 +104,9 @@ impl<'a> Canvas<'a> {
     /// Rows of the part of a rectangle that may be drawn on.
     fn rows(&mut self, x: i32, y: i32, w: i32, h: i32) -> impl Iterator<Item = &mut [u32]> {
         let part = Rect::new(x, y, w.max(0), h.max(0)).intersect(self.clip);
+        // Nothing of it in the clip, no rows: its corner may be past the
+        // edge, which no row reaches to.
+        let part = if part.is_empty() { Rect::new(0, 0, 0, 0) } else { part };
         let (x0, x1) = (part.x as usize, part.right() as usize);
         let rows = self.pixels.chunks_exact_mut(self.width.max(1) as usize);
         rows.skip(part.y.max(0) as usize).take(part.h as usize).map(move |row| &mut row[x0..x1])
@@ -531,6 +534,17 @@ pub fn changed(now: &[u32], was: &mut [u32], width: usize) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_is_drawn_past_the_edge_is_left_out() {
+        let mut pixels = vec![0u32; 10 * 10];
+        let mut canvas = Canvas::new(&mut pixels, 10, 10);
+        canvas.set_clip(Rect::new(0, 0, 10, 10));
+        canvas.fill(11, 2, 4, 4, 0xFF0000);
+        canvas.fill(-8, 2, 4, 4, 0xFF0000);
+        canvas.fill(2, 12, 4, 4, 0xFF0000);
+        assert!(pixels.iter().all(|&pixel| pixel == 0));
+    }
 
     #[test]
     fn a_pointer_is_drawn_where_it_was_and_no_further_than_the_picture() {
