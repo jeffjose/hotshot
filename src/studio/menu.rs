@@ -471,7 +471,7 @@ impl Studio {
         self.run_menu(act)
     }
 
-    fn run_menu(&mut self, act: MenuAct) -> Outcome {
+    pub(super) fn run_menu(&mut self, act: MenuAct) -> Outcome {
         match act {
             MenuAct::Nothing => {}
             MenuAct::Face(face) => {

@@ -24,6 +24,7 @@ mod actions;
 mod menu;
 mod panel;
 mod picker;
+mod preview;
 
 
 use menu::{MenuKind, MenuState};
@@ -1469,6 +1470,8 @@ pub struct Studio {
     /// The lines what is being moved has snapped to, on the artboard:
     /// up and down at an x, or across at a y.
     guides: Vec<(bool, f32)>,
+    /// What is shown as if it were done, while the pointer rests on it.
+    preview: Option<preview::Preview>,
     dirty: bool,
 }
 
@@ -1533,6 +1536,7 @@ impl Studio {
             note: None,
             last_press: (0, (-100, -100)),
             guides: Vec::new(),
+            preview: None,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -1999,6 +2003,9 @@ impl Studio {
             Drag::Picker { part, rect } => self.pick_at(part, rect, (x, y), false),
             Drag::Slide { field, left, wide } => self.slide_to(field, left, wide, x),
             Drag::None => {
+                // What a control the pointer rests on would do, shown.
+                let over = self.control_at((x, y));
+                self.hover_preview(over);
                 // Over an open list, the list a row of it opens.
                 if self.menu.is_some() {
                     let control = self.control_at((x, y));
@@ -2105,6 +2112,7 @@ impl Studio {
     }
 
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
+        self.end_preview();
         let at_window = self.pointer;
         let double = time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at_window);
@@ -3426,6 +3434,7 @@ impl Studio {
     /// beside it first and put in its place, so that a file half written
     /// is never what is there. Said, when `loud`.
     pub fn save(&mut self, loud: bool) {
+        self.end_preview();
         let path = self.path.clone().unwrap_or_else(|| crate::home::fresh_file(&crate::home::drafts(), "Untitled"));
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -3450,6 +3459,9 @@ impl Studio {
     // ---- The keys ----
 
     pub fn key(&mut self, key: Key, mods: Mods, down: bool) -> Outcome {
+        if down {
+            self.end_preview();
+        }
         self.mods = mods;
         self.dirty = true;
         if key == Key::Char(' ') && self.editing.is_none() && self.typing.is_none() && self.renaming.is_none() {
@@ -3691,10 +3703,12 @@ impl Studio {
         if let Some(index) = self.hovered.filter(|index| !self.selected.contains(index) && *index < self.doc.layers.len()) {
             self.outline(&mut canvas, index, 0x7A93EA);
         }
-        for index in self.chosen() {
+        // While a change is previewed, what it changes is shown bare.
+        let previewing = self.preview.is_some();
+        for index in self.chosen().into_iter().filter(|_| !previewing) {
             self.outline(&mut canvas, index, ACCENT);
         }
-        if self.cropping.is_none() {
+        if self.cropping.is_none() && !previewing {
             for (spot, _) in self.handles() {
                 canvas.fill(spot.0 - 5, spot.1 - 5, 10, 10, ACCENT);
                 canvas.fill(spot.0 - 4, spot.1 - 4, 8, 8, 0xFFFFFF);
@@ -4611,6 +4625,37 @@ mod tests {
         studio.set_field(Field::LineAngle, 90.0);
         let Kind::Shape(line) = &studio.doc.layers[0].kind else { panic!() };
         assert_eq!(line.points[1], (10.0, 110.0));
+    }
+
+    #[test]
+    fn a_button_hovered_shows_what_it_does_and_only_a_click_keeps_it() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xFF0000, 2.0, (100.0, 100.0));
+        boxed.points[1] = (200.0, 150.0);
+        let mut other = boxed.clone();
+        other.translate(150.0, 200.0);
+        studio.doc.layers = vec![Layer::shape(boxed), Layer::shape(other)];
+        studio.selected = vec![0, 1];
+        let left_of = |studio: &Studio| match &studio.doc.layers[1].kind {
+            Kind::Shape(shape) => shape.points[0].0,
+            Kind::Picture(_) => 0.0,
+        };
+        let button = studio.control_rect(Control::Action(Action::Align(0))).unwrap().center();
+        let away = (button.0 - 300, button.1 + 300);
+        studio.pointer_moved(button.0, button.1, Mods::default());
+        assert!(studio.preview.is_some());
+        assert_eq!((left_of(&studio), studio.undo.len()), (100.0, 0));
+        studio.pointer_moved(away.0, away.1, Mods::default());
+        assert_eq!((left_of(&studio), studio.preview.is_none()), (250.0, true));
+        // Clicked, it is kept, as one step to undo.
+        studio.pointer_moved(button.0, button.1, Mods::default());
+        studio.pressed(1, 1000);
+        studio.released();
+        assert_eq!((left_of(&studio), studio.undo.len()), (100.0, 1));
+        studio.pointer_moved(away.0, away.1, Mods::default());
+        assert_eq!(left_of(&studio), 100.0);
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert_eq!(left_of(&studio), 250.0);
     }
 
     #[test]
