@@ -23,6 +23,7 @@ use crate::text::{icons, Text, FACES};
 mod actions;
 mod arrange;
 mod crop_bar;
+mod export;
 mod menu;
 pub use menu::parse_frame_size;
 mod panel;
@@ -1192,6 +1193,11 @@ enum Control {
     /// A tab of the search, and a row of what it found.
     SearchTab(u8),
     Found(u16),
+    /// A tab of the right panel; a frame of the page to export or not;
+    /// and the window of what was written closed, or its folder opened.
+    Tab(u8),
+    ExportPick(usize),
+    ExportDone(bool),
     ColorLayer(usize, &'static str),
     /// The strip a gradient is shown on, its stops at its ends.
     GradientBar,
@@ -1254,6 +1260,8 @@ enum Action {
     /// The shape a crop is kept to, and the crop undone.
     Aspect(u8),
     ResetCrop,
+    /// The frames of the page chosen in the Export tab written.
+    ExportChosen,
     /// What is picked out set side by side with no gaps, across or down;
     /// made the width, the height, the size, the corners, the shadow or
     /// the whole look of the first picked; each lined up with the frame,
@@ -1340,6 +1348,7 @@ impl Action {
             Action::BorderOff => "No border",
             Action::Aspect(_) => "Aspect",
             Action::ResetCrop => "Reset",
+            Action::ExportChosen => "Export",
             Action::Pack(0) => "Pack \u{2194}",
             Action::Pack(_) => "Pack \u{2195}",
             Action::Match(0) => "Width",
@@ -1393,6 +1402,8 @@ struct Layout {
     search: Option<Rect>,
     /// The bar over a picture being cropped.
     crop_bar: Option<Rect>,
+    /// The window of what an export wrote.
+    exported: Option<Rect>,
     menus: Vec<(Rect, MenuKind)>,
 }
 
@@ -1546,6 +1557,11 @@ pub struct Studio {
     user_guides: Vec<(bool, f32)>,
     /// What the list of layers is narrowed to.
     layer_filter: String,
+    /// Which tab of the right panel is shown: Design, or Export; the frames
+    /// of the page left out of its export; and what the last export wrote.
+    panel_tab: u8,
+    export_off: Vec<usize>,
+    exported: Option<export::Exported>,
     /// The color of the selection opened to its layers, if one is.
     color_open: Option<u32>,
     /// Whether the grid of styles is open.
@@ -1627,6 +1643,9 @@ impl Studio {
             drag_mods: Mods::default(),
             user_guides: Vec::new(),
             layer_filter: String::new(),
+            panel_tab: 0,
+            export_off: Vec::new(),
+            exported: None,
             color_open: None,
             styling: false,
             search: None,
@@ -1814,6 +1833,7 @@ impl Studio {
             }
         }
         self.layout_crop_bar(&mut layout);
+        self.layout_exported(&mut layout);
         self.layout_styles(&mut layout);
         self.layout_search(&mut layout);
         self.layout_menus(&mut layout);
@@ -1937,7 +1957,9 @@ impl Studio {
         let (left, inner) = (panel.x + 14, panel.w - 28);
         layout.controls.push((Rect::new(left - 4, panel.y + 10, 64, 30), Control::Zoom));
         layout.controls.push((Rect::new(left + inner - 92, panel.y + 10, 92, 30), Control::Action(Action::Export)));
-        let top = panel.y + 50;
+        layout.controls.push((Rect::new(left - 4, panel.y + 46, 70, 26), Control::Tab(0)));
+        layout.controls.push((Rect::new(left + 70, panel.y + 46, 70, 26), Control::Tab(1)));
+        let top = panel.y + 80;
         // The sections, laid out apart and then kept to what of them shows.
         let mut part = Layout::default();
         let end = self.properties(&mut part, left, inner, top - self.scroll, panel.w);
@@ -2223,6 +2245,12 @@ impl Studio {
 
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
         self.end_preview();
+        // The window of what was written closes with a click off it.
+        if self.exported.is_some() && !matches!(self.control_at(self.pointer), Some(Control::ExportDone(_) | Control::Panel)) {
+            self.exported = None;
+            self.dirty = true;
+            return Outcome::Continue;
+        }
         // With the search open, a click off it closes it.
         if self.search.is_some() && !matches!(self.control_at(self.pointer), Some(Control::Found(_) | Control::SearchTab(_) | Control::Panel)) {
             self.search = None;
@@ -2560,6 +2588,12 @@ impl Studio {
                 }
             }
             Control::Found(row) => return self.choose_hit(usize::from(row)),
+            Control::Tab(tab) => (self.panel_tab, self.scroll) = (tab, 0),
+            Control::ExportPick(index) => match self.export_off.iter().position(|&off| off == index) {
+                Some(at) => drop(self.export_off.remove(at)),
+                None => self.export_off.push(index),
+            },
+            Control::ExportDone(done) => self.press_exported(done),
             Control::ColorOpen(color) => self.color_open = if self.color_open == Some(color) { None } else { Some(color) },
             Control::ColorLayer(index, _) => self.selected = vec![index],
             Control::GradientBar => {
@@ -3636,7 +3670,7 @@ impl Studio {
     fn export(&mut self) {
         let active = self.active;
         match self.export_frames(&[active]) {
-            Ok(written) if written.len() == 1 => self.say(format!("Exported {}", shortened(&written[0]))),
+            Ok(written) if !written.is_empty() => self.show_exported(written),
             Ok(written) => self.say(format!("Exported {} pictures to {}", written.len(), shortened(&self.export_dir()))),
             Err(error) => self.say(error),
         }
@@ -3771,6 +3805,7 @@ impl Studio {
         };
         match (lower, mods.ctrl) {
             // Style Mode: S opens the grid of styles, a letter puts one on.
+            (Key::Escape, _) if self.exported.is_some() => self.exported = None,
             (Key::Escape, _) if self.styling => self.styling = false,
             (Key::Char(letter), false) if self.styling && style::STYLE_KEYS.contains(&letter) => {
                 let at = style::STYLE_KEYS.iter().position(|&known| known == letter).unwrap_or(0);
@@ -4177,7 +4212,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock), layout.flyout, layout.popover, layout.styles, layout.search, layout.crop_bar].into_iter().flatten() {
+        for place in [Some(layout.dock), layout.flyout, layout.popover, layout.styles, layout.search, layout.crop_bar, layout.exported].into_iter().flatten() {
             for grow in (1..=6).rev() {
                 canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 12 + grow, 0x000000, 14);
             }
@@ -4186,6 +4221,9 @@ impl Studio {
         }
         for rule in &layout.rules {
             canvas.fill(rule.x + 1, rule.y, rule.w - 2, 1, EDGE_COLOR);
+        }
+        if let Some(place) = layout.exported {
+            self.draw_exported(canvas, place);
         }
         if let Some(place) = layout.styles {
             self.draw_styles_frame(canvas, place);
@@ -4398,6 +4436,44 @@ impl Studio {
                 Control::Style(style) => self.draw_style_tile(canvas, rect, style, hovered),
                 Control::Found(row) => self.draw_hit(canvas, rect, usize::from(row), hovered),
                 Control::SearchTab(_) => {}
+                Control::Tab(tab) => {
+                    let on = self.panel_tab == tab;
+                    if on || hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { FIELD_COLOR } else { HOVER_COLOR }, 256);
+                    }
+                    let says = if tab == 0 { "Design" } else { "Export" };
+                    let wide = self.text.width(says, 12);
+                    self.text.draw(canvas, rect.x + (rect.w - wide) / 2, cy - line_high / 2, px, if on { TEXT_COLOR } else { DIM_TEXT_COLOR }, says);
+                }
+                Control::ExportPick(index) => {
+                    let on = !self.export_off.contains(&index);
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
+                    let tick = Rect::new(rect.x + 8, cy - 7, 14, 14);
+                    canvas.round_fill(tick.x, tick.y, tick.w, tick.h, 3, if on { ACCENT } else { 0x4A4A4A }, 256);
+                    if on {
+                        self.text.draw_centered(canvas, tick.x + 7, tick.y + 7, 10, 0xFFFFFF, icons::CHECK);
+                    }
+                    let frame = self.frame(index);
+                    let (name, sizes) = (frame.name.clone(), frame.exports.len().max(1));
+                    self.text.draw_centered(canvas, rect.x + 34, cy, 12, DIM_TEXT_COLOR, icons::HASH);
+                    self.text.draw(canvas, rect.x + 46, cy - line_high / 2, px, TEXT_COLOR, &name);
+                    let says = format!("{sizes} {}", if sizes == 1 { "size" } else { "sizes" });
+                    let wide = self.text.width(&says, 11);
+                    self.text.draw(canvas, rect.right() - 10 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, &says);
+                }
+                Control::ExportDone(done) => {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, if done { if hovered { 0x5472E4 } else { ACCENT } } else if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
+                    let says = if done { "Done" } else { "Show in folder" };
+                    let wide = self.text.width(says, 12);
+                    self.text.draw(canvas, rect.x + (rect.w - wide) / 2, cy - line_high / 2, px, if done { 0xFFFFFF } else { TEXT_COLOR }, says);
+                }
+                Control::Action(Action::ExportChosen) => {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, if hovered { 0x5472E4 } else { ACCENT }, 256);
+                    let count = self.export_count();
+                    let says = format!("Export {count} {}", if count == 1 { "picture" } else { "pictures" });
+                    let wide = self.text.width(&says, 12);
+                    self.text.draw(canvas, rect.x + (rect.w - wide) / 2, cy - line_high / 2, px, 0xFFFFFF, &says);
+                }
                 Control::ColorOpen(color) => {
                     let open = self.color_open == Some(color);
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
@@ -5208,6 +5284,28 @@ mod tests {
             _ => None,
         }).collect();
         assert_eq!(listed, vec![2]);
+    }
+
+    #[test]
+    fn the_export_tab_chooses_frames_and_says_what_was_written() {
+        let dir = std::env::temp_dir().join(format!("hotshot-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut studio = Studio::new(Doc::new(120, 80), Text::load(), 1400, 900, dir.clone(), "shot.png".into());
+        studio.path = Some(dir.join("File.hotshot"));
+        studio.new_frame((300.0, 0.0), (60.0, 40.0));
+        studio.press_control(Control::Tab(1), false);
+        let controls: Vec<Control> = studio.layout().controls.iter().map(|(_, control)| *control).collect();
+        assert!(controls.contains(&Control::ExportPick(0)) && controls.contains(&Control::ExportPick(1)) && controls.contains(&Control::Action(Action::ExportChosen)));
+        // The first left out: only the second is written, and shown.
+        studio.press_control(Control::ExportPick(0), false);
+        assert_eq!(studio.export_chosen(), vec![1]);
+        studio.act(Action::ExportChosen);
+        let exported = studio.exported.as_ref().expect("what was written is shown");
+        assert_eq!(exported.files.len(), studio.frame(1).exports.len().max(1));
+        assert!(exported.files.iter().all(|(path, ..)| path.exists()));
+        studio.press_control(Control::ExportDone(true), false);
+        assert!(studio.exported.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

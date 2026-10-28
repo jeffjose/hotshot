@@ -174,6 +174,10 @@ impl Studio {
         let mut rows = Rows { layout, left, inner, y, rule_x: left - 14, panel_w };
         let act = Control::Action;
         let actions = |list: &[Action]| list.iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect::<Vec<_>>();
+        if self.panel_tab == 1 {
+            self.export_sections(&mut rows);
+            return rows.y;
+        }
         if self.cropping.is_some() {
             rows.section("Crop", "", None);
             rows.note("Drag the corners, or the picture inside");
@@ -304,10 +308,7 @@ impl Studio {
             }
             Fill::None => {}
         }
-        rows.section("Export", "", Some((Control::Action(Action::AddExport), icons::PLUS)));
-        for index in 0..self.doc.exports.len().min(6) {
-            rows.split(&[(Control::Field(Field::ExportTimes(index as u8)), 52), (Control::Entry(Naming::Suffix(index)), 70), (Control::Menu(MenuKind::Format(index)), 0), (Control::Action(Action::RemoveExport(index as u8)), FIELD_H)]);
-        }
+        self.export_sizes(rows);
         let says = format!("Export {}", self.doc.name);
         rows.chips(&mut self.text, vec![(says, Control::Action(Action::Export)), ("Copy".into(), Control::Action(Action::Copy))]);
     }
@@ -578,6 +579,17 @@ impl Studio {
         }
         for hole in holes {
             canvas.round_outline(hole.x, hole.y, hole.w, hole.h, 4, 2, ACCENT);
+        }
+    }
+}
+
+impl Studio {
+    /// The sizes the frame worked in is exported at, each with what its
+    /// file ends in and its kind, and a plus for another.
+    pub(super) fn export_sizes(&mut self, rows: &mut Rows) {
+        rows.section("Export", "", Some((Control::Action(Action::AddExport), icons::PLUS)));
+        for index in 0..self.doc.exports.len().min(6) {
+            rows.split(&[(Control::Field(Field::ExportTimes(index as u8)), 52), (Control::Entry(Naming::Suffix(index)), 70), (Control::Menu(MenuKind::Format(index)), 0), (Control::Action(Action::RemoveExport(index as u8)), FIELD_H)]);
         }
     }
 }
