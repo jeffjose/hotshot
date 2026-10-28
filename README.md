@@ -587,6 +587,12 @@ arrows between them copied too. A box can keep what is put in it laid
 out, from `Ctrl+K`: in a row left to right, or as a tree top down, as
 it is added; the rest of the board stays free.
 
+The pen draws as it is drawn. Neaten, beside it in the bar of styles
+while the pen is in hand or from `Ctrl+K`, is off until asked for: with
+it on, a rough loop becomes an oval, a rough square a box, and a
+stroke ending in a V an arrow tied to what it touches; anything else
+stays as drawn. There is no gesture to delete by scribbling.
+
 Screenshots and pictures dropped or pasted on a board stay pictures, to
 point at. An SVG comes in as shapes to change: its boxes as boxes, its
 circles and ellipses as ovals, its lines and outlined paths as pen

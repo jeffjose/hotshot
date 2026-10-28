@@ -68,6 +68,8 @@ pub(super) enum Ctl {
     Now,
     /// Present, at the top right.
     Present,
+    /// Neaten, by the pen.
+    Neaten,
 }
 
 /// What a board keeps of its own, in the window rather than the file.
@@ -121,11 +123,13 @@ pub(super) struct Board {
     pub svg: Option<svg::Brought>,
     /// How far apart a map's levels are laid out.
     pub level: f32,
+    /// Whether the pen neatens what it draws: off until asked for.
+    pub neaten: bool,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0 }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false }
     }
 }
 
@@ -140,6 +144,7 @@ mod pick;
 pub(super) mod svg;
 mod export;
 mod mermaid;
+mod neaten;
 /// Whether some text is Mermaid a board can read.
 pub(super) fn is_mermaid(text: &str) -> bool {
     mermaid::kind_of(text).is_some()

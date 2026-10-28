@@ -159,7 +159,10 @@ impl Studio {
                 self.board_stick(index, &[0, 1]);
                 self.guess(true);
             }
-            Tool::Pen | Tool::Marker => self.changed(),
+            Tool::Pen | Tool::Marker => {
+                self.neaten(index);
+                self.changed();
+            }
             _ => {
                 self.selected = vec![index];
                 self.tool = Tool::Select;

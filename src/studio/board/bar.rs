@@ -44,6 +44,9 @@ impl Studio {
         if boxes {
             parts.push((Ctl::Status, SWATCH + 4));
         }
+        if self.tool == Tool::Pen {
+            parts.push((Ctl::Neaten, 64));
+        }
         parts.push((Ctl::Guess, SWATCH + 4));
         let wide = parts.iter().map(|(_, w)| w.abs() + GAP).sum::<i32>() - GAP + 2 * PAD;
         let high = SWATCH + 2 * PAD;
@@ -144,6 +147,14 @@ impl Studio {
                 self.text.draw(canvas, rect.x + 6, cy - line_high / 2 - 1, 13, TEXT_COLOR, "Aa");
                 self.text.draw(canvas, rect.x + 26, cy - line_high / 2 + 1, 10, DIM_TEXT_COLOR, ["S", "M", "L", "XL"][which]);
             }
+            Ctl::Neaten => {
+                if self.board.neaten {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, ROW_ON, 256);
+                } else if hovered {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+                }
+                self.text.draw(canvas, rect.x + 8, cy - line_high / 2, 11, if self.board.neaten { ACCENT_TEXT } else { TEXT_COLOR }, "Neaten");
+            }
             Ctl::Status => {
                 if hovered {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
@@ -223,6 +234,10 @@ impl Studio {
                     }
                 });
                 self.say(["No status", "Status: red", "Status: amber", "Status: green"][usize::from(next)]);
+            }
+            Ctl::Neaten => {
+                self.board.neaten = !self.board.neaten;
+                self.say(if self.board.neaten { "Neaten: a loop an oval, a square a box, a V an arrow" } else { "Neaten off" });
             }
             Ctl::Guess => {
                 self.board.guessing = !self.board.guessing;

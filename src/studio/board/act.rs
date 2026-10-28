@@ -38,6 +38,8 @@ pub(in crate::studio) enum Act {
     /// What is picked out, or the board, as Mermaid on the clipboard: as
     /// a flowchart or a sequence, or as a mind map.
     Mermaid(bool),
+    /// The pen neatening what it draws, or not.
+    Neaten,
 }
 
 impl Studio {
@@ -52,6 +54,7 @@ impl Studio {
             (if self.board.guessing { "Stop guessing what comes next" } else { "Guess what comes next" }.to_owned(), "", Act::Guessing),
         ];
         acts.push(("Copy as Mermaid".to_owned(), "", Act::Mermaid(false)));
+        acts.push((if self.board.neaten { "Stop neatening pen strokes" } else { "Neaten pen strokes" }.to_owned(), "", Act::Neaten));
         acts.push(("Copy as Mermaid mind map".to_owned(), "", Act::Mermaid(true)));
         for (at, name) in look::LOOKS.iter().enumerate() {
             acts.push((format!("Look: {name}"), "", Act::Look(at as u8)));
@@ -106,6 +109,7 @@ impl Studio {
             Act::Export(kind) => self.export_board(kind),
             Act::Look(look) => self.set_look(Some(look), None),
             Act::Mermaid(map) => self.copy_mermaid(map),
+            Act::Neaten => self.press_style(Ctl::Neaten),
             Act::Ground(ground) => self.set_look(None, Some(ground)),
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
