@@ -22,6 +22,7 @@ use crate::text::{icons, Text, FACES};
 
 mod actions;
 mod arrange;
+mod empty;
 mod menu;
 pub use menu::parse_frame_size;
 mod panel;
@@ -1186,6 +1187,8 @@ enum Control {
     /// A tab of the search, and a row of what it found.
     SearchTab(u8),
     Found(u16),
+    /// A button of an empty frame: capture, paste, the captures, a look.
+    Start(u8),
     ColorLayer(usize, &'static str),
     /// The strip a gradient is shown on, its stops at its ends.
     GradientBar,
@@ -1385,6 +1388,8 @@ struct Layout {
     styles: Option<Rect>,
     /// The search over everything, while it is open.
     search: Option<Rect>,
+    /// The place for a picture in an empty frame.
+    empty: Option<Rect>,
     menus: Vec<(Rect, MenuKind)>,
 }
 
@@ -1794,6 +1799,7 @@ impl Studio {
                 layout.controls.push((place, Control::Frame(index)));
             }
         }
+        self.layout_empty(&mut layout);
         self.layout_styles(&mut layout);
         self.layout_search(&mut layout);
         self.layout_menus(&mut layout);
@@ -2490,6 +2496,7 @@ impl Studio {
                 }
             }
             Control::Found(row) => return self.choose_hit(usize::from(row)),
+            Control::Start(which) => return self.press_start(which),
             Control::ColorOpen(color) => self.color_open = if self.color_open == Some(color) { None } else { Some(color) },
             Control::ColorLayer(index, _) => self.selected = vec![index],
             Control::GradientBar => {
@@ -4022,6 +4029,9 @@ impl Studio {
         for rule in &layout.rules {
             canvas.fill(rule.x + 1, rule.y, rule.w - 2, 1, EDGE_COLOR);
         }
+        if let Some(place) = layout.empty {
+            self.draw_empty(canvas, place);
+        }
         if let Some(place) = layout.styles {
             self.draw_styles_frame(canvas, place);
         }
@@ -4225,6 +4235,7 @@ impl Studio {
                 Control::Style(style) => self.draw_style_tile(canvas, rect, style, hovered),
                 Control::Found(row) => self.draw_hit(canvas, rect, usize::from(row), hovered),
                 Control::SearchTab(_) => {}
+                Control::Start(which) => self.draw_start(canvas, rect, which, hovered),
                 Control::ColorOpen(color) => {
                     let open = self.color_open == Some(color);
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
