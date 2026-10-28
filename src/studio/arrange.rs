@@ -225,21 +225,41 @@ impl Studio {
         if self.doc.layers.len() != count {
             return;
         }
+        // Into a stack, along it or out of it, by the row it is let go on.
+        let mut stepped = false;
+        match self.stack_drop(index, control) {
+            stack_rows::StackDrop::Into(into, by) => {
+                self.checkpoint();
+                return self.put_in_stack(index, into, by, over);
+            }
+            stack_rows::StackDrop::Out => {
+                self.checkpoint();
+                self.take_out_of_stack(index);
+                stepped = true;
+            }
+            stack_rows::StackDrop::Nothing => {}
+        }
         // Among the page's own things, by what it is let go by there.
         let by = match control {
             Control::Frame(frame) if middle => {
                 if frame != self.active {
-                    self.checkpoint();
+                    if !stepped {
+                        self.checkpoint();
+                    }
                     self.move_layers_to(frame, &[index]);
+                } else if stepped {
+                    self.changed();
                 }
                 return;
             }
             Control::Frame(frame) => Child::Frame(frame),
             Control::PageLayer(target) => Child::Layer(target),
             Control::Layer(target) | Control::Eye(target) | Control::Lock(target) if self.on_page() => Child::Layer(target),
-            _ => return self.reorder_layer(index),
+            _ => return self.reorder_layer(index, stepped),
         };
-        self.checkpoint();
+        if !stepped {
+            self.checkpoint();
+        }
         // Out of a frame first, onto the page, the row let go by known by
         // what its layer is called, as the page's own layers grow by one.
         let by_id = match by {
@@ -267,13 +287,19 @@ impl Studio {
     }
 
     /// A layer dragged in its list let go over another of the same frame:
-    /// put where that one was.
-    fn reorder_layer(&mut self, index: usize) {
-        let Some(target) = self.reorder_target() else { return };
-        if target == index || index >= self.doc.layers.len() {
+    /// put where that one was; in the step to undo already begun, if one
+    /// was, as it came out of a stack.
+    fn reorder_layer(&mut self, index: usize, stepped: bool) {
+        let target = self.reorder_target().filter(|&target| target != index && index < self.doc.layers.len());
+        let Some(target) = target else {
+            if stepped {
+                self.changed();
+            }
             return;
+        };
+        if !stepped {
+            self.checkpoint();
         }
-        self.checkpoint();
         let layer = self.doc.layers.remove(index);
         self.doc.layers.insert(target, layer);
         self.selected = vec![target];
@@ -310,7 +336,12 @@ impl Studio {
         match (self.drag, control) {
             (Drag::Reorder { moved: true, .. }, Control::Frame(frame)) if (0.25..0.75).contains(&along) => (frame != self.active).then_some(1),
             (Drag::Reorder { moved: true, .. }, Control::Frame(_) | Control::PageLayer(_)) => Some(side),
-            (Drag::Reorder { moved: true, index, .. }, Control::Layer(target)) if target != index => Some(if on_page { side } else { 1 }),
+            // Before or after something in a stack, or out of one, as well.
+            (Drag::Reorder { moved: true, index, .. }, Control::Layer(target)) if target != index => {
+                let stacked = |at: usize| self.doc.layers.get(at).is_some_and(|layer| self.stack_of(stacks::layer_id(layer)).is_some());
+                Some(if on_page || stacked(index) || stacked(target) { side } else { 1 })
+            }
+            (Drag::Reorder { moved: true, .. }, Control::StackRow(_)) => Some(1),
             (Drag::ReorderFrame { moved: true, index, .. }, Control::Frame(frame)) if frame != index => Some(side),
             (Drag::ReorderFrame { moved: true, .. }, Control::PageLayer(_)) => Some(side),
             (Drag::ReorderFrame { moved: true, .. }, Control::Layer(_)) if on_page => Some(side),

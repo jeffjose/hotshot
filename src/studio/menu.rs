@@ -41,6 +41,9 @@ pub(super) enum MenuKind {
     /// selection, right clicked in the panels.
     Layer(usize),
     Frame(usize),
+    /// What can be done with a stack, right clicked in the list of layers,
+    /// by what it is called.
+    Stack(u32),
     Color(u32),
     /// What can be done with any other color right clicked in the panel.
     Hex(u32),
@@ -151,6 +154,11 @@ pub(super) enum Command {
     ReplaceColor(u32),
     /// A color put on the clipboard as hex, `#RRGGBB`.
     CopyHex(u32),
+    /// What is in a stack picked out, each of it; the stack named; and
+    /// the stack gone with all of it, by what it is called.
+    SelectMembers(u32),
+    RenameStack(u32),
+    DeleteStack(u32),
 }
 
 /// The sizes a frame can be, by what each is for.
@@ -460,6 +468,14 @@ impl Studio {
                 Item::sub("Order", MenuKind::Order),
                 Item::Rule,
                 do_("Delete frame", "Del", Command::DeleteFrame),
+            ],
+            MenuKind::Stack(id) => vec![
+                do_("Rename", "Double-click", Command::RenameStack(id)),
+                do_("Select members", "", Command::SelectMembers(id)),
+                Item::Rule,
+                Item::entry("Remove auto layout", "", MenuAct::Act(Action::RemoveStack)),
+                Item::Rule,
+                do_("Delete stack and members", "Del", Command::DeleteStack(id)),
             ],
             MenuKind::Color(color) => vec![do_("Select all with this color", "", Command::SelectColor(color)), do_("Replace color\u{2026}", "", Command::ReplaceColor(color)), Item::Rule, do_("Copy hex", "", Command::CopyHex(color))],
             MenuKind::Hex(color) => vec![do_("Copy hex", "", Command::CopyHex(color))],
@@ -875,6 +891,14 @@ impl Studio {
                     .collect();
             }
             Command::ReplaceColor(color) => self.open_picker(Paint::Recolor(color)),
+            Command::SelectMembers(id) => self.pick_members(id),
+            Command::RenameStack(id) => {
+                self.pick_stack(id);
+                if let Some(title) = self.stack_by_id(id).map(stacks::Stack::title) {
+                    self.start_naming(Naming::Stack(id), title);
+                }
+            }
+            Command::DeleteStack(id) => self.delete_stack(id),
             Command::CopyHex(color) => {
                 let hex = format!("#{:06X}", color & 0xFF_FFFF);
                 // Tests say it, and leave the clipboard be.

@@ -50,6 +50,7 @@ mod recent;
 mod rulers;
 mod snap;
 mod stacks;
+mod stack_rows;
 mod view;
 mod search;
 mod sizes;
@@ -858,6 +859,9 @@ impl Doc {
         // them has none of.
         for stack in &self.stacks {
             *out += &format!("{}\n", stack.write());
+            if let Some(name) = &stack.name {
+                *out += &format!("stack-named {}\n", one_line(name));
+            }
         }
     }
 
@@ -948,6 +952,7 @@ impl Doc {
                 *named = Some(line["named ".len().min(line.len())..].to_owned());
             }
             "stack" => self.stacks.push(stacks::Stack::read(&line["stack ".len().min(line.len())..])?),
+            "stack-named" => self.stacks.last_mut()?.name = Some(line["stack-named ".len().min(line.len())..].to_owned()),
             "stacking" => (self.below, self.tier) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?),
             "shape" => {
                 let rest = line.splitn(4, ' ').collect::<Vec<_>>();
@@ -1664,6 +1669,10 @@ enum Control {
     /// A layer of the page itself, outside the frames, listed while the
     /// frame worked in is one of them: clicked, the page is worked in.
     PageLayer(usize),
+    /// A stack's row in the list of layers, by what it is called; and the
+    /// caret on it that folds it.
+    StackRow(u32),
+    StackFold(u32),
     Eye(usize),
     Lock(usize),
     Field(Field),
@@ -2002,6 +2011,8 @@ enum Naming {
     Filter,
     /// A color as hex, in the picker.
     Hex,
+    /// A stack's name, in the list of layers, by what it is called.
+    Stack(u32),
 }
 
 /// What the window has to do for the canvas, that the canvas cannot.
@@ -2217,6 +2228,11 @@ pub struct Studio {
     /// laying the stacks out moved anything the last time anything changed.
     stack_hovered: Option<u32>,
     stacks_moved: bool,
+    /// The stacks whose rows are folded in the list of layers; and what
+    /// was picked out as what is in a stack, each of it, rather than the
+    /// stack, while it still is what is picked out.
+    folded: Vec<u32>,
+    members_picked: Option<Vec<usize>>,
     /// What was done lately, for Ctrl+K to list first and Ctrl+Shift+K to
     /// do again; and the file it is kept in, which a test has none of.
     commands: Vec<recent::Done>,
@@ -2330,6 +2346,8 @@ impl Studio {
             crop_chrome: None,
             stack_hovered: None,
             stacks_moved: false,
+            folded: Vec::new(),
+            members_picked: None,
             commands: Vec::new(),
             commands_file: None,
             dirty: true,
@@ -2799,20 +2817,60 @@ impl Studio {
         // Everything on the page in the order it is drawn, the topmost
         // first, frames and the page's own layers among each other as in
         // Figma: those worked in as a frame's layers are, and otherwise
-        // each a row that works in them when clicked.
+        // each a row that works in them when clicked. A stack is a row of
+        // its own, what is in it set in under it, where the first of it
+        // comes; narrowed by what is typed, the layers alone are listed.
         let on_page = self.on_page();
+        let flat = !filter.trim().is_empty();
+        let matches = |layer: &Layer| layer.name().to_lowercase().contains(filter.trim());
+        // Each row: the frame it is, or a row of the page's own layers or of
+        // the frame worked in's.
+        let mut listed: Vec<(Option<usize>, stack_rows::Row, bool)> = Vec::new();
+        let mut shown = Vec::new();
         for child in self.page_order().into_iter().rev() {
+            match child {
+                Child::Layer(index) => {
+                    let loose = self.loose();
+                    let mut rows = Vec::new();
+                    match flat {
+                        true if matches(&loose.layers[index]) => rows.push(stack_rows::Row::Layer(index, 0)),
+                        true => {}
+                        false => stack_rows::rows_for(loose, index, &mut shown, &self.folded, &mut rows),
+                    }
+                    listed.extend(rows.into_iter().map(|row| (None, row, true)));
+                }
+                Child::Frame(frame) => {
+                    listed.push((Some(frame), stack_rows::Row::Layer(0, 0), false));
+                    if frame != self.active {
+                        continue;
+                    }
+                    let mut rows = Vec::new();
+                    let mut shown = Vec::new();
+                    for index in (0..self.doc.layers.len()).rev() {
+                        match flat {
+                            true if matches(&self.doc.layers[index]) => rows.push(stack_rows::Row::Layer(index, 0)),
+                            true => {}
+                            false => stack_rows::rows_for(&self.doc, index, &mut shown, &self.folded, &mut rows),
+                        }
+                    }
+                    listed.extend(rows.into_iter().map(|row| (None, row, false)));
+                }
+            }
+        }
+        for (frame, row_of, of_page) in listed {
             if y + row > panel.bottom() - 8 {
                 break;
             }
-            let frame = match child {
-                Child::Frame(frame) => frame,
-                Child::Layer(index) => {
-                    if !filter.is_empty() && !self.loose().layers[index].name().to_lowercase().contains(filter.trim()) {
-                        continue;
-                    }
-                    let place = Rect::new(left - 4, y, inner + 8, row);
-                    match on_page {
+            if let Some(frame) = frame {
+                layout.controls.push((Rect::new(left - 4, y, inner + 8, row), Control::Frame(frame)));
+                y += row;
+                continue;
+            }
+            let (x0, w0) = if of_page { (left - 4, inner + 8) } else { (left + 14, inner - 10) };
+            match row_of {
+                stack_rows::Row::Layer(index, depth) => {
+                    let place = Rect::new(x0 + 14 * depth as i32, y, w0 - 14 * depth as i32, row);
+                    match !of_page || on_page {
                         true => {
                             layout.controls.push((Rect::new(left + inner - 44, y, 22, row), Control::Eye(index)));
                             layout.controls.push((Rect::new(left + inner - 20, y, 22, row), Control::Lock(index)));
@@ -2820,27 +2878,14 @@ impl Studio {
                         }
                         false => layout.controls.push((place, Control::PageLayer(index))),
                     }
-                    y += row;
-                    continue;
                 }
-            };
-            layout.controls.push((Rect::new(left - 4, y, inner + 8, row), Control::Frame(frame)));
+                stack_rows::Row::Stack(id, depth) => {
+                    let place = Rect::new(x0 + 14 * depth as i32, y, w0 - 14 * depth as i32, row);
+                    layout.controls.push((Rect::new(place.x, y, 18, row), Control::StackFold(id)));
+                    layout.controls.push((place, Control::StackRow(id)));
+                }
+            }
             y += row;
-            if frame != self.active {
-                continue;
-            }
-            for index in (0..self.doc.layers.len()).rev() {
-                if y + row > panel.bottom() - 8 {
-                    break;
-                }
-                if !filter.is_empty() && !self.doc.layers[index].name().to_lowercase().contains(filter.trim()) {
-                    continue;
-                }
-                layout.controls.push((Rect::new(left + inner - 44, y, 22, row), Control::Eye(index)));
-                layout.controls.push((Rect::new(left + inner - 20, y, 22, row), Control::Lock(index)));
-                layout.controls.push((Rect::new(left + 14, y, inner - 10, row), Control::Layer(index)));
-                y += row;
-            }
         }
         layout.controls.push((panel, Control::Panel));
     }
@@ -3754,9 +3799,12 @@ impl Studio {
                     Naming::Hex => format!("{:06X}", self.palette.and_then(|paint| self.paint_color(paint)).unwrap_or(0)),
                     Naming::Filter => self.layer_filter.clone(),
                     Naming::Layer(index) => self.doc.layers.get(index).map_or(String::new(), Layer::name),
+                    Naming::Stack(id) => self.stack_by_id(id).map_or(String::new(), stacks::Stack::title),
                 };
                 self.start_naming(naming, now);
             }
+            Control::StackRow(id) => self.press_stack_row(id, double),
+            Control::StackFold(id) => self.fold_stack(id),
             // What an end is stuck to, picked out.
             Control::Stuck(end) => {
                 let stuck = self.picked().and_then(|index| match &self.doc.layers[index].kind {
@@ -4168,6 +4216,9 @@ impl Studio {
                     if !layer.hidden && !layer.locked && x < right && x + w > left && y < bottom && y + h > top && !self.selected.contains(&index) {
                         self.selected.push(index);
                     }
+                }
+                if !self.mods.ctrl {
+                    self.marquee_stacks((left, top, right, bottom));
                 }
             }
             // Let go in a stack, or well out of the one it was in, laid out
@@ -4725,7 +4776,7 @@ impl Studio {
             self.layer_filter = typed;
             return;
         }
-        if typed.is_empty() && matches!(naming, Naming::Frame | Naming::Page(_) | Naming::Layer(_)) {
+        if typed.is_empty() && matches!(naming, Naming::Frame | Naming::Page(_) | Naming::Layer(_) | Naming::Stack(_)) {
             return;
         }
         // A color typed as hex: the paint the picker is open for made it.
@@ -4759,6 +4810,7 @@ impl Studio {
                 }
             }
             Naming::Hex | Naming::Filter => {}
+            Naming::Stack(id) => self.rename_stack(id, typed),
             Naming::Layer(index) => {
                 if let Some(layer) = self.doc.layers.get_mut(index) {
                     layer.rename(typed);
@@ -6138,8 +6190,28 @@ impl Studio {
                     let name: String = name.chars().take(18).collect();
                     self.text.draw(canvas, rect.x + 28, cy - line_high / 2, px, ink, &name);
                 }
-                // Drawn with the row of the layer they belong to.
-                Control::Eye(_) | Control::Lock(_) => {}
+                // A stack's row: its caret, which way it goes, and its name,
+                // lit while all of it is what is picked out.
+                Control::StackRow(id) => {
+                    let Some(stack) = self.stack_by_id(id).cloned() else { continue };
+                    let on = self.picked_stack().is_some_and(|index| self.doc.stacks[index].id == id);
+                    let row_hovered = matches!(hover, Some(Control::StackRow(at) | Control::StackFold(at)) if at == id);
+                    if on || row_hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
+                    }
+                    let open = !self.folded.contains(&id);
+                    self.text.draw_centered(canvas, rect.x + 8, cy, 10, DIM_TEXT_COLOR, if open { icons::DOWN } else { icons::RIGHT });
+                    self.text.draw_centered(canvas, rect.x + 24, cy, 14, TEXT_COLOR, stack_rows::stack_icon(&stack));
+                    let name = match self.renaming.clone() {
+                        Some((Naming::Stack(at), typed)) if at == id => self.typed_shown(canvas, (rect.x + 38, cy - line_high / 2), px, typed),
+                        _ => stack.title(),
+                    };
+                    let name: String = name.chars().take(18).collect();
+                    self.text.draw(canvas, rect.x + 38, cy - line_high / 2, px, TEXT_COLOR, &name);
+                    self.draw_drop_mark(canvas, rect, control);
+                }
+                // Drawn with the row they belong to.
+                Control::Eye(_) | Control::Lock(_) | Control::StackFold(_) => {}
                 Control::Field(field) if field.slides() => {
                     // A slider: its name, and a track with a knob on it at
                     // its value, the middle being none.

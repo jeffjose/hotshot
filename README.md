@@ -264,6 +264,19 @@ again when the frame is resized; and what it is filled with. A click in
 its padding picks all of it out, a stack can hold another, and the minus
 in the section undoes it, everything staying where it is. Stacks are
 kept in the file; the layers do not know of them.
+
+In the list of layers a stack is a row of its own, as an auto layout is
+in Figma: called Row, Column or Stack for the way it goes, with what is
+in it set in under it in its order, folded away by its caret. Click it
+to pick out the whole stack; double-click it to rename it. Drag a row
+along the stack to move it along, onto a row in another stack or onto
+the stack's own row to put it in, or onto a row of none to take it out,
+and the stack is laid out again at once. Its right-click menu renames
+it, picks out each of what is in it rather than the stack, takes the
+auto layout away, or deletes the stack and all of it. A box dragged out
+over any of a stack picks out the whole stack (with Ctrl, only what it
+touches), and `Ctrl+K` finds stacks by name.
+
 The markup tools draw over everything, with the
 same arrow heads, fills and sketched lines as the editor. Space or the
 middle button pans, Ctrl+scroll zooms, `Ctrl+0` fits the artboard and

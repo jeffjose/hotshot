@@ -470,6 +470,11 @@ impl Studio {
                 self.selected.clear();
                 Some(MenuKind::Frame(index))
             }
+            Some(Control::StackRow(id) | Control::StackFold(id)) => {
+                self.commit_text();
+                self.pick_stack(id);
+                Some(MenuKind::Stack(id))
+            }
             Some(Control::ColorField(Paint::Recolor(color)) | Control::ColorOpen(color)) => Some(MenuKind::Color(color)),
             // A size the frame is exported at, by any part of its row.
             Some(Control::Field(Field::ExportTimes(index)) | Control::Action(Action::RemoveExport(index))) => Some(MenuKind::Export(usize::from(index))),

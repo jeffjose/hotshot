@@ -46,6 +46,10 @@ pub struct Stack {
     /// what says that all of it was moved, rather than some of it. Not
     /// kept in its file.
     pub seen: Vec<(u32, f32, f32)>,
+    /// What it has been renamed in the list of layers, in place of what it
+    /// is called for which way it goes; kept in its file on a line of its
+    /// own after it.
+    pub name: Option<String>,
 }
 
 impl Stack {
@@ -82,7 +86,17 @@ impl Stack {
             radius: number(11)?.max(0.0),
             members,
             seen: Vec::new(),
+            name: None,
         })
+    }
+
+    /// What the list of layers calls it: what it was renamed, or which way
+    /// it goes.
+    pub(super) fn title(&self) -> String {
+        match &self.name {
+            Some(name) => name.clone(),
+            None => ["Row", "Column", "Stack"][usize::from(self.way.min(WRAP))].to_owned(),
+        }
     }
 
     /// Lined up how, in words: across, then down.
@@ -179,7 +193,7 @@ impl Studio {
     }
 
     /// The box of something on the frame: a layer's, or a stack's.
-    fn unit_bounds(&mut self, id: u32) -> Option<(f32, f32, f32, f32)> {
+    pub(super) fn unit_bounds(&mut self, id: u32) -> Option<(f32, f32, f32, f32)> {
         if let Some(index) = self.stack_index(id) {
             let stack = &self.doc.stacks[index];
             return Some((stack.x, stack.y, stack.w, stack.h));
@@ -189,7 +203,7 @@ impl Studio {
     }
 
     /// Something moved: a layer, or a stack with everything in it.
-    fn move_unit(&mut self, id: u32, (dx, dy): (f32, f32)) {
+    pub(super) fn move_unit(&mut self, id: u32, (dx, dy): (f32, f32)) {
         if let Some(index) = self.stack_index(id) {
             let stack = &mut self.doc.stacks[index];
             (stack.x, stack.y) = (stack.x + dx, stack.y + dy);
@@ -211,6 +225,10 @@ impl Studio {
     pub(super) fn picked_stack(&self) -> Option<usize> {
         let mut chosen = self.chosen_ids();
         if chosen.is_empty() {
+            return None;
+        }
+        // What is in one picked out as each of it, from its row's menu.
+        if self.members_picked.as_deref() == Some(&self.selected[..]) {
             return None;
         }
         chosen.sort_unstable();
@@ -294,7 +312,7 @@ impl Studio {
         for stack in &mut self.doc.stacks {
             stack.members.retain(|member| !members.contains(member) || stack.id == id);
         }
-        let stack = Stack { id, members, way: if row { ROW } else { COLUMN }, gap, pad, align: 3, sizing: HUG, x: left - pad, y: top - pad, w: right - left + 2.0 * pad, h: bottom - top + 2.0 * pad, fill: None, radius: 0.0, seen: Vec::new() };
+        let stack = Stack { id, members, way: if row { ROW } else { COLUMN }, gap, pad, align: 3, sizing: HUG, x: left - pad, y: top - pad, w: right - left + 2.0 * pad, h: bottom - top + 2.0 * pad, fill: None, radius: 0.0, seen: Vec::new(), name: None };
         self.doc.stacks.push(stack);
         self.changed();
         self.say(format!("Auto layout: a {} of {}", if row { "row" } else { "column" }, units.len()));
@@ -813,7 +831,7 @@ mod tests {
     use super::*;
 
     fn stack(way: u8, sizing: u8, align: u8) -> Stack {
-        Stack { id: 1, members: vec![], way, gap: 10.0, pad: 20.0, align, sizing, x: 100.0, y: 50.0, w: 200.0, h: 300.0, fill: None, radius: 0.0, seen: Vec::new() }
+        Stack { id: 1, members: vec![], way, gap: 10.0, pad: 20.0, align, sizing, x: 100.0, y: 50.0, w: 200.0, h: 300.0, fill: None, radius: 0.0, seen: Vec::new(), name: None }
     }
 
     #[test]

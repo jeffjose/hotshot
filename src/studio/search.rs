@@ -28,6 +28,9 @@ pub(super) enum Found {
     Layer(usize),
     /// One of the page's own layers, while a frame is worked in.
     PageLayer(usize),
+    /// A stack, of the frame worked in or of the page, by what it is
+    /// called.
+    Stack(u32),
     Page(usize),
     Frame(usize),
     File(PathBuf),
@@ -174,6 +177,15 @@ impl Studio {
                 hits.push(Hit { heading: "LAYERS", says: self.loose().layers[index].name(), hint: self.pages[self.page].name.clone(), found: Found::PageLayer(index) });
             }
         }
+        // The stacks, as the list of layers has them, each said to be one.
+        for stack in &self.doc.stacks {
+            hits.push(Hit { heading: "LAYERS", says: stack.title(), hint: format!("auto layout \u{b7} {where_}"), found: Found::Stack(stack.id) });
+        }
+        if !self.on_page() {
+            for stack in &self.loose().stacks {
+                hits.push(Hit { heading: "LAYERS", says: stack.title(), hint: format!("auto layout \u{b7} {}", self.pages[self.page].name), found: Found::Stack(stack.id) });
+            }
+        }
         for (index, page) in self.pages.iter().enumerate() {
             hits.push(Hit { heading: "PAGES AND FRAMES", says: page.name.clone(), hint: "page".into(), found: Found::Page(index) });
         }
@@ -197,7 +209,7 @@ impl Studio {
         let Some(search) = self.search.clone() else { return Vec::new() };
         let wanted = |hit: &Hit| match search.tab {
             1 => matches!(hit.found, Found::Act(_) | Found::Tool(_)),
-            2 => matches!(hit.found, Found::Layer(_) | Found::PageLayer(_)),
+            2 => matches!(hit.found, Found::Layer(_) | Found::PageLayer(_) | Found::Stack(_)),
             3 => matches!(hit.found, Found::Page(_) | Found::Frame(_)),
             4 => matches!(hit.found, Found::File(_)),
             _ => true,
@@ -316,6 +328,10 @@ impl Studio {
                 self.selected = vec![index];
                 self.zoom_to_selection();
             }
+            Found::Stack(id) => {
+                self.pick_stack(id);
+                self.zoom_to_selection();
+            }
             Found::Page(page) => self.go_to_page(page),
             Found::Frame(frame) => {
                 self.activate(frame);
@@ -428,6 +444,7 @@ impl Studio {
                 Some(Kind::Picture(_)) => icons::PICTURE,
                 _ => icons::RECT,
             },
+            Found::Stack(id) => self.stack_by_id(*id).map_or(icons::DIST_H, stack_rows::stack_icon),
             Found::Page(_) => icons::FILE,
             Found::Frame(_) => icons::HASH,
             Found::File(_) => icons::FILE,
