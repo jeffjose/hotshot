@@ -92,8 +92,14 @@ impl Recipe {
     /// As the words of a line of the file, but for its name and when.
     fn words(&self) -> String {
         let (area, frame) = (self.area, self.frame);
+        // The window round it after the rest, where it is in one, so that
+        // a picture in none is called what it always was.
+        let window = match frame.window {
+            frame::Window::None => String::new(),
+            window => format!(" window-{}-{}", window.word(), frame.theme.word()),
+        };
         format!(
-            "{} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {}{window}",
             area.x,
             area.y,
             area.w,
@@ -142,6 +148,9 @@ impl Recipe {
         if frame.shadow.on() {
             said.push(format!("shadow {}", frame.shadow.name().map_or_else(|| frame.shadow.css(), str::to_owned)));
         }
+        if frame.window != frame::Window::None {
+            said.push(format!("in a {} window", frame.window.says()));
+        }
         if self.pointer {
             said.push("pointer".into());
         }
@@ -152,6 +161,10 @@ impl Recipe {
 /// A line of the file, read: or nothing, from one that is not one.
 fn read_line(line: &str) -> Option<Taken> {
     let words: Vec<&str> = line.split_whitespace().collect();
+    let (words, window) = match words.len() {
+        14 => (&words[..13], words[13].strip_prefix("window-")),
+        _ => (&words[..], None),
+    };
     let [name, when, x, y, w, h, corners, backdrop, across, down, radius, shadow, pointer] = words[..] else { return None };
     let number = |word: &str| word.parse::<i32>().ok();
     let area = Rect::new(number(x)?, number(y)?, number(w)?, number(h)?);
@@ -169,7 +182,11 @@ fn read_line(line: &str) -> Option<Taken> {
         "1" => Shadow::named(frame::SHADOW)?,
         said => Shadow::parse(&said.replace('_', " ")).ok()?,
     };
-    let frame = Frame { backdrop, pad: (number(across)?, number(down)?), radius: number(radius)?, shadow, ..Frame::default() };
+    let mut frame = Frame { backdrop, pad: (number(across)?, number(down)?), radius: number(radius)?, shadow, ..Frame::default() };
+    if let Some((style, theme)) = window.and_then(|window| window.split_once('-')) {
+        frame.window = frame::Window::named(style)?;
+        frame.theme = crate::chrome::Theme::named(theme)?;
+    }
     let recipe = Recipe { area, corners: corners.parse().ok()?, frame, pointer: pointer == "1", photo };
     Some(Taken { name: name.into(), when: when.parse().ok()?, recipe })
 }
@@ -325,6 +342,12 @@ mod tests {
         let own = Recipe { frame: Frame { shadow: Shadow::parse("0 8px 24px -4px rgb(20 30 200 / 0.3)").unwrap(), ..first.frame }, ..first };
         remember_in(&file, &own, None, 5000);
         assert_eq!(all_in(&file)[0].recipe, own);
+        // A window round it is kept too, and named for it; none is the
+        // name it always had.
+        let windowed = Recipe { frame: Frame { window: frame::Window::Gnome, theme: crate::chrome::Theme::Dark, ..first.frame }, ..first };
+        remember_in(&file, &windowed, None, 5500);
+        assert_eq!(all_in(&file)[0].recipe, windowed);
+        assert!(windowed.said().contains("in a GNOME window") && windowed.name() != first.name());
         std::fs::write(&file, "abcd 1 0 0 10 10 0 none 0 0 0 1 0\n").unwrap();
         assert_eq!(all_in(&file)[0].recipe.frame.shadow, Shadow::named(frame::SHADOW).unwrap());
         // No more are kept than the most there are to be.
