@@ -179,3 +179,56 @@ mod tests {
         assert_eq!(nearest_size(197.0, &[50.0, 190.0], 4.0), None);
     }
 }
+
+/// How long Shift or Alt still counts as held after it is let go.
+pub(super) const MODS_HOLD: std::time::Duration = std::time::Duration::from_millis(150);
+
+impl Studio {
+    /// The keys held as a drag should take them: Shift and Alt a moment
+    /// after they are let go, as a hand lets go of them a little before
+    /// the button; and for the rest of a drag once pressed in it.
+    pub(super) fn steady_mods(&mut self, mut mods: Mods) -> Mods {
+        let now = std::time::Instant::now();
+        if mods.shift {
+            self.seen_mods.0 = Some(now);
+        }
+        if mods.alt {
+            self.seen_mods.1 = Some(now);
+        }
+        let dragging = !matches!(self.drag, Drag::None | Drag::Pan { .. } | Drag::Picker { .. } | Drag::Slide { .. } | Drag::Scrub { .. });
+        if dragging {
+            self.drag_mods.shift |= mods.shift;
+            self.drag_mods.alt |= mods.alt;
+        } else {
+            self.drag_mods = Mods::default();
+        }
+        let recent = |seen: Option<std::time::Instant>| seen.is_some_and(|when| now.duration_since(when) < MODS_HOLD);
+        mods.shift |= recent(self.seen_mods.0) || self.drag_mods.shift;
+        mods.alt |= recent(self.seen_mods.1) || self.drag_mods.alt;
+        mods
+    }
+}
+
+#[cfg(test)]
+mod held {
+    use super::*;
+
+    #[test]
+    fn shift_holds_a_moment_after_it_is_let_go_and_for_the_rest_of_a_drag() {
+        let mut studio = Studio::new(Doc::new(100, 100), Text::load(), 800, 600, std::env::temp_dir(), "t.png".into());
+        let shift = Mods { shift: true, ..Mods::default() };
+        assert!(!studio.steady_mods(Mods::default()).shift);
+        assert!(studio.steady_mods(shift).shift);
+        // Let go just now: still held.
+        assert!(studio.steady_mods(Mods::default()).shift);
+        studio.seen_mods.0 = Some(std::time::Instant::now() - MODS_HOLD * 2);
+        assert!(!studio.steady_mods(Mods::default()).shift);
+        // Pressed in a drag, it stays for the rest of it.
+        studio.drag = Drag::Draw { from: (0.0, 0.0) };
+        studio.steady_mods(shift);
+        studio.seen_mods.0 = Some(std::time::Instant::now() - MODS_HOLD * 2);
+        assert!(studio.steady_mods(Mods::default()).shift);
+        studio.drag = Drag::None;
+        assert!(!studio.steady_mods(Mods::default()).shift);
+    }
+}

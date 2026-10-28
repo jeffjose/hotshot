@@ -1524,6 +1524,11 @@ pub struct Studio {
     gaps: Vec<snap::Gap>,
     /// Whether Shift+1 last fitted the frame, to fit what is picked out next.
     fitted_frame: bool,
+    /// When Shift and Alt were last seen held, and which were pressed
+    /// during the drag going on: they hold a moment after they are let go,
+    /// and for the rest of a drag once pressed in it.
+    seen_mods: (Option<std::time::Instant>, Option<std::time::Instant>),
+    drag_mods: Mods,
     /// The color of the selection opened to its layers, if one is.
     color_open: Option<u32>,
     /// Whether the grid of styles is open.
@@ -1601,6 +1606,8 @@ impl Studio {
             preview: None,
             gaps: Vec::new(),
             fitted_frame: false,
+            seen_mods: (None, None),
+            drag_mods: Mods::default(),
             color_open: None,
             styling: false,
             search: None,
@@ -2068,6 +2075,7 @@ impl Studio {
     // ---- The pointer ----
 
     pub fn pointer_moved(&mut self, x: i32, y: i32, mods: Mods) {
+        let mods = self.steady_mods(mods);
         (self.pointer, self.mods) = ((x, y), mods);
         let at = self.to_doc((x, y));
         match self.drag {
@@ -3925,6 +3933,14 @@ impl Studio {
                 let (x, y) = self.to_window(((place.x + along) as f32, (place.y + top) as f32));
                 canvas.fill(x + 1, y, 2, (line as f32 * self.zoom) as i32, ACCENT);
             }
+        }
+        // With the text tool, a faint caret where a click would begin
+        // text, as tall as its letters would be.
+        let over_control = layout.controls.iter().any(|(rect, _)| rect.contains(self.pointer.0, self.pointer.1));
+        if self.tool == Tool::Text && !self.framing && self.editing.is_none() && self.drag == Drag::None && !over_control && self.over_page(self.pointer) {
+            let high = (Text::line_height(FONT_SIZES[self.size]) as f32 * self.zoom).round() as i32;
+            canvas.round_fill(self.pointer.0 - 1, self.pointer.1 - high / 2 - 1, 4, high + 2, 0, 0x000000, 70);
+            canvas.round_fill(self.pointer.0, self.pointer.1 - high / 2, 2, high, 0, 0xFFFFFF, 190);
         }
         canvas.reset_clip();
         self.draw_panels(&mut canvas, &layout);
