@@ -24,6 +24,7 @@ mod actions;
 mod arrange;
 mod crop_bar;
 mod drawn;
+mod effects;
 mod export;
 mod menu;
 pub use menu::parse_frame_size;
@@ -118,8 +119,10 @@ const FONT_SIZES: [u32; 4] = [18, 26, 40, 64];
 
 /// The sizes an artboard can be set to at once, by what each is for.
 
-/// The tools down the side, with their keys.
-const TOOLS: [(Tool, &str, &str); 9] = [
+/// The tools, with their keys: those along the bottom, and after them
+/// those the More tools button holds, with capture mode's keys where the
+/// canvas has no other use for them.
+const TOOLS: [(Tool, &str, &str); 10] = [
     (Tool::Select, "Move", "V"),
     (Tool::Rect, "Rectangle", "R"),
     (Tool::Ellipse, "Oval", "O"),
@@ -129,7 +132,14 @@ const TOOLS: [(Tool, &str, &str); 9] = [
     (Tool::Marker, "Marker", "M"),
     (Tool::Text, "Text", "T"),
     (Tool::Counter, "Counter", "N"),
+    (Tool::Blur, "Blur", "B"),
 ];
+
+/// The tools kept behind the More tools button, at the end of the bar,
+/// in the order its list has them.
+const MORE_TOOLS: [Tool; 1] = [Tool::Blur];
+/// The group the More tools button opens, after the shapes' and the pens'.
+const MORE: u8 = 2;
 
 /// What a shape drawn with a tool is called: the tool's name, and for
 /// those brought from capture mode that the canvas has no tool for,
@@ -473,6 +483,12 @@ impl Doc {
     /// `part` of that, everything drawn afresh at that size, so that the
     /// shapes and the text on it are as sharp however large it is shown.
     pub fn render_part(&self, times: f32, part: Rect, text: &mut Text) -> Vec<u32> {
+        self.render_under(self.layers.len(), times, part, text)
+    }
+
+    /// The same of the background and only so many of the layers, the
+    /// first of them: what a blur, a spotlight or a zoom works on.
+    fn render_under(&self, count: usize, times: f32, part: Rect, text: &mut Text) -> Vec<u32> {
         let (wide, high) = (((self.width as f32 * times).round() as i32).max(1) as f32, ((self.height as f32 * times).round() as i32).max(1) as f32);
         let mut out = vec![0u32; (part.w.max(0) * part.h.max(0)) as usize];
         if out.is_empty() {
@@ -497,9 +513,10 @@ impl Doc {
                 }
             }),
         }
-        for layer in self.layers.iter().filter(|layer| !layer.hidden) {
+        for (index, layer) in self.layers[..count.min(self.layers.len())].iter().enumerate().filter(|(_, layer)| !layer.hidden) {
             match &layer.kind {
                 Kind::Picture(picture) => draw_picture(&mut out, part, picture, times, text),
+                Kind::Shape(shape) if effects::changes_beneath(shape.tool) => self.change_beneath(index, &mut out, part, times, text),
                 Kind::Shape(shape) => {
                     let mut shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
                     if (part.x, part.y) != (0, 0) {
@@ -1147,6 +1164,8 @@ enum Field {
     FrameY,
     Length,
     LineAngle,
+    /// How strong a blur is.
+    Strength,
 }
 
 impl Field {
@@ -1171,6 +1190,7 @@ impl Field {
             Field::Stroke => "W",
             Field::Length => "Length",
             Field::LineAngle => "\u{b0}",
+            Field::Strength => "Strength",
             Field::ExportTimes(_) => "\u{d7}",
         }
     }
@@ -1330,6 +1350,8 @@ enum Action {
     Match(u8),
     ToFrame(u8),
     Turn(i16),
+    /// A blur made a mosaic, or smooth.
+    BlurStyle(u8),
 }
 
 impl Action {
@@ -1433,6 +1455,8 @@ impl Action {
             Action::Align(4) => "\u{2195}",
             Action::Align(_) => "\u{2913}",
             Action::Halo => "White edge",
+            Action::BlurStyle(effects::SMOOTH) => "Smooth",
+            Action::BlurStyle(_) => "Mosaic",
         }
     }
 }
@@ -1993,6 +2017,7 @@ impl Studio {
             (Control::Group(1), caret),
             (Control::Tool(Tool::Text), side),
             (Control::Tool(Tool::Counter), side),
+            (Control::Group(MORE), side),
             (Control::Panel, 9),
             (Control::Action(Action::Capture), side),
         ];
@@ -2000,10 +2025,12 @@ impl Studio {
         let open = self.open_area();
         let dock = Rect::new(open.x + (open.w - wide) / 2, self.height - 20 - side - 2 * pad, wide, side + 2 * pad);
         let mut x = dock.x + pad;
-        let mut group_at = [0; 2];
+        let mut group_at = [0; 3];
         for (control, w) in items {
+            // A group's list over the tool before its caret; the More
+            // tools list over its own button.
             if let Control::Group(group) = control {
-                group_at[usize::from(group)] = x - side - gap;
+                group_at[usize::from(group)] = if group == MORE { x } else { x - side - gap };
             }
             if control != Control::Panel {
                 layout.controls.push((Rect::new(x, dock.y + pad, w, side), control));
@@ -2012,9 +2039,13 @@ impl Studio {
         }
         // The list a group opens, over its button.
         if let Some(group) = self.flyout {
-            let tools: &[Tool] = if group == 0 { &[Tool::Rect, Tool::Ellipse, Tool::Line] } else { &[Tool::Pen, Tool::Marker] };
+            let tools: &[Tool] = match group {
+                0 => &[Tool::Rect, Tool::Ellipse, Tool::Line],
+                MORE => &MORE_TOOLS,
+                _ => &[Tool::Pen, Tool::Marker],
+            };
             let (row, w) = (30, 190);
-            let list = Rect::new(group_at[usize::from(group)], dock.y - 8 - tools.len() as i32 * row - 10, w, tools.len() as i32 * row + 10);
+            let list = Rect::new(group_at[usize::from(group)].min(self.width - INSET - w), dock.y - 8 - tools.len() as i32 * row - 10, w, tools.len() as i32 * row + 10);
             for (at, &tool) in tools.iter().enumerate() {
                 layout.controls.push((Rect::new(list.x + 5, list.y + 5 + at as i32 * row, w - 10, row), Control::Pick(tool)));
             }
@@ -2326,7 +2357,7 @@ impl Studio {
             Kind::Picture(picture) => pulls.iter().map(|&(px, py)| (self.to_window(picture.placed((px as f32 * picture.w / 2.0, py as f32 * picture.h / 2.0))), (px, py))).collect(),
             // A box or an oval by its frame, and text by its corners,
             // turned with it.
-            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge) => {
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge | Tool::Blur) => {
                 let (x, y, w, h) = match shape.tool {
                     Tool::Text | Tool::Badge => {
                         let place = shape.local_bounds(&mut self.text);
@@ -2890,8 +2921,10 @@ impl Studio {
             }
             Control::Group(group) => self.flyout = if self.flyout == Some(group) { None } else { Some(group) },
             Control::Pick(tool) => {
-                let group = usize::from(matches!(tool, Tool::Pen | Tool::Marker));
-                self.groups[group] = tool;
+                if !MORE_TOOLS.contains(&tool) {
+                    let group = usize::from(matches!(tool, Tool::Pen | Tool::Marker));
+                    self.groups[group] = tool;
+                }
                 self.flyout = None;
                 self.set_tool(tool);
             }
@@ -3593,6 +3626,7 @@ impl Studio {
                 Field::Opacity => shape.opacity as f32 * 100.0 / 256.0,
                 Field::FontSize => shape.font_px as f32,
                 Field::Stroke => shape.stroke,
+                Field::Strength => effects::strength(shape),
                 Field::StartX => shape.points[0].0,
                 Field::StartY => shape.points[0].1,
                 Field::EndX => shape.points[1.min(shape.points.len() - 1)].0,
@@ -3682,6 +3716,7 @@ impl Studio {
                         }
                         (Kind::Shape(shape), Field::FontSize) => shape.font_px = (value.round() as u32).clamp(6, 400),
                         (Kind::Shape(shape), Field::Stroke) => shape.stroke = (value * 2.0).round().clamp(1.0, 80.0) / 2.0,
+                        (Kind::Shape(shape), Field::Strength) => shape.stroke = effects::stroke_for(value),
                         (Kind::Shape(shape), Field::StartX | Field::StartY | Field::EndX | Field::EndY) => {
                             let at = if matches!(field, Field::StartX | Field::StartY) { 0 } else { 1.min(shape.points.len() - 1) };
                             if matches!(field, Field::StartX | Field::EndX) {
@@ -4593,7 +4628,7 @@ impl Studio {
     fn box_corners(&mut self, index: usize) -> [(i32, i32); 4] {
         let corners = match self.doc.layers[index].kind.clone() {
             Kind::Picture(picture) => picture.corners(),
-            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge) => {
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge | Tool::Blur) => {
                 let (x, y, w, h) = match shape.tool {
                     Tool::Text | Tool::Badge => {
                         let place = shape.local_bounds(&mut self.text);
@@ -4780,6 +4815,20 @@ impl Studio {
                         canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, HOVER_COLOR, 256);
                     }
                     self.text.draw_centered(canvas, cx, cy, 17, if self.framing { 0xFFFFFF } else { TEXT_COLOR }, icons::HASH);
+                }
+                // The More tools button: the one of them in hand, lit, or
+                // three dots, as Figma's has.
+                Control::Group(MORE) => {
+                    let (open, on) = (self.flyout == Some(MORE), MORE_TOOLS.contains(&self.tool) && !self.framing);
+                    if on {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, ACCENT, 256);
+                    } else if hovered || open {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, HOVER_COLOR, 256);
+                    }
+                    match on {
+                        true => self.text.draw_centered(canvas, cx, cy, 17, 0xFFFFFF, tool_icon(self.tool)),
+                        false => (-1..=1).for_each(|at| canvas.disc(cx + at * 6, cy, 2, TEXT_COLOR, 256)),
+                    }
                 }
                 Control::Group(group) => {
                     let open = self.flyout == Some(group);
@@ -5244,6 +5293,7 @@ impl Studio {
         let says = match hover {
             Some(Control::Tool(tool)) => TOOLS.iter().find(|(known, ..)| *known == tool).map(|(_, name, key)| format!("{name}  {key}")),
             Some(Control::FrameTool) => Some("Frame  F".to_owned()),
+            Some(Control::Group(MORE)) => Some("More tools".to_owned()),
             Some(Control::Action(Action::Capture)) if self.pointer.1 >= layout.dock.y => Some("Capture the screen  Ctrl+G".to_owned()),
             _ => None,
         };

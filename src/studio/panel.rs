@@ -317,6 +317,12 @@ impl Studio {
     fn shape_sections(&mut self, rows: &mut Rows, index: usize, shape: &Shape) {
         let act = Control::Action;
         let actions = |list: &[Action]| list.iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect::<Vec<_>>();
+        // A blur and the like have sections of their own.
+        if effects::changes_beneath(shape.tool) {
+            self.effect_sections(rows, shape);
+            self.layer_section(rows);
+            return;
+        }
         let name = tool_name(shape.tool);
         rows.section(name, "", None);
         let line = matches!(shape.tool, Tool::Line | Tool::Arrow);
@@ -451,6 +457,8 @@ impl Studio {
             Tool::Text if shape.style & shapes::BOXED != 0 => vec![(shape.color, "pill")],
             Tool::Text => vec![(shape.color, "text")],
             Tool::Counter | Tool::Badge => vec![(shape.color, "fill")],
+            // A blur has no color of its own.
+            Tool::Blur => Vec::new(),
             _ => vec![(shape.color, "stroke")],
         }
     }
@@ -492,6 +500,7 @@ impl Studio {
                 _ => !shape.elbow && shape.points.len() <= 2,
             }),
             Action::Aspect(which) => usize::from(which) == self.crop_aspect,
+            Action::BlurStyle(style) => shape.is_some_and(|shape| shape.tool == Tool::Blur && (shape.style == effects::SMOOTH) == (style == effects::SMOOTH)),
             Action::FlipAcross => matches!(shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.flip.0),
             Action::FlipDown => matches!(shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.flip.1),
             _ => false,

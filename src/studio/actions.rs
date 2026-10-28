@@ -173,7 +173,7 @@ impl Studio {
                 }
                 self.changed();
             }
-            _ => {}
+            other => self.act_effect(other),
         }
         self.dirty = true;
         Outcome::Continue

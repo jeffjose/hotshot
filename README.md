@@ -150,6 +150,13 @@ they do; hold Ctrl not to snap. Boxes, ovals and text keep their handles
 when rotated, and text grows by its corners; arrows and lines have a
 handle at each end, and stick to pictures as well as shapes.
 
+The rarer tools are kept behind one More tools button at the end of the
+bar, which shows the one in hand while it is; their keys work without
+opening it. `B` blurs what is under a box, everything below it in the
+frame, pictures and layers alike, as a mosaic or smoothly, as strongly
+as the panel says; it is worked out at the size the frame is exported
+at, so an export at 2x is blurred from pixels drawn at 2x.
+
 Hover a button, a swatch, a shadow or a style and the canvas shows what
 it would do; only a click keeps it. While moving, a layer also snaps to
 even gaps between its neighbors, marked in magenta; while resizing, to
