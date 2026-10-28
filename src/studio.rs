@@ -62,6 +62,32 @@ const LEFT_W: i32 = 252;
 const RIGHT_W: i32 = 268;
 const DOCK_ROOM: i32 = 72;
 
+/// How far a notch of the wheel moves the page, in pixels of the window;
+/// and how much larger a notch with Ctrl makes it, about the pointer:
+/// 1.15 times, near what Figma's does for a notch of a mouse's wheel.
+/// A trackpad's strokes come as parts of a notch, each zooming by as
+/// large a part of that, so that many small ones add up to the same.
+const WHEEL_STEP: f32 = 60.0;
+const WHEEL_ZOOM: f32 = 1.15;
+
+/// How much larger so many notches of the wheel down make the page:
+/// smaller, for down, and larger for up.
+fn wheel_zoom(down: f32) -> f32 {
+    (-WHEEL_ZOOM.ln() * down).exp()
+}
+
+/// Which way a press of buttons 4 to 7, a notch of the wheel, turns it:
+/// so many notches right and down.
+fn wheel_notch(button: u8) -> (f32, f32) {
+    match button {
+        4 => (0.0, -1.0),
+        5 => (0.0, 1.0),
+        6 => (-1.0, 0.0),
+        7 => (1.0, 0.0),
+        _ => (0.0, 0.0),
+    }
+}
+
 /// How much larger a picture's shadow is than Tailwind's of its name.
 const SHADOW_SIZE: f32 = 2.0;
 
@@ -1517,9 +1543,6 @@ pub struct Studio {
     zoom: f32,
     /// Where the artboard's top left corner is, in the view.
     pan: (f32, f32),
-    /// The zoom a turn of the wheel is easing toward, and the point of
-    /// the window it keeps still.
-    zoom_goal: Option<(f32, (i32, i32))>,
     tool: Tool,
     selected: Vec<usize>,
     hovered: Option<usize>,
@@ -1623,7 +1646,6 @@ impl Studio {
             height,
             zoom: 1.0,
             pan: (0.0, 0.0),
-            zoom_goal: None,
             tool: Tool::Select,
             selected: Vec::new(),
             hovered: None,
@@ -2128,26 +2150,34 @@ impl Studio {
         self.dirty = true;
     }
 
-    /// The wheel turned with Ctrl: the zoom eased toward a new one over a
-    /// few frames, as Figma's is, and not jumped to.
-    fn ease_zoom(&mut self, times: f32, at: (i32, i32)) {
-        let goal = self.zoom_goal.map_or(self.zoom, |(goal, _)| goal);
-        self.zoom_goal = Some(((goal * times).clamp(0.02, 16.0), at));
-        self.dirty = true;
-    }
-
-    /// A step of the zoom toward where the wheel left it; whether there
-    /// are more to come.
-    pub fn tick(&mut self) -> bool {
-        let Some((goal, at)) = self.zoom_goal else { return false };
-        let left = goal / self.zoom;
-        if (left - 1.0).abs() < 0.004 {
-            self.zoom_about(left, at);
-            self.zoom_goal = None;
-            return false;
+    /// The wheel turned, or a trackpad stroked, by so many notches down
+    /// and so many to the right, parts of one as well: the panel of
+    /// properties scrolled over it; with Ctrl, larger or smaller at once
+    /// about the pointer, as Figma's and Chrome's are, down smaller; and
+    /// otherwise the page moved, across with Shift.
+    pub fn scrolled(&mut self, right: f32, down: f32) {
+        self.end_preview();
+        // With the search open, the wheel waits.
+        if self.search.is_some() || (right == 0.0 && down == 0.0) {
+            return;
         }
-        self.zoom_about(left.powf(0.35), at);
-        true
+        self.dirty = true;
+        if self.shows_right() && self.pointer.0 >= self.page_right() {
+            // Over the panel of properties: that, scrolled.
+            self.scroll = (self.scroll + (down * 48.0).round() as i32).max(0);
+            return;
+        }
+        if self.pointer.0 < self.page_left() {
+            return;
+        }
+        if self.mods.ctrl {
+            self.zoom_about(wheel_zoom(down), self.pointer);
+        } else if self.mods.shift {
+            self.pan.0 -= (right + down) * WHEEL_STEP;
+        } else {
+            self.pan.0 -= right * WHEEL_STEP;
+            self.pan.1 -= down * WHEEL_STEP;
+        }
     }
 
     /// A point of the window as a point of the page, and back.
@@ -2262,6 +2292,14 @@ impl Studio {
     }
 
     // ---- The pointer ----
+
+    /// Where the pointer is as the wheel turns, and the keys held: only
+    /// that, for the zoom to keep the point under it still; what it is
+    /// over is found by the next move.
+    pub fn wheel_at(&mut self, x: i32, y: i32, mods: Mods) {
+        self.pointer = (x, y);
+        self.mods = self.steady_mods(mods);
+    }
 
     pub fn pointer_moved(&mut self, x: i32, y: i32, mods: Mods) {
         let mods = self.steady_mods(mods);
@@ -2405,23 +2443,10 @@ impl Studio {
         self.dirty = true;
         self.pressed_at = self.version;
         match button {
-            // The wheel: up and down, or with Shift across; with Ctrl,
-            // larger and smaller about the pointer.
-            4 | 5 | 6 | 7 if self.shows_right() && self.pointer.0 >= self.page_right() => {
-                // Over the panel of properties: that, scrolled.
-                self.scroll = (self.scroll + if button == 4 { -48 } else if button == 5 { 48 } else { 0 }).max(0);
-                return Outcome::Continue;
-            }
-            4 | 5 | 6 | 7 if self.pointer.0 < self.page_left() => return Outcome::Continue,
-            4 | 5 | 6 | 7 => {
-                let up = matches!(button, 4 | 6);
-                if self.mods.ctrl {
-                    self.ease_zoom(if up { 1.2 } else { 1.0 / 1.2 }, at_window);
-                } else if self.mods.shift || button > 5 {
-                    self.pan.0 += if up { 60.0 } else { -60.0 };
-                } else {
-                    self.pan.1 += if up { 60.0 } else { -60.0 };
-                }
+            // A notch of the wheel: up, down, left or right.
+            4..=7 => {
+                let (right, down) = wheel_notch(button);
+                self.scrolled(right, down);
                 return Outcome::Continue;
             }
             2 => {
@@ -5181,17 +5206,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let mut saved = std::time::Instant::now();
     loop {
         // What has happened: a run of the pointer's movements told as
-        // where it last was.
-        // While the zoom eases, a step of it each 8 ms between whatever
-        // else happens.
-        let easing = matches!(&screen, Shown::Studio(studio) if studio.zoom_goal.is_some());
-        let mut events: Vec<Event> = if easing { conn.poll_for_event()?.into_iter().collect() } else { vec![conn.wait_for_event()?] };
-        if easing && events.is_empty() {
-            std::thread::sleep(std::time::Duration::from_millis(8));
-            if let Shown::Studio(studio) = &mut screen {
-                studio.tick();
-            }
-        }
+        // where it last was, and a run of the wheel's notches all taken
+        // before it is drawn once.
+        let mut events: Vec<Event> = vec![conn.wait_for_event()?];
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);
         }
@@ -5204,6 +5221,17 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         for event in events {
             match event {
                 Event::MotionNotify(motion_event) => motion = Some((i32::from(motion_event.event_x), i32::from(motion_event.event_y), crate::x11::mods(motion_event.state.into()))),
+                // A notch of the wheel on the canvas: the pointer only put
+                // where it is, and what it is over found once after the
+                // run of them, not again for each.
+                Event::ButtonPress(press) if (4..=7).contains(&press.detail) && matches!(screen, Shown::Studio(_)) => {
+                    let at = (i32::from(press.event_x), i32::from(press.event_y), crate::x11::mods(press.state.into()));
+                    if let Shown::Studio(studio) = &mut screen {
+                        studio.wheel_at(at.0, at.1, at.2);
+                        outcome = studio.pressed(press.detail, press.time);
+                    }
+                    motion = Some(at);
+                }
                 Event::ButtonPress(press) => {
                     if let Some(at) = motion.take() {
                         moved(&mut screen, at);
@@ -6154,32 +6182,50 @@ mod tests {
             for turn in 0..turns {
                 studio.mods.ctrl = true;
                 studio.pressed(if up { 4 } else { 5 }, turn);
-                while studio.tick() {
-                    studio.draw(&mut out);
-                }
                 studio.draw(&mut out);
             }
         }
     }
     #[test]
-    fn the_wheel_eases_the_zoom_and_keeps_the_point_under_the_pointer() {
+    fn the_wheel_zooms_at_once_and_keeps_the_point_under_the_pointer() {
         let mut studio = studio();
         let (before, at) = (studio.zoom, (700, 450));
         let under = studio.to_page(at);
+        studio.wheel_at(at.0, at.1, Mods { ctrl: true, ..Mods::default() });
         studio.mods.ctrl = true;
-        studio.pointer_moved(at.0, at.1, Mods { ctrl: true, ..Mods::default() });
+        // Two notches up: larger by 1.15 twice, there at once.
         studio.pressed(4, 1000);
         studio.pressed(4, 1010);
-        // Not there at once, but a step at a time.
-        assert_eq!(studio.zoom, before);
-        let mut steps = 0;
-        while studio.tick() {
-            steps += 1;
-            assert!(steps < 60);
-        }
-        assert!(steps > 3 && (studio.zoom / before - 1.44).abs() < 0.01, "{steps} {}", studio.zoom / before);
+        assert!((studio.zoom / before - WHEEL_ZOOM * WHEEL_ZOOM).abs() < 1e-4, "{}", studio.zoom / before);
         let now = studio.to_page(at);
-        assert!((now.0 - under.0).abs() < 1.0 && (now.1 - under.1).abs() < 1.0);
+        assert!((now.0 - under.0).abs() < 0.5 && (now.1 - under.1).abs() < 0.5);
+        // A notch down undoes a notch up; and a trackpad's ten tenths of
+        // one come to the same as the notch.
+        studio.pressed(5, 1020);
+        assert!((studio.zoom / before - WHEEL_ZOOM).abs() < 1e-4);
+        let notched = studio.zoom;
+        studio.pressed(5, 1030);
+        for _ in 0..10 {
+            studio.scrolled(0.0, -0.1);
+        }
+        assert!((studio.zoom / notched - 1.0).abs() < 1e-4, "{}", studio.zoom / notched);
+        assert!((wheel_zoom(1.0) * WHEEL_ZOOM - 1.0).abs() < 1e-6 && wheel_zoom(0.0) == 1.0);
+        assert!((wheel_zoom(0.5) * wheel_zoom(0.5) - wheel_zoom(1.0)).abs() < 1e-6);
+        // Without Ctrl, the page moved: down by a notch, across with Shift
+        // or a notch to the side, and by parts of one as well.
+        studio.mods.ctrl = false;
+        let pan = studio.pan;
+        let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
+        studio.pressed(5, 1040);
+        assert!(near(studio.pan, (pan.0, pan.1 - WHEEL_STEP)));
+        studio.pressed(7, 1050);
+        assert!(near(studio.pan, (pan.0 - WHEEL_STEP, pan.1 - WHEEL_STEP)));
+        studio.mods.shift = true;
+        studio.pressed(4, 1060);
+        assert!(near(studio.pan, (pan.0, pan.1 - WHEEL_STEP)));
+        studio.mods.shift = false;
+        studio.scrolled(0.25, -0.5);
+        assert!(near(studio.pan, (pan.0 - WHEEL_STEP / 4.0, pan.1 - WHEEL_STEP / 2.0)), "{:?}", studio.pan);
     }
     #[test]
     fn a_drag_inside_what_is_picked_out_moves_it_though_nothing_is_under_it() {
