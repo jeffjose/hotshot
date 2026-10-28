@@ -413,6 +413,7 @@ impl Studio {
         self.commit_typing();
         self.commit_name();
         (self.menu, self.flyout, self.palette, self.styling, self.eyedropping) = (None, None, None, false, false);
+        self.menu_row = None;
         self.dirty = true;
         // A row of the layers ends the typing of text, which may take a
         // row away: the row is found again after.

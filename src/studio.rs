@@ -1525,6 +1525,9 @@ pub struct Studio {
     /// size of it; whether rulers are shown; whether width and height are
     /// kept to each other; layers copied; and the shape crops keep to.
     menu: Option<MenuState>,
+    /// The row of the open list come to by the keys: the list a level
+    /// deep, and the row in it.
+    menu_row: Option<(u8, usize)>,
     pub screen: (i32, i32),
     rulers: bool,
     /// Whether the panel down the left, and the one down the right, are
@@ -1681,6 +1684,7 @@ impl Studio {
             name_picked: false,
             groups: [Tool::Rect, Tool::Pen],
             menu: None,
+            menu_row: None,
             screen: (1920, 1080),
             rulers: false,
             left_open: true,
@@ -2481,6 +2485,7 @@ impl Studio {
 
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
         self.end_preview();
+        self.menu_row = None;
         // The window of what was written closes with a click off it.
         if self.exported.is_some() && button <= 3 && !matches!(self.control_at(self.pointer), Some(Control::ExportDone(_) | Control::Panel)) {
             self.exported = None;
@@ -4041,6 +4046,13 @@ impl Studio {
         }
         self.mods = mods;
         self.dirty = true;
+        // An open list takes the keys, as Ctrl+K does: Up and Down, Enter,
+        // Right and Left into and out of the list a row opens, and Esc;
+        // a letter switches no tool while it is open. Ctrl keys still do
+        // what they say.
+        if self.menu.is_some() && !mods.ctrl {
+            return if down { self.menu_key(key) } else { Outcome::Continue };
+        }
         if key == Key::Char(' ') && self.editing.is_none() && self.typing.is_none() && self.renaming.is_none() {
             self.space = down;
             return Outcome::Continue;
@@ -6875,6 +6887,59 @@ mod tests {
         }
         studio.key(Key::Enter, Mods::default(), true);
         assert!(studio.zen && studio.search.is_none());
+    }
+
+    #[test]
+    fn the_keys_go_through_an_open_list_and_a_letter_takes_up_no_tool() {
+        let mut studio = studio();
+        let none = Mods::default();
+        let says = |studio: &mut Studio| {
+            let (level, row) = studio.menu_row.expect("a row come to");
+            let menu = studio.menu.expect("a list is open");
+            let kind = if level == 0 { menu.kind } else { menu.sub.unwrap().1 };
+            match studio.menu_items(kind).into_iter().nth(row) {
+                Some(menu::Item::Entry { says, .. }) => says,
+                _ => panic!("not an entry"),
+            }
+        };
+        // The main menu: Down to the first row, Up round to the last.
+        let home = studio.control_rect(Control::Home).unwrap().center();
+        click(&mut studio, home);
+        studio.key(Key::Down, none, true);
+        assert_eq!(says(&mut studio), "Back to projects");
+        studio.key(Key::Up, none, true);
+        assert_eq!(says(&mut studio), "Close");
+        // A letter does nothing while it is open: no tool taken up.
+        studio.key(Key::Char('r'), none, true);
+        assert!(studio.tool == Tool::Select && studio.menu.is_some());
+        // Down round to the top and past the rule to File; Right into it,
+        // Left back out.
+        studio.key(Key::Down, none, true);
+        studio.key(Key::Down, none, true);
+        assert_eq!(says(&mut studio), "File");
+        studio.key(Key::Right, none, true);
+        assert_eq!((says(&mut studio), studio.menu.unwrap().sub.map(|(_, kind)| kind)), ("New page".to_owned(), Some(MenuKind::MainSub(0))));
+        studio.key(Key::Left, none, true);
+        assert_eq!((says(&mut studio), studio.menu.unwrap().sub), ("File".to_owned(), None));
+        // Into View, down to Rulers, and Enter does it and closes the list.
+        studio.key(Key::Down, none, true);
+        studio.key(Key::Down, none, true);
+        studio.key(Key::Enter, none, true);
+        assert_eq!(studio.menu.unwrap().sub.map(|(_, kind)| kind), Some(MenuKind::MainSub(2)));
+        while says(&mut studio) != "Rulers" {
+            studio.key(Key::Down, none, true);
+        }
+        studio.key(Key::Enter, none, true);
+        assert!(studio.rulers && studio.menu.is_none());
+        // The right click's list the same, and Esc closes it.
+        let empty = studio.to_window((700.0, 500.0));
+        studio.right_click(empty);
+        studio.key(Key::Down, none, true);
+        assert_eq!(says(&mut studio), "Paste here");
+        studio.key(Key::Escape, none, true);
+        assert!(studio.menu.is_none());
+        studio.key(Key::Char('r'), none, true);
+        assert_eq!(studio.tool, Tool::Rect);
     }
 
     #[test]

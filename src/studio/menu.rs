@@ -517,7 +517,7 @@ impl Studio {
                     Item::Heading(says) => self.text.draw(canvas, place.x + 13, y + 8, 10, 0x8F8F8F, says),
                     Item::Rule => canvas.fill(place.x + 7, y + 4, place.w - 14, 1, 0x3A3A3A),
                     Item::Entry { says, keys, on, sub, look, .. } => {
-                        let lit = hover == Some(Control::MenuRow(level as u8, index as u16)) || open == Some(index);
+                        let lit = hover == Some(Control::MenuRow(level as u8, index as u16)) || open == Some(index) || self.menu_row == Some((level as u8, index));
                         if lit {
                             canvas.round_fill(place.x + 5, y, place.w - 10, ROW, 5, ACCENT, 256);
                         }
@@ -567,6 +567,10 @@ impl Studio {
     /// beside it.
     pub(super) fn hover_menu(&mut self, control: Option<Control>) {
         let Some(mut menu) = self.menu else { return };
+        // The keys go on from the row the pointer is on.
+        if let Some(Control::MenuRow(level, row)) = control {
+            self.menu_row = Some((level, usize::from(row)));
+        }
         if let Some(Control::MenuRow(0, row)) = control {
             let items = self.menu_items(menu.kind);
             let sub = match items.get(usize::from(row)) {
@@ -595,6 +599,54 @@ impl Studio {
         self.menu = None;
         self.dirty = true;
         self.run_menu(act)
+    }
+
+    /// A key while a list is open, as Ctrl+K takes them: Up and Down from
+    /// row to row, Right into the list a row opens and Left back out of
+    /// it, Enter to choose, Esc to close. Anything else does nothing.
+    pub(super) fn menu_key(&mut self, key: Key) -> Outcome {
+        let Some(menu) = self.menu else { return Outcome::Continue };
+        self.dirty = true;
+        let kind_at = |level: u8| if level == 0 { Some(menu.kind) } else { menu.sub.map(|(_, kind)| kind) };
+        let (level, row) = match self.menu_row {
+            Some((level, row)) if kind_at(level).is_some() => (level, Some(row)),
+            _ => (0, None),
+        };
+        let Some(kind) = kind_at(level) else { return Outcome::Continue };
+        let rows: Vec<usize> = self.menu_items(kind).iter().enumerate().filter(|(_, item)| matches!(item, Item::Entry { .. })).map(|(at, _)| at).collect();
+        let place = row.and_then(|row| rows.iter().position(|&at| at == row));
+        match key {
+            Key::Escape => (self.menu, self.menu_row) = (None, None),
+            Key::Down | Key::Up if !rows.is_empty() => {
+                let next = match (place, key == Key::Down) {
+                    (None, true) => 0,
+                    (None, false) => rows.len() - 1,
+                    (Some(at), true) => (at + 1) % rows.len(),
+                    (Some(at), false) => (at + rows.len() - 1) % rows.len(),
+                };
+                self.menu_row = Some((level, rows[next]));
+            }
+            Key::Right | Key::Enter if level == 0 && row.is_some_and(|row| matches!(self.menu_items(kind).get(row), Some(Item::Entry { sub: Some(_), .. }))) => {
+                let row = row.unwrap_or(0);
+                if let Some(Item::Entry { sub: Some(sub), .. }) = self.menu_items(kind).get(row) {
+                    let first = self.menu_items(*sub).iter().position(|item| matches!(item, Item::Entry { .. }));
+                    self.menu = Some(MenuState { sub: Some((row, *sub)), ..menu });
+                    self.menu_row = first.map(|first| (1, first));
+                }
+            }
+            Key::Left if level == 1 => {
+                self.menu_row = menu.sub.map(|(row, _)| (0, row));
+                self.menu = Some(MenuState { sub: None, ..menu });
+            }
+            Key::Enter => {
+                if let Some(row) = row {
+                    self.menu_row = None;
+                    return self.press_menu(level, row as u16);
+                }
+            }
+            _ => {}
+        }
+        Outcome::Continue
     }
 
     pub(super) fn run_menu(&mut self, act: MenuAct) -> Outcome {
