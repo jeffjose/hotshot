@@ -122,6 +122,12 @@ color, a two-color gradient at any angle, one of the frame box's
 backdrops, or nothing), and the export
 scale.
 
+Each panel has a button at its top corner that hides it, as Claude's
+sidebar button does: the button stays where it is, alone, and the page
+takes the room; it brings the panel back. `Ctrl+Shift+\` hides or shows
+the left panel and `Ctrl+Alt+\` the right, and the next time the canvas
+opens they are as they were left.
+
 Pictures come from files given on the command line, from the clipboard
 (`Ctrl+V`), or from the screen (Capture, or `Ctrl+G`, which hides the
 window while you take one). Drag to move, drag a handle to resize

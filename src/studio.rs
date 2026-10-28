@@ -1215,6 +1215,8 @@ enum Control {
     ColorLayer(usize, &'static str),
     /// The strip a gradient is shown on, its stops at its ends.
     GradientBar,
+    /// The button that hides or shows a panel: the left one, or the right.
+    SidePanel(u8),
     /// A part of a panel that is no control.
     Panel,
 }
@@ -1497,6 +1499,11 @@ pub struct Studio {
     menu: Option<MenuState>,
     pub screen: (i32, i32),
     rulers: bool,
+    /// Whether the panel down the left, and the one down the right, are
+    /// shown: each hidden and brought back by its own button, which stays
+    /// where it is either way.
+    left_open: bool,
+    right_open: bool,
     keep_ratio: bool,
     copied: Vec<Layer>,
     crop_aspect: usize,
@@ -1653,6 +1660,8 @@ impl Studio {
             menu: None,
             screen: (1920, 1080),
             rulers: false,
+            left_open: true,
+            right_open: true,
             keep_ratio: false,
             copied: Vec::new(),
             crop_aspect: 0,
@@ -1942,16 +1951,23 @@ impl Studio {
     /// The panel down the left: the file, its pages, and the layers of the
     /// page shown, by frame.
     fn left_panel(&mut self, layout: &mut Layout) {
+        // Its button first, where it is whether the panel shows or not;
+        // hidden, the panel is that button and nothing else.
+        layout.controls.push((self.side_button(0), Control::SidePanel(0)));
+        if !self.shows_left() {
+            return;
+        }
         let panel = Rect::new(INSET, INSET, LEFT_W, self.height - 2 * INSET);
         layout.panels.push(panel);
         let (left, inner) = (panel.x + 12, panel.w - 24);
         let line = Text::line_height(12);
         // The file: the way home, its project, and its name.
-        layout.controls.push((Rect::new(left, panel.y + 12, 28, 28), Control::Home));
+        let home = self.side_button(0).right() + 6;
+        layout.controls.push((Rect::new(home, panel.y + 12, 28, 28), Control::Home));
         let project = self.path.as_ref().and_then(|path| path.parent()).and_then(|dir| dir.file_name()).map_or("Drafts".to_owned(), |name| name.to_string_lossy().into_owned());
-        layout.words.push(((left + 38, panel.y + 10), project, DIM_TEXT_COLOR, 11));
+        layout.words.push(((home + 38, panel.y + 10), project, DIM_TEXT_COLOR, 11));
         let name = self.title().trim_end_matches(" \u{2014} hotshot").to_owned();
-        layout.words.push(((left + 38, panel.y + 25), name, TEXT_COLOR, 13));
+        layout.words.push(((home + 38, panel.y + 25), name, TEXT_COLOR, 13));
         // The pages.
         let mut y = panel.y + 56;
         layout.rules.push(Rect::new(panel.x, y, panel.w, 1));
@@ -2005,11 +2021,15 @@ impl Studio {
     /// under them what there is to set of what is picked out, or of the
     /// frame, a section at a time, scrolled if it is long.
     fn right_panel(&mut self, layout: &mut Layout) {
+        layout.controls.push((self.side_button(1), Control::SidePanel(1)));
+        if !self.shows_right() {
+            return;
+        }
         let panel = Rect::new(self.width - INSET - RIGHT_W, INSET, RIGHT_W, self.height - 2 * INSET);
         layout.panels.push(panel);
         let (left, inner) = (panel.x + 14, panel.w - 28);
         layout.controls.push((Rect::new(left - 4, panel.y + 10, 64, 30), Control::Zoom));
-        layout.controls.push((Rect::new(left + inner - 92, panel.y + 10, 92, 30), Control::Action(Action::Export)));
+        layout.controls.push((Rect::new(self.side_button(1).x - 6 - 92, panel.y + 10, 92, 30), Control::Action(Action::Export)));
         layout.controls.push((Rect::new(left - 4, panel.y + 46, 70, 26), Control::Tab(0)));
         layout.controls.push((Rect::new(left + 70, panel.y + 46, 70, 26), Control::Tab(1)));
         let top = panel.y + 80;
@@ -2037,9 +2057,55 @@ impl Studio {
     /// The part of the window between the panels and over the toolbar,
     /// where what is fitted to the view goes.
     fn open_area(&self) -> Rect {
-        let left = INSET + LEFT_W + INSET;
-        let right = self.width - INSET - RIGHT_W - INSET;
+        let left = if self.shows_left() { self.page_left() } else { INSET };
+        let right = if self.shows_right() { self.page_right() } else { self.width - INSET };
         Rect::new(left, INSET, (right - left).max(100), (self.height - INSET - DOCK_ROOM).max(100))
+    }
+
+    /// Whether each panel is shown.
+    fn shows_left(&self) -> bool {
+        self.left_open
+    }
+
+    fn shows_right(&self) -> bool {
+        self.right_open
+    }
+
+    /// Where the page begins and ends across the window: past the panels
+    /// that are shown, and at the window's edges where none is.
+    fn page_left(&self) -> i32 {
+        if self.shows_left() { INSET + LEFT_W + INSET } else { 0 }
+    }
+
+    fn page_right(&self) -> i32 {
+        if self.shows_right() { self.width - INSET - RIGHT_W - INSET } else { self.width }
+    }
+
+    /// The button that hides and shows a panel, at the top of it: the
+    /// same place whether the panel is there or not, so that nothing
+    /// moves, as Claude's own sidebar button does not.
+    fn side_button(&self, side: u8) -> Rect {
+        match side {
+            0 => Rect::new(INSET + 12, INSET + 12, 28, 28),
+            _ => Rect::new(self.width - INSET - 14 - 28, INSET + 12, 28, 28),
+        }
+    }
+
+    /// A panel hidden or shown, and kept so for the next time; what was
+    /// being typed in it kept first, and the colors beside the right one
+    /// closed with it.
+    fn toggle_panel(&mut self, side: u8) {
+        self.commit_name();
+        self.commit_typing();
+        (self.palette, self.eyedropping) = (None, false);
+        match side {
+            0 => self.left_open = !self.left_open,
+            _ => self.right_open = !self.right_open,
+        }
+        if !cfg!(test) {
+            keep_panels(self.left_open, self.right_open);
+        }
+        self.dirty = true;
     }
 
     /// The frame worked in made to fit the open part of the window, with
@@ -2114,9 +2180,7 @@ impl Studio {
 
     /// Whether a point of the window is over the page, and not a panel.
     fn over_page(&self, (x, _): (i32, i32)) -> bool {
-        let left = x < INSET + LEFT_W + INSET;
-        let right = x >= self.width - INSET - RIGHT_W - INSET;
-        !(left || right)
+        x >= self.page_left() && x < self.page_right()
     }
 
     fn chosen(&self) -> Vec<usize> {
@@ -2343,12 +2407,12 @@ impl Studio {
         match button {
             // The wheel: up and down, or with Shift across; with Ctrl,
             // larger and smaller about the pointer.
-            4 | 5 | 6 | 7 if self.pointer.0 >= self.width - INSET - RIGHT_W - INSET => {
+            4 | 5 | 6 | 7 if self.shows_right() && self.pointer.0 >= self.page_right() => {
                 // Over the panel of properties: that, scrolled.
                 self.scroll = (self.scroll + if button == 4 { -48 } else if button == 5 { 48 } else { 0 }).max(0);
                 return Outcome::Continue;
             }
-            4 | 5 | 6 | 7 if self.pointer.0 < INSET + LEFT_W + INSET => return Outcome::Continue,
+            4 | 5 | 6 | 7 if self.pointer.0 < self.page_left() => return Outcome::Continue,
             4 | 5 | 6 | 7 => {
                 let up = matches!(button, 4 | 6);
                 if self.mods.ctrl {
@@ -2635,6 +2699,7 @@ impl Studio {
             self.menu = None;
         }
         match control {
+            Control::SidePanel(side) => self.toggle_panel(side),
             Control::Home => {
                 let place = self.control_rect(control).unwrap_or_default();
                 self.menu = Some(MenuState { kind: MenuKind::Main, at: (place.x, place.bottom() + 6), sub: None });
@@ -3994,6 +4059,10 @@ impl Studio {
             (Key::Char('g'), true) => return Outcome::Capture,
             (Key::Char(']' | '}'), true) => self.restack(true),
             (Key::Char('[' | '{'), true) => self.restack(false),
+            // Ctrl+Shift+\ hides or shows the left panel, Ctrl+Alt+\ the
+            // right; Shift gives | on most keyboards.
+            (Key::Char('\\' | '|'), true) if mods.alt => self.toggle_panel(1),
+            (Key::Char('\\' | '|'), true) if mods.shift => self.toggle_panel(0),
             (Key::Char('0'), true) => self.fit(),
             (Key::Char('1'), true) => {
                 let middle = self.open_area().center();
@@ -4528,6 +4597,22 @@ impl Studio {
                     let wide = self.text.width(&zoom, px);
                     self.text.draw_centered(canvas, rect.x + 18 + wide, cy, 10, DIM_TEXT_COLOR, icons::DOWN);
                 }
+                Control::SidePanel(side) => {
+                    let open = if side == 0 { self.shows_left() } else { self.shows_right() };
+                    // With its panel hidden, the button floats on its own,
+                    // on a little panel of its own.
+                    if !open {
+                        for grow in (1..=5).rev() {
+                            canvas.round_fill(rect.x - 4 - grow, rect.y - 4 - grow + 3, rect.w + 8 + 2 * grow, rect.h + 8 + 2 * grow, 10 + grow, 0x000000, 14);
+                        }
+                        canvas.round_fill(rect.x - 4, rect.y - 4, rect.w + 8, rect.h + 8, 10, PANEL_COLOR, 256);
+                        canvas.round_outline(rect.x - 4, rect.y - 4, rect.w + 8, rect.h + 8, 10, 1, EDGE_COLOR);
+                    }
+                    if hovered {
+                        canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+                    }
+                    draw_side_icon(canvas, rect, side, open, if hovered { TEXT_COLOR } else { DIM_TEXT_COLOR });
+                }
                 Control::Home => {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 8, if hovered { 0x5472E4 } else { ACCENT }, 256);
                     self.text.draw_centered(canvas, cx, cy, 15, 0xFFFFFF, if hovered { icons::HOME } else { icons::CAMERA });
@@ -4555,7 +4640,7 @@ impl Studio {
                         self.text.draw(canvas, rect.right() - 10 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, &count);
                     }
                 }
-                Control::Frame(index) if rect.x < INSET + LEFT_W => {
+                Control::Frame(index) if self.shows_left() && rect.right() <= INSET + LEFT_W => {
                     let on = index == self.active && (self.frame_picked || chosen.is_empty());
                     if on || hovered {
                         canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
@@ -4949,6 +5034,20 @@ impl Studio {
     }
 }
 
+/// The picture on the button that hides and shows a panel: a window with
+/// a strip down the side the panel is on, filled in while it shows.
+fn draw_side_icon(canvas: &mut Canvas, rect: Rect, side: u8, open: bool, color: u32) {
+    let (w, h) = (16, 14);
+    let (x, y) = (rect.x + (rect.w - w) / 2, rect.y + (rect.h - h) / 2);
+    canvas.round_outline(x, y, w, h, 3, 1, color);
+    let strip = if side == 0 { x + 5 } else { x + w - 6 };
+    canvas.fill(strip, y + 1, 1, h - 2, color);
+    if open {
+        let (from, wide) = if side == 0 { (x + 1, 4) } else { (strip + 1, 4) };
+        canvas.round_fill(from, y + 1, wide, h - 2, 1, color, 120);
+    }
+}
+
 /// A line a pixel wide, from one point to another, in the window.
 fn line(canvas: &mut Canvas, from: (i32, i32), to: (i32, i32), color: u32) {
     let steps = (to.0 - from.0).abs().max((to.1 - from.1).abs()).max(1);
@@ -4985,6 +5084,10 @@ fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: Pa
         studio.add_size(name.clone(), *w, *h);
     }
     studio.path = Some(path);
+    (studio.left_open, studio.right_open) = kept_panels();
+    if !studio.left_open || !studio.right_open {
+        studio.fit();
+    }
     // Pictures after the first a little down and to the right of it.
     for (index, (image, name)) in pictures.into_iter().enumerate() {
         studio.add_picture(image, &name);
@@ -4996,6 +5099,27 @@ fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: Pa
         studio.save(false);
     }
     studio
+}
+
+/// Whether the left panel and the right one were showing when last left,
+/// kept in `canvas-panels` among hotshot's state as two words, `left
+/// right`, each 1 or 0; both, the first time.
+fn kept_panels() -> (bool, bool) {
+    let kept = crate::output::state_file("canvas-panels").and_then(|file| std::fs::read_to_string(file).ok());
+    read_panels(&kept.unwrap_or_default())
+}
+
+fn read_panels(text: &str) -> (bool, bool) {
+    let mut words = text.split_whitespace();
+    (words.next() != Some("0"), words.next() != Some("0"))
+}
+
+fn keep_panels(left: bool, right: bool) {
+    let Some(file) = crate::output::state_file("canvas-panels") else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, format!("{} {}\n", u8::from(left), u8::from(right)));
 }
 
 /// The canvas in a window of its own, until it is closed. With no files,
@@ -6406,6 +6530,48 @@ mod tests {
         choose(&mut studio, "Duplicate frame");
         assert_eq!((studio.frame_count(), studio.active), (2, 1));
         assert!(studio.doc.name.ends_with("copy") && studio.doc.x > studio.frame(0).x);
+    }
+
+    /// A click of the left button at a point of the window, never taken
+    /// for the second of a double click.
+    fn click(studio: &mut Studio, at: (i32, i32)) -> Outcome {
+        studio.pointer_moved(at.0, at.1, Mods::default());
+        studio.last_press.0 = 0;
+        let outcome = studio.pressed(1, 100_000);
+        studio.released();
+        outcome
+    }
+
+    #[test]
+    fn a_panel_is_hidden_and_shown_by_a_button_that_stays_where_it_is() {
+        let mut studio = studio();
+        let ctrl_shift = Mods { ctrl: true, shift: true, ..Mods::default() };
+        let left = studio.control_rect(Control::SidePanel(0)).unwrap();
+        let right = studio.control_rect(Control::SidePanel(1)).unwrap();
+        let in_panel = (INSET + 100, 400);
+        assert!(!studio.over_page(in_panel) && studio.control_rect(Control::Home).is_some());
+        // Ctrl+Shift+\ hides the left panel: the page reaches the edge,
+        // and its button is the one thing left there, where it was.
+        studio.key(Key::Char('|'), ctrl_shift, true);
+        assert!(!studio.left_open && studio.over_page(in_panel) && studio.control_rect(Control::Home).is_none());
+        assert_eq!(studio.control_rect(Control::SidePanel(0)), Some(left));
+        assert_eq!(studio.control_at(in_panel), None);
+        assert!(studio.open_area().x < INSET + LEFT_W);
+        let mut out = vec![0u32; (1400 * 900) as usize];
+        studio.draw(&mut out);
+        assert_ne!(out[(400 * 1400 + INSET + 100) as usize] & 0xFFFFFF, PANEL_COLOR);
+        // Its button brings it back.
+        click(&mut studio, left.center());
+        assert!(studio.left_open && studio.control_rect(Control::Home).is_some());
+        // The right one the same, by Ctrl+Alt+\ and its own button.
+        studio.key(Key::Char('\\'), Mods { ctrl: true, alt: true, ..Mods::default() }, true);
+        assert!(!studio.right_open && studio.control_rect(Control::Zoom).is_none());
+        assert_eq!(studio.control_rect(Control::SidePanel(1)), Some(right));
+        assert!(studio.over_page((1400 - INSET - 100, 400)));
+        click(&mut studio, right.center());
+        assert!(studio.right_open && studio.control_rect(Control::Zoom).is_some());
+        // Kept between runs as two words, both shown when nothing is kept.
+        assert_eq!((read_panels("0 1\n"), read_panels("1 0"), read_panels("")), ((false, true), (true, false), (true, true)));
     }
 
     #[test]

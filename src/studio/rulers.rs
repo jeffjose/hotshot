@@ -19,7 +19,8 @@ impl Studio {
     /// Where the rulers are: along the top, and down the left, between
     /// the panels.
     pub(super) fn ruler_bands(&self) -> (Rect, Rect) {
-        let (left, right) = (INSET + LEFT_W + 6, self.width - INSET - RIGHT_W - 6);
+        let left = if self.shows_left() { INSET + LEFT_W + 6 } else { 0 };
+        let right = if self.shows_right() { self.width - INSET - RIGHT_W - 6 } else { self.width };
         (Rect::new(left, 0, right - left, RULER), Rect::new(left, RULER, RULER, self.height - RULER))
     }
 
