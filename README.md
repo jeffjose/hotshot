@@ -545,9 +545,25 @@ state they are of; an ER diagram's entities are tables of their
 attributes' types, names, keys and comments, its relationships ending
 in crow's feet, one, none or one, one or more, none or more, dashed
 where not identifying, with their words between. All are laid out in
-layers as flowcharts are. Gantt charts, pies (the pie as a picture,
-its key as words), mind maps, timelines, journeys, git graphs and
-quadrant charts come in too. `Ctrl+K` Copy as Mermaid puts what is
+layers as flowcharts are. A gantt chart is its tasks as bars along a
+time axis of dates written as its `axisFormat` says, its sections bands
+across it with their names at the left, done tasks gray, active ones
+violet, critical ones red, milestones diamonds, `after` and `until`
+followed and `excludes weekends` skipped, today a red line where it
+falls; a pie is slices of the board, each a shape of its own, with its
+share in it and its key, `showData` its values, beside it; a timeline
+is its periods along a line through time under their sections, their
+events under them; a journey is its tasks under their sections, who
+did each a colored dot, and under each a face as glad as its score,
+higher the gladder; a mind map goes out to either side of its root,
+each branch its own color, in its shapes, and stays a map to add to; a
+git graph is its branches as lanes of commits in their colors,
+branching off, merging and cherry-picking round corners, with their
+ids and tags, a merge a ring, a highlight a square and a reversal
+crossed; and a quadrant chart is its four quadrants in shades of one
+color with their names, its axes' ends along its sides and its points,
+in their own colors and sizes if given, with their names. Each with
+its title over it. `Ctrl+K` Copy as Mermaid puts what is
 picked out, or the board, on the clipboard as a flowchart, or as a
 sequence diagram for a sequence, and writes it beside the file as an
 `.mmd`; Copy as Mermaid mind map does a map from the box picked out.
