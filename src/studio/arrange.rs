@@ -184,3 +184,28 @@ mod tests {
         assert!(!in_a_row(&[(0.0, 0.0, 10.0, 10.0), (5.0, 100.0, 10.0, 10.0)]));
     }
 }
+
+impl Studio {
+    /// Where a layer dragged in its list would go: the layer under the
+    /// pointer, if it is over one of the list.
+    pub(super) fn reorder_target(&mut self) -> Option<usize> {
+        match self.control_at(self.pointer) {
+            Some(Control::Layer(target) | Control::Eye(target) | Control::Lock(target)) => Some(target),
+            _ => None,
+        }
+    }
+
+    /// A layer dragged in its list let go: put where the layer under the
+    /// pointer was, over it or under it, as one step to undo.
+    pub(super) fn drop_layer(&mut self, index: usize) {
+        let Some(target) = self.reorder_target() else { return };
+        if target == index || index >= self.doc.layers.len() {
+            return;
+        }
+        self.checkpoint();
+        let layer = self.doc.layers.remove(index);
+        self.doc.layers.insert(target, layer);
+        self.selected = vec![target];
+        self.changed();
+    }
+}

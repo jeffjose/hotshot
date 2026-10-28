@@ -1041,6 +1041,8 @@ enum Drag {
     Slide { field: Field, left: i32, wide: i32 },
     /// A guide dragged out of a ruler, or taken hold of.
     Guide { index: usize },
+    /// A layer dragged up or down its list, to go over or under others.
+    Reorder { index: usize, from: i32, moved: bool },
     /// A part of the color picker dragged along.
     Picker { part: u8, rect: Rect },
 }
@@ -1416,6 +1418,10 @@ enum Naming {
     /// the file of one of the frame's export sizes ends in.
     Title(usize),
     Suffix(usize),
+    /// A picture's name, in the list of layers; and what the list of
+    /// layers is narrowed to.
+    Layer(usize),
+    Filter,
     /// A color as hex, in the picker.
     Hex,
 }
@@ -1542,6 +1548,8 @@ pub struct Studio {
     /// The guides dragged out of the rulers: up and down at an x, or
     /// across at a y, in pixels of the frame.
     user_guides: Vec<(bool, f32)>,
+    /// What the list of layers is narrowed to.
+    layer_filter: String,
     /// The color of the selection opened to its layers, if one is.
     color_open: Option<u32>,
     /// Whether the grid of styles is open.
@@ -1622,6 +1630,7 @@ impl Studio {
             seen_mods: (None, None),
             drag_mods: Mods::default(),
             user_guides: Vec::new(),
+            layer_filter: String::new(),
             color_open: None,
             styling: false,
             search: None,
@@ -1893,6 +1902,11 @@ impl Studio {
         layout.rules.push(Rect::new(panel.x, y, panel.w, 1));
         y += 10;
         layout.words.push(((left, y + (22 - line) / 2), "Layers".to_owned(), TEXT_COLOR, 12));
+        layout.controls.push((Rect::new(left + 60, y, inner - 60, 22), Control::Entry(Naming::Filter)));
+        let filter = match &self.renaming {
+            Some((Naming::Filter, typed)) => typed.to_lowercase(),
+            _ => self.layer_filter.to_lowercase(),
+        };
         y += 28;
         for frame in 0..self.frame_count() {
             if y + row > panel.bottom() - 8 {
@@ -1906,6 +1920,9 @@ impl Studio {
             for index in (0..self.doc.layers.len()).rev() {
                 if y + row > panel.bottom() - 8 {
                     break;
+                }
+                if !filter.is_empty() && !self.doc.layers[index].name().to_lowercase().contains(filter.trim()) {
+                    continue;
                 }
                 layout.controls.push((Rect::new(left + inner - 44, y, 22, row), Control::Eye(index)));
                 layout.controls.push((Rect::new(left + inner - 20, y, 22, row), Control::Lock(index)));
@@ -2098,6 +2115,8 @@ impl Studio {
             Drag::Picker { part, rect } => self.pick_at(part, rect, (x, y), false),
             Drag::Slide { field, left, wide } => self.slide_to(field, left, wide, x),
             Drag::Guide { index } => self.drag_guide(index, (x, y)),
+            Drag::Reorder { index, from, moved: false } if (y - from).abs() > 4 => self.drag = Drag::Reorder { index, from, moved: true },
+            Drag::Reorder { .. } => self.dirty = true,
             Drag::None => {
                 // What a control the pointer rests on would do, shown.
                 let over = self.control_at((x, y));
@@ -2254,6 +2273,9 @@ impl Studio {
         if let Some(control) = control {
             let outcome = self.press_control(control, double);
             // A frame's name on the page is what it is moved by.
+            if let (Control::Layer(index), false, false) = (control, double, self.mods.shift) {
+                self.drag = Drag::Reorder { index, from: at_window.1, moved: false };
+            }
             if let (Control::Frame(_), false, true) = (control, double, self.over_page(at_window)) {
                 self.drag = Drag::MoveFrame { from: at_window, origin: (self.doc.x, self.doc.y), moved: false };
             }
@@ -2462,6 +2484,8 @@ impl Studio {
                     Naming::Frame => self.doc.name.clone(),
                     Naming::Page(page) => self.pages[page].name.clone(),
                     Naming::Hex => format!("{:06X}", self.palette.and_then(|paint| self.paint_color(paint)).unwrap_or(0)),
+                    Naming::Filter => self.layer_filter.clone(),
+                    Naming::Layer(index) => self.doc.layers.get(index).map_or(String::new(), Layer::name),
                 };
                 self.renaming = Some((naming, now));
             }
@@ -2541,7 +2565,15 @@ impl Studio {
                     false => self.selected = vec![index],
                 }
                 if double {
-                    self.cropping = matches!(self.doc.layers[index].kind, Kind::Picture(_)).then_some(index);
+                    // A picture renamed where it is listed; text typed into.
+                    match &self.doc.layers[index].kind {
+                        Kind::Picture(picture) => self.renaming = Some((Naming::Layer(index), picture.name.clone())),
+                        Kind::Shape(shape) if matches!(shape.tool, Tool::Text | Tool::Badge) => {
+                            self.checkpoint();
+                            self.edit_text(index);
+                        }
+                        Kind::Shape(_) => {}
+                    }
                 }
             }
             Control::Eye(index) => {
@@ -2757,6 +2789,7 @@ impl Studio {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.dirty = true;
         match drag {
+            Drag::Reorder { index, moved: true, .. } => self.drop_layer(index),
             Drag::Guide { index } => {
                 let at = self.pointer;
                 self.drop_guide(index, at);
@@ -3315,7 +3348,11 @@ impl Studio {
         let typed = typed.trim().to_owned();
         // A frame or a page is called something; a title or a suffix may
         // be nothing.
-        if typed.is_empty() && matches!(naming, Naming::Frame | Naming::Page(_)) {
+        if naming == Naming::Filter {
+            self.layer_filter = typed;
+            return;
+        }
+        if typed.is_empty() && matches!(naming, Naming::Frame | Naming::Page(_) | Naming::Layer(_)) {
             return;
         }
         // A color typed as hex: the paint the picker is open for made it.
@@ -3341,7 +3378,12 @@ impl Studio {
                     picture.title = typed;
                 }
             }
-            Naming::Hex => {}
+            Naming::Hex | Naming::Filter => {}
+            Naming::Layer(index) => {
+                if let Some(Layer { kind: Kind::Picture(picture), .. }) = self.doc.layers.get_mut(index) {
+                    picture.name = typed;
+                }
+            }
             Naming::Suffix(index) => {
                 if let Some(size) = self.doc.exports.get_mut(index) {
                     size.suffix = typed.replace([' ', ':', '/'], "_");
@@ -4239,7 +4281,15 @@ impl Studio {
                             tool => tool_icon(tool),
                         },
                     };
-                    let (name, faint) = (layer.name(), layer.hidden);
+                    let name = match &self.renaming {
+                        Some((Naming::Layer(at), typed)) if *at == index => format!("{typed}|"),
+                        _ => layer.name(),
+                    };
+                    let faint = layer.hidden;
+                    // Where a layer dragged in the list would go.
+                    if matches!(self.drag, Drag::Reorder { moved: true, index: dragged, .. } if dragged != index) && rect.contains(self.pointer.0, self.pointer.1) {
+                        canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 2, ACCENT);
+                    }
                     let ink = if faint { DIM_TEXT_COLOR } else { TEXT_COLOR };
                     self.text.draw_centered(canvas, rect.x + 12, cy, 14, ink, icon);
                     let name: String = name.chars().take(18).collect();
@@ -4456,6 +4506,7 @@ impl Studio {
                         }),
                         Naming::Suffix(index) => ("", self.doc.exports.get(index).map_or(String::new(), |size| size.suffix.clone())),
                         Naming::Hex => ("Hex", format!("{:06X}", self.palette.and_then(|paint| self.paint_color(paint)).unwrap_or(0))),
+                        Naming::Filter => ("", self.layer_filter.clone()),
                         _ => ("", String::new()),
                     };
                     let mut x = rect.x + 9;
@@ -4465,7 +4516,7 @@ impl Studio {
                     }
                     match typing {
                         Some(typed) => self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &format!("{typed}|")),
-                        None if now.is_empty() => self.text.draw(canvas, x, cy - line_high / 2, px, 0x777777, if label.is_empty() { "suffix" } else { "none" }),
+                        None if now.is_empty() => self.text.draw(canvas, x, cy - line_high / 2, px, 0x777777, match naming { Naming::Filter => "Filter layers", _ if label.is_empty() => "suffix", _ => "none" }),
                         None => self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &now),
                     }
                 }
@@ -5070,6 +5121,42 @@ mod tests {
         assert_eq!(kept, "frame-size = \"My size 1 = 800x600\"\nframe-size = \"Phone shot = 800x600\"\n");
         assert_eq!(studio.frame_sizes.len(), 2);
         let _ = std::fs::remove_dir_all(file.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn layers_are_dragged_up_and_down_their_list_renamed_and_filtered() {
+        let mut studio = studio();
+        for name in ["back", "middle", "front"] {
+            studio.add_picture(checker(20, 20), name);
+        }
+        let row = |studio: &mut Studio, index: usize| studio.control_rect(Control::Layer(index)).unwrap().center();
+        // The front one, listed first, dragged down onto the back one.
+        let (from, to) = (row(&mut studio, 2), row(&mut studio, 0));
+        studio.pointer_moved(from.0, from.1, Mods::default());
+        studio.pressed(1, 1000);
+        studio.pointer_moved(to.0, to.1 - 3, Mods::default());
+        studio.pointer_moved(to.0, to.1, Mods::default());
+        studio.released();
+        let names: Vec<String> = studio.doc.layers.iter().map(Layer::name).collect();
+        assert_eq!((names, studio.selected.clone()), (vec!["front".to_owned(), "back".to_owned(), "middle".to_owned()], vec![0]));
+        // Double-clicked, a picture is renamed where it is listed.
+        let at = row(&mut studio, 1);
+        studio.pointer_moved(at.0, at.1, Mods::default());
+        studio.pressed(1, 5000);
+        studio.released();
+        studio.pressed(1, 5100);
+        studio.released();
+        assert_eq!(studio.renaming.as_ref().map(|(naming, _)| *naming), Some(Naming::Layer(1)));
+        studio.renaming = Some((Naming::Layer(1), "Behind".into()));
+        studio.commit_name();
+        assert_eq!(studio.doc.layers[1].name(), "Behind");
+        // Narrowed to those whose names have what is typed.
+        studio.layer_filter = "mid".into();
+        let listed: Vec<usize> = studio.layout().controls.iter().filter_map(|(_, control)| match control {
+            Control::Layer(index) => Some(*index),
+            _ => None,
+        }).collect();
+        assert_eq!(listed, vec![2]);
     }
 
     #[test]
