@@ -369,7 +369,7 @@ pub fn encode(width: u32, height: u32, pixels: &[u32], alpha: bool, source: Opti
         }
         Format::Jpeg => {
             let jpeg = &settings.jpeg;
-            let rgb = bytes(pixels, false, true);
+            let rgb = bytes(pixels, false, alpha);
             // mozjpeg says what went wrong by unwinding, which with
             // panics set to abort cannot be caught: the sizes it would
             // refuse are refused here first.
@@ -805,6 +805,11 @@ mod tests {
         // JPEG has no transparency: it goes white.
         let back = decode(&encode(8, 8, &pixels, true, None, Format::Jpeg, &settings).unwrap().bytes).unwrap();
         assert!(!back.alpha && back.pixels[60] & 0xFF_FFFF > 0xE0_E0E0);
+        // A screen's pixels say nothing in their top byte: without alpha,
+        // that is no reason to make them white.
+        let screen: Vec<u32> = vec![0x00_20_40_80; 64];
+        let back = decode(&encode(8, 8, &screen, false, None, Format::Jpeg, &settings).unwrap().bytes).unwrap();
+        assert!(back.pixels[20] & 0xFF < 0xA0, "{:06X}", back.pixels[20]);
     }
 
     #[test]
