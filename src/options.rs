@@ -111,6 +111,10 @@ Making a picture of pictures:
                              large and --format which kind; without either,
                              at each size its Export rows list. -o names
                              the file
+      --fine-tune FILE...    a window to try each kind's settings on the first
+                             picture, the original and the converted split
+                             side by side, then convert them all; --into
+                             DIR writes there rather than beside each
       --convert KIND FILE... pictures converted to a kind, as jog does: each
                              written beside the original with the new
                              ending, nothing overwritten, as the [convert]
@@ -351,6 +355,11 @@ pub struct Options {
     pub clip: Option<PathBuf>,
     /// A file to put on the clipboard as a file, by where it is.
     pub clip_file: Option<PathBuf>,
+    /// Pictures to try the settings of each kind of file on, in a window
+    /// of their own, and convert; and a folder to write into instead of
+    /// beside each.
+    pub fine_tune: bool,
+    pub into: Option<PathBuf>,
     /// A recording made of the area, not a picture taken of it: so
     /// many frames a second, as a file of some kind, for so long (or
     /// until it is stopped, at 0), with the mouse pointer in it or not,
@@ -432,6 +441,8 @@ fn defaults() -> Options {
         forget: false,
         clip: None,
         clip_file: None,
+        fine_tune: false,
+        into: None,
         record: false,
         fps: 60,
         video: Video::Mp4,
@@ -486,7 +497,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "window-theme", "window-bar", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size", "convert", "export", "frame", "scale", "clip-file"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "window-theme", "window-bar", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size", "convert", "export", "frame", "scale", "clip-file", "into"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -561,6 +572,8 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         // on the screen to be copied from, or text from the canvas.
         "clip" => options.clip = Some(path(&value()?)),
         "clip-file" => options.clip_file = Some(path(&value()?)),
+        "fine-tune" => options.fine_tune = true,
+        "into" => options.into = Some(path(&value()?)),
         "record" => options.record = true,
         "fps" => {
             let text = value()?;
@@ -971,7 +984,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     if options.convert_to.is_some() && options.files.is_empty() {
         return Err("--convert needs the pictures to convert".into());
     }
-    if !options.canvas && options.convert_to.is_none() && !options.files.is_empty() {
+    if !options.canvas && options.convert_to.is_none() && !options.fine_tune && !options.files.is_empty() {
         return Err(format!("unexpected argument '{}'", options.files[0].display()));
     }
     // JPEG XL or WebP named, the way the [convert] table says.

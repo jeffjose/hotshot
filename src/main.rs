@@ -33,6 +33,7 @@ mod studio;
 mod text;
 mod tray;
 mod tune;
+mod tune_window;
 mod wayland;
 mod x11;
 
@@ -222,6 +223,10 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     if let Some(format) = options.convert_to {
         let ok = convert::convert_all(&options.files, format, &options.convert);
         return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+    }
+    if options.fine_tune {
+        tune_window::run(&options.files, options.into.as_deref(), options.forget, &options)?;
+        return Ok(ExitCode::SUCCESS);
     }
     if let Some(file) = &options.export {
         let format = options.format_said.then_some(options.format);

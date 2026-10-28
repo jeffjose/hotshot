@@ -41,6 +41,7 @@ hotshot --aspect 16:9  # lock the area to an aspect ratio; --fixed 1280x720 lock
 hotshot -f -o shot.jxl # save as JPEG XL (or .avif, .webp, .jpg); --format sets the format for Save
 hotshot --convert jxl ~/Pictures/*.png   # convert pictures, as jog does, each beside its original
 hotshot --export design.hotshot --frame 2 --scale 2 --format avif   # a canvas frame, with no window
+hotshot --fine-tune shot.png   # try each format's settings on a picture, side by side, then convert it
 hotshot --pin          # pin the screenshot on screen, above other windows
 hotshot --record       # record an area; run again to stop (needs ffmpeg)
 hotshot --tray         # show an icon in the panel's tray; --menu opens its menu

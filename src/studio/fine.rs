@@ -24,6 +24,8 @@ pub(super) struct Fine {
     /// the loupe is held.
     divider: Option<i32>,
     loupe: bool,
+    /// The two sides made smaller, for a frame shown smaller than it is.
+    shrunk: crate::tune::Shrunk,
 }
 
 impl Studio {
@@ -40,7 +42,7 @@ impl Studio {
         let words = Words { title, subtitle: self.doc.name.clone(), primary: "Use for this row", secondary: Some("Export now") };
         let tuner = Tuner::new(Source::new(wide as u32, high as u32, pixels, None), size.format, size.tuned.unwrap_or(self.convert), words);
         (self.menu, self.menu_row) = (None, None);
-        self.fine = Some(Fine { tuner, row, page: self.page, frame: self.active, divider: None, loupe: false });
+        self.fine = Some(Fine { tuner, row, page: self.page, frame: self.active, divider: None, loupe: false, shrunk: Default::default() });
         self.dirty = true;
     }
 
@@ -183,7 +185,7 @@ impl Studio {
     /// each side; and the loupe.
     pub(super) fn draw_split(&mut self, canvas: &mut Canvas, view: Rect) {
         let (a, b) = (self.to_window((0.0, 0.0)), self.to_window((self.doc.width as f32, self.doc.height as f32)));
-        let Some(fine) = &self.fine else { return };
+        let Some(fine) = &mut self.fine else { return };
         if (fine.page, fine.frame) != (self.page, self.active) {
             return;
         }
@@ -202,7 +204,16 @@ impl Studio {
             let sy = (((y - frame.y) as f32 + 0.5) * sh as f32 / frame.h as f32) as i32;
             (sy.clamp(0, sh - 1) * sw + sx.clamp(0, sw - 1)) as usize
         };
-        canvas.paint(shown, |x, y| if x < divider { before[at(x, y)] } else { after[at(x, y)] } & 0xFF_FFFF);
+        // Shown smaller than it is, each side averaged rather than picked
+        // from, which would shimmer on text; larger, the nearest pixel.
+        if frame.w < sw && frame.h < sh {
+            let (small_before, small_after) = fine.shrunk.of(&fine.tuner, frame.w, frame.h);
+            let small_after = small_after.unwrap_or(small_before);
+            let small = |x: i32, y: i32| ((y - frame.y).clamp(0, frame.h - 1) * frame.w + (x - frame.x).clamp(0, frame.w - 1)) as usize;
+            canvas.paint(shown, |x, y| if x < divider { small_before[small(x, y)] } else { small_after[small(x, y)] } & 0xFF_FFFF);
+        } else {
+            canvas.paint(shown, |x, y| if x < divider { before[at(x, y)] } else { after[at(x, y)] } & 0xFF_FFFF);
+        }
         // The line, with a handle across its middle.
         canvas.fill(divider - 1, shown.y, 2, shown.h, 0xFFFFFF);
         let middle = (frame.y + frame.h / 2).clamp(shown.y + 14, (shown.bottom() - 14).max(shown.y + 14));

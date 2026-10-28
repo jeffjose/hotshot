@@ -6994,7 +6994,7 @@ fn pasted_paths(words: &str) -> Vec<PathBuf> {
 
 /// The next event, if one comes within so long; nothing if none does,
 /// and nothing done meanwhile but wait for one.
-fn event_within(conn: &x11rb::rust_connection::RustConnection, wait: std::time::Duration) -> crate::x11::Result<Option<x11rb::protocol::Event>> {
+pub(crate) fn event_within(conn: &x11rb::rust_connection::RustConnection, wait: std::time::Duration) -> crate::x11::Result<Option<x11rb::protocol::Event>> {
     use std::os::fd::AsRawFd;
     use x11rb::connection::Connection;
     let until = std::time::Instant::now() + wait;

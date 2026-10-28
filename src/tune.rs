@@ -760,6 +760,33 @@ fn tries(source: Arc<Source>, inbox: mpsc::Receiver<Job>, tell: mpsc::Sender<Eve
     }
 }
 
+/// The original and the latest trial made smaller to be shown, each
+/// pixel the average of those it covers, rather than every so many of
+/// them, which shimmers on text; made again only when the size shown or
+/// the trial changes.
+#[derive(Default)]
+pub struct Shrunk {
+    key: (i32, i32, usize, usize),
+    before: Vec<u32>,
+    after: Vec<u32>,
+}
+
+impl Shrunk {
+    /// Both at `wide` × `high`, which is no larger than the picture.
+    pub fn of(&mut self, tuner: &Tuner, wide: i32, high: i32) -> (&[u32], Option<&[u32]>) {
+        let source = &tuner.source;
+        let preview = tuner.preview();
+        let key = (wide, high, preview.map_or(0, |(pixels, ..)| pixels.as_ptr() as usize), preview.map_or(0, |(_, _, size)| size));
+        if self.key != key {
+            let (sw, sh) = (source.width as i32, source.height as i32);
+            self.before = crate::pin::sized(&source.flat, sw, sh, wide, high);
+            self.after = preview.map(|(pixels, ..)| crate::pin::sized(pixels, sw, sh, wide, high)).unwrap_or_default();
+            self.key = key;
+        }
+        (&self.before, (!self.after.is_empty()).then_some(&self.after[..]))
+    }
+}
+
 /// How long to wait before looking at the thread again, while it works.
 pub const POLL: Duration = Duration::from_millis(60);
 
