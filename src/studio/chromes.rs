@@ -102,13 +102,60 @@ impl Picture {
     }
 }
 
+/// The box round a picture on its frame, its window and all: its left,
+/// top, right and bottom.
+pub(super) fn picture_box(picture: &Picture) -> (f32, f32, f32, f32) {
+    let corners = picture.corners();
+    let (left, top) = (corners.iter().map(|c| c.0).fold(f32::MAX, f32::min), corners.iter().map(|c| c.1).fold(f32::MAX, f32::min));
+    let (right, bottom) = (corners.iter().map(|c| c.0).fold(f32::MIN, f32::max), corners.iter().map(|c| c.1).fold(f32::MIN, f32::max));
+    (left, top, right, bottom)
+}
+
+impl Doc {
+    /// Whether a box fills the frame, or nearly: each side within a few
+    /// pixels of the frame's, as a capture's picture fills its own.
+    pub(super) fn filled_by(&self, (left, top, right, bottom): (f32, f32, f32, f32)) -> bool {
+        let (w, h) = (self.width as f32, self.height as f32);
+        let (near_x, near_y) = ((w * 0.02).max(2.0), (h * 0.02).max(2.0));
+        !self.page && left.abs() <= near_x && top.abs() <= near_y && (right - w).abs() <= near_x && (bottom - h).abs() <= near_y
+    }
+
+    /// The frame grown or shrunk as a picture that fills it has: each side
+    /// moved as the picture's did, the frame moved on its page so that
+    /// what is in it stays where it was there, and so where it is against
+    /// the picture's pixels.
+    pub(super) fn follow_picture(&mut self, was: (f32, f32, f32, f32), now: (f32, f32, f32, f32)) {
+        let (left, top) = (now.0 - was.0, now.1 - was.1);
+        let (right, bottom) = (now.2 - was.2, now.3 - was.3);
+        self.width = ((self.width as f32 + right - left).round() as i32).max(1);
+        self.height = ((self.height as f32 + bottom - top).round() as i32).max(1);
+        (self.x, self.y) = (self.x + left, self.y + top);
+        for layer in &mut self.layers {
+            layer.translate(-left, -top);
+        }
+        for stack in &mut self.stacks {
+            (stack.x, stack.y) = (stack.x - left, stack.y - top);
+        }
+    }
+}
+
 /// What the chips of the Theme row say, and the theme each is.
 pub(super) const THEMES: [chrome::Theme; 3] = [chrome::Theme::Light, chrome::Theme::Dark, chrome::Theme::Auto];
 
 impl Studio {
     /// A change to the window of each picture picked out, one step to undo:
     /// a window given to one that had none, the settings it is to have.
+    /// A picture that fills the frame, as a capture does its own, has the
+    /// frame follow it: grown round its window, or shrunk with it, in the
+    /// same step.
     fn rechrome(&mut self, change: impl Fn(&mut Chrome)) {
+        let filling = match self.on_page() {
+            true => None,
+            false => self.chosen().into_iter().find_map(|index| match &self.doc.layers[index].kind {
+                Kind::Picture(picture) if self.doc.filled_by(picture_box(picture)) => Some((index, picture_box(picture))),
+                _ => None,
+            }),
+        };
         self.restyle(|layer| {
             if let Kind::Picture(picture) = &mut layer.kind {
                 picture.find_insets();
@@ -117,6 +164,13 @@ impl Studio {
                 picture.set_chrome(Some(chrome));
             }
         });
+        let Some((index, was)) = filling else { return };
+        let Some(Layer { kind: Kind::Picture(picture), .. }) = self.doc.layers.get(index) else { return };
+        let now = picture_box(picture);
+        if now != was {
+            self.doc.follow_picture(was, now);
+            self.changed();
+        }
     }
 
     /// One of the windows put round what is picked out, and kept for the

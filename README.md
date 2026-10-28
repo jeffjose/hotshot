@@ -246,7 +246,11 @@ system's, none, or the picture's own from Effects. A picture being
 cropped shows all of itself, its own bar too, and is in its window again
 once it is done. `Ctrl+K` "mac", "windows", "gnome" and the rest put
 that window round what is picked out, and the window chosen last is put
-round the next window captured.
+round the next window captured. A frame the picture fills, or nearly,
+as a capture's own frame is, grows round its window, or shrinks as it
+comes off, the picture's pixels and what is drawn on them staying where
+they were, in the same step to undo; in any other frame nothing moves,
+and the window is cut off at the frame's edge as anything else is.
 
 `Shift+A` puts what is picked out in an auto layout, as Figma's, cut to
 what screenshots need: a stack that goes across, down, or across in

@@ -1144,9 +1144,6 @@ pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str, notes: &chrome::Not
     if notes.scale > 0.0 {
         picture.screen_scale = notes.scale;
     }
-    if let (Some(style), true) = (chromes::kept_window(), notes.insets.is_some()) {
-        picture.set_chrome(Some(Chrome::new(style)));
-    }
     doc.layers.push(Layer::picture(picture));
     // Spotlights first, just over the picture: in capture mode they darken
     // the picture and not what is drawn on it.
@@ -1154,6 +1151,17 @@ pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str, notes: &chrome::Not
     for mut shape in lit.into_iter().chain(rest) {
         shape.translate(-area.x as f32, -area.y as f32);
         doc.layers.push(Layer::shape(shape));
+    }
+    // The frame grown round its window, what is drawn on the picture
+    // staying on it.
+    if let (Some(style), true) = (chromes::kept_window(), notes.insets.is_some()) {
+        if let Kind::Picture(picture) = &mut doc.layers[0].kind {
+            let was = chromes::picture_box(picture);
+            picture.set_chrome(Some(Chrome::new(style)));
+            let now = chromes::picture_box(picture);
+            doc.follow_picture(was, now);
+            (doc.x, doc.y) = (0.0, 0.0);
+        }
     }
     doc
 }
@@ -8390,6 +8398,45 @@ mod tests {
         let old = [OLD_MAGIC.as_bytes(), &old[old.iter().position(|&byte| byte == b'\n').unwrap()..]].concat();
         let old: Vec<u8> = String::from_utf8_lossy(&old).lines().filter(|line| !line.starts_with("page ") && !line.starts_with("frame ")).collect::<Vec<_>>().join("\n").into_bytes();
         assert_eq!(read_pages(&old).map(|pages| (pages.len(), pages[0].frames.len())), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_frame_a_picture_fills_grows_round_its_window_and_one_it_does_not_fill_stays() {
+        let mut studio = Studio::new(framed(checker(400, 300), "Shot"), Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.0, (50.0, 50.0));
+        boxed.points[1] = (100.0, 100.0);
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.changed();
+        let (y0, steps) = (studio.doc.y, studio.undo.len());
+        let on_page = |studio: &Studio, at: usize| corner_of(&studio.doc.layers[at]).1 + studio.doc.y;
+        let box_at = on_page(&studio, 1);
+        studio.selected = vec![0];
+        studio.put_window(chrome::Style::Browser);
+        let Kind::Picture(picture) = &studio.doc.layers[0].kind else { panic!("a picture") };
+        let (bar, edges) = (picture.bar(), chromes::picture_box(picture));
+        assert!(bar > 10.0, "a browser's bar, {bar}");
+        // As large as the picture in its window, which begins at its top.
+        assert_eq!((studio.doc.width, studio.doc.height), (400, (300.0 + bar).round() as i32));
+        assert!(edges.1.abs() < 0.01 && (edges.3 - studio.doc.height as f32).abs() < 0.5, "{edges:?}");
+        // What is in it where it was on the page, on the picture's pixels.
+        assert!((studio.doc.y - (y0 - bar)).abs() < 0.01);
+        assert!((on_page(&studio, 1) - box_at).abs() < 0.01);
+        // One step to undo, the window and the frame both.
+        assert_eq!(studio.undo.len(), steps + 1);
+        studio.undo();
+        assert_eq!((studio.doc.width, studio.doc.height, studio.doc.y), (400, 300, y0));
+        // Taken off again, the frame shrinks with it.
+        studio.selected = vec![0];
+        studio.put_window(chrome::Style::Mac);
+        studio.put_window(chrome::Style::None);
+        assert_eq!((studio.doc.width, studio.doc.height), (400, 300));
+        // In a frame it does not fill, nothing moves.
+        let mut doc = Doc::new(900, 700);
+        doc.layers.push(Layer::picture(Picture::new(Arc::new(checker(400, 300)), "Small".into(), (300.0, 300.0))));
+        let mut studio = Studio::new(doc, Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
+        studio.selected = vec![0];
+        studio.put_window(chrome::Style::Browser);
+        assert_eq!((studio.doc.width, studio.doc.height, studio.doc.y), (900, 700, 0.0));
     }
 
     #[test]
