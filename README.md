@@ -398,9 +398,18 @@ left panel, and stays there with the panels hidden and with `Ctrl+\`;
 `Ctrl+M` flips the page shown. One file can hold both: the polished
 screenshots on a page of frames, the sketch that explains them on a
 board beside it. A new file begins as the last page was switched to,
-and a new page as the one shown is. Nothing is lost by switching: a
-board's boxes are the page's own layers, which Design shows and moves
-as any, and switched back they are a board's again.
+and a new page as the one shown is; or choose: the arrow on New file
+has Design file and Board, a right click on the projects New design
+file and New board, and the File menu, a page's right click and
+`Ctrl+K` New design page and New board page. A board begins with no
+frame. Nothing is lost by switching: a board's boxes are the page's own
+layers, which Design shows and moves as any, and switched back they
+are a board's again. A page made a board loses the Frame 1 it began
+with if nobody has touched it, and has it back if switched straight
+back; any other frame becomes an export area on the board, said along
+the bottom: a faint dashed edge with its name over it, no background,
+what is in it shown whole where it was, nothing cut off at its edge.
+Switched back, it is a frame again with all of it inside.
 
 A board is one endless sheet of warm paper with dots, which move with
 it and thin out as it is zoomed out. It has no frames to begin with,
@@ -671,9 +680,9 @@ picture. On a page of frames an SVG is a picture.
 `Ctrl+E` on a board exports it as a PNG at twice its size, on its
 paper, beside the file in `exports`: all of it, with room round it;
 what is picked out, with what is in it; or, with a frame drawn round
-part of the board worked in, everything in that frame. A board's frames
-are only what of it is exported: what is moved over one stays the
-board's. `Ctrl+K` exports the same as AVIF, JPEG XL or SVG, since a
+part of the board worked in, exactly that rectangle of the board, with
+what is in the frame itself. A board's frames are only what of it is
+exported: what is moved over one stays the board's. `Ctrl+K` exports the same as AVIF, JPEG XL or SVG, since a
 board is all shapes: each shape as its hand drew it, stroke by stroke,
 its words as words in its lettering, and anything else, a picture or a
 counter, as a picture in its place. On a page of frames, `Ctrl+K`

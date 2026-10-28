@@ -50,11 +50,18 @@ impl Studio {
     /// What is exported, and the part of the board it is in: what is
     /// picked out; with a frame worked in, everything in its place; or
     /// all of the board.
-    fn export_part(&mut self) -> Option<(Vec<Layer>, (f32, f32, f32, f32), String)> {
+    pub(in crate::studio) fn export_part(&mut self) -> Option<(Vec<Layer>, (f32, f32, f32, f32), String)> {
         let chosen = self.chosen();
         if !self.on_page() && self.on_board() {
             let (x, y, w, h) = (self.doc.x, self.doc.y, self.doc.width as f32, self.doc.height as f32);
-            let layers = self.loose().layers.iter().filter(|layer| !layer.hidden).cloned().collect();
+            // The board there, and over it what is in the frame itself,
+            // as it was in Design.
+            let mut layers: Vec<Layer> = self.loose().layers.iter().filter(|layer| !layer.hidden).cloned().collect();
+            layers.extend(self.doc.layers.iter().filter(|layer| !layer.hidden).map(|layer| {
+                let mut layer = layer.clone();
+                layer.translate(x, y);
+                layer
+            }));
             return Some((layers, (x, y, w, h), self.doc.name.clone()));
         }
         let (layers, name): (Vec<Layer>, String) = match chosen.is_empty() {
@@ -83,7 +90,7 @@ impl Studio {
             layer.translate(-x, -y);
             layer
         }).collect();
-        sheet.board = self.doc.board;
+        sheet.board = self.loose().board;
         sheet
     }
 

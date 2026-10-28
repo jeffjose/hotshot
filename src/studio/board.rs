@@ -145,6 +145,30 @@ pub(super) mod svg;
 mod export;
 mod mermaid;
 mod neaten;
+/// Whether a frame is the one a new page of frames begins with, as it
+/// began: called Frame 1, where it was put, its size, white, empty, and
+/// exported as it was.
+fn untouched(frame: &Doc) -> bool {
+    let new = Doc::new(1200, 675);
+    frame.name == new.name && (frame.x, frame.y, frame.width, frame.height) == (new.x, new.y, new.width, new.height) && frame.background == new.background && frame.layers.is_empty() && frame.stacks.is_empty() && frame.exports == new.exports
+}
+
+/// A rectangle's edge in dashes a pixel wide, as a frame of a board is
+/// drawn: 6 pixels on and 5 off, from each corner.
+pub(super) fn dashed_rect(canvas: &mut Canvas, rect: Rect, color: u32) {
+    let (on, step) = (6, 11);
+    for side in [(rect.x, rect.y, rect.w, true), (rect.x, rect.bottom() - 1, rect.w, true), (rect.x, rect.y, rect.h, false), (rect.right() - 1, rect.y, rect.h, false)] {
+        let (x, y, long, across) = side;
+        for start in (0..long.max(0)).step_by(step) {
+            let run = on.min(long - start);
+            match across {
+                true => canvas.fill(x + start, y, run, 1, color),
+                false => canvas.fill(x, y + start, 1, run, color),
+            }
+        }
+    }
+}
+
 /// Whether some text is Mermaid a board can read.
 pub(super) fn is_mermaid(text: &str) -> bool {
     mermaid::kind_of(text).is_some()
@@ -160,7 +184,7 @@ pub(super) fn last_was_board() -> bool {
     crate::output::state_file("canvas-mode").and_then(|file| std::fs::read_to_string(file).ok()).is_some_and(|kept| kept.trim() == "board")
 }
 
-fn keep_mode(board: bool) {
+pub(super) fn keep_mode(board: bool) {
     if cfg!(test) {
         return;
     }
@@ -198,6 +222,9 @@ impl Studio {
         }
         self.commit_text();
         self.commit_name();
+        // Switched straight back with nothing done, the frame nobody had
+        // touched is back as it was.
+        let parked = self.parked.take().filter(|(page, _, version)| !board && *page == self.page && *version == self.version);
         self.checkpoint();
         self.pages[self.page].board = board;
         if board {
@@ -207,12 +234,37 @@ impl Studio {
         if board {
             self.activate(LOOSE);
         }
+        // On a board, the frame a new page of frames begins with, which
+        // nobody has touched, is gone; any other is the part of the board
+        // to export, drawn as a dashed edge with what is in it as it was.
+        let mut gone = None;
+        if board {
+            if let Some(at) = self.pages[self.page].frames.iter().position(untouched) {
+                gone = Some(self.pages[self.page].frames.remove(at));
+            }
+        }
+        let areas: Vec<String> = match board {
+            true => self.pages[self.page].frames.iter().map(|frame| frame.name.clone()).collect(),
+            false => Vec::new(),
+        };
+        if let Some((_, frame, _)) = parked {
+            self.pages[self.page].frames.insert(0, frame);
+            self.keep_order();
+        }
         (self.tool, self.framing) = (Tool::Select, false);
         self.selected.clear();
         self.shown.clear();
         self.shown_page.clear();
         self.changed();
-        self.say(if board { "Board: for explaining" } else { "Design: for pixels" });
+        if let Some(frame) = gone {
+            self.parked = Some((self.page, frame, self.version));
+        }
+        self.say(match (board, &areas[..]) {
+            (true, []) => "Board: for explaining".to_owned(),
+            (true, [name]) => format!("{name} is now an export area on this board"),
+            (true, names) => format!("{} frames are now export areas on this board", names.len()),
+            (false, _) => "Design: for pixels".to_owned(),
+        });
     }
 
     /// Another page shown: a board's tool back to the pointer.
@@ -522,6 +574,65 @@ pub(super) mod tests {
         studio.draw(&mut out);
         let (x, y) = studio.to_window_page(at);
         out[(y * studio.width + x) as usize] & 0xFF_FFFF
+    }
+
+    /// A page of frames, as a new file is when Design was last used.
+    fn design() -> Studio {
+        let mut studio = Studio::with_pages(vec![Page::new("Page 1", vec![Doc::new(1200, 675)])], Text::load(), 1400, 900, std::env::temp_dir(), "test-%Y.png".into());
+        (studio.zoom, studio.pan) = (0.5, (100.0, 100.0));
+        studio
+    }
+
+    #[test]
+    fn the_frame_nobody_touched_goes_as_a_page_becomes_a_board_and_comes_back_if_nothing_was_done() {
+        let mut studio = design();
+        assert_eq!(studio.frame_count(), 1);
+        studio.set_mode(true);
+        assert_eq!(studio.frame_count(), 0, "a board begins with no frame");
+        studio.set_mode(false);
+        assert_eq!((studio.frame_count(), studio.pages[0].frames[0].name.as_str()), (1, "Frame 1"), "back as it was");
+        // Something done on the board, it stays gone.
+        studio.set_mode(true);
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.set_mode(false);
+        assert_eq!(studio.frame_count(), 0);
+        // A new page chosen as a board begins with none; as Design, with one.
+        studio.new_page_of(true);
+        assert!(studio.on_board() && studio.frame_count() == 0);
+        studio.new_page_of(false);
+        assert!(!studio.on_board() && studio.frame_count() == 1);
+    }
+
+    #[test]
+    fn a_frame_on_a_board_is_an_export_area_drawn_dashed_with_all_that_is_in_it_and_no_background() {
+        let mut studio = design();
+        studio.doc.name = "Hero".into();
+        // A box in the frame, half out past its left edge.
+        let mut inside = Shape::new(Tool::Rect, 0x1971C2, 2.0, (-60.0, 100.0));
+        inside.points[1] = (60.0, 200.0);
+        (inside.filled, inside.fill) = (true, 0x1971C2);
+        studio.doc.layers.push(Layer::shape(inside));
+        studio.changed();
+        studio.set_mode(true);
+        assert_eq!(studio.frame_count(), 1, "kept, as the part to export");
+        assert_eq!(studio.note.as_ref().map(|(said, _)| said.as_str()), Some("Hero is now an export area on this board"));
+        // No white of its own: the board's paper shows in it.
+        assert!(matches!(shown(&mut studio, (600.0, 500.0)), shapes::PAPER | DOTS));
+        // What is in it is shown whole, past its edge too, where it was.
+        assert_eq!(shown(&mut studio, (-30.0, 150.0)), 0x1971C2);
+        assert_eq!(shown(&mut studio, (30.0, 150.0)), 0x1971C2);
+        // Exported, it is exactly its part of the board, with what is in it.
+        studio.activate(0);
+        let (layers, part, name) = studio.export_part().unwrap();
+        assert_eq!((part, name.as_str()), ((0.0, 0.0, 1200.0, 675.0), "Hero"));
+        assert!(layers.iter().any(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.fill == 0x1971C2 && shape.frame().0 == -60.0)));
+        // A page of frames again: a frame with what is in it inside it.
+        studio.set_mode(false);
+        assert_eq!((studio.frame_count(), studio.pages[0].frames.first().map_or(studio.doc.layers.len(), |frame| frame.layers.len().max(studio.doc.layers.len()))), (1, 1));
+        assert_ne!(shown(&mut studio, (-30.0, 150.0)), 0x1971C2, "cut off at its edge again");
+        assert_eq!(shown(&mut studio, (600.0, 500.0)), 0xFFFFFF, "on its white again");
     }
 
     #[test]

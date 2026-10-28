@@ -595,6 +595,10 @@ pub struct Doc {
     /// it is drawn: its look, its ground, and whether it is on the board's
     /// paper rather than shown in Design. Not kept in its file.
     pub board: Option<(u8, u8, bool)>,
+    /// A frame on a board: only the part of it to export, drawn on the
+    /// board with no background and nothing of what is in it cut off.
+    /// The paper it is on, given it from its page; not kept in its file.
+    pub area: Option<u32>,
 }
 
 /// A size a frame is exported at.
@@ -663,7 +667,7 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
 
 impl Doc {
     pub fn new(width: i32, height: i32) -> Doc {
-        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)], page: false, stacks: Vec::new(), below: 0, tier: 0, board: None }
+        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)], page: false, stacks: Vec::new(), below: 0, tier: 0, board: None, area: None }
     }
 
     /// The layers of a page outside its frames, as Figma has them: on
@@ -737,7 +741,8 @@ impl Doc {
         if out.is_empty() {
             return out;
         }
-        match self.background {
+        // A frame on a board is on the board's paper, with none of its own.
+        match if self.area.is_some() { Fill::None } else { self.background } {
             Fill::None => {}
             Fill::Color(color) => out.iter_mut().for_each(|pixel| *pixel = 0xFF00_0000 | color),
             Fill::Backdrop(which) => out.par_chunks_mut(part.w as usize).enumerate().for_each(|(y, row)| {
@@ -786,7 +791,7 @@ impl Doc {
                     // On a board's paper, which is under what is drawn.
                     let paper = match (self.board, self.background) {
                         (Some((_, ground, true)), Fill::None) => Some(board::look::PAPERS[usize::from(ground.min(2))].0),
-                        _ => None,
+                        _ => self.area,
                     };
                     draw_shape_on(&mut out, part.w, part.h, &shape, text, paper);
                 }
@@ -2320,6 +2325,10 @@ pub struct Studio {
     /// Where the pill saying how large what is picked out is was drawn
     /// last, for what is said along the bottom to keep off it.
     pill: Option<Rect>,
+    /// The frame a page had that nobody had touched, taken away as the page
+    /// became a board: which page, the frame, and the change it was taken
+    /// at, to be put back if the page is switched back with nothing done.
+    parked: Option<(usize, Doc, u64)>,
     /// The window of the picture being cropped, by what the picture is
     /// called: off it while it is cropped, and put back after.
     crop_chrome: Option<(u32, Chrome)>,
@@ -2445,6 +2454,7 @@ impl Studio {
             frame_sizes: Vec::new(),
             pressed_at: 0,
             pill: None,
+            parked: None,
             crop_chrome: None,
             stack_hovered: None,
             stacks_moved: false,
@@ -2651,15 +2661,19 @@ impl Studio {
         }
     }
 
-    /// A new page, with a frame on it the size of the one worked in, white
-    /// whatever that one is on.
+    /// A new page of the same kind as the one shown.
     fn new_page(&mut self) {
+        self.new_page_of(self.on_board());
+    }
+
+    /// A new page of a kind: a board, with nothing on it; or a page with a
+    /// frame on it the size of the one worked in, white whatever that one
+    /// is on.
+    fn new_page_of(&mut self, board: bool) {
         self.checkpoint();
-        // A page of the same kind as the one shown: a board, with nothing
-        // on it, or a page with a frame as large as the one worked in.
-        let board = self.on_board();
         let (width, height) = match self.frame_count() {
             0 => (1200, 675),
+            _ if self.on_board() => (1200, 675),
             _ => (self.frame_like().width, self.frame_like().height),
         };
         let name = format!("{} {}", if board { "Board" } else { "Page" }, self.pages.len() + 1);
@@ -5772,7 +5786,13 @@ impl Studio {
     fn extent(&mut self, index: usize, (from, to): (usize, usize), times: f32) -> Rect {
         if index != LOOSE {
             let frame = self.frame(index);
-            return Rect::new(0, 0, ((frame.width as f32 * times).round() as i32).max(1), ((frame.height as f32 * times).round() as i32).max(1));
+            let size = Rect::new(0, 0, ((frame.width as f32 * times).round() as i32).max(1), ((frame.height as f32 * times).round() as i32).max(1));
+            // On a board, as far as what is in it goes, none of it cut off.
+            if frame.area.is_none() {
+                return size;
+            }
+            let layers: Vec<Layer> = frame.layers.iter().filter(|layer| !layer.hidden).cloned().collect();
+            return layers.iter().map(|layer| drawn::reach(layer, times, &mut self.text)).fold(size, drawn::both);
         }
         let layers: Vec<Layer> = self.loose().layers.iter().take(to).skip(from).filter(|layer| !layer.hidden).cloned().collect();
         layers.iter().map(|layer| drawn::reach(layer, times, &mut self.text)).fold(Rect::default(), drawn::both)
@@ -5883,6 +5903,9 @@ impl Studio {
             }
             let at = |along: i32, start: i32, size: i32| (((along as f32 + 0.5) * by) as i32 - start).clamp(0, size - 1) as usize;
             let columns: Vec<usize> = (drawn.x..drawn.right()).map(|x| at(x - origin.0, part.x, part.w)).collect();
+            // Under a frame on a board is the board, as under the page's
+            // own layers.
+            let on_page = index == LOOSE || self.frame(index).area.is_some();
             // The rows shared out among the cores, as a 4K window has
             // millions of pixels to go through.
             let rows = &mut out[(drawn.y * width) as usize..(drawn.bottom() * width) as usize];
@@ -5898,7 +5921,7 @@ impl Studio {
                         255 => color & 0xFF_FFFF,
                         // The page's own layers over the page, with nothing
                         // behind them but it and the frames.
-                        _ if index == LOOSE => canvas::mix(*pixel, color & 0xFF_FFFF, alpha + (alpha >> 7)),
+                        _ if on_page => canvas::mix(*pixel, color & 0xFF_FFFF, alpha + (alpha >> 7)),
                         _ => {
                             let light = ((drawn.x + step as i32 - origin.0) / 10 + light_row) % 2 == 0;
                             canvas::mix(if light { 0xFFFFFF } else { 0xE6E6E6 }, color & 0xFF_FFFF, alpha + (alpha >> 7))
@@ -5912,6 +5935,16 @@ impl Studio {
         let mut canvas = Canvas::new(out, width, height);
         canvas.set_clip(view);
         self.draw_pixel_grid(&mut canvas, view);
+        // A board's frames, the parts of it to export: a faint dashed edge
+        // round each, over what is in it.
+        if self.on_board() {
+            let faint = canvas::mix(self.paper().0, board::QUIET, 150);
+            for index in 0..self.frame_count() {
+                let frame = self.frame(index);
+                let (a, b) = (self.to_window_page((frame.x, frame.y)), self.to_window_page((frame.x + frame.width as f32, frame.y + frame.height as f32)));
+                board::dashed_rect(&mut canvas, Rect::new(a.0, a.1, b.0 - a.0, b.1 - a.1), faint);
+            }
+        }
         for (index, place, name) in self.frame_labels() {
             // On a board's paper, in its ink.
             let (lit, dim) = if self.on_board() { (board::INK, board::QUIET) } else { (TEXT_COLOR, DIM_TEXT_COLOR) };
@@ -7290,6 +7323,19 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                 let pictures: Vec<(Image, String)> = picture.iter().filter_map(|file| Some((Image::open(&std::fs::read(file).ok()?)?, "Capture".to_owned()))).collect();
                 let path = crate::home::fresh_file(&dir, "Untitled");
                 let mut studio = opened(None, pictures, path, home.into_text(), size, options);
+                studio.save(false);
+                Shown::Studio(Box::new(studio))
+            }
+            // A new file chosen as a board, or as a page of frames, and the
+            // next to begin as it.
+            (Shown::Home(home), crate::home::Outcome::NewOf(dir, board)) => {
+                let path = crate::home::fresh_file(&dir, "Untitled");
+                board::keep_mode(board);
+                let pages = match board {
+                    true => board::board_pages(),
+                    false => vec![Page::new("Page 1", vec![Doc::new(1200, 675)])],
+                };
+                let mut studio = opened(Some(pages), Vec::new(), path, home.into_text(), size, options);
                 studio.save(false);
                 Shown::Studio(Box::new(studio))
             }
@@ -9607,7 +9653,7 @@ mod tests {
         // A page's row: a new page.
         let page = studio.control_rect(Control::Page(0)).unwrap().center();
         studio.right_click(page);
-        choose(&mut studio, "New page");
+        choose(&mut studio, "New design page");
         assert_eq!((studio.pages.len(), studio.page), (2, 1));
         studio.commit_name();
         // A frame's row: picked out, and copied beside itself.
@@ -9731,7 +9777,7 @@ mod tests {
         studio.key(Key::Down, none, true);
         assert_eq!(says(&mut studio), "File");
         studio.key(Key::Right, none, true);
-        assert_eq!((says(&mut studio), studio.menu.unwrap().sub.map(|(_, kind)| kind)), ("New page".to_owned(), Some(MenuKind::MainSub(0))));
+        assert_eq!((says(&mut studio), studio.menu.unwrap().sub.map(|(_, kind)| kind)), ("New design page".to_owned(), Some(MenuKind::MainSub(0))));
         studio.key(Key::Left, none, true);
         assert_eq!((says(&mut studio), studio.menu.unwrap().sub), ("File".to_owned(), None));
         // Into View, down to Rulers, and Enter does it and closes the list.

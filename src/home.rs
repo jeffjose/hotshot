@@ -81,6 +81,9 @@ enum Control {
     Go(Place),
     NewProject,
     NewFile,
+    /// The arrow on New file: the kinds of file to begin, a board or a
+    /// page of frames.
+    NewKinds,
     Open(PathBuf),
     Capture(PathBuf),
     /// The files shown as a list, or as cards; the menu of a file, and
@@ -103,6 +106,8 @@ pub enum Outcome {
     /// A new file in a folder, to be opened in the canvas: empty, or with
     /// a picture from a file on it.
     New(PathBuf, Option<PathBuf>),
+    /// A new file in a folder chosen as a board, or as a page of frames.
+    NewOf(PathBuf, bool),
     /// What is on the clipboard wanted: a picture, or the path of one, to
     /// begin a new file in a folder with.
     Paste(PathBuf),
@@ -296,6 +301,7 @@ impl Home {
         }
         controls.push((Rect::new(0, 0, SIDE, self.height), Control::Panel));
         if self.place != Place::Captures {
+            controls.push((Rect::new(self.width - 36 - 26, 30, 26, 34), Control::NewKinds));
             controls.push((Rect::new(self.width - 36 - 116, 30, 116, 34), Control::NewFile));
             controls.push((Rect::new(self.width - 36 - 116 - 74, 33, 28, 28), Control::View(false)));
             controls.push((Rect::new(self.width - 36 - 116 - 44, 33, 28, 28), Control::View(true)));
@@ -439,6 +445,7 @@ impl Home {
             }
             Some(Control::NewProject) => self.new_project(),
             Some(Control::NewFile) => return Outcome::New(self.folder(), None),
+            Some(Control::NewKinds) => self.file_menu = Some((Menu::Kinds, (self.width - 36 - 116, 68))),
             Some(Control::Open(path)) => return Outcome::Open(path),
             // With Ctrl or Shift, a capture is picked out, to convert many
             // at once; without, a file is begun with it.
@@ -654,6 +661,13 @@ impl Home {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, if hovered { 0x5472E4 } else { ACCENT }, 256);
                     self.text.draw_centered(&mut canvas, rect.x + 20, rect.y + rect.h / 2, 14, 0xFFFFFF, icons::PLUS);
                     self.text.draw(&mut canvas, rect.x + 34, rect.y + (rect.h - line) / 2, 13, 0xFFFFFF, "New file");
+                    // Its arrow, for the kind of file: a board or a page of frames.
+                    let split = rect.right() - 26;
+                    canvas.fill(split, rect.y + 8, 1, rect.h - 16, 0x7D93EA);
+                    if hover.as_ref() == Some(&Control::NewKinds) {
+                        canvas.round_fill(split + 1, rect.y, 25, rect.h, 7, 0x5472E4, 256);
+                    }
+                    self.text.draw_centered(&mut canvas, split + 13, rect.y + rect.h / 2, 10, 0xFFFFFF, icons::DOWN);
                 }
                 Control::NewFile => {
                     let thumb = rect.h - 44;
@@ -778,6 +792,8 @@ enum Menu {
     File(PathBuf),
     Project(PathBuf),
     Empty,
+    /// The kinds of file New file begins.
+    Kinds,
     /// Captures, one or those picked out; and the kinds to convert them to.
     Captures(Vec<PathBuf>),
     Convert(Vec<PathBuf>),
@@ -795,6 +811,7 @@ enum Act {
     Trash,
     NewFileIn,
     NewFile,
+    NewOf(bool),
     NewProject,
     Paste,
     CopyPath,
@@ -899,7 +916,8 @@ impl Home {
                 rows
             }
             Some(Menu::Project(_)) => vec![entry("Open", "", Act::Open), entry("Rename", "Double-click", Act::Rename), entry("New file in it", "", Act::NewFileIn), Row::Rule, entry("Show in folder", "", Act::ShowFolder), entry("Copy path", "", Act::CopyPath), Row::Rule, entry("Move to trash", "", Act::Trash)],
-            Some(Menu::Empty) => vec![entry("New file", "Ctrl N", Act::NewFile), entry("New project", "", Act::NewProject), Row::Rule, entry("Paste a picture", "Ctrl V", Act::Paste)],
+            Some(Menu::Kinds) => vec![entry("Design file", "", Act::NewOf(false)), entry("Board", "", Act::NewOf(true))],
+            Some(Menu::Empty) => vec![entry("New file", "Ctrl N", Act::NewFile), entry("New design file", "", Act::NewOf(false)), entry("New board", "", Act::NewOf(true)), entry("New project", "", Act::NewProject), Row::Rule, entry("Paste a picture", "Ctrl V", Act::Paste)],
             Some(Menu::Captures(paths)) => {
                 let mut rows = Vec::new();
                 if paths.len() == 1 {
@@ -986,6 +1004,7 @@ impl Home {
             }
             (Menu::Project(dir), Act::NewFileIn) => return Outcome::New(dir, None),
             (_, Act::NewFile) => return Outcome::New(self.folder(), None),
+            (_, Act::NewOf(board)) => return Outcome::NewOf(self.folder(), board),
             (_, Act::NewProject) => self.new_project(),
             (_, Act::Paste) => return Outcome::Paste(self.folder()),
             _ => {}
@@ -1189,6 +1208,14 @@ mod tests {
         home.pressed(3, 0);
         assert!(matches!(home.file_menu, Some((Menu::Empty, _))));
         assert_eq!(home.file_act(row(&home, "Paste a picture")), Outcome::Paste(home.folder()));
+        // A new file chosen as a board or a page of frames, there or from
+        // the arrow on New file.
+        home.pressed(3, 0);
+        assert_eq!(home.file_act(row(&home, "New board")), Outcome::NewOf(home.folder(), true));
+        home.pointer_moved(1200 - 36 - 13, 47);
+        home.pressed(1, 0);
+        assert!(matches!(home.file_menu, Some((Menu::Kinds, _))));
+        assert_eq!(home.file_act(row(&home, "Design file")), Outcome::NewOf(home.folder(), false));
         // A file not in Drafts can be moved there.
         home.file_menu = Some((Menu::File(std::env::temp_dir().join("Elsewhere.hotshot")), (600, 300)));
         row(&home, "Move to Drafts");

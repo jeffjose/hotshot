@@ -2720,8 +2720,12 @@ pub fn round_corners(corners: &[Point], radius: f32) -> Vec<Point> {
         let steps = ((radius * 0.8).ceil() as usize).clamp(4, 64);
         for step in 0..=steps {
             let t = step as f32 / steps as f32;
-            let (u, v, w) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t), t * t);
-            points.push((from.0 * u + corner.0 * v + to.0 * w, from.1 * u + corner.1 * v + to.1 * w));
+            // A cubic pulled toward the corner as far as a quarter circle
+            // is, so that a square corner rounds as a circle would.
+            let (pull_a, pull_b) = ((from.0 + (corner.0 - from.0) * 0.55, from.1 + (corner.1 - from.1) * 0.55), (to.0 + (corner.0 - to.0) * 0.55, to.1 + (corner.1 - to.1) * 0.55));
+            let s = 1.0 - t;
+            let (a, b, c, d) = (s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t);
+            points.push((from.0 * a + pull_a.0 * b + pull_b.0 * c + to.0 * d, from.1 * a + pull_a.1 * b + pull_b.1 * c + to.1 * d));
         }
     }
     if let Some(&first) = points.first() {

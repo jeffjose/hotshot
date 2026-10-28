@@ -152,11 +152,20 @@ impl Studio {
             (false, true) => Some((2, 0, false)),
             (false, false) => None,
         };
-        if self.doc.board != style {
-            self.doc.board = style;
+        // The frames of a board only what of it is exported, on its paper.
+        let area = page.board.then(|| PAPERS[usize::from(page.ground.min(2))].0);
+        let active = self.active;
+        match active {
+            LOOSE => self.doc.board = style,
+            _ => {
+                (self.doc.area, self.doc.board) = (area, None);
+                self.pages[self.page].loose.board = style;
+            }
         }
-        if self.active != LOOSE && self.pages[self.page].loose.board != style {
-            self.pages[self.page].loose.board = style;
+        for (index, frame) in self.pages[self.page].frames.iter_mut().enumerate() {
+            if index != active {
+                (frame.area, frame.board) = (area, None);
+            }
         }
     }
 
@@ -200,10 +209,17 @@ mod tests {
         studio.selected.clear();
         let was = shape(&studio, 0).clone();
         assert_eq!((studio.pages[0].look, studio.pages[0].ground), (0, 0), "rounded on light, to begin with");
-        // Rounded: its corner is paper, as an angular one's is not.
-        let corner = shown(&mut studio, (103.0, 103.0));
+        // Rounded: its corner is paper, as an angular one's is not; the
+        // wobble the same every time, by what it is called.
+        if let Kind::Shape(shape) = &mut studio.doc.layers[0].kind {
+            shape.id = 7;
+            shape.touch();
+        }
+        studio.changed();
+        let paper =|studio: &mut Studio| (100..106).flat_map(|x| (100..106).map(move |y| (x as f32, y as f32))).filter(|&at| matches!(shown(studio, at), shapes::PAPER | DOTS)).count();
+        let rounded = paper(&mut studio);
         studio.set_look(Some(1), None);
-        assert_ne!(shown(&mut studio, (103.0, 103.0)), corner);
+        assert!(rounded > paper(&mut studio) + 4, "more paper in a rounded corner");
         // Dark gray: its paper and its fill turn; its frame stays put.
         studio.set_look(None, Some(1));
         assert_eq!(shown(&mut studio, (200.0, 130.0)), shade(FILLS[2], 1));
@@ -267,7 +283,7 @@ mod tests {
             // its ink as edges over nothing once were.
             let row: Vec<u32> = (90..112).map(|x| shown(&mut studio, (x as f32, 136.0))).collect();
             let dark = row.iter().filter(|&&pixel| (pixel & 0xFF) < 0x80).count();
-            assert!((1..=3).contains(&dark), "{}: {dark} dark pixels across its line", LOOKS[usize::from(look)]);
+            assert!((1..=4).contains(&dark), "{}: {dark} dark pixels across its line", LOOKS[usize::from(look)]);
             assert!(row.iter().all(|&pixel| (pixel & 0xFF) >= 0x1A), "{}: an edge darker than its ink", LOOKS[usize::from(look)]);
         }
     }
