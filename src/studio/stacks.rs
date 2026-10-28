@@ -539,18 +539,65 @@ impl Studio {
     /// A copy just made of something in a stack goes in it next after
     /// what it is a copy of, where that is, to be laid out there.
     pub(super) fn stack_copies(&mut self, pairs: &[(u32, u32)]) {
-        for &(source, copy) in pairs {
-            if let Some(index) = self.stack_of(source) {
-                let stack = &mut self.doc.stacks[index];
-                let at = stack.members.iter().position(|&member| member == source).map_or(stack.members.len(), |at| at + 1);
-                stack.members.insert(at, copy);
-                // Put where what it is a copy of is, it comes after it.
-                if let (Some(from), Some(to)) = (self.layer_by_id(source), self.layer_by_id(copy)) {
+        if self.doc.stacks.is_empty() || pairs.is_empty() {
+            return;
+        }
+        let sources: Vec<u32> = pairs.iter().map(|&(source, _)| source).collect();
+        let whole = |studio: &Studio, id: u32| studio.leaves(id).iter().all(|leaf| sources.contains(leaf));
+        // A whole stack copied is a stack too, beside it as the copies are,
+        // and next after it in what it is in.
+        let tops: Vec<u32> = self.doc.stacks.iter().map(|stack| stack.id).filter(|&id| whole(self, id) && self.stack_of(id).is_none_or(|outer| !whole(self, self.doc.stacks[outer].id))).collect();
+        let mut handled: Vec<u32> = Vec::new();
+        for top in tops {
+            let leaves = self.leaves(top);
+            let Some(&(source, copy)) = pairs.iter().find(|(source, _)| leaves.contains(source)) else { continue };
+            let (Some(a), Some(b)) = (self.unit_bounds(source), self.unit_bounds(copy)) else { continue };
+            let copied = self.copy_stack(top, pairs, (b.0 - a.0, b.1 - a.1));
+            if let Some(outer) = self.stack_of(top) {
+                let stack = &mut self.doc.stacks[outer];
+                let at = stack.members.iter().position(|&member| member == top).map_or(stack.members.len(), |at| at + 1);
+                stack.members.insert(at, copied);
+            }
+            handled.extend(leaves);
+        }
+        // The rest: what is copied of a stack goes in it after the last of
+        // what it is a copy of, in order, put where that last is, so that
+        // it is laid out after it.
+        let rest: Vec<(u32, u32)> = pairs.iter().copied().filter(|(source, _)| !handled.contains(source)).collect();
+        let mut stacks: Vec<usize> = rest.iter().filter_map(|&(source, _)| self.stack_of(source)).collect();
+        stacks.dedup();
+        for index in stacks {
+            let members = self.doc.stacks[index].members.clone();
+            let mine: Vec<(u32, u32)> = rest.iter().copied().filter(|(source, _)| members.contains(source)).collect();
+            let Some(last) = members.iter().rposition(|member| mine.iter().any(|(source, _)| source == member)) else { continue };
+            let last_id = members[last];
+            for (offset, &(_, copy)) in mine.iter().enumerate() {
+                self.doc.stacks[index].members.insert(last + 1 + offset, copy);
+                if let (Some(from), Some(to)) = (self.layer_by_id(last_id), self.layer_by_id(copy)) {
                     let (a, b) = (self.doc.layers[from].bounds(&mut self.text), self.doc.layers[to].bounds(&mut self.text));
                     self.doc.layers[to].translate(a.0 - b.0, a.1 - b.1);
                 }
             }
         }
+    }
+
+    /// A stack copied, with the stacks in it, holding the copies made of
+    /// what it holds, its box moved as they were: what the copy is called.
+    fn copy_stack(&mut self, id: u32, pairs: &[(u32, u32)], (dx, dy): (f32, f32)) -> u32 {
+        let Some(index) = self.stack_index(id) else { return id };
+        let mut stack = self.doc.stacks[index].clone();
+        let mut members = Vec::new();
+        for member in stack.members.clone() {
+            members.push(match self.stack_index(member) {
+                Some(_) => self.copy_stack(member, pairs, (dx, dy)),
+                None => pairs.iter().find(|(source, _)| *source == member).map_or(member, |&(_, copy)| copy),
+            });
+        }
+        (stack.id, stack.members, stack.seen) = (shapes::fresh_id(), members, Vec::new());
+        (stack.x, stack.y) = (stack.x + dx, stack.y + dy);
+        let copied = stack.id;
+        self.doc.stacks.push(stack);
+        copied
     }
 
     /// The stack the pointer is over on the frame, with the move tool in
@@ -902,6 +949,16 @@ mod tests {
         assert_eq!((number(&studio, copy), number(&studio, counters[1])), (2, 3));
         assert!(corner(&mut studio, counters[1]).0 > before.0);
         assert_eq!(corner(&mut studio, copy), before);
+        // All of it copied: a stack of its own, beside it, numbered again
+        // from 1; the first as it was.
+        studio.selected = (0..studio.doc.layers.len()).collect();
+        assert_eq!(studio.picked_stack(), Some(0));
+        studio.key(Key::Char('d'), CTRL, true);
+        assert_eq!((studio.doc.stacks.len(), studio.doc.stacks[0].members.len(), studio.doc.stacks[1].members.len()), (2, 3, 3));
+        assert_eq!(studio.picked_stack(), Some(1));
+        let numbers: Vec<u32> = studio.doc.stacks[1].members.iter().map(|&id| number(&studio, studio.layer_by_id(id).unwrap())).collect();
+        assert_eq!(numbers, [1, 2, 3]);
+        assert!(studio.doc.stacks[1].x > studio.doc.stacks[0].x + studio.doc.stacks[0].w - 1.0 || studio.doc.stacks[1].y > studio.doc.stacks[0].y + studio.doc.stacks[0].h - 1.0);
     }
 
     #[test]

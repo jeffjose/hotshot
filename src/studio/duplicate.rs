@@ -63,7 +63,14 @@ impl Studio {
             Some(by) => by,
             None => {
                 let ids: Vec<u32> = chosen.iter().map(|&index| id_of(&self.doc.layers[index])).collect();
-                let me = self.box_of(&ids).unwrap_or_default();
+                // A whole stack goes beside its box, padding and all.
+                let me = match self.picked_stack() {
+                    Some(index) => {
+                        let stack = &self.doc.stacks[index];
+                        [stack.x, stack.y, stack.x + stack.w, stack.y + stack.h]
+                    }
+                    None => self.box_of(&ids).unwrap_or_default(),
+                };
                 let others = self.other_edges();
                 // Kept to the frame; on the page, kept to nothing.
                 let within = (!self.on_page()).then_some([0.0, 0.0, self.doc.width as f32, self.doc.height as f32]);
