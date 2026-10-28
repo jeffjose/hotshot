@@ -419,6 +419,12 @@ impl Studio {
             self.commit_text();
             control = self.control_at(at);
         }
+        // A row of the page's own layers works in them, and is then the
+        // row it is among them.
+        if let Some(Control::PageLayer(_)) = control {
+            self.activate(LOOSE);
+            control = self.control_at(at);
+        }
         // A row right clicked is picked out first, as Figma does, and its
         // menu opens.
         let kind = match control {
@@ -457,8 +463,8 @@ impl Studio {
             return Outcome::Continue;
         }
         self.commit_text();
-        if let Some(frame) = self.frame_at(self.to_page(at)).filter(|&frame| frame != self.active) {
-            self.activate(frame);
+        if let Some(target) = self.press_target(at) {
+            self.activate(target);
         }
         let point = self.to_doc(at);
         match self.layer_at(point) {

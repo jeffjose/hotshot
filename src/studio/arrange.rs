@@ -50,6 +50,8 @@ impl Studio {
                     self.doc.layers[index].translate(if way == 0 { by } else { 0.0 }, if way == 0 { 0.0 } else { by });
                 }
             }
+            // The page's own layers have no frame to be put to.
+            Action::ToFrame(_) if self.on_page() => return,
             Action::ToFrame(way) => {
                 let (fw, fh) = (self.doc.width as f32, self.doc.height as f32);
                 self.checkpoint();
@@ -198,7 +200,21 @@ impl Studio {
 
     /// A layer dragged in its list let go: put where the layer under the
     /// pointer was, over it or under it, as one step to undo.
+    /// Let go on a frame's row, it goes into that frame; on a row of the
+    /// page's own layers, onto the page, outside the frames; each where it
+    /// was on the page, as Figma's list moves a layer.
     pub(super) fn drop_layer(&mut self, index: usize) {
+        let into = match self.control_at(self.pointer) {
+            Some(Control::Frame(frame)) if frame != self.active => Some(frame),
+            Some(Control::PageLayer(_)) => Some(LOOSE),
+            _ => None,
+        };
+        if let Some(into) = into.filter(|_| index < self.doc.layers.len()) {
+            self.commit_text();
+            self.cropping = None;
+            self.checkpoint();
+            return self.move_layers_to(into, &[index]);
+        }
         let Some(target) = self.reorder_target() else { return };
         if target == index || index >= self.doc.layers.len() {
             return;

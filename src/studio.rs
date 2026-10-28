@@ -568,6 +568,10 @@ pub struct Doc {
     /// The sizes it is exported at, each with what its file's name ends in
     /// before the kind, and the kind of file.
     pub exports: Vec<ExportSize>,
+    /// Whether it is the layers of a page outside its frames, drawn on the
+    /// page with nothing behind them and kept to no size; not kept in its
+    /// file as a frame is.
+    pub page: bool,
 }
 
 /// A size a frame is exported at.
@@ -635,7 +639,22 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
 
 impl Doc {
     pub fn new(width: i32, height: i32) -> Doc {
-        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)] }
+        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)], page: false }
+    }
+
+    /// The layers of a page outside its frames, as Figma has them: on
+    /// nothing, where the page's own points are theirs, of no size.
+    pub fn for_page() -> Doc {
+        Doc { name: "Page".into(), background: Fill::None, exports: Vec::new(), page: true, ..Doc::new(1, 1) }
+    }
+
+    /// All of it at `times` its size, from its corner: a frame's size, or
+    /// for a page's own layers as far as anything could be.
+    pub(super) fn whole(&self, times: f32) -> Rect {
+        match self.page {
+            true => Rect::new(-(1 << 28), -(1 << 28), 1 << 29, 1 << 29),
+            false => Rect::new(0, 0, ((self.width as f32 * times).round() as i32).max(1), ((self.height as f32 * times).round() as i32).max(1)),
+        }
     }
 
     /// The artboard as a picture, `times` its size: each pixel with how
@@ -723,7 +742,7 @@ impl Doc {
 
     /// The frame as a file of its own: one page with it on it.
     pub fn write(&self) -> Vec<u8> {
-        write_pages(&[Page { name: "Page 1".into(), frames: vec![self.clone()] }])
+        write_pages(&[Page::new("Page 1", vec![self.clone()])])
     }
 
     /// The first frame of a file, or nothing from anything else.
@@ -745,6 +764,11 @@ impl Doc {
             Fill::Gradient(from, to, angle) => format!("background gradient {from:06X} {to:06X} {angle}\n"),
             Fill::Radial(from, to) => format!("background radial {from:06X} {to:06X}\n"),
         };
+        self.write_layers(out, images);
+    }
+
+    /// Its layers, line by line, the first at the back.
+    fn write_layers(&self, out: &mut String, images: &mut Vec<Arc<Image>>) {
         for layer in &self.layers {
             let flags = format!("{} {}", u8::from(layer.hidden), u8::from(layer.locked));
             match &layer.kind {
@@ -911,6 +935,12 @@ pub fn write_pages(pages: &[Page]) -> Vec<u8> {
             out += &format!("frame {} {} {}\n", frame.x, frame.y, one_line(&frame.name));
             frame.write_lines(&mut out, &mut images);
         }
+        // The page's own layers, outside its frames, after them, where a
+        // file from before them has none.
+        if !page.loose.layers.is_empty() {
+            out += "page-layers\n";
+            page.loose.write_layers(&mut out, &mut images);
+        }
     }
     let mut bytes = out.into_bytes();
     for image in images {
@@ -943,15 +973,28 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
         at += line_end + 1 + length + 1;
     }
     let mut pages: Vec<Page> = Vec::new();
+    // Whether the lines are of the page's own layers, which come after
+    // its frames, until another page or frame.
+    let mut own = false;
     for line in lines {
         if let Some(name) = line.strip_prefix("page ") {
-            pages.push(Page { name: name.to_owned(), frames: Vec::new() });
+            pages.push(Page::new(name.to_owned(), Vec::new()));
+            own = false;
             continue;
         }
         if pages.is_empty() {
-            pages.push(Page { name: "Page 1".into(), frames: Vec::new() });
+            pages.push(Page::new("Page 1", Vec::new()));
         }
         let page = pages.last_mut()?;
+        if line == "page-layers" {
+            own = true;
+            continue;
+        }
+        if own && !line.starts_with("frame ") {
+            let _ = page.loose.read_line(line, &images);
+            continue;
+        }
+        own = false;
         if let Some(rest) = line.strip_prefix("frame ") {
             let mut words = rest.splitn(3, ' ');
             let mut frame = Doc::new(1, 1);
@@ -976,11 +1019,32 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
 }
 
 /// A page of a file: an endless canvas, with frames on it, each a picture
-/// to export.
+/// to export; and layers of its own outside them, drawn on the page and
+/// exported with none of the frames, as Figma has them.
 #[derive(Clone)]
 pub struct Page {
     pub name: String,
     pub frames: Vec<Doc>,
+    pub loose: Doc,
+}
+
+impl Page {
+    pub fn new(name: impl Into<String>, frames: Vec<Doc>) -> Page {
+        Page { name: name.into(), frames, loose: Doc::for_page() }
+    }
+}
+
+/// Where among a page's frames its own layers are said to be, outside
+/// them all: the frame worked in, when it is they that are worked in.
+const LOOSE: usize = usize::MAX;
+
+/// A frame of a page by where it is among them, or at `LOOSE` its own
+/// layers.
+fn slot(page: &mut Page, index: usize) -> &mut Doc {
+    match index {
+        LOOSE => &mut page.loose,
+        index => &mut page.frames[index],
+    }
 }
 
 
@@ -1526,6 +1590,9 @@ enum Paint {
 enum Control {
     Tool(Tool),
     Layer(usize),
+    /// A layer of the page itself, outside the frames, listed while the
+    /// frame worked in is one of them: clicked, the page is worked in.
+    PageLayer(usize),
     Eye(usize),
     Lock(usize),
     Field(Field),
@@ -1975,6 +2042,8 @@ pub struct Studio {
     /// Each frame of the page as drawn last, at the size it is shown: at
     /// which change to it, at which zoom, and which part of it.
     shown: Vec<Option<drawn::Drawn>>,
+    /// The same of the page's own layers, outside its frames.
+    shown_page: Option<drawn::Drawn>,
     /// The layers of the frame worked in that alone have changed since
     /// the change it was at, up to the change it is at now, if that is
     /// all that has: where they are is all that needs drawing again.
@@ -2057,7 +2126,7 @@ pub struct Studio {
 impl Studio {
     #[cfg(test)]
     pub fn new(doc: Doc, text: Text, width: i32, height: i32, dir: PathBuf, filename: String) -> Studio {
-        Studio::with_pages(vec![Page { name: "Page 1".into(), frames: vec![doc] }], text, width, height, dir, filename)
+        Studio::with_pages(vec![Page::new("Page 1", vec![doc])], text, width, height, dir, filename)
     }
 
     /// The canvas, with a file's pages, at the first frame of the first.
@@ -2098,9 +2167,10 @@ impl Studio {
             typing: None,
             version: 0,
             shown: Vec::new(),
+            shown_page: None,
             moving: None,
             touched: None,
-            pages: if pages.is_empty() { vec![Page { name: "Page 1".into(), frames: vec![Doc::new(1200, 675)] }] } else { pages },
+            pages: if pages.is_empty() { vec![Page::new("Page 1", vec![Doc::new(1200, 675)])] } else { pages },
             page: 0,
             active: 0,
             framing: false,
@@ -2256,7 +2326,7 @@ impl Studio {
     /// The pages, with the frame worked in back in its place.
     pub fn gathered(&self) -> Vec<Page> {
         let mut pages = self.pages.clone();
-        pages[self.page].frames[self.active] = self.doc.clone();
+        *slot(&mut pages[self.page], self.active) = self.doc.clone();
         self.put_back_crop_window(&mut pages);
         pages
     }
@@ -2265,24 +2335,36 @@ impl Studio {
     fn restore(&mut self, snapshot: Snapshot) {
         self.pages = snapshot.pages;
         self.page = snapshot.page.min(self.pages.len() - 1);
-        self.active = snapshot.active.min(self.pages[self.page].frames.len() - 1);
-        self.doc = std::mem::replace(&mut self.pages[self.page].frames[self.active], Doc::new(1, 1));
+        self.active = match snapshot.active {
+            LOOSE => LOOSE,
+            active => active.min(self.pages[self.page].frames.len() - 1),
+        };
+        self.doc = std::mem::replace(slot(&mut self.pages[self.page], self.active), Doc::new(1, 1));
         self.selected.retain(|&index| index < self.doc.layers.len());
         (self.cropping, self.editing, self.repeat) = (None, None, None);
+        self.frame_picked &= self.active != LOOSE;
         self.shown.clear();
+        self.shown_page = None;
     }
 
-    /// Another frame of the page worked in, the one before put back.
+    /// Whether what is worked in is the page's own layers, outside its
+    /// frames, rather than a frame.
+    fn on_page(&self) -> bool {
+        self.active == LOOSE
+    }
+
+    /// Another frame of the page worked in, or at `LOOSE` the page's own
+    /// layers, the one before put back.
     fn activate(&mut self, frame: usize) {
-        if frame == self.active || frame >= self.pages[self.page].frames.len() {
+        if frame == self.active || (frame >= self.pages[self.page].frames.len() && frame != LOOSE) {
             return;
         }
         // A name being typed goes to what it names before that is put away.
         self.commit_name();
         self.commit_text();
-        let frames = &mut self.pages[self.page].frames;
-        std::mem::swap(&mut self.doc, &mut frames[self.active]);
-        std::mem::swap(&mut self.doc, &mut frames[frame]);
+        let page = &mut self.pages[self.page];
+        std::mem::swap(&mut self.doc, slot(page, self.active));
+        std::mem::swap(&mut self.doc, slot(page, frame));
         self.active = frame;
         self.selected.clear();
         (self.cropping, self.editing, self.frame_picked) = (None, None, false);
@@ -2297,31 +2379,52 @@ impl Studio {
         self.commit_name();
         self.commit_text();
         let back = std::mem::replace(&mut self.doc, Doc::new(1, 1));
-        self.pages[self.page].frames[self.active] = back;
+        *slot(&mut self.pages[self.page], self.active) = back;
         (self.page, self.active) = (page, 0);
         self.doc = std::mem::replace(&mut self.pages[page].frames[0], Doc::new(1, 1));
         self.selected.clear();
         (self.cropping, self.editing, self.frame_picked) = (None, None, false);
         self.shown.clear();
+        self.shown_page = None;
         self.fit();
     }
 
-    /// The frames of the page shown, the one worked in among them.
+    /// The frames of the page shown, the one worked in among them; and
+    /// at `LOOSE`, the page's own layers.
     fn frame(&self, index: usize) -> &Doc {
-        if index == self.active { &self.doc } else { &self.pages[self.page].frames[index] }
+        match index == self.active {
+            true => &self.doc,
+            false if index == LOOSE => &self.pages[self.page].loose,
+            false => &self.pages[self.page].frames[index],
+        }
+    }
+
+    /// The page's own layers, outside its frames, whether they are worked
+    /// in or not.
+    fn loose(&self) -> &Doc {
+        self.frame(LOOSE)
     }
 
     fn frame_count(&self) -> usize {
         self.pages[self.page].frames.len()
     }
 
+    /// The frame worked in, or with the page's own layers worked in, the
+    /// last of its frames: what a new frame or page is made like.
+    fn frame_like(&self) -> &Doc {
+        match self.on_page() {
+            true => self.pages[self.page].frames.last().unwrap_or(&self.doc),
+            false => &self.doc,
+        }
+    }
+
     /// A new page, with a frame on it the size of the one worked in, white
     /// whatever that one is on.
     fn new_page(&mut self) {
         self.checkpoint();
-        let frame = Doc::new(self.doc.width, self.doc.height);
+        let frame = Doc::new(self.frame_like().width, self.frame_like().height);
         let name = format!("Page {}", self.pages.len() + 1);
-        self.pages.push(Page { name, frames: vec![frame] });
+        self.pages.push(Page::new(name, vec![frame]));
         self.go_to_page(self.pages.len() - 1);
         self.renaming = Some((Naming::Page(self.page), String::new()));
         self.changed();
@@ -2342,6 +2445,9 @@ impl Studio {
 
     /// The frame worked in, gone, where there are others on the page.
     fn delete_frame(&mut self) {
+        if self.on_page() {
+            return self.say("Pick a frame to delete it");
+        }
         if self.frame_count() < 2 {
             return self.say("A page keeps one frame");
         }
@@ -2365,6 +2471,84 @@ impl Studio {
         })
     }
 
+
+    /// Which of the page's own layers a point of the page is on, the
+    /// topmost, whether they are worked in or not.
+    fn page_layer_at(&mut self, at: (f32, f32)) -> Option<usize> {
+        if self.on_page() {
+            return self.layer_at(at);
+        }
+        let layers = self.pages[self.page].loose.layers.clone();
+        (0..layers.len()).rev().find(|&index| !layers[index].hidden && !layers[index].locked && layers[index].hit(at, &mut self.text))
+    }
+
+    /// Whether a point of the window is on what is picked out, its box and
+    /// a little round it, where its handles are and it is turned from.
+    fn near_selection(&mut self, at: (i32, i32)) -> bool {
+        let chosen = self.chosen();
+        if chosen.is_empty() {
+            return false;
+        }
+        let corners: Vec<(i32, i32)> = chosen.into_iter().flat_map(|index| self.box_corners(index)).collect();
+        let (left, right) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.0).max().unwrap_or(0));
+        let (top, bottom) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
+        Rect::new(left, top, right - left + 1, bottom - top + 1).inflate(16).contains(at.0, at.1)
+    }
+
+    /// What a press on the page is to work in, if not what is worked in
+    /// now: a layer of the page's own under it, over the frames as they
+    /// are drawn; the frame it is in; or outside every frame, the page's
+    /// own layers, as a shape drawn there is one of them, as in Figma.
+    /// Nothing while a picture is cropped, or on or by what is picked out.
+    fn press_target(&mut self, at: (i32, i32)) -> Option<usize> {
+        if self.cropping.is_some() || self.near_selection(at) {
+            return None;
+        }
+        let point = self.to_page(at);
+        if self.page_layer_at(point).is_some() {
+            return (!self.on_page()).then_some(LOOSE);
+        }
+        match self.frame_at(point) {
+            Some(frame) => (frame != self.active).then_some(frame),
+            None => (!self.on_page()).then_some(LOOSE),
+        }
+    }
+
+    /// Layers of what is worked in moved into a frame, or onto the page,
+    /// where they are on the page kept, and on top there; that worked in,
+    /// with them picked out. What a layer dragged into a frame, or out of
+    /// one, is let go into.
+    fn move_layers_to(&mut self, target: usize, chosen: &[usize]) {
+        if target == self.active || chosen.is_empty() {
+            return;
+        }
+        let (dx, dy) = (self.doc.x - self.frame(target).x, self.doc.y - self.frame(target).y);
+        let mut sorted: Vec<usize> = chosen.iter().copied().filter(|&index| index < self.doc.layers.len()).collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let mut moving: Vec<Layer> = sorted.iter().rev().map(|&index| self.doc.layers.remove(index)).collect();
+        moving.reverse();
+        for layer in &mut moving {
+            layer.translate(dx, dy);
+        }
+        self.selected.clear();
+        self.changed();
+        self.activate(target);
+        let start = self.doc.layers.len();
+        self.doc.layers.extend(moving);
+        self.selected = (start..self.doc.layers.len()).collect();
+        self.changed();
+    }
+
+    /// What was dragged on the page let go: into the frame the pointer is
+    /// over, or onto the page outside them all, if that is not where it
+    /// was, as Figma moves a layer let go over a frame into it.
+    fn drop_into_place(&mut self) {
+        let point = self.to_page(self.pointer);
+        let target = self.frame_at(point).unwrap_or(LOOSE);
+        let chosen = self.chosen();
+        self.move_layers_to(target, &chosen);
+    }
 
     /// Something has changed: drawn again, and the file is behind.
     fn changed(&mut self) {
@@ -2499,6 +2683,28 @@ impl Studio {
             _ => self.layer_filter.to_lowercase(),
         };
         y += 28;
+        // The page's own layers first, as they are drawn over the frames,
+        // the topmost first; worked in, as a frame's layers are, and
+        // otherwise each a row that works in them when clicked.
+        let on_page = self.on_page();
+        for index in (0..self.loose().layers.len()).rev() {
+            if y + row > panel.bottom() - 8 {
+                break;
+            }
+            if !filter.is_empty() && !self.loose().layers[index].name().to_lowercase().contains(filter.trim()) {
+                continue;
+            }
+            let place = Rect::new(left - 4, y, inner + 8, row);
+            match on_page {
+                true => {
+                    layout.controls.push((Rect::new(left + inner - 44, y, 22, row), Control::Eye(index)));
+                    layout.controls.push((Rect::new(left + inner - 20, y, 22, row), Control::Lock(index)));
+                    layout.controls.push((place, Control::Layer(index)));
+                }
+                false => layout.controls.push((place, Control::PageLayer(index))),
+            }
+            y += row;
+        }
         for frame in 0..self.frame_count() {
             if y + row > panel.bottom() - 8 {
                 break;
@@ -2652,12 +2858,22 @@ impl Studio {
 
     /// The frame worked in made to fit the open part of the window, with
     /// room round it.
+    /// With the page's own layers worked in, all of them.
     fn fit(&mut self) {
         let open = self.open_area();
-        let (w, h) = (self.doc.width as f32, self.doc.height as f32);
+        let (x, y, w, h) = match self.on_page() {
+            true => {
+                let layers = self.doc.layers.clone();
+                let boxes: Vec<(f32, f32, f32, f32)> = layers.iter().map(|layer| layer.bounds(&mut self.text)).collect();
+                let Some(all) = actions::union(&boxes) else { return };
+                all
+            }
+            false => (self.doc.x, self.doc.y, self.doc.width as f32, self.doc.height as f32),
+        };
+        let (w, h) = (w.max(1.0), h.max(1.0));
         self.zoom = (open.w as f32 * 0.86 / w).min(open.h as f32 * 0.86 / h).clamp(MIN_ZOOM, MAX_ZOOM);
         let middle = (open.x as f32 + open.w as f32 / 2.0, open.y as f32 + open.h as f32 / 2.0);
-        self.pan = (middle.0 - (self.doc.x + w / 2.0) * self.zoom, middle.1 - (self.doc.y + h / 2.0) * self.zoom);
+        self.pan = (middle.0 - (x + w / 2.0) * self.zoom, middle.1 - (y + h / 2.0) * self.zoom);
         self.dirty = true;
     }
 
@@ -3049,7 +3265,13 @@ impl Studio {
                 self.commit_text();
             }
         }
-        let control = self.control_at(at_window);
+        let mut control = self.control_at(at_window);
+        // A row of the page's own layers works in them first, and is then
+        // the row it is among them.
+        if let Some(Control::PageLayer(_)) = control {
+            self.activate(LOOSE);
+            control = self.control_at(at_window);
+        }
         if let Some(control) = control {
             let outcome = self.press_control(control, double);
             // A frame's name on the page is what it is moved by.
@@ -3077,7 +3299,8 @@ impl Studio {
         // On the page.
         self.commit_name();
         (self.palette, self.flyout) = (None, None);
-        if self.space || self.tool == Tool::Select && self.mods.alt && self.frame_at(self.to_page(at_window)).is_none() {
+        let off_everything = self.frame_at(self.to_page(at_window)).is_none() && self.page_layer_at(self.to_page(at_window)).is_none() && !self.near_selection(at_window);
+        if self.space || self.tool == Tool::Select && self.mods.alt && off_everything {
             self.drag = Drag::Pan { from: at_window, origin: self.pan };
             return Outcome::Continue;
         }
@@ -3085,9 +3308,10 @@ impl Studio {
             self.drag = Drag::NewFrame { from: self.to_page(at_window) };
             return Outcome::Continue;
         }
-        // In another frame, that one worked in.
-        if let Some(frame) = self.frame_at(self.to_page(at_window)).filter(|&frame| frame != self.active && self.cropping.is_none()) {
-            self.activate(frame);
+        // In another frame, that one worked in; on the page's own layers,
+        // or outside every frame, they.
+        if let Some(target) = self.press_target(at_window) {
+            self.activate(target);
         }
         self.frame_picked = false;
         let at = self.to_doc(at_window);
@@ -3456,6 +3680,11 @@ impl Studio {
                 self.pick_at(part, rect, at, true);
             }
             Control::Tool(tool) => self.set_tool(tool),
+            // The page's own layers worked in, and that one picked out.
+            Control::PageLayer(index) => {
+                self.activate(LOOSE);
+                return self.press_control(Control::Layer(index), double);
+            }
             Control::Layer(index) => {
                 match self.mods.shift {
                     true => match self.selected.iter().position(|&other| other == index) {
@@ -3735,7 +3964,7 @@ impl Studio {
             Drag::NewFrame { from } => {
                 let to = self.to_page(self.pointer);
                 let (w, h) = ((to.0 - from.0).abs(), (to.1 - from.1).abs());
-                let size = if w * self.zoom < 4.0 && h * self.zoom < 4.0 { (self.doc.width as f32, self.doc.height as f32) } else { (w, h) };
+                let size = if w * self.zoom < 4.0 && h * self.zoom < 4.0 { (self.frame_like().width as f32, self.frame_like().height as f32) } else { (w, h) };
                 self.new_frame((from.0.min(to.0), from.1.min(to.1)), size);
                 self.framing = false;
             }
@@ -3767,6 +3996,7 @@ impl Studio {
                     }
                 }
             }
+            Drag::Move { moved: true, .. } => self.drop_into_place(),
             Drag::Move { moved: false, .. } => {
                 if let Some(index) = self.under_press.take() {
                     self.selected = vec![index];
@@ -4415,7 +4645,8 @@ impl Studio {
     /// on the box round them all; alone, on the artboard.
     fn align(&mut self, way: u8) {
         let chosen = self.chosen();
-        if chosen.is_empty() {
+        // One of the page's own layers alone has no frame to line up on.
+        if chosen.is_empty() || (chosen.len() == 1 && self.on_page()) {
             return;
         }
         let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
@@ -4443,17 +4674,43 @@ impl Studio {
     /// A picture put on the artboard: in the middle of the view, made to
     /// fit in it if it is larger, and picked out.
     pub fn add_picture(&mut self, image: Image, name: &str) {
+        self.drop_picture(image, name, None);
+    }
+
+    /// A picture put where it was dropped in the window, in the frame
+    /// there or on the page outside every frame; or with nowhere said, in
+    /// the middle of the view.
+    pub fn drop_picture(&mut self, image: Image, name: &str, at: Option<(i32, i32)>) {
         self.checkpoint();
-        let middle = self.to_doc(self.open_area().center());
+        let at = at.filter(|&at| self.over_page(at)).unwrap_or_else(|| self.open_area().center());
+        self.work_at(at);
+        let middle = self.to_doc(at);
         let image = Arc::new(image);
         let mut picture = Picture::new(image, name.to_owned(), middle);
-        let most = (self.doc.width as f32 * 0.9 / picture.w).min(self.doc.height as f32 * 0.9 / picture.h).min(1.0);
+        // Kept inside a frame; on the page, as large as it is.
+        let most = match self.on_page() {
+            true => 1.0,
+            false => (self.doc.width as f32 * 0.9 / picture.w).min(self.doc.height as f32 * 0.9 / picture.h).min(1.0),
+        };
         (picture.w, picture.h) = (picture.w * most, picture.h * most);
         self.doc.layers.push(Layer::picture(picture));
         self.window_as_last(self.doc.layers.len() - 1);
         self.selected = vec![self.doc.layers.len() - 1];
         self.tool = Tool::Select;
         self.changed();
+    }
+
+    /// What is in the middle of the view worked in, for what is put there:
+    /// the frame there, or outside every frame the page's own layers.
+    fn work_where_seen(&mut self) {
+        self.work_at(self.open_area().center());
+    }
+
+    /// The frame at a point of the window worked in, or outside every
+    /// frame the page's own layers.
+    fn work_at(&mut self, at: (i32, i32)) {
+        let target = self.frame_at(self.to_page(at)).unwrap_or(LOOSE);
+        self.activate(target);
     }
 
     /// What the clipboard had: a picture, put on the artboard; or text,
@@ -4470,6 +4727,7 @@ impl Studio {
                 }
             } else {
                 self.checkpoint();
+                self.work_where_seen();
                 let middle = self.to_doc(self.open_area().center());
                 let mut shape = Shape::new(Tool::Text, self.color, STROKES[self.size], middle);
                 (shape.text, shape.font_px, shape.face) = (text, FONT_SIZES[self.size], self.face);
@@ -4538,6 +4796,10 @@ impl Studio {
     }
 
     fn export(&mut self) {
+        // The page's own layers go in no export, as Figma's do not.
+        if self.on_page() {
+            return self.say("Pick a frame to export it");
+        }
         let active = self.active;
         match self.export_frames(&[active]) {
             Ok(written) if !written.is_empty() => self.show_exported(written),
@@ -4549,6 +4811,9 @@ impl Studio {
     /// The artboard on the clipboard, kept there by a hotshot of its own,
     /// as the pin does.
     fn copy(&mut self) {
+        if self.on_page() {
+            return self.say("Pick a frame to copy it");
+        }
         let Some(png) = self.png() else { return };
         let kept = crate::output::state_file("pins").and_then(|dir| {
             std::fs::create_dir_all(&dir).ok()?;
@@ -4891,19 +5156,21 @@ impl Studio {
     /// not, as the page grows smaller or is moved far, it is drawn at half
     /// the size it is shown and over more round it, for the next steps.
     /// Once the page is still, it is drawn sharp again.
-    fn shown_frame(&mut self, index: usize, view: Rect, stop: &mut dyn FnMut() -> bool) -> ((i32, i32), i32, i32) {
+    ///
+    /// The page's own layers, at `LOOSE`, are drawn the same, as far as
+    /// they reach rather than to a frame's edges.
+    fn shown_frame(&mut self, index: usize, view: Rect, stop: &mut dyn FnMut() -> bool) -> ((i32, i32), Rect) {
         let frame = self.frame(index);
-        let (wide, high) = (((frame.width as f32 * self.zoom).round() as i32).max(1), ((frame.height as f32 * self.zoom).round() as i32).max(1));
         let origin = self.to_window_page((frame.x, frame.y));
         let stamp = frame.stamp;
-        let (frame_w, frame_h) = (frame.width as f32, frame.height as f32);
+        let whole = self.extent(index, self.zoom);
         // What of it is in the view, counted from its corner.
-        let seen = view.moved(-origin.0, -origin.1).intersect(Rect::new(0, 0, wide, high));
+        let seen = view.moved(-origin.0, -origin.1).intersect(whole);
         if self.shown.len() < self.frame_count() {
             self.shown.resize_with(self.frame_count(), || None);
         }
         let quick = self.moving.is_some();
-        let fresh = self.shown[index].as_ref().is_some_and(|drawn| {
+        let fresh = self.drawn_of(index).is_some_and(|drawn| {
             drawn.stamp == stamp
                 && (seen.is_empty()
                     || match same_zoom(drawn.zoom, self.zoom) {
@@ -4917,33 +5184,69 @@ impl Studio {
                     let times = self.zoom / 2.0;
                     let around = seen.inflate(view.w.max(view.h) / 4);
                     let halved = Rect::new(around.x.div_euclid(2), around.y.div_euclid(2), around.w / 2 + 1, around.h / 2 + 1);
-                    (times, halved.intersect(Rect::new(0, 0, ((frame_w * times).round() as i32).max(1), ((frame_h * times).round() as i32).max(1))))
+                    (times, halved.intersect(self.extent(index, times)))
                 }
-                false => (self.zoom, seen.inflate(ROOM).intersect(Rect::new(0, 0, wide, high))),
+                false => (self.zoom, seen.inflate(ROOM).intersect(whole)),
             };
             // Drawn sharp where only the view has changed since: a band at
             // a time, and given up for the wheel or a key that comes
             // meanwhile, what was drawn shown until it is done.
-            let only_view = !quick && self.shown[index].as_ref().is_some_and(|drawn| drawn.stamp == stamp);
-            let doc = if index == self.active { &self.doc } else { &self.pages[self.page].frames[index] };
+            let only_view = !quick && self.drawn_of(index).is_some_and(|drawn| drawn.stamp == stamp);
+            let doc = match index == self.active {
+                true => &self.doc,
+                false => match index {
+                    LOOSE => &self.pages[self.page].loose,
+                    index => &self.pages[self.page].frames[index],
+                },
+            };
             let pixels = match only_view {
                 true => match doc.render_part_stopping(times, part, &mut self.text, stop) {
                     Some(pixels) => pixels,
                     // Given up: drawn sharp again once what came is heard.
                     None => {
                         self.dirty = true;
-                        return (origin, wide, high);
+                        return (origin, whole);
                     }
                 },
                 false => doc.render_part(times, part, &mut self.text),
             };
             let reaches = if index == self.active { self.reaches(times) } else { Vec::new() };
-            self.shown[index] = Some(drawn::Drawn { stamp, zoom: times, part, pixels, reaches });
+            *self.drawn_slot(index) = Some(drawn::Drawn { stamp, zoom: times, part, pixels, reaches });
             if index == self.active {
                 self.touched = None;
             }
         }
-        (origin, wide, high)
+        (origin, whole)
+    }
+
+    /// How far a frame reaches, at `times` its size, from its corner: its
+    /// size; or for the page's own layers, as far as anything of them is
+    /// drawn, shadows and all.
+    fn extent(&mut self, index: usize, times: f32) -> Rect {
+        if index != LOOSE {
+            let frame = self.frame(index);
+            return Rect::new(0, 0, ((frame.width as f32 * times).round() as i32).max(1), ((frame.height as f32 * times).round() as i32).max(1));
+        }
+        let layers: Vec<Layer> = self.loose().layers.iter().filter(|layer| !layer.hidden).cloned().collect();
+        layers.iter().map(|layer| drawn::reach(layer, times, &mut self.text)).fold(Rect::default(), drawn::both)
+    }
+
+    /// What was drawn last of a frame, or of the page's own layers.
+    fn drawn_of(&self, index: usize) -> Option<&drawn::Drawn> {
+        match index {
+            LOOSE => self.shown_page.as_ref(),
+            index => self.shown.get(index).and_then(Option::as_ref),
+        }
+    }
+
+    fn drawn_slot(&mut self, index: usize) -> &mut Option<drawn::Drawn> {
+        if index == LOOSE {
+            return &mut self.shown_page;
+        }
+        if self.shown.len() <= index {
+            self.shown.resize_with(index + 1, || None);
+        }
+        &mut self.shown[index]
     }
 
     /// The page zoomed or moved by the wheel or the hand just now: shown
@@ -4991,10 +5294,13 @@ impl Studio {
                 out[(y * width + x) as usize] = 0x2E2E2E;
             }
         }
-        for index in 0..self.frame_count() {
-            let (origin, wide, high) = self.shown_frame(index, view, stop);
-            let shown = Rect::new(origin.0, origin.1, wide, high).intersect(view);
-            let Some(Some(drawn::Drawn { zoom: kept_zoom, part, pixels, .. })) = self.shown.get(index) else { continue };
+        // The page's own layers last, over the frames, as nothing of them
+        // is in one.
+        let page_too = !self.loose().layers.is_empty();
+        for index in (0..self.frame_count()).chain(page_too.then_some(LOOSE)) {
+            let (origin, whole) = self.shown_frame(index, view, stop);
+            let shown = whole.moved(origin.0, origin.1).intersect(view);
+            let Some(drawn::Drawn { zoom: kept_zoom, part, pixels, .. }) = self.drawn_of(index) else { continue };
             // Drawn at another zoom while the page moves: where each pixel
             // of the window falls in what was drawn, by the nearest one.
             let by = if same_zoom(*kept_zoom, self.zoom) { 1.0 } else { kept_zoom / self.zoom };
@@ -5026,6 +5332,9 @@ impl Studio {
                     let alpha = color >> 24;
                     *pixel = match alpha {
                         255 => color & 0xFF_FFFF,
+                        // The page's own layers over the page, with nothing
+                        // behind them but it and the frames.
+                        _ if index == LOOSE => canvas::mix(*pixel, color & 0xFF_FFFF, alpha + (alpha >> 7)),
                         _ => {
                             let light = ((drawn.x + step as i32 - origin.0) / 10 + light_row) % 2 == 0;
                             canvas::mix(if light { 0xFFFFFF } else { 0xE6E6E6 }, color & 0xFF_FFFF, alpha + (alpha >> 7))
@@ -5212,6 +5521,16 @@ impl Studio {
         }
     }
 
+    /// Where the frame worked in is in the window; with the page's own
+    /// layers worked in, all of the window, as they are kept to nothing.
+    fn frame_on_screen(&self) -> Rect {
+        if self.on_page() {
+            return Rect::new(0, 0, self.width, self.height);
+        }
+        let (a, b) = (self.to_window((0.0, 0.0)), self.to_window((self.doc.width as f32, self.doc.height as f32)));
+        Rect::new(a.0, a.1, b.0 - a.0, b.1 - a.1)
+    }
+
     /// The corners of a layer's box in the window, turned with it.
     fn box_corners(&mut self, index: usize) -> [(i32, i32); 4] {
         let corners = match self.doc.layers[index].kind.clone() {
@@ -5301,8 +5620,7 @@ impl Studio {
         // a grid of thirds in it, and how large it is under it.
         if picture.angle == 0.0 {
             let crop = Rect::spanning(corners[0], corners[2]);
-            let (a, b) = (self.to_window((0.0, 0.0)), self.to_window((self.doc.width as f32, self.doc.height as f32)));
-            let frame = Rect::new(a.0, a.1, b.0 - a.0, b.1 - a.1);
+            let frame = self.frame_on_screen();
             for part in [
                 Rect::new(frame.x, frame.y, frame.w, crop.y - frame.y),
                 Rect::new(frame.x, crop.bottom(), frame.w, frame.bottom() - crop.bottom()),
@@ -5523,16 +5841,26 @@ impl Studio {
                     self.text.draw(canvas, rect.right() - 10 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, &size);
                 }
                 Control::Frame(_) => {}
-                Control::Layer(index) => {
-                    let on = chosen.contains(&index);
-                    let row_hovered = matches!(hover, Some(Control::Layer(at) | Control::Eye(at) | Control::Lock(at)) if at == index);
+                // A layer of the page itself, while a frame is worked in,
+                // is listed as one of the frame's is.
+                Control::Layer(index) | Control::PageLayer(index) => {
+                    let of_page = matches!(control, Control::PageLayer(_));
+                    let on = !of_page && chosen.contains(&index);
+                    let row_hovered = match of_page {
+                        true => hover == Some(Control::PageLayer(index)),
+                        false => matches!(hover, Some(Control::Layer(at) | Control::Eye(at) | Control::Lock(at)) if at == index),
+                    };
                     if on || row_hovered {
                         canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
                     }
                     // Its eye and lock, which come before it among the
                     // controls, to be clicked first, are drawn over it here,
                     // where its color does not hide them.
-                    let layer = &self.doc.layers[index];
+                    let layer = match of_page {
+                        true => self.pages[self.page].loose.layers[index].clone(),
+                        false => self.doc.layers[index].clone(),
+                    };
+                    let renamed = !of_page && matches!(&self.renaming, Some((Naming::Layer(at), _)) if *at == index);
                     let (eye, lock) = (rect.right() - 37, rect.right() - 13);
                     if layer.hidden || row_hovered {
                         self.text.draw_centered(canvas, eye, cy, 14, if layer.hidden { DIM_TEXT_COLOR } else { TEXT_COLOR }, if layer.hidden { icons::EYE_OFF } else { icons::EYE });
@@ -5548,12 +5876,12 @@ impl Studio {
                         },
                     };
                     let (named, faint) = (layer.name(), layer.hidden);
-                    let name = match self.renaming.clone() {
-                        Some((Naming::Layer(at), typed)) if at == index => self.typed_shown(canvas, (rect.x + 28, cy - line_high / 2), px, typed),
+                    let name = match (self.renaming.clone(), renamed) {
+                        (Some((_, typed)), true) => self.typed_shown(canvas, (rect.x + 28, cy - line_high / 2), px, typed),
                         _ => named,
                     };
                     // Where a layer dragged in the list would go.
-                    if matches!(self.drag, Drag::Reorder { moved: true, index: dragged, .. } if dragged != index) && rect.contains(self.pointer.0, self.pointer.1) {
+                    if matches!(self.drag, Drag::Reorder { moved: true, index: dragged, .. } if dragged != index || of_page) && rect.contains(self.pointer.0, self.pointer.1) {
                         canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 2, ACCENT);
                     }
                     let ink = if faint { DIM_TEXT_COLOR } else { TEXT_COLOR };
@@ -5984,7 +6312,7 @@ fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: Pa
     let first = (pages.is_none() && fresh).then(|| pictures.remove(0));
     let pages = pages.unwrap_or_else(|| {
         let frame = first.map_or_else(|| Doc::new(1200, 675), |(image, name)| framed(image, &name));
-        vec![Page { name: "Page 1".into(), frames: vec![frame] }]
+        vec![Page::new("Page 1", vec![frame])]
     });
     let dir = options.places.first().cloned().unwrap_or_else(|| options.dir.clone());
     let mut studio = Studio::with_pages(pages, text, size.0, size.1, dir, options.filename.clone());
@@ -6088,6 +6416,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let dnd = Dnd { enter: atom("XdndEnter")?, position: atom("XdndPosition")?, status: atom("XdndStatus")?, drop: atom("XdndDrop")?, finished: atom("XdndFinished")?, selection: atom("XdndSelection")?, copy: atom("XdndActionCopy")?, uris: atom("text/uri-list")? };
     conn.change_property32(PropMode::REPLACE, window, atom("XdndAware")?, AtomEnum::ATOM, &[5])?;
     let mut dropped: Option<(u32, u32)> = None;
+    // Where in the window what is dragged over it was last, for what is
+    // dropped to go there.
+    let mut drop_at: Option<(i32, i32)> = None;
     let gc = conn.generate_id()?;
     conn.create_gc(gc, window, &CreateGCAux::new().graphics_exposures(0))?;
     conn.map_window(window)?;
@@ -6246,6 +6577,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                 // to be copied; let go, what it is is asked for after.
                 Event::ClientMessage(message) if message.type_ == dnd.position => {
                     let source = message.data.as_data32()[0];
+                    let packed = message.data.as_data32()[2];
+                    let (root_x, root_y) = ((packed >> 16) as i16, (packed & 0xFFFF) as i16);
+                    drop_at = conn.translate_coordinates(display.root, window, root_x, root_y).ok().and_then(|cookie| cookie.reply().ok()).map(|reply| (i32::from(reply.dst_x), i32::from(reply.dst_y)));
                     let status = ClientMessageEvent::new(32, source, dnd.status, [window, 1, 0, 0, dnd.copy]);
                     conn.send_event(false, source, EventMask::NO_EVENT, status)?;
                 }
@@ -6279,7 +6613,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             match &mut screen {
                 Shown::Studio(studio) => {
                     for (image, name) in dropped_pictures.drain(..) {
-                        studio.add_picture(image, &name);
+                        studio.drop_picture(image, &name, drop_at);
                     }
                     if let Some(path) = canvas_file {
                         studio.open_next = Some(path);
@@ -6327,7 +6661,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                 match picture {
                     Some(image) => {
                         let path = crate::home::fresh_file(&dir, "Pasted");
-                        let mut studio = opened(Some(vec![Page { name: "Page 1".into(), frames: vec![framed(image, "Pasted")] }]), Vec::new(), path, home.into_text(), size, options);
+                        let mut studio = opened(Some(vec![Page::new("Page 1", vec![framed(image, "Pasted")])]), Vec::new(), path, home.into_text(), size, options);
                         studio.save(false);
                         studio.fit();
                         Shown::Studio(Box::new(studio))
@@ -7055,6 +7389,163 @@ mod tests {
         assert_eq!(out[20 * 200 + 60], 0xFFFF0000);
     }
 
+    /// A canvas zoomed out to half, its frame at the left of the view and
+    /// the page bare to its right.
+    fn with_room_beside() -> Studio {
+        let mut studio = studio();
+        (studio.zoom, studio.pan) = (0.5, (300.0, 200.0));
+        studio
+    }
+
+    /// Where a box's or an oval's frame begins, in what it is in.
+    fn corner_of(layer: &Layer) -> (f32, f32) {
+        let Kind::Shape(shape) = &layer.kind else { panic!("a shape") };
+        let (x, y, ..) = shape.frame();
+        (x, y)
+    }
+
+    /// A drag from a point of the page to another.
+    fn drag_page(studio: &mut Studio, from: (f32, f32), to: (f32, f32)) {
+        let (a, b) = (studio.to_window_page(from), studio.to_window_page(to));
+        studio.pointer_moved(a.0, a.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.pointer_moved((a.0 + b.0) / 2, (a.1 + b.1) / 2, Mods::default());
+        studio.pointer_moved(b.0, b.1, Mods::default());
+        studio.released();
+    }
+
+    /// What the window shows at a point of the page.
+    fn shown_at(studio: &mut Studio, at: (f32, f32)) -> u32 {
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let (x, y) = studio.to_window_page(at);
+        out[(y * studio.width + x) as usize] & 0xFF_FFFF
+    }
+
+    #[test]
+    fn a_box_drawn_outside_the_frames_is_the_pages_own_drawn_picked_out_and_styled() {
+        let mut studio = with_room_beside();
+        studio.set_tool(Tool::Rect);
+        drag_page(&mut studio, (900.0, 100.0), (1100.0, 250.0));
+        // On the page, not in the frame, where it was drawn, and picked out.
+        assert!(studio.on_page());
+        assert_eq!((studio.doc.layers.len(), studio.pages[0].frames[0].layers.len()), (1, 0));
+        assert!((corner_of(&studio.doc.layers[0]).0 - 900.0).abs() <= 2.0);
+        assert_eq!(studio.selected, vec![0]);
+        // Drawn on the page, where nothing but the page was.
+        let page = shown_at(&mut studio, (1000.0, 300.0));
+        assert_ne!(shown_at(&mut studio, (1000.0, 180.0)), page);
+        // Styled from the panel as a frame's box is.
+        studio.paint(Paint::Fill, Some(0x00AA00));
+        assert_eq!(shown_at(&mut studio, (1000.0, 180.0)), 0x00AA00);
+        // Picked out again by a click from in the frame, and moved.
+        let at = studio.to_window_page((400.0, 300.0));
+        click(&mut studio, at);
+        assert!(!studio.on_page() && studio.selected.is_empty());
+        let at = studio.to_window_page((1000.0, 180.0));
+        click(&mut studio, at);
+        assert!(studio.on_page() && studio.selected == vec![0]);
+        let before = corner_of(&studio.doc.layers[0]);
+        drag_page(&mut studio, (1000.0, 180.0), (1050.0, 400.0));
+        let after = corner_of(&studio.doc.layers[0]);
+        assert!(((after.0 - before.0) - 50.0).abs() <= 2.0 && ((after.1 - before.1) - 220.0).abs() <= 2.0, "moved from {before:?} to {after:?}");
+        assert!(studio.on_page(), "still the page's, off every frame");
+        // Undone, back where it was; undone again, never drawn.
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        let layer = studio.loose().layers[0].clone();
+        assert_eq!(corner_of(&layer), before);
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert!(studio.loose().layers.is_empty());
+        // Exported, the frame has nothing of it.
+        studio.key(Key::Char('y'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert_eq!(studio.loose().layers.len(), 1);
+        let frame = studio.pages[0].frames.first().cloned().unwrap_or_else(|| studio.doc.clone());
+        let (_, _, pixels) = frame.render(1.0, &mut studio.text);
+        assert!(pixels.iter().all(|&pixel| pixel == 0xFFFF_FFFF));
+    }
+
+    #[test]
+    fn a_layer_dragged_into_a_frame_goes_into_it_and_out_again_onto_the_page() {
+        let mut studio = with_room_beside();
+        studio.set_tool(Tool::Ellipse);
+        drag_page(&mut studio, (900.0, 100.0), (1000.0, 200.0));
+        assert!(studio.on_page());
+        // Into the frame: one of its layers, where it was let go on the page.
+        drag_page(&mut studio, (950.0, 150.0), (350.0, 250.0));
+        assert!(!studio.on_page());
+        assert_eq!((studio.doc.layers.len(), studio.loose().layers.len(), studio.selected.clone()), (1, 0, vec![0]));
+        let (x, y) = corner_of(&studio.doc.layers[0]);
+        assert!((x + studio.doc.x - 300.0).abs() <= 6.0 && (y + studio.doc.y - 200.0).abs() <= 6.0, "where it was let go on the page");
+        // Clipped to the frame now, and in its export.
+        let (_, _, pixels) = studio.doc.render(1.0, &mut studio.text);
+        assert!(pixels.iter().any(|&pixel| pixel != 0xFFFF_FFFF));
+        // Out again, onto the page; one step to undo each way.
+        drag_page(&mut studio, (350.0, 250.0), (1200.0, 450.0));
+        assert!(studio.on_page());
+        assert_eq!((studio.loose().layers.len(), studio.pages[0].frames[0].layers.len()), (1, 0));
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert_eq!((studio.loose().layers.len(), studio.frame(0).layers.len()), (0, 1));
+    }
+
+    #[test]
+    fn the_pages_own_layers_are_listed_above_its_frames_and_kept_in_its_file() {
+        let mut studio = with_room_beside();
+        studio.set_tool(Tool::Rect);
+        drag_page(&mut studio, (900.0, 100.0), (1100.0, 250.0));
+        studio.add_picture(checker(40, 40), "In the frame");
+        // The picture went where the view's middle is: the frame.
+        studio.activate(0);
+        studio.add_picture(checker(40, 40), "Shot");
+        assert_eq!(studio.doc.layers.iter().map(Layer::name).collect::<Vec<_>>().last().map(String::as_str), Some("Shot"));
+        // With the frame worked in, the page's box is a row of its own over
+        // the frame's, and clicked, works in the page with it picked out.
+        let controls: Vec<Control> = studio.layout().controls.iter().map(|(_, control)| *control).filter(|control| matches!(control, Control::PageLayer(_) | Control::Frame(_) | Control::Layer(_))).collect();
+        let row = controls.iter().position(|control| *control == Control::PageLayer(0)).expect("listed");
+        assert!(row < controls.iter().position(|control| matches!(control, Control::Frame(_))).unwrap());
+        let at = studio.control_rect(Control::PageLayer(0)).unwrap().center();
+        click(&mut studio, at);
+        assert!(studio.on_page() && studio.selected == vec![0]);
+        // Kept in the file and read back; a file from before has none.
+        let bytes = write_pages(&studio.gathered());
+        let back = read_pages(&bytes).unwrap();
+        assert_eq!((back[0].loose.layers.len(), back[0].frames[0].layers.len()), (studio.loose().layers.len(), studio.frame(0).layers.len()));
+        let old: Vec<u8> = String::from_utf8_lossy(&bytes).split("page-layers\n").next().unwrap().bytes().collect();
+        let back = read_pages(&old).unwrap();
+        assert!(back[0].loose.layers.is_empty());
+        // Opened with the page's own layers worked in, it still draws.
+        let mut again = Studio::with_pages(read_pages(&bytes).unwrap(), Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
+        again.activate(LOOSE);
+        let mut out = vec![0u32; 1400 * 900];
+        again.draw(&mut out);
+    }
+
+    #[test]
+    fn a_picture_pasted_with_the_page_in_view_goes_on_the_page_at_its_size() {
+        let mut studio = with_room_beside();
+        // The view's middle off the frame, on the bare page.
+        studio.pan = (-900.0, 200.0);
+        studio.add_picture(checker(1000, 800), "Big");
+        assert!(studio.on_page());
+        let Kind::Picture(picture) = &studio.doc.layers[0].kind else { panic!() };
+        assert_eq!((picture.w, picture.h), (1000.0, 800.0));
+        // Exporting and copying are of frames alone.
+        studio.act(Action::Export);
+        assert!(studio.exported.is_none());
+        // One dropped on the frame goes in it, where it was let go, and one
+        // dropped beside it on the page.
+        studio.pan = (300.0, 200.0);
+        let on_frame = studio.to_window_page((200.0, 150.0));
+        studio.drop_picture(checker(40, 40), "Dropped", Some(on_frame));
+        assert_eq!(studio.active, 0);
+        let Kind::Picture(picture) = &studio.doc.layers.last().unwrap().kind else { panic!() };
+        assert!((picture.cx - 200.0).abs() <= 2.0 && (picture.cy - 150.0).abs() <= 2.0);
+        let beside = studio.to_window_page((1000.0, 150.0));
+        studio.drop_picture(checker(40, 40), "Beside", Some(beside));
+        assert!(studio.on_page() && studio.doc.layers.len() == 2);
+    }
+
     #[test]
     fn a_canvas_is_written_down_and_read_back_whole() {
         let mut doc = Doc::new(640, 360);
@@ -7292,7 +7783,7 @@ mod tests {
         let captured = from_markup(Rect::new(10, 10, 120, 80), &vec![0xFF0000FF; 120 * 80], "", &chrome::Notes::default());
         assert_eq!(captured.exports.iter().map(|size| size.times).collect::<Vec<_>>(), vec![1.0]);
         // What is copied is at the size it is exported at.
-        let mut studio = Studio::with_pages(vec![Page { name: "Page 1".into(), frames: vec![frame] }], Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
+        let mut studio = Studio::with_pages(vec![Page::new("Page 1", vec![frame])], Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
         let png = studio.png().unwrap();
         assert_eq!(Image::open(&png).map(|image| (image.width(), image.height())), Some((120, 80)));
     }

@@ -166,7 +166,7 @@ impl Doc {
     pub(super) fn change_beneath(&self, index: usize, out: &mut [u32], part: Rect, times: f32, text: &mut Text) {
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.layers.get(index) else { return };
         let shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
-        let whole = Rect::new(0, 0, ((self.width as f32 * times).round() as i32).max(1), ((self.height as f32 * times).round() as i32).max(1));
+        let whole = self.whole(times);
         match shape.tool {
             Tool::Blur => self.blur(index, &shape, out, (part, whole, times), text),
             Tool::Spotlight => self.spotlight(index, out, part, times),
@@ -211,6 +211,7 @@ impl Doc {
             return;
         }
         let dark = dim(shape) as f32 / 100.0;
+        let on_page = self.page;
         let shapes: Vec<Lit> = lit.iter().map(|(_, shape)| Lit { frame: shape.frame(), radius: shape.radius, round: shape.filled }).collect();
         out.par_chunks_mut(part.w.max(1) as usize).enumerate().for_each(|(row, pixels)| {
             let y = (part.y + row as i32) as f32 + 0.5;
@@ -218,7 +219,9 @@ impl Doc {
                 let x = (part.x + column as i32) as f32 + 0.5;
                 let inside = shapes.iter().map(|lit| lit.cover(x, y)).fold(0.0f32, f32::max);
                 let amount = dark * (1.0 - inside);
-                if amount > 0.0 {
+                // On the page, outside the frames, there is no frame to
+                // darken: only what is under it of the page's own layers.
+                if amount > 0.0 && !(on_page && *pixel >> 24 == 0) {
                     *pixel = darkened(*pixel, amount);
                 }
             }

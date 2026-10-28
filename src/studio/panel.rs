@@ -214,8 +214,18 @@ impl Studio {
             return rows.y;
         }
         let chosen = self.chosen();
+        // The page's own layers worked in, none picked out: no frame to set.
+        if chosen.is_empty() && self.on_page() {
+            let page = self.pages[self.page].name.clone();
+            rows.section("Page", &page, None);
+            rows.note("Layers outside the frames are drawn on the");
+            rows.note("page and go in no export; drag one into a");
+            rows.note("frame to put it in that frame");
+            return rows.y;
+        }
         // Lining up one picked out, on the frame; several have more below.
-        if chosen.len() == 1 {
+        // One of the page's own layers has no frame to line up on.
+        if chosen.len() == 1 && !self.on_page() {
             rows.y += 8;
             let aligns: Vec<Control> = (0..6).map(|way| act(Action::Align(way))).collect();
             rows.buttons(&[&aligns[..3], &aligns[3..], &[act(Action::Distribute(0)), act(Action::Distribute(1))]]);
@@ -278,9 +288,11 @@ impl Studio {
                 }
                 rows.section("Match to 1", "the first picked", None);
                 rows.grid(&mut self.text, actions(&(0..6).map(Action::Match).collect::<Vec<_>>()), 3);
-                rows.section("To the frame", "", None);
-                let to_frame: Vec<Control> = (0..6).map(|way| act(Action::ToFrame(way))).collect();
-                rows.tools(&mut self.text, &[&to_frame[..3], &to_frame[3..]], actions(&[Action::ToFrame(6)]));
+                if !self.on_page() {
+                    rows.section("To the frame", "", None);
+                    let to_frame: Vec<Control> = (0..6).map(|way| act(Action::ToFrame(way))).collect();
+                    rows.tools(&mut self.text, &[&to_frame[..3], &to_frame[3..]], actions(&[Action::ToFrame(6)]));
+                }
                 rows.section("Turn", "", None);
                 rows.grid(&mut self.text, actions(&[Action::Turn(-90), Action::Turn(90), Action::Turn(180), Action::FlipAcross]), 4);
                 // Every color among them, once, with how many layers use
@@ -620,7 +632,8 @@ impl Studio {
 impl Studio {
     /// The frame dimmed but where some layers are, and those ringed.
     pub(super) fn dim_except(&mut self, canvas: &mut Canvas, layers: &[usize]) {
-        let (a, b) = (self.to_window((0.0, 0.0)), self.to_window((self.doc.width as f32, self.doc.height as f32)));
+        let frame = self.frame_on_screen();
+        let (a, b) = ((frame.x, frame.y), (frame.right(), frame.bottom()));
         let count = self.doc.layers.len();
         let holes: Vec<Rect> = layers
             .iter()

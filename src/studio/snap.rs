@@ -65,7 +65,17 @@ impl Studio {
             (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h));
         }
         let others = self.other_edges();
-        let (mut across, mut down) = (vec![0.0, self.doc.width as f32 / 2.0, self.doc.width as f32], vec![0.0, self.doc.height as f32 / 2.0, self.doc.height as f32]);
+        // The frame's edges and middles; on the page, outside the frames,
+        // there is none, and the frames' own edges instead.
+        let (mut across, mut down) = match self.on_page() {
+            true => (0..self.frame_count()).map(|index| self.frame(index)).fold((Vec::new(), Vec::new()), |(mut across, mut down), frame| {
+                let (w, h) = (frame.width as f32, frame.height as f32);
+                across.extend([frame.x, frame.x + w / 2.0, frame.x + w]);
+                down.extend([frame.y, frame.y + h / 2.0, frame.y + h]);
+                (across, down)
+            }),
+            false => (vec![0.0, self.doc.width as f32 / 2.0, self.doc.width as f32], vec![0.0, self.doc.height as f32 / 2.0, self.doc.height as f32]),
+        };
         across.extend(self.guide_lines(true));
         down.extend(self.guide_lines(false));
         let (theirs_across, theirs_down) = spacing::lines_of(&others);

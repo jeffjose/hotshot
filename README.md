@@ -126,6 +126,14 @@ middles of the other frames, with a red line across where it does, and
 to even gaps between them, marked in magenta with how wide; hold Ctrl
 not to snap, and Shift to keep it to across or down.
 
+As in Figma, a shape drawn, a picture pasted or dropped, or a label put down outside
+every frame is the page's own: drawn on the page, not cut off by a
+frame, listed in the layers above the frames, picked out, moved, styled
+and undone as a frame's layers are, kept in the file, and left out of
+every export. Drag one onto a frame and let go, or drop its row on the
+frame's row in the list, and it goes into that frame where it was on the
+page; drag a frame's layer off every frame and it goes onto the page.
+
 `Ctrl+D` duplicates as Figma does. A frame's first copy goes 100 to its
 right, past any frame already there; a layer's goes 20 to its right, or
 below it if that would leave the frame, past anything in the way. Move

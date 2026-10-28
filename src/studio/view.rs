@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn a_file_is_shown_again_where_it_was_left() {
         let mut studio = Studio::new(Doc::new(800, 600), Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
-        studio.pages.push(Page { name: "Page 2".into(), frames: vec![Doc::new(400, 300), Doc::new(500, 500)] });
+        studio.pages.push(Page::new("Page 2", vec![Doc::new(400, 300), Doc::new(500, 500)]));
         studio.go_to_page(1);
         studio.activate(1);
         studio.zoom = 3.0;

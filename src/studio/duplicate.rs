@@ -65,7 +65,9 @@ impl Studio {
                 let ids: Vec<u32> = chosen.iter().map(|&index| id_of(&self.doc.layers[index])).collect();
                 let me = self.box_of(&ids).unwrap_or_default();
                 let others = self.other_edges();
-                spacing::beside(me, &others, Some([0.0, 0.0, self.doc.width as f32, self.doc.height as f32]), LAYER_GAP)
+                // Kept to the frame; on the page, kept to nothing.
+                let within = (!self.on_page()).then_some([0.0, 0.0, self.doc.width as f32, self.doc.height as f32]);
+                spacing::beside(me, &others, within, LAYER_GAP)
             }
         };
         self.copy_layers_by(by);
@@ -120,6 +122,9 @@ impl Studio {
     pub(super) fn copy_frame(&mut self, at: (f32, f32)) {
         self.commit_name();
         self.commit_text();
+        if self.on_page() {
+            return self.say("Pick a frame to copy it");
+        }
         let source = self.active;
         let mut copy = self.doc.clone();
         // A copy of a copy is called what it is, not "copy copy".

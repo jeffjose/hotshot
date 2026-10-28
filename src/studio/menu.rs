@@ -798,8 +798,8 @@ impl Studio {
             Command::NewPage => self.new_page(),
             Command::NewFrame => {
                 // Beside the frame worked in, the same size.
-                let at = (self.doc.x + self.doc.width as f32 + 80.0, self.doc.y);
-                let size = (self.doc.width as f32, self.doc.height as f32);
+                let at = (self.frame_like().x + self.frame_like().width as f32 + 80.0, self.frame_like().y);
+                let size = (self.frame_like().width as f32, self.frame_like().height as f32);
                 self.new_frame(at, size);
                 self.fit();
             }
@@ -841,6 +841,7 @@ impl Studio {
                     self.edit_text(index);
                 }
             }
+            Command::RenameFrame if self.on_page() => self.say("Pick a frame to rename it"),
             Command::RenameFrame => self.renaming = Some((Naming::Frame, self.doc.name.clone())),
             Command::DuplicateFrame => self.duplicate_frame(),
             Command::DeleteFrame => self.delete_frame(),

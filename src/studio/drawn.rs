@@ -17,7 +17,7 @@ pub(super) struct Drawn {
 }
 
 /// The smallest area over both.
-fn both(a: Rect, b: Rect) -> Rect {
+pub(super) fn both(a: Rect, b: Rect) -> Rect {
     match (a.is_empty(), b.is_empty()) {
         (true, _) => b,
         (_, true) => a,
@@ -96,7 +96,7 @@ impl Studio {
     /// is seen of it; whether it could be.
     pub(super) fn redraw_touched(&mut self, index: usize, seen: Rect) -> bool {
         let Some((from, upto, list)) = &self.touched else { return false };
-        let Some(Some(drawn)) = self.shown.get(index) else { return false };
+        let Some(drawn) = self.drawn_of(index) else { return false };
         let fits = index == self.active
             && drawn.stamp == *from
             && self.doc.stamp == *upto
@@ -113,25 +113,26 @@ impl Studio {
         let mut now = Vec::with_capacity(list.len());
         for &layer in &list {
             let reach = reach(&self.doc.layers[layer], self.zoom, &mut self.text);
-            damage = both(damage, both(reach, self.shown[index].as_ref().map_or(Rect::default(), |drawn| drawn.reaches[layer])));
+            damage = both(damage, both(reach, self.drawn_of(index).map_or(Rect::default(), |drawn| drawn.reaches[layer])));
             now.push(reach);
         }
-        let Some(Some(drawn)) = self.shown.get(index) else { return false };
+        let Some(drawn) = self.drawn_of(index) else { return false };
         let (part, zoom) = (drawn.part, drawn.zoom);
         let damage = damage.intersect(part);
         if !damage.is_empty() {
             let fresh = self.doc.render_part(zoom, damage, &mut self.text);
-            let Some(Some(drawn)) = self.shown.get_mut(index) else { return false };
+            let Some(drawn) = self.drawn_slot(index).as_mut() else { return false };
             for row in 0..damage.h {
                 let into = ((damage.y - part.y + row) * part.w + damage.x - part.x) as usize;
                 drawn.pixels[into..into + damage.w as usize].copy_from_slice(&fresh[(row * damage.w) as usize..((row + 1) * damage.w) as usize]);
             }
         }
-        let Some(Some(drawn)) = self.shown.get_mut(index) else { return false };
+        let stamp = self.doc.stamp;
+        let Some(drawn) = self.drawn_slot(index).as_mut() else { return false };
         for (&layer, reach) in list.iter().zip(now) {
             drawn.reaches[layer] = reach;
         }
-        drawn.stamp = self.doc.stamp;
+        drawn.stamp = stamp;
         // Drawn as it is now: the next change counts from here.
         self.touched = None;
         true

@@ -29,7 +29,11 @@ impl Studio {
         for index in 0..self.frame_count() {
             rows.wide(Control::ExportPick(index));
         }
-        self.export_sizes(rows);
+        // The sizes are a frame's: the page's own layers have none, and go
+        // in no export.
+        if !self.on_page() {
+            self.export_sizes(rows);
+        }
         rows.section("Where", "", None);
         let dir = shortened(&self.export_dir());
         let dir = if dir.chars().count() > 38 { format!("\u{2026}{}", dir.chars().rev().take(37).collect::<Vec<_>>().into_iter().rev().collect::<String>()) } else { dir };

@@ -223,9 +223,13 @@ impl Studio {
             _ => return,
         };
         self.checkpoint();
+        self.work_where_seen();
         let size = shape.bounds(&mut self.text);
         let middle = self.to_doc(self.open_area().center());
-        let middle = (middle.0.clamp(0.0, self.doc.width as f32), middle.1.clamp(0.0, self.doc.height as f32));
+        let middle = match self.on_page() {
+            true => middle,
+            false => (middle.0.clamp(0.0, self.doc.width as f32), middle.1.clamp(0.0, self.doc.height as f32)),
+        };
         shape.points[0] = ((middle.0 - size.w as f32 / 2.0).round(), (middle.1 - size.h as f32 / 2.0).round());
         let badge = shape.tool == Tool::Badge;
         self.doc.layers.push(Layer::shape(shape));

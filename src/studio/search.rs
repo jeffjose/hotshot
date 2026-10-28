@@ -26,6 +26,8 @@ pub(super) enum Found {
     /// A tool, by where it is among `FOUND_TOOLS`.
     Tool(usize),
     Layer(usize),
+    /// One of the page's own layers, while a frame is worked in.
+    PageLayer(usize),
     Page(usize),
     Frame(usize),
     File(PathBuf),
@@ -143,8 +145,16 @@ impl Studio {
         for (says, keys, act) in acts {
             hits.push(Hit { heading: "ACTIONS", says, hint: keys.into_owned(), found: Found::Act(act) });
         }
+        // The layers worked in, and the page's own, outside the frames,
+        // said to be the page's.
+        let where_ = if self.on_page() { self.pages[self.page].name.clone() } else { self.doc.name.clone() };
         for index in (0..self.doc.layers.len()).rev() {
-            hits.push(Hit { heading: "LAYERS", says: self.doc.layers[index].name(), hint: self.doc.name.clone(), found: Found::Layer(index) });
+            hits.push(Hit { heading: "LAYERS", says: self.doc.layers[index].name(), hint: where_.clone(), found: Found::Layer(index) });
+        }
+        if !self.on_page() {
+            for index in (0..self.loose().layers.len()).rev() {
+                hits.push(Hit { heading: "LAYERS", says: self.loose().layers[index].name(), hint: self.pages[self.page].name.clone(), found: Found::PageLayer(index) });
+            }
         }
         for (index, page) in self.pages.iter().enumerate() {
             hits.push(Hit { heading: "PAGES AND FRAMES", says: page.name.clone(), hint: "page".into(), found: Found::Page(index) });
@@ -169,7 +179,7 @@ impl Studio {
         let Some(search) = self.search.clone() else { return Vec::new() };
         let wanted = |hit: &Hit| match search.tab {
             1 => matches!(hit.found, Found::Act(_) | Found::Tool(_)),
-            2 => matches!(hit.found, Found::Layer(_)),
+            2 => matches!(hit.found, Found::Layer(_) | Found::PageLayer(_)),
             3 => matches!(hit.found, Found::Page(_) | Found::Frame(_)),
             4 => matches!(hit.found, Found::File(_)),
             _ => true,
@@ -268,6 +278,11 @@ impl Studio {
         match hit.found {
             Found::Act(act) => return self.run_menu(act),
             Found::Tool(at) => self.take_found_tool(at),
+            Found::PageLayer(index) => {
+                self.activate(LOOSE);
+                self.selected = vec![index];
+                self.zoom_to_selection();
+            }
             Found::Layer(index) => {
                 self.selected = vec![index];
                 self.zoom_to_selection();
@@ -375,6 +390,10 @@ impl Studio {
                 (None, "Emoji") => icons::STICKER,
                 (None, "Frame") => icons::HASH,
                 _ => icons::CROP,
+            },
+            Found::PageLayer(index) => match self.loose().layers.get(*index).map(|layer| &layer.kind) {
+                Some(Kind::Picture(_)) => icons::PICTURE,
+                _ => icons::RECT,
             },
             Found::Layer(index) => match self.doc.layers.get(*index).map(|layer| &layer.kind) {
                 Some(Kind::Picture(_)) => icons::PICTURE,

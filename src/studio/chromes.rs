@@ -189,7 +189,12 @@ impl Studio {
     /// it is to be kept and come back to.
     pub(super) fn put_back_crop_window(&self, pages: &mut [Page]) {
         let Some((id, chrome)) = &self.crop_chrome else { return };
-        let Some(frame) = pages.get_mut(self.page).and_then(|page| page.frames.get_mut(self.active)) else { return };
+        let Some(frame) = pages.get_mut(self.page).and_then(|page| match self.active {
+            LOOSE => Some(&mut page.loose),
+            active => page.frames.get_mut(active),
+        }) else {
+            return;
+        };
         for layer in &mut frame.layers {
             if let Kind::Picture(picture) = &mut layer.kind {
                 if picture.id == *id && picture.chrome.is_none() {
