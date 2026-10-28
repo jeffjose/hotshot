@@ -2278,12 +2278,15 @@ impl Studio {
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
         self.end_preview();
         // The window of what was written closes with a click off it.
-        if self.exported.is_some() && !matches!(self.control_at(self.pointer), Some(Control::ExportDone(_) | Control::Panel)) {
+        if self.exported.is_some() && button <= 3 && !matches!(self.control_at(self.pointer), Some(Control::ExportDone(_) | Control::Panel)) {
             self.exported = None;
             self.dirty = true;
             return Outcome::Continue;
         }
-        // With the search open, a click off it closes it.
+        // With the search open, a click off it closes it; the wheel waits.
+        if self.search.is_some() && (4..=7).contains(&button) {
+            return Outcome::Continue;
+        }
         if self.search.is_some() && !matches!(self.control_at(self.pointer), Some(Control::Found(_) | Control::SearchTab(_) | Control::Panel)) {
             self.search = None;
             self.dirty = true;
@@ -6100,6 +6103,25 @@ mod tests {
         studio.pressed(1, 100_000);
         studio.released();
         assert_eq!((studio.editing, studio.selected.clone()), (None, vec![0]));
+    }
+
+    #[test]
+    fn ctrl_k_closes_the_rest_and_the_wheel_leaves_it_open() {
+        let mut studio = studio();
+        let mut words = Shape::new(Tool::Text, 0x000000, 2.0, (100.0, 100.0));
+        words.text = "Hi".into();
+        studio.doc.layers.push(Layer::shape(words));
+        studio.selected = vec![0];
+        studio.edit_text(0);
+        (studio.flyout, studio.palette) = (Some(0), Some(Paint::Line));
+        studio.key(Key::Char('k'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert!(studio.search.is_some() && studio.editing.is_none() && studio.flyout.is_none() && studio.palette.is_none());
+        studio.pointer_moved(700, 800, Mods::default());
+        studio.pressed(5, 1000);
+        assert!(studio.search.is_some());
+        studio.pressed(1, 2000);
+        studio.released();
+        assert!(studio.search.is_none());
     }
 
     #[test]
