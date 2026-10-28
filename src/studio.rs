@@ -27,6 +27,7 @@ mod panel;
 mod picker;
 mod preview;
 mod snap;
+mod style;
 
 
 use menu::{MenuKind, MenuState};
@@ -1177,6 +1178,8 @@ enum Control {
     /// The arrow that opens a color of the selection to its layers, and
     /// one of those layers, with what of it the color colors.
     ColorOpen(u32),
+    /// A style of the grid of them, by where it is in it.
+    Style(u8),
     ColorLayer(usize, &'static str),
     /// The strip a gradient is shown on, its stops at its ends.
     GradientBar,
@@ -1372,6 +1375,8 @@ struct Layout {
     flyout: Option<Rect>,
     popover: Option<Rect>,
     /// The lists open, and where each is.
+    /// The grid of styles, while it is open.
+    styles: Option<Rect>,
     menus: Vec<(Rect, MenuKind)>,
 }
 
@@ -1511,6 +1516,8 @@ pub struct Studio {
     fitted_frame: bool,
     /// The color of the selection opened to its layers, if one is.
     color_open: Option<u32>,
+    /// Whether the grid of styles is open.
+    styling: bool,
     dirty: bool,
 }
 
@@ -1579,6 +1586,7 @@ impl Studio {
             gaps: Vec::new(),
             fitted_frame: false,
             color_open: None,
+            styling: false,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -1760,6 +1768,7 @@ impl Studio {
                 layout.controls.push((place, Control::Frame(index)));
             }
         }
+        self.layout_styles(&mut layout);
         self.layout_menus(&mut layout);
         layout
     }
@@ -2436,6 +2445,10 @@ impl Studio {
                 self.groups[group] = tool;
                 self.flyout = None;
                 self.set_tool(tool);
+            }
+            Control::Style(style) => {
+                self.put_style(style);
+                self.styling = false;
             }
             Control::ColorOpen(color) => self.color_open = if self.color_open == Some(color) { None } else { Some(color) },
             Control::ColorLayer(index, _) => self.selected = vec![index],
@@ -3601,6 +3614,14 @@ impl Studio {
             other => other,
         };
         match (lower, mods.ctrl) {
+            // Style Mode: S opens the grid of styles, a letter puts one on.
+            (Key::Escape, _) if self.styling => self.styling = false,
+            (Key::Char(letter), false) if self.styling && style::STYLE_KEYS.contains(&letter) => {
+                let at = style::STYLE_KEYS.iter().position(|&known| known == letter).unwrap_or(0);
+                self.put_style(at as u8);
+                self.styling = false;
+            }
+            (Key::Char('s'), false) if !self.styling && self.styles_apply() => self.styling = true,
             (Key::Char('q' | 'w'), true) => return Outcome::Quit,
             (Key::Char('z'), true) if mods.shift => self.redo(),
             (Key::Char('z'), true) => self.undo(),
@@ -3939,7 +3960,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock), layout.flyout, layout.popover].into_iter().flatten() {
+        for place in [Some(layout.dock), layout.flyout, layout.popover, layout.styles].into_iter().flatten() {
             for grow in (1..=6).rev() {
                 canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 12 + grow, 0x000000, 14);
             }
@@ -3948,6 +3969,9 @@ impl Studio {
         }
         for rule in &layout.rules {
             canvas.fill(rule.x + 1, rule.y, rule.w - 2, 1, EDGE_COLOR);
+        }
+        if let Some(place) = layout.styles {
+            self.draw_styles_frame(canvas, place);
         }
         // The group's divider in the bar of tools.
         let divider = layout.controls.iter().find(|(_, control)| *control == Control::Action(Action::Capture)).map(|(rect, _)| rect.x - 6);
@@ -4143,6 +4167,7 @@ impl Studio {
                     };
                     field_text(&mut self.text, canvas, rect, label, icon, &value, DIM_TEXT_COLOR);
                 }
+                Control::Style(style) => self.draw_style_tile(canvas, rect, style, hovered),
                 Control::ColorOpen(color) => {
                     let open = self.color_open == Some(color);
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
@@ -4808,6 +4833,28 @@ mod tests {
         assert_eq!(studio.color_uses(0x1A1A1A), vec![(2, "text")]);
         studio.paint(Paint::Recolor(0xE5484D), Some(0xFFC53D));
         assert_eq!(studio.selection_colors(), vec![(0xFFC53D, 2), (0x1A1A1A, 1)]);
+    }
+
+    #[test]
+    fn s_opens_the_styles_and_a_letter_puts_one_on() {
+        let mut studio = studio();
+        studio.doc.background = Fill::Color(0x111111);
+        let mut boxed = Shape::new(Tool::Rect, 0x30A46C, 2.0, (100.0, 100.0));
+        boxed.points[1] = (200.0, 150.0);
+        studio.doc.layers = vec![Layer::shape(boxed)];
+        studio.key(Key::Char('s'), Mods::default(), true);
+        assert!(!studio.styling, "nothing picked out, nothing to style");
+        studio.selected = vec![0];
+        studio.key(Key::Char('s'), Mods::default(), true);
+        assert!(studio.styling && studio.layout().controls.iter().any(|(_, control)| *control == Control::Style(style::GLOW)));
+        studio.key(Key::Char('g'), Mods::default(), true);
+        let Kind::Shape(shape) = &studio.doc.layers[0].kind else { panic!() };
+        assert!(!studio.styling && shape.filled && shape.shadow.is_some_and(|drop| drop.color & 0xFF_FFFF == 0x30A46C));
+        assert_eq!((studio.undo.len(), studio.tool), (1, Tool::Select));
+        // On something light, there is no glow.
+        studio.doc.background = Fill::Color(0xFFFFFF);
+        studio.put_style(style::GLOW);
+        assert_eq!(studio.undo.len(), 1);
     }
 
     #[test]

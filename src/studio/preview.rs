@@ -30,7 +30,7 @@ impl Studio {
         match control {
             Control::Action(action) => matches!(action, Action::Align(_) | Action::Distribute(_) | Action::Pack(_) | Action::Match(_) | Action::ToFrame(_) | Action::Turn(_) | Action::FlipAcross | Action::FlipDown | Action::Halo | Action::Pill(_) | Action::TextAlign(_) | Action::Path(_)),
             Control::Swatch(paint, _) => !matches!(paint, Paint::Background | Paint::From | Paint::To),
-            Control::Shadow(_) | Control::Window(_) => true,
+            Control::Shadow(_) | Control::Window(_) | Control::Style(_) => true,
             Control::MenuRow(level, row) => {
                 let Some(menu) = self.menu else { return false };
                 let kind = if level == 0 { menu.kind } else { menu.sub.map_or(menu.kind, |(_, kind)| kind) };
@@ -64,6 +64,7 @@ impl Studio {
                 }
             }
             Control::Swatch(paint, color) => self.paint(paint, color),
+            Control::Style(style) => self.put_style(style),
             Control::Action(action) => drop(self.act(action)),
             other => drop(self.press_control(other, false)),
         }
