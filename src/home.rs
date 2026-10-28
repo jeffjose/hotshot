@@ -81,6 +81,11 @@ enum Control {
     NewFile,
     Open(PathBuf),
     Capture(PathBuf),
+    /// The files shown as a list, or as cards; the menu of a file, and
+    /// one of its rows.
+    View(bool),
+    More(PathBuf),
+    FileAct(u8),
     Panel,
 }
 
@@ -117,6 +122,13 @@ pub struct Home {
     /// The folder pictures are captured into.
     captures: PathBuf,
     last_press: (u32, (i32, i32)),
+    /// Whether the files are a list rather than cards; the file whose menu
+    /// is open, and where; a file being renamed, and what is typed; and
+    /// how many pages each file has and what its frames are called.
+    pub list: bool,
+    file_menu: Option<(PathBuf, (i32, i32))>,
+    renaming_file: Option<(PathBuf, String)>,
+    facts: HashMap<PathBuf, (SystemTime, usize, String)>,
     dirty: bool,
 }
 
@@ -125,7 +137,7 @@ const SIDE: i32 = 248;
 
 impl Home {
     pub fn new(text: Text, width: i32, height: i32, captures: PathBuf) -> Home {
-        Home { text, width, height, place: Place::Recent, pointer: (0, 0), scroll: 0, thumbs: HashMap::new(), naming: None, captures, last_press: (0, (-100, -100)), dirty: true }
+        Home { text, width, height, place: Place::Recent, pointer: (0, 0), scroll: 0, thumbs: HashMap::new(), naming: None, captures, last_press: (0, (-100, -100)), list: false, file_menu: None, renaming_file: None, facts: HashMap::new(), dirty: true }
     }
 
     /// The text it draws with, handed back for the canvas to draw with.
@@ -151,7 +163,7 @@ impl Home {
 
     /// The projects, the latest changed first.
     fn projects(&self) -> Vec<PathBuf> {
-        let mut found: Vec<(PathBuf, SystemTime)> = std::fs::read_dir(library()).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|path| path.is_dir() && *path != drafts()).map(|path| {
+        let mut found: Vec<(PathBuf, SystemTime)> = std::fs::read_dir(library()).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|path| path.is_dir() && *path != drafts() && !path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.'))).map(|path| {
             let when = modified(&path);
             (path, when)
         }).collect();
@@ -244,10 +256,13 @@ impl Home {
         controls.push((Rect::new(0, 0, SIDE, self.height), Control::Panel));
         if self.place != Place::Captures {
             controls.push((Rect::new(self.width - 36 - 116, 30, 116, 34), Control::NewFile));
+            controls.push((Rect::new(self.width - 36 - 116 - 74, 33, 28, 28), Control::View(false)));
+            controls.push((Rect::new(self.width - 36 - 116 - 44, 33, 28, 28), Control::View(true)));
         }
         for (place, control) in self.cards() {
             controls.push((place, control));
         }
+        self.layout_file_menu(&mut controls);
         controls
     }
 
@@ -262,7 +277,18 @@ impl Home {
         let each = (right - left - gap * (across - 1)) / across;
         let thumb = each * 3 / 5;
         let mut y = top;
-        if self.place != Place::Captures {
+        // As a list: a row each, under the names of its columns.
+        if self.place != Place::Captures && self.list {
+            let files = self.files();
+            y += 28;
+            for (path, _) in &files {
+                let row = Rect::new(left, y, right - left, 52);
+                cards.push((Rect::new(row.right() - 36, row.y + 13, 26, 26), Control::More(path.clone())));
+                cards.push((row, Control::Open(path.clone())));
+                y += 54;
+            }
+            y += 40;
+        } else if self.place != Place::Captures {
             let files = self.files();
             let count = files.len() + usize::from(self.place != Place::Recent);
             for (at, (path, _)) in files.into_iter().enumerate() {
@@ -306,13 +332,26 @@ impl Home {
                 self.scroll += 60;
                 return Outcome::Continue;
             }
-            1 => {}
+            1 | 3 => {}
             _ => return Outcome::Continue,
         }
         let at = self.pointer;
         let double = time.wrapping_sub(self.last_press.0) < 400 && (at.0 - self.last_press.1 .0).abs().max((at.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at);
         let control = self.layout().into_iter().find(|(rect, _)| rect.contains(at.0, at.1)).map(|(_, control)| control);
+        // A right click on a file opens its menu; any other click closes it.
+        if button == 3 {
+            if let Some(Control::Open(path)) = control {
+                self.file_menu = Some((path, at));
+            }
+            return Outcome::Continue;
+        }
+        if !matches!(control, Some(Control::FileAct(_))) {
+            self.file_menu = None;
+        }
+        if let Some((path, typed)) = self.renaming_file.take() {
+            rename_file(&path, &typed);
+        }
         if !matches!(control, Some(Control::Go(Place::Project(_)))) || !double {
             self.commit_name();
         }
@@ -334,6 +373,9 @@ impl Home {
             Some(Control::NewFile) => return Outcome::New(self.folder(), None),
             Some(Control::Open(path)) => return Outcome::Open(path),
             Some(Control::Capture(path)) => return Outcome::New(self.folder(), Some(path)),
+            Some(Control::View(list)) => self.list = list,
+            Some(Control::More(path)) => self.file_menu = Some((path, at)),
+            Some(Control::FileAct(act)) => return self.file_act(act),
             Some(Control::Panel) | None => {}
         }
         Outcome::Continue
@@ -354,6 +396,23 @@ impl Home {
 
     pub fn key(&mut self, key: Key, mods: Mods) -> Outcome {
         self.dirty = true;
+        if let Some((path, typed)) = &mut self.renaming_file {
+            match key {
+                Key::Char(letter) if !mods.ctrl => typed.push(letter),
+                Key::Backspace => drop(typed.pop()),
+                Key::Enter => {
+                    let (path, typed) = (path.clone(), typed.clone());
+                    self.renaming_file = None;
+                    rename_file(&path, &typed);
+                }
+                Key::Escape => self.renaming_file = None,
+                _ => {}
+            }
+            return Outcome::Continue;
+        }
+        if key == Key::Escape && self.file_menu.take().is_some() {
+            return Outcome::Continue;
+        }
         if let Some((_, typed)) = &mut self.naming {
             match key {
                 Key::Char(letter) if !mods.ctrl => typed.push(letter),
@@ -458,6 +517,15 @@ impl Home {
                     self.text.draw_centered(&mut canvas, rect.x + rect.w / 2, rect.y + thumb / 2 + 16, 13, DIM_TEXT_COLOR, "New file");
                     lowest = lowest.max(rect.bottom());
                 }
+                Control::Open(path) if self.list => {
+                    self.draw_file_row(&mut canvas, *rect, path, hovered);
+                    lowest = lowest.max(rect.bottom());
+                }
+                Control::View(list) => {
+                    let on = self.list == *list;
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { FIELD_COLOR } else if hovered { HOVER_COLOR } else { VIEW_COLOR }, 256);
+                    self.text.draw_centered(&mut canvas, rect.x + rect.w / 2, rect.y + rect.h / 2, 13, if on { TEXT_COLOR } else { DIM_TEXT_COLOR }, if *list { "\u{2261}" } else { icons::PICTURE });
+                }
                 Control::Open(path) => {
                     let thumb = rect.h - 44;
                     canvas.round_fill(rect.x, rect.y, rect.w, thumb, 10, 0x262626, 256);
@@ -501,6 +569,18 @@ impl Home {
                 self.text.draw(&mut canvas, left, 140, 13, DIM_TEXT_COLOR, "Nothing here yet.");
             }
         }
+        // The names of the columns of the list, over its first row.
+        if self.list {
+            if let Some((row, _)) = controls.iter().find(|(rect, control)| matches!(control, Control::Open(_)) && rect.h == 52) {
+                let at = row.y - 22;
+                self.text.draw(&mut canvas, row.x + 90, at, 11, DIM_TEXT_COLOR, "Name");
+                for (x, says) in list_columns(*row).iter().zip(["Pages", "Frames", "Size", "Edited"]) {
+                    self.text.draw(&mut canvas, *x, at, 11, DIM_TEXT_COLOR, says);
+                }
+            }
+        }
+        canvas.reset_clip();
+        self.draw_file_menu(&mut canvas, hover.as_ref());
         let _ = (FIELD_COLOR, lowest);
     }
 }
@@ -524,5 +604,183 @@ fn blit(canvas: &mut Canvas, pixels: &[u32], w: i32, h: i32, into: Rect) {
             let color = pixels[(y * w + x) as usize];
             canvas.blend(at_x, at_y, color & 0xFF_FFFF, (color >> 24) as u8);
         }
+    }
+}
+
+/// What a file's menu says, and the keys for each.
+const FILE_MENU: [(&str, &str); 4] = [("Open", "Enter"), ("Rename", ""), ("Duplicate", ""), ("Move to trash", "")];
+
+/// How wide a file's menu is, and how high a row of it.
+const MENU_W: i32 = 200;
+const MENU_ROW: i32 = 28;
+
+/// A file renamed to what was typed, in its folder, unless there is one
+/// called that already or nothing was typed.
+fn rename_file(path: &Path, typed: &str) {
+    let typed = typed.trim().replace(['/', '\\'], "-");
+    if typed.is_empty() {
+        return;
+    }
+    let to = path.with_file_name(format!("{typed}.hotshot"));
+    if !to.exists() {
+        let _ = std::fs::rename(path, to);
+    }
+}
+
+/// Where a file goes when it is thrown away: a folder of the library's
+/// own, out of the way, from which it can be taken back by hand.
+pub fn trash() -> PathBuf {
+    library().join(".trash")
+}
+
+impl Home {
+    /// A row of a file's menu chosen.
+    fn file_act(&mut self, act: u8) -> Outcome {
+        let Some((path, _)) = self.file_menu.take() else { return Outcome::Continue };
+        match act {
+            0 => return Outcome::Open(path),
+            1 => {
+                let name = path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned());
+                self.renaming_file = Some((path, name));
+            }
+            2 => {
+                let stem = path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned());
+                let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(drafts);
+                let _ = std::fs::copy(&path, fresh_file(&dir, &format!("{stem} copy")));
+            }
+            _ => {
+                let bin = trash();
+                if std::fs::create_dir_all(&bin).is_ok() {
+                    let name = path.file_name().map(|name| name.to_owned()).unwrap_or_default();
+                    let mut to = bin.join(&name);
+                    let mut count = 2;
+                    while to.exists() {
+                        to = bin.join(format!("{} {count}.hotshot", path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned())));
+                        count += 1;
+                    }
+                    let _ = std::fs::rename(&path, to);
+                }
+            }
+        }
+        self.dirty = true;
+        Outcome::Continue
+    }
+
+    /// How many pages a file has and what its frames are called, read
+    /// once and again when it changes.
+    fn facts(&mut self, path: &Path) -> (usize, String) {
+        let when = modified(path);
+        if !self.facts.get(path).is_some_and(|(made, ..)| *made == when) {
+            let pages = std::fs::read(path).ok().and_then(|bytes| studio::read_pages(&bytes)).unwrap_or_default();
+            let names: Vec<String> = pages.iter().flat_map(|page| page.frames.iter().map(|frame| frame.name.clone())).collect();
+            let frames = match names.len() {
+                0 => String::new(),
+                1..=2 => names.join(", "),
+                count => format!("{}, {}, +{}", names[0], names[1], count - 2),
+            };
+            self.facts.insert(path.to_owned(), (when, pages.len(), frames));
+        }
+        let (_, pages, frames) = &self.facts[path];
+        (*pages, frames.clone())
+    }
+
+    /// The menu of a file, where it opens.
+    fn file_menu_place(&self) -> Option<Rect> {
+        let (_, at) = self.file_menu.as_ref()?;
+        let high = MENU_ROW * FILE_MENU.len() as i32 + 12;
+        Some(Rect::new(at.0.min(self.width - MENU_W - 8), at.1.min(self.height - high - 8), MENU_W, high))
+    }
+
+    /// The rows of a file's menu, over everything else.
+    fn layout_file_menu(&self, controls: &mut Vec<(Rect, Control)>) {
+        let Some(place) = self.file_menu_place() else { return };
+        let mut front = Vec::new();
+        for (at, _) in FILE_MENU.iter().enumerate() {
+            front.push((Rect::new(place.x + 5, place.y + 6 + at as i32 * MENU_ROW, place.w - 10, MENU_ROW - 2), Control::FileAct(at as u8)));
+        }
+        front.push((place, Control::Panel));
+        front.append(controls);
+        *controls = front;
+    }
+
+    /// A file's menu drawn.
+    fn draw_file_menu(&mut self, canvas: &mut Canvas, hover: Option<&Control>) {
+        let Some(place) = self.file_menu_place() else { return };
+        for grow in (1..=5).rev() {
+            canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 10 + grow, 0x000000, 16);
+        }
+        canvas.round_fill(place.x, place.y, place.w, place.h, 10, PANEL_COLOR, 256);
+        canvas.round_outline(place.x, place.y, place.w, place.h, 10, 1, EDGE_COLOR);
+        for (at, (says, keys)) in FILE_MENU.iter().enumerate() {
+            let rect = Rect::new(place.x + 5, place.y + 6 + at as i32 * MENU_ROW, place.w - 10, MENU_ROW - 2);
+            if hover == Some(&Control::FileAct(at as u8)) {
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, ACCENT, 256);
+            }
+            let ink = if at == 3 { 0xFF6B6B } else { TEXT_COLOR };
+            self.text.draw(canvas, rect.x + 10, rect.y + (rect.h - Text::line_height(12)) / 2, 12, ink, says);
+            let wide = self.text.width(keys, 11);
+            self.text.draw(canvas, rect.right() - 10 - wide, rect.y + (rect.h - Text::line_height(11)) / 2, 11, DIM_TEXT_COLOR, keys);
+        }
+    }
+
+    /// A file as a row of the list: a small picture of it, its name, how
+    /// many pages, its frames, how large, and when it was changed.
+    fn draw_file_row(&mut self, canvas: &mut Canvas, rect: Rect, path: &Path, hovered: bool) {
+        if hovered {
+            canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 8, HOVER_COLOR, 256);
+        }
+        let thumb = Rect::new(rect.x + 10, rect.y + 6, 64, rect.h - 12);
+        canvas.round_fill(thumb.x, thumb.y, thumb.w, thumb.h, 6, 0x262626, 256);
+        if let Some((_, w, h, pixels)) = self.thumb(path, thumb.w, thumb.h).cloned() {
+            blit(canvas, &pixels, w, h, thumb);
+        }
+        let middle = rect.y + (rect.h - Text::line_height(13)) / 2;
+        let name = match &self.renaming_file {
+            Some((known, typed)) if known == path => format!("{typed}|"),
+            _ => path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned()),
+        };
+        self.text.draw(canvas, rect.x + 90, middle, 13, TEXT_COLOR, &name);
+        let (pages, frames) = self.facts(path);
+        let size = std::fs::metadata(path).map_or(0, |meta| meta.len());
+        let size = if size >= 1 << 20 { format!("{:.1} MB", size as f64 / (1 << 20) as f64) } else { format!("{} KB", size.div_ceil(1024)) };
+        let columns = list_columns(rect);
+        let small = rect.y + (rect.h - Text::line_height(12)) / 2;
+        let frames: String = frames.chars().take(28).collect();
+        for (x, says) in columns.iter().zip([pages.to_string(), frames, size, ago(modified(path))]) {
+            self.text.draw(canvas, *x, small, 12, DIM_TEXT_COLOR, &says);
+        }
+        let more = Rect::new(rect.right() - 36, rect.y + (rect.h - 26) / 2, 26, 26);
+        self.text.draw_centered(canvas, more.x + 13, more.y + 13, 12, if hovered { TEXT_COLOR } else { DIM_TEXT_COLOR }, "\u{2022}\u{2022}\u{2022}");
+    }
+}
+
+/// Where the columns of the list begin: pages, frames, size, edited.
+fn list_columns(row: Rect) -> [i32; 4] {
+    let right = row.right() - 50;
+    [right - 470, right - 400, right - 170, right - 90]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_is_renamed_and_duplicated_from_its_menu() {
+        let dir = std::env::temp_dir().join(format!("hotshot-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Launch.hotshot");
+        std::fs::write(&file, b"HOTSHOT CANVAS 2\n").unwrap();
+        rename_file(&file, "Launch post");
+        let renamed = dir.join("Launch post.hotshot");
+        assert!(renamed.exists() && !file.exists());
+        rename_file(&renamed, "  ");
+        assert!(renamed.exists(), "nothing typed, nothing renamed");
+        let mut home = Home::new(Text::load(), 1200, 800, dir.clone());
+        home.file_menu = Some((renamed.clone(), (10, 10)));
+        assert_eq!(home.file_act(2), Outcome::Continue);
+        assert!(dir.join("Launch post copy.hotshot").exists());
+        home.file_menu = Some((renamed.clone(), (10, 10)));
+        assert_eq!(home.file_act(0), Outcome::Open(renamed));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
