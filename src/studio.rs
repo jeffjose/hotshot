@@ -1521,6 +1521,9 @@ pub struct Studio {
     /// The layers as they were when something was taken hold of, to
     /// change from rather than from what the last move left.
     held: Vec<Layer>,
+    /// What a press inside the box of what is picked out was on, beneath
+    /// it: picked out instead if the press is let go without a move.
+    under_press: Option<usize>,
     /// The text being typed into, by its layer.
     editing: Option<usize>,
     /// The picture being cropped, by its layer.
@@ -1619,6 +1622,7 @@ impl Studio {
             undo: Vec::new(),
             redo: Vec::new(),
             held: Vec::new(),
+            under_press: None,
             editing: None,
             cropping: None,
             color: 0xE5484D,
@@ -2515,14 +2519,19 @@ impl Studio {
         let under = self.layer_at(at);
         // Inside the box of what is picked out a drag moves all of it, as
         // Figma has it, though the press is on nothing of it: inside a box
-        // with no fill, or between several picked out.
-        if !self.mods.shift && !double && under.is_none_or(|index| self.selected.contains(&index)) && !self.chosen().is_empty() {
+        // with no fill, or between several picked out. Also where the press
+        // is on what lies beneath all of it, as a picture under a box drawn
+        // on it does; a click let go there without a move picks that out.
+        self.under_press = None;
+        let beneath = under.filter(|index| self.chosen().iter().all(|chosen| chosen > index));
+        if !self.mods.shift && !double && (under.is_none_or(|index| self.selected.contains(&index)) || beneath.is_some()) && !self.chosen().is_empty() {
             let corners: Vec<(i32, i32)> = self.chosen().into_iter().flat_map(|index| self.box_corners(index)).collect();
             let (left, right) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.0).max().unwrap_or(0));
             let (top, bottom) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
             if (left..=right).contains(&at_window.0) && (top..=bottom).contains(&at_window.1) {
                 self.held = self.chosen().iter().map(|&index| self.doc.layers[index].clone()).collect();
                 self.drag = Drag::Move { from: at, moved: false };
+                self.under_press = beneath;
                 return;
             }
         }
@@ -2994,7 +3003,11 @@ impl Studio {
                     }
                 }
             }
-            Drag::Move { moved: false, .. } => {}
+            Drag::Move { moved: false, .. } => {
+                if let Some(index) = self.under_press.take() {
+                    self.selected = vec![index];
+                }
+            }
             _ => {}
         }
         self.held.clear();
@@ -5816,6 +5829,32 @@ mod tests {
         studio.set_field(Field::X, 500.0);
         let Kind::Shape(after) = studio.doc.layers[1].kind.clone() else { panic!() };
         assert!(after.points[1].0 > arrow.points[1].0 + 100.0, "{:?} then {:?}", arrow.points[1], after.points[1]);
+    }
+
+    #[test]
+    fn a_box_drawn_on_a_picture_is_moved_from_inside_it_and_a_click_there_picks_the_picture() {
+        let mut studio = studio();
+        studio.add_picture(checker(400, 300), "pic");
+        let Kind::Picture(picture) = studio.doc.layers[0].kind.clone() else { panic!() };
+        studio.key(Key::Char('r'), Mods::default(), true);
+        drag(&mut studio, (picture.cx - 50.0, picture.cy - 30.0), (picture.cx + 50.0, picture.cy + 30.0), Mods::default());
+        assert_eq!(studio.selected, vec![1]);
+        let Kind::Shape(before) = studio.doc.layers[1].kind.clone() else { panic!() };
+        assert!(!before.filled);
+        // A drag from the middle of the box, where only the picture is.
+        drag(&mut studio, (picture.cx, picture.cy), (picture.cx + 40.0, picture.cy + 20.0), Mods::default());
+        let Kind::Shape(after) = studio.doc.layers[1].kind.clone() else { panic!() };
+        let Kind::Picture(still) = studio.doc.layers[0].kind.clone() else { panic!() };
+        assert!((after.points[0].0 - before.points[0].0 - 40.0).abs() < 4.0, "{:?} then {:?}", before.points, after.points);
+        assert_eq!((still.cx, still.cy), (picture.cx, picture.cy));
+        assert_eq!(studio.selected, vec![1]);
+        // A click there, let go without a move, picks out the picture.
+        let middle = studio.to_window((picture.cx + 40.0, picture.cy + 20.0));
+        studio.pointer_moved(middle.0, middle.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.released();
+        assert_eq!(studio.selected, vec![0]);
     }
 
     #[test]
