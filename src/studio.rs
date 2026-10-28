@@ -77,6 +77,19 @@ fn wheel_zoom(down: f32) -> f32 {
     (-WHEEL_ZOOM.ln() * down).exp()
 }
 
+/// How long the page has to be still after it is zoomed or moved before
+/// it is drawn sharp again, rather than shown from what was drawn before.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(130);
+
+/// Whether a part of a frame drawn at one zoom reaches over a part of it
+/// as it is seen at another, to a pixel: each counted from the frame's
+/// corner, at its own zoom.
+fn reaches(part: Rect, zoom: f32, seen: Rect, now: f32) -> bool {
+    let by = zoom / now;
+    let near = |a: f32, b: i32| a >= b as f32 - 1.0;
+    near(seen.x as f32 * by, part.x) && near(seen.y as f32 * by, part.y) && near(part.right() as f32, (seen.right() as f32 * by).floor() as i32) && near(part.bottom() as f32, (seen.bottom() as f32 * by).floor() as i32)
+}
+
 /// Which way a press of buttons 4 to 7, a notch of the wheel, turns it:
 /// so many notches right and down.
 fn wheel_notch(button: u8) -> (f32, f32) {
@@ -1589,6 +1602,10 @@ pub struct Studio {
     /// Each frame of the page as drawn last, at the size it is shown: at
     /// which change to it, at which zoom, and which part of it.
     shown: Vec<Option<(u64, f32, Rect, Vec<u32>)>>,
+    /// When the page was last zoomed or moved by the wheel or the hand,
+    /// while it is shown from what was drawn before rather than drawn
+    /// sharp: until it has been still a moment.
+    moving: Option<std::time::Instant>,
     /// Where it is kept, if it is; and whether it has changed since.
     pub path: Option<PathBuf>,
     edited: bool,
@@ -1672,6 +1689,7 @@ impl Studio {
             typing: None,
             version: 0,
             shown: Vec::new(),
+            moving: None,
             pages: if pages.is_empty() { vec![Page { name: "Page 1".into(), frames: vec![Doc::new(1200, 675)] }] } else { pages },
             page: 0,
             active: 0,
@@ -2241,6 +2259,7 @@ impl Studio {
             self.pan.0 -= right * WHEEL_STEP;
             self.pan.1 -= down * WHEEL_STEP;
         }
+        self.moved_quickly();
     }
 
     /// A point of the window as a point of the page, and back.
@@ -2406,7 +2425,7 @@ impl Studio {
             }
             Drag::Pan { from, origin } => {
                 self.pan = (origin.0 + (x - from.0) as f32, origin.1 + (y - from.1) as f32);
-                self.dirty = true;
+                self.moved_quickly();
             }
             Drag::Move { from, moved } => {
                 let (mut dx, mut dy) = (at.0 - from.0, at.1 - from.1);
@@ -4286,23 +4305,70 @@ impl Studio {
     /// panning needs nothing drawn. Drawn again when it changes, when the
     /// zoom does, or when the view goes past what was drawn. Gives where
     /// its corner is in the window, and how large it is shown.
+    ///
+    /// While the page is being zoomed or moved, as Figma does, what was
+    /// drawn last is shown larger or smaller rather than drawn afresh
+    /// each step, so long as it reaches over what is seen; where it does
+    /// not, as the page grows smaller, it is drawn at half the size it is
+    /// shown and over far more round it, for the next steps to keep to.
+    /// Once the page is still, it is drawn sharp again.
     fn shown_frame(&mut self, index: usize, view: Rect) -> ((i32, i32), i32, i32) {
         let frame = self.frame(index);
         let (wide, high) = (((frame.width as f32 * self.zoom).round() as i32).max(1), ((frame.height as f32 * self.zoom).round() as i32).max(1));
         let origin = self.to_window_page((frame.x, frame.y));
         let stamp = frame.stamp;
+        let (frame_w, frame_h) = (frame.width as f32, frame.height as f32);
         // What of it is in the view, counted from its corner.
         let seen = view.moved(-origin.0, -origin.1).intersect(Rect::new(0, 0, wide, high));
         if self.shown.len() < self.frame_count() {
             self.shown.resize_with(self.frame_count(), || None);
         }
-        let fresh = self.shown[index].as_ref().is_some_and(|(kept, zoom, part, _)| *kept == stamp && *zoom == self.zoom && (seen.is_empty() || part.intersect(seen) == seen));
+        let quick = self.moving.is_some();
+        let fresh = self.shown[index].as_ref().is_some_and(|(kept, zoom, part, _)| {
+            *kept == stamp
+                && (seen.is_empty()
+                    || match *zoom == self.zoom {
+                        true => part.intersect(seen) == seen,
+                        false => quick && reaches(*part, *zoom, seen, self.zoom),
+                    })
+        });
         if !fresh && !seen.is_empty() {
-            let part = seen.inflate(view.w.max(view.h) / 2).intersect(Rect::new(0, 0, wide, high));
-            let pixels = if index == self.active { self.doc.render_part(self.zoom, part, &mut self.text) } else { self.pages[self.page].frames[index].render_part(self.zoom, part, &mut self.text) };
-            self.shown[index] = Some((stamp, self.zoom, part, pixels));
+            let kept_zoom = self.shown[index].as_ref().map(|(_, zoom, _, _)| *zoom);
+            let (times, part) = match quick && kept_zoom != Some(self.zoom) {
+                true => {
+                    let times = self.zoom / 2.0;
+                    let around = seen.inflate(view.w.max(view.h));
+                    let halved = Rect::new(around.x.div_euclid(2), around.y.div_euclid(2), around.w / 2 + 1, around.h / 2 + 1);
+                    (times, halved.intersect(Rect::new(0, 0, ((frame_w * times).round() as i32).max(1), ((frame_h * times).round() as i32).max(1))))
+                }
+                false => (self.zoom, seen.inflate(view.w.max(view.h) / 2).intersect(Rect::new(0, 0, wide, high))),
+            };
+            let pixels = if index == self.active { self.doc.render_part(times, part, &mut self.text) } else { self.pages[self.page].frames[index].render_part(times, part, &mut self.text) };
+            self.shown[index] = Some((stamp, times, part, pixels));
         }
         (origin, wide, high)
+    }
+
+    /// The page zoomed or moved by the wheel or the hand just now: shown
+    /// from what was drawn last until it is still.
+    fn moved_quickly(&mut self) {
+        self.moving = Some(std::time::Instant::now());
+        self.dirty = true;
+    }
+
+    /// How long until the page, zoomed or moved, has been still long
+    /// enough to be drawn sharp, if it is waiting to be.
+    pub fn settle_in(&self) -> Option<std::time::Duration> {
+        let since = self.moving?.elapsed();
+        Some(SETTLE.saturating_sub(since).max(std::time::Duration::from_millis(1)))
+    }
+
+    /// The page drawn sharp again, once it has been still long enough.
+    pub fn settle(&mut self) {
+        if self.moving.is_some_and(|when| when.elapsed() >= SETTLE) {
+            self.moving = None;
+            self.dirty = true;
+        }
     }
 
     pub fn draw(&mut self, out: &mut [u32]) {
@@ -4322,22 +4388,39 @@ impl Studio {
         for index in 0..self.frame_count() {
             let (origin, wide, high) = self.shown_frame(index, view);
             let shown = Rect::new(origin.0, origin.1, wide, high).intersect(view);
-            let Some(Some((_, _, part, pixels))) = self.shown.get(index) else { continue };
-            let drawn = part.moved(origin.0, origin.1).intersect(shown);
+            let Some(Some((_, kept_zoom, part, pixels))) = self.shown.get(index) else { continue };
+            // Drawn at another zoom while the page moves: where each pixel
+            // of the window falls in what was drawn, by the nearest one.
+            let by = kept_zoom / self.zoom;
+            let reach = match by == 1.0 {
+                true => part.moved(origin.0, origin.1),
+                false => {
+                    let (left, top) = ((part.x as f32 / by).ceil() as i32, (part.y as f32 / by).ceil() as i32);
+                    Rect::new(origin.0 + left, origin.1 + top, (part.right() as f32 / by).floor() as i32 - left, (part.bottom() as f32 / by).floor() as i32 - top)
+                }
+            };
+            let drawn = reach.intersect(shown);
             // Beside what is shown, nothing; its corner may be past the end
             // of what was drawn, which no row reaches to.
             if drawn.is_empty() {
                 continue;
             }
+            let at = |along: i32, start: i32, size: i32| (((along as f32 + 0.5) * by) as i32 - start).clamp(0, size - 1) as usize;
+            let columns: Vec<usize> = (drawn.x..drawn.right()).map(|x| at(x - origin.0, part.x, part.w)).collect();
             for y in drawn.y..drawn.bottom() {
                 let row = &mut out[(y * width + drawn.x) as usize..(y * width + drawn.right()) as usize];
-                let from = &pixels[((y - origin.1 - part.y) * part.w + drawn.x - origin.0 - part.x) as usize..][..drawn.w as usize];
-                for (at, (pixel, &color)) in row.iter_mut().zip(from).enumerate() {
+                let from = &pixels[at(y - origin.1, part.y, part.h) * part.w as usize..][..part.w as usize];
+                let light_row = (y - origin.1) / 10;
+                for (step, (pixel, &column)) in row.iter_mut().zip(&columns).enumerate() {
+                    let color = from[column];
                     let alpha = color >> 24;
-                    let x = drawn.x + at as i32;
-                    let light = ((x - origin.0) / 10 + (y - origin.1) / 10) % 2 == 0;
-                    let ground = if light { 0xFFFFFF } else { 0xE6E6E6 };
-                    *pixel = if alpha == 255 { color & 0xFF_FFFF } else { canvas::mix(ground, color & 0xFF_FFFF, alpha + (alpha >> 7)) };
+                    *pixel = match alpha {
+                        255 => color & 0xFF_FFFF,
+                        _ => {
+                            let light = ((drawn.x + step as i32 - origin.0) / 10 + light_row) % 2 == 0;
+                            canvas::mix(if light { 0xFFFFFF } else { 0xE6E6E6 }, color & 0xFF_FFFF, alpha + (alpha >> 7))
+                        }
+                    };
                 }
             }
         }
@@ -5306,17 +5389,20 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         // What has happened: a run of the pointer's movements told as
         // where it last was, and a run of the wheel's notches all taken
         // before it is drawn once. While something said shows, a look
-        // every 50 ms, to take it away when its time is up.
-        let noting = match &mut screen {
-            Shown::Studio(studio) => studio.note_left(),
+        // every 50 ms, to take it away when its time is up; and once the
+        // page zoomed or moved has been still a moment, a look then, to
+        // draw it sharp. Otherwise nothing until something happens.
+        let wait = match &mut screen {
+            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in()].into_iter().flatten().min(),
             Shown::Home(_) => None,
         };
-        let mut events: Vec<Event> = if noting.is_some() { conn.poll_for_event()?.into_iter().collect() } else { vec![conn.wait_for_event()?] };
-        if let (Some(left), true) = (noting, events.is_empty()) {
-            std::thread::sleep(left.min(std::time::Duration::from_millis(50)));
-            if let Shown::Studio(studio) = &mut screen {
-                studio.note_left();
-            }
+        let mut events: Vec<Event> = match wait {
+            Some(wait) => event_within(conn, wait)?.into_iter().collect(),
+            None => vec![conn.wait_for_event()?],
+        };
+        if let Shown::Studio(studio) = &mut screen {
+            studio.note_left();
+            studio.settle();
         }
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);
@@ -5605,6 +5691,26 @@ fn pasted_path(words: &str) -> Option<PathBuf> {
     })
 }
 
+
+/// The next event, if one comes within so long; nothing if none does,
+/// and nothing done meanwhile but wait for one.
+fn event_within(conn: &x11rb::rust_connection::RustConnection, wait: std::time::Duration) -> crate::x11::Result<Option<x11rb::protocol::Event>> {
+    use std::os::fd::AsRawFd;
+    use x11rb::connection::Connection;
+    let until = std::time::Instant::now() + wait;
+    loop {
+        if let Some(event) = conn.poll_for_event()? {
+            return Ok(Some(event));
+        }
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Ok(None);
+        }
+        let mut socket = libc::pollfd { fd: conn.stream().as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd, which lives through the call.
+        unsafe { libc::poll(&mut socket, 1, left.as_millis().clamp(1, i32::MAX as u128) as i32) };
+    }
+}
 
 fn event_is_press(event: &x11rb::protocol::Event) -> bool {
     matches!(event, x11rb::protocol::Event::KeyPress(_))
@@ -6414,6 +6520,51 @@ mod tests {
         studio.draw(&mut out);
         studio.pan.0 += 6000.0;
         studio.draw(&mut out);
+    }
+    #[test]
+    fn zooming_shows_what_was_drawn_until_the_page_is_still() {
+        let mut studio = studio();
+        // Red on the left half, blue on the right.
+        studio.add_picture(Image::new(800, 600, (0..800 * 600).map(|at| if at % 800 < 400 { 0xFFFF0000 } else { 0xFF0000FF }).collect()), "halves");
+        let mut out = vec![0u32; 1400 * 900];
+        studio.draw(&mut out);
+        let sharp = studio.zoom;
+        let at = (560, 450);
+        let before = out[(at.1 * 1400 + at.0) as usize];
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(sharp));
+        // Zoomed in by the wheel: what was drawn, shown larger, the point
+        // under the pointer the same color still; nothing drawn afresh.
+        studio.wheel_at(at.0, at.1, Mods { ctrl: true, ..Mods::default() });
+        studio.scrolled(0.0, -12.0);
+        assert!(studio.settle_in().is_some_and(|wait| wait <= SETTLE));
+        studio.draw(&mut out);
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(sharp));
+        assert_eq!(out[(at.1 * 1400 + at.0) as usize], before);
+        // Still a moment: drawn sharp at the zoom it is at, and no more
+        // waiting to be.
+        studio.settle();
+        assert!(studio.moving.is_some());
+        studio.moving = Some(std::time::Instant::now() - SETTLE);
+        studio.settle();
+        assert!(studio.moving.is_none() && studio.settle_in().is_none() && studio.dirty);
+        studio.draw(&mut out);
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(studio.zoom));
+        assert_eq!(out[(at.1 * 1400 + at.0) as usize], before);
+        // Zoomed far out, past what was drawn: drawn again, at half the
+        // size it is shown, for the next steps out to keep to.
+        studio.scrolled(0.0, 12.0);
+        studio.draw(&mut out);
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(studio.zoom / 2.0));
+        let half = studio.zoom / 2.0;
+        studio.scrolled(0.0, 2.0);
+        studio.draw(&mut out);
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(half));
+        // A change to the frame is drawn at once, moving or not.
+        studio.doc.layers[0].hidden = true;
+        studio.changed();
+        studio.draw(&mut out);
+        assert!(studio.shown[0].as_ref().is_some_and(|kept| kept.0 == studio.doc.stamp));
+        assert_eq!(out[(at.1 * 1400 + at.0) as usize] & 0xFF_FFFF, 0xFFFFFF);
     }
     #[test]
     fn the_wheel_zooms_at_once_and_keeps_the_point_under_the_pointer() {
