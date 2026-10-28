@@ -147,12 +147,14 @@ impl Studio {
                 Kind::Shape(shape) => shape.shadow = None,
             }),
             Action::FillOn => {
-                let color = self.fill.unwrap_or(0xFFFFFF);
+                let color = self.fill.unwrap_or(super::fills::DEFAULT_FILL);
                 self.paint(Paint::Fill, Some(color));
             }
             Action::FillOff => self.paint(Paint::Fill, None),
             Action::BorderOn | Action::BorderOff => {
                 let on = action == Action::BorderOn;
+                self.border = on;
+                self.keep_shape_style();
                 self.restyle(|layer| {
                     if let Kind::Shape(shape) = &mut layer.kind {
                         // One without a border is filled, or there would

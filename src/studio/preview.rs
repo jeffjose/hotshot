@@ -16,6 +16,8 @@ pub(super) struct Preview {
     color: u32,
     fill: Option<u32>,
     face: usize,
+    border: bool,
+    gradient: Option<shapes::Gradient>,
     edited: bool,
 }
 
@@ -57,7 +59,7 @@ impl Studio {
         }
         self.end_preview();
         let Some(key) = wanted else { return };
-        self.preview = Some(Preview { key, doc: self.doc.clone(), undo: self.undo.len(), redo: self.redo.clone(), color: self.color, fill: self.fill, face: self.face, edited: self.edited });
+        self.preview = Some(Preview { key, doc: self.doc.clone(), undo: self.undo.len(), redo: self.redo.clone(), color: self.color, fill: self.fill, face: self.face, border: self.border, gradient: self.gradient, edited: self.edited });
         let (menu, palette, hsv) = (self.menu, self.palette, self.hsv);
         match key {
             Control::MenuRow(level, row) => {
@@ -86,7 +88,7 @@ impl Studio {
     pub(super) fn end_preview(&mut self) {
         let Some(preview) = self.preview.take() else { return };
         self.doc = preview.doc;
-        (self.color, self.fill, self.face, self.edited) = (preview.color, preview.fill, preview.face, preview.edited);
+        (self.color, self.fill, self.face, self.border, self.gradient, self.edited) = (preview.color, preview.fill, preview.face, preview.border, preview.gradient, preview.edited);
         self.undo.truncate(preview.undo);
         self.redo = preview.redo;
         self.version += 1;

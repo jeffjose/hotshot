@@ -1769,8 +1769,10 @@ pub struct Studio {
     /// How the next shape is drawn.
     color: u32,
     fill: Option<u32>,
-    /// The gradient the next box or oval is filled with, from its `fill`.
+    /// The gradient the next box or oval is filled with, from its `fill`;
+    /// and whether it has a border, in `color`, as well.
     gradient: Option<shapes::Gradient>,
+    border: bool,
     size: usize,
     /// How round the corners of the next rectangle are.
     radius: f32,
@@ -1884,8 +1886,11 @@ impl Studio {
             editing: None,
             cropping: None,
             color: 0xE5484D,
-            fill: None,
+            // Filled with no border, as Figma draws a box; capture mode
+            // outlines one instead.
+            fill: Some(fills::DEFAULT_FILL),
             gradient: None,
+            border: false,
             size: 1,
             radius: 8.0,
             face: 0,
@@ -2899,6 +2904,9 @@ impl Studio {
                 if matches!(tool, Tool::Rect | Tool::Ellipse) {
                     (shape.filled, shape.fill) = (self.fill.is_some(), self.fill.unwrap_or(0xFFFFFF));
                     shape.gradient = self.gradient.filter(|_| shape.filled);
+                    // One with no fill has its border, or there would be
+                    // nothing of it.
+                    shape.border = self.border || !shape.filled;
                     shape.radius = if tool == Tool::Rect { self.radius } else { 0.0 };
                 }
                 shape.number = self.doc.layers.iter().filter(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.tool == Tool::Counter)).count() as u32 + 1;
@@ -3357,6 +3365,12 @@ impl Studio {
             Paint::Line => {
                 let color = color.unwrap_or(self.color);
                 self.color = color;
+                // A border given a box is one the next box has too.
+                let boxes = self.chosen().iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse)));
+                if boxes || (self.chosen().is_empty() && matches!(self.tool, Tool::Rect | Tool::Ellipse)) {
+                    self.border = true;
+                }
+                self.keep_shape_style();
                 self.restyle(|layer| {
                     if let Kind::Shape(shape) = &mut layer.kind {
                         (shape.color, shape.border) = (color, true);
@@ -3365,6 +3379,7 @@ impl Studio {
             }
             Paint::Fill => {
                 self.fill = color;
+                self.keep_shape_style();
                 self.restyle(|layer| {
                     if let Kind::Shape(shape) = &mut layer.kind {
                         match color {
@@ -5628,6 +5643,8 @@ fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: Pa
     }
     studio.path = Some(path);
     (studio.left_open, studio.right_open) = kept_panels();
+    // Boxes drawn as the last were set to be, in any file.
+    studio.recall_shape_style();
     if !studio.left_open || !studio.right_open {
         studio.fit();
     }
@@ -6521,11 +6538,11 @@ mod tests {
         studio.pointer_moved(b.0, b.1, Mods::default());
         studio.released();
         assert_eq!((studio.doc.layers.len(), studio.selected.clone(), studio.tool), (1, vec![0], Tool::Select));
-        // Its fill: a plus for one, then the colors its fill opens.
-        let plus = studio.control_rect(Control::Action(Action::FillOn)).expect("a fill can be added").center();
-        studio.pointer_moved(plus.0, plus.1, Mods::default());
-        studio.pressed(1, 1500);
-        studio.released();
+        // Filled, with no border, as Figma draws one, in a soft indigo.
+        let Kind::Shape(shape) = &studio.doc.layers[0].kind else { panic!() };
+        assert_eq!((shape.filled, shape.fill, shape.border), (true, fills::DEFAULT_FILL, false));
+        assert!(studio.control_rect(Control::Action(Action::BorderOn)).is_some());
+        // Its fill: the colors its fill opens.
         let field = studio.layout().controls.iter().find(|(_, control)| *control == Control::ColorField(Paint::Fill)).map(|(rect, _)| rect.center()).expect("its fill is in the panel");
         studio.pointer_moved(field.0, field.1, Mods::default());
         studio.pressed(1, 2000);
@@ -6654,6 +6671,8 @@ mod tests {
         let mut studio = studio();
         studio.add_picture(checker(400, 300), "pic");
         let Kind::Picture(picture) = studio.doc.layers[0].kind.clone() else { panic!() };
+        // A box with no fill: its border alone.
+        studio.fill = None;
         studio.key(Key::Char('r'), Mods::default(), true);
         drag(&mut studio, (picture.cx - 50.0, picture.cy - 30.0), (picture.cx + 50.0, picture.cy + 30.0), Mods::default());
         assert_eq!(studio.selected, vec![1]);

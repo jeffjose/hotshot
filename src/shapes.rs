@@ -223,11 +223,11 @@ pub struct Gradient {
 
 /// A gradient as a word of a file: its color, its angle, and l or r for
 /// straight or round; or a dash for none.
-fn gradient_word(gradient: Option<Gradient>) -> String {
+pub fn gradient_word(gradient: Option<Gradient>) -> String {
     gradient.map_or("-".to_owned(), |gradient| format!("{:06X}:{}:{}", gradient.to, gradient.angle, if gradient.radial { "r" } else { "l" }))
 }
 
-fn gradient_read(word: &str) -> Option<Gradient> {
+pub fn gradient_read(word: &str) -> Option<Gradient> {
     let parts: Vec<&str> = word.split(':').collect();
     let [to, angle, kind] = parts[..] else { return None };
     let angle = angle.parse::<f32>().ok().filter(|angle| angle.is_finite())?;

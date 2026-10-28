@@ -61,6 +61,39 @@ impl Studio {
         if kind == 0 && self.palette == Some(Paint::FillTo) {
             self.palette = Some(Paint::Fill);
         }
+        self.keep_shape_style();
+    }
+
+    /// How the next box or oval is drawn kept for the next time the canvas
+    /// opens, in `canvas-shapes` among hotshot's state: its fill or a dash,
+    /// whether it has a border, the border's color, and its gradient or a
+    /// dash. Only for a file of the user's, not while a change is only
+    /// shown, and so never from the tests.
+    pub(super) fn keep_shape_style(&self) {
+        if self.path.is_none() || self.preview.is_some() {
+            return;
+        }
+        let Some(file) = crate::output::state_file("canvas-shapes") else { return };
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let fill = self.fill.map_or("-".to_owned(), |fill| format!("{fill:06X}"));
+        let _ = std::fs::write(file, format!("{fill} {} {:06X} {}\n", u8::from(self.border), self.color, shapes::gradient_word(self.gradient)));
+    }
+
+    /// How the next box or oval is drawn, as it was kept.
+    pub(super) fn recall_shape_style(&mut self) {
+        let kept = crate::output::state_file("canvas-shapes").and_then(|file| std::fs::read_to_string(file).ok());
+        if let Some(kept) = kept {
+            self.read_shape_style(&kept);
+        }
+    }
+
+    pub(super) fn read_shape_style(&mut self, kept: &str) {
+        let words: Vec<&str> = kept.split_whitespace().collect();
+        let [fill, border, color, gradient] = words[..] else { return };
+        let (Ok(color), fill) = (u32::from_str_radix(color, 16), u32::from_str_radix(fill, 16).ok()) else { return };
+        (self.fill, self.border, self.color, self.gradient) = (fill.map(|fill| fill & 0xFF_FFFF), border == "1", color & 0xFF_FFFF, shapes::gradient_read(gradient));
     }
 
     /// The color the fill's gradient goes to, for what is picked out and
@@ -70,6 +103,7 @@ impl Studio {
         if let Some(gradient) = &mut self.gradient {
             gradient.to = color;
         }
+        self.keep_shape_style();
         self.restyle(|layer| {
             if let Kind::Shape(shape) = &mut layer.kind {
                 if let Some(gradient) = &mut shape.gradient {
@@ -264,10 +298,40 @@ mod tests {
         assert_eq!(studio.doc.background, Fill::Radial(0x112233, 0x445566));
         assert!(studio.control_rect(Control::Field(Field::Angle)).is_none());
     }
+
+    #[test]
+    fn a_box_is_filled_with_no_border_to_begin_with_and_after_as_the_last_was_set() {
+        let mut studio = studio();
+        let draw = |studio: &mut Studio| {
+            studio.selected.clear();
+            studio.set_tool(Tool::Ellipse);
+            let (a, b) = (studio.to_window((100.0, 100.0)), studio.to_window((200.0, 180.0)));
+            studio.pointer_moved(a.0, a.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            studio.pointer_moved(b.0, b.1, Mods::default());
+            studio.released();
+            let Kind::Shape(shape) = studio.doc.layers.last().unwrap().kind.clone() else { panic!() };
+            (shape.filled, shape.fill, shape.border)
+        };
+        assert_eq!(draw(&mut studio), (true, DEFAULT_FILL, false));
+        // A border given it, the next has one too; its fill taken away, the
+        // next is an outline.
+        studio.act(Action::BorderOn);
+        assert_eq!(draw(&mut studio), (true, DEFAULT_FILL, true));
+        studio.act(Action::FillOff);
+        assert!(matches!(draw(&mut studio), (false, _, true)));
+        // As kept for the next time the canvas opens.
+        studio.read_shape_style("FFC53D 0 E5484D 3E63DD:90:l\n");
+        assert_eq!((studio.fill, studio.border, studio.color), (Some(0xFFC53D), false, 0xE5484D));
+        assert_eq!(studio.gradient, Some(Gradient { to: 0x3E63DD, angle: 90.0, radial: false }));
+        studio.read_shape_style("- 1 000000 -");
+        assert_eq!((studio.fill, studio.border, studio.gradient), (None, true, None));
+    }
 }
 
 /// What a box or an oval drawn on the canvas is filled with to begin with,
-/// as Figma fills its shapes rather than outlining them: Radix's indigo 6,
-/// soft enough to put words over on a white frame, and still a color on a
-/// picture.
-pub(super) const DEFAULT_FILL: u32 = 0xC1D0FF;
+/// as Figma fills its shapes rather than outlining them: Radix's indigo 8.
+/// Its paler steps wash out on a white frame; this one reads as a color on
+/// white and on a picture, and dark words still read over it.
+pub(super) const DEFAULT_FILL: u32 = 0x8DA4EF;
