@@ -705,6 +705,10 @@ pub fn remember_tools(settings: &Settings, save_to: Option<&std::path::Path>) {
 
 /// Where the config file is: under `$XDG_CONFIG_HOME`, or `~/.config`.
 pub fn config_file() -> PathBuf {
+    // Tests never read or write the user's own.
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("hotshot-test-config-{}", std::process::id())).join("hotshot/config.toml");
+    }
     let base = std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
     base.join("hotshot/config.toml")
 }

@@ -4970,6 +4970,21 @@ mod tests {
     }
 
     #[test]
+    fn a_size_saved_is_named_for_its_frame_never_for_its_size_and_kept_in_the_tests_own_config() {
+        let mut studio = studio();
+        let file = crate::options::config_file();
+        assert!(file.starts_with(std::env::temp_dir()));
+        let _ = std::fs::remove_file(&file);
+        studio.run_menu(menu::MenuAct::SaveSize);
+        studio.doc.name = "Phone shot".into();
+        studio.run_menu(menu::MenuAct::SaveSize);
+        let kept = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(kept, "frame-size = \"My size 1 = 800x600\"\nframe-size = \"Phone shot = 800x600\"\n");
+        assert_eq!(studio.frame_sizes.len(), 2);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
     fn ctrl_k_finds_actions_and_layers_by_what_is_typed() {
         let mut studio = studio();
         studio.add_picture(checker(40, 40), "Shadow catcher");

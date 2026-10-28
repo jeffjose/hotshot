@@ -551,8 +551,10 @@ impl Studio {
             }
             MenuAct::SaveSize => {
                 let (w, h) = (self.doc.width, self.doc.height);
-                // Called what the frame is, unless that is only its number.
-                let name = if self.doc.name.starts_with("Frame ") { format!("{w} \u{d7} {h}") } else { self.doc.name.clone() };
+                // Called what the frame is, unless that is only its number:
+                // then a name of its own, never the size it already says.
+                let numbered = self.doc.name.strip_prefix("Frame ").is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()));
+                let name = if numbered || self.doc.name.trim().is_empty() { format!("My size {}", self.frame_sizes.len() + 1) } else { self.doc.name.trim().to_owned() };
                 match crate::options::add_frame_size(&name, w, h) {
                     Ok(()) => {
                         self.add_size(name.clone(), w, h);
