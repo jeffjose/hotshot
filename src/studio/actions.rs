@@ -115,6 +115,9 @@ impl Studio {
             Action::Italic => set_style(self, shapes::ITALIC),
             Action::Highlight => set_style(self, shapes::HIGHLIGHT),
             Action::Bullets => set_style(self, shapes::BULLETS),
+            Action::Underline => set_style(self, shapes::UNDERLINE),
+            Action::Strike => set_style(self, shapes::STRIKE),
+            Action::Upper => set_style(self, shapes::UPPER),
             Action::Pill(on) => self.restyle(|layer| {
                 if let Kind::Shape(shape) = &mut layer.kind {
                     shape.style = if on { shape.style | shapes::BOXED } else { shape.style & !shapes::BOXED };

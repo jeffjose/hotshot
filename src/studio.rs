@@ -1171,6 +1171,8 @@ enum Control {
     Stuck(u8),
     /// A part of the color picker: its square, its strips, its dropper.
     Picker(u8),
+    /// The strip a gradient is shown on, its stops at its ends.
+    GradientBar,
     /// A part of a panel that is no control.
     Panel,
 }
@@ -1213,6 +1215,9 @@ enum Action {
     Italic,
     Highlight,
     Bullets,
+    Underline,
+    Strike,
+    Upper,
     Pill(bool),
     TextAlign(u8),
     /// A shadow under a picture, or none; and its adjustments undone.
@@ -1282,6 +1287,9 @@ impl Action {
             Action::Italic => "I",
             Action::Highlight => "M",
             Action::Bullets => "\u{2022}",
+            Action::Underline => "U",
+            Action::Strike => "S",
+            Action::Upper => "AA",
             Action::Pill(true) => "Pill",
             Action::Pill(false) => "None",
             Action::TextAlign(0) => "Left",
@@ -2183,7 +2191,7 @@ impl Studio {
                 let mut shape = Shape::new(Tool::Text, self.color, STROKES[self.size], (at.0, at.1 - FONT_SIZES[self.size] as f32 / 2.0));
                 (shape.font_px, shape.face) = (FONT_SIZES[self.size], self.face);
                 self.doc.layers.push(Layer::shape(shape));
-                self.editing = Some(self.doc.layers.len() - 1);
+                self.edit_text(self.doc.layers.len() - 1);
                 self.selected = vec![self.doc.layers.len() - 1];
                 self.changed();
             }
@@ -2250,7 +2258,7 @@ impl Studio {
                         Kind::Picture(_) => self.cropping = Some(index),
                         Kind::Shape(shape) if matches!(shape.tool, Tool::Text | Tool::Badge) => {
                             self.checkpoint();
-                            self.editing = Some(index);
+                            self.edit_text(index);
                         }
                         Kind::Shape(_) => {}
                     }
@@ -2379,7 +2387,12 @@ impl Studio {
                 self.flyout = None;
                 self.set_tool(tool);
             }
-
+            Control::GradientBar => {
+                // The stop nearer where it was pressed, to color.
+                let rect = self.control_rect(control).unwrap_or_default();
+                let paint = if self.pointer.0 < rect.x + rect.w / 2 { Paint::From } else { Paint::To };
+                self.open_picker(paint);
+            }
             Control::ColorField(paint) => match self.palette == Some(paint) {
                 true => self.palette = None,
                 false => self.open_picker(paint),
@@ -3166,8 +3179,22 @@ impl Studio {
         self.changed();
     }
 
+    /// Text taken to be typed into, by its layer: its headings show
+    /// their hashes while it is.
+    fn edit_text(&mut self, index: usize) {
+        self.editing = Some(index);
+        if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
+            shape.editing = true;
+            shape.touch();
+        }
+    }
+
     fn commit_text(&mut self) {
         if let Some(index) = self.editing.take() {
+            if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
+                shape.editing = false;
+                shape.touch();
+            }
             if matches!(&self.doc.layers.get(index), Some(Layer { kind: Kind::Shape(shape), .. }) if shape.is_slight()) {
                 self.doc.layers.remove(index);
                 self.selected.clear();
@@ -3525,7 +3552,7 @@ impl Studio {
                             Kind::Picture(_) => self.cropping = Some(index),
                             Kind::Shape(shape) if matches!(shape.tool, Tool::Text | Tool::Badge) => {
                                 self.checkpoint();
-                                self.editing = Some(index);
+                                self.edit_text(index);
                             }
                             Kind::Shape(_) => {}
                         }
@@ -3693,11 +3720,19 @@ impl Studio {
         if let Some(index) = self.editing {
             if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index).cloned() {
                 let place = shape.bounds(&mut self.text);
-                let line = Text::line_height(shape.font_px);
-                let last = shape.text.rsplit('\n').next().unwrap_or("");
-                let rows = shape.text.split('\n').count() as i32;
-                let along = self.text.width_in(shape.words_face(), last, shape.font_px);
-                let (x, y) = self.to_window(((place.x + along) as f32, (place.y + (rows - 1) * line) as f32));
+                let (along, top, line) = match shape.tool {
+                    Tool::Text => {
+                        let lines = shape.text_lines(&mut self.text);
+                        let widest = lines.iter().map(|line| line.width).max().unwrap_or(0);
+                        lines.last().map_or((0, 0, Text::line_height(shape.font_px)), |last| (last.width + (widest - last.width) * i32::from(shape.align.min(2)) / 2, last.top, Text::line_height(last.px)))
+                    }
+                    _ => {
+                        let last = shape.text.rsplit('\n').next().unwrap_or("");
+                        let line = Text::line_height(shape.font_px);
+                        (self.text.width_in(shape.words_face(), last, shape.font_px), (shape.text.split('\n').count() as i32 - 1) * line, line)
+                    }
+                };
+                let (x, y) = self.to_window(((place.x + along) as f32, (place.y + top) as f32));
                 canvas.fill(x + 1, y, 2, (line as f32 * self.zoom) as i32, ACCENT);
             }
         }
@@ -3974,6 +4009,21 @@ impl Studio {
                         other => (other.label(), false),
                     };
                     field_text(&mut self.text, canvas, rect, label, icon, &value, DIM_TEXT_COLOR);
+                }
+                Control::GradientBar => {
+                    if let Fill::Gradient(from, to, _) = self.doc.background {
+                        let inner = rect.inflate(-1);
+                        for x in 0..inner.w {
+                            let along = (x * 256 / inner.w.max(1)) as u32;
+                            canvas.fill(inner.x + x, inner.y + 3, 1, inner.h - 6, crate::canvas::mix(from, to, along));
+                        }
+                        // A stop at each end, ringed; lit while its color is open.
+                        for (x, paint, color) in [(rect.x + 1, Paint::From, from), (rect.right() - 13, Paint::To, to)] {
+                            let lit = self.palette == Some(paint);
+                            canvas.round_fill(x - 1, rect.y - 1, 14, rect.h + 2, 4, if lit { ACCENT } else { 0xFFFFFF }, 256);
+                            canvas.round_fill(x + 2, rect.y + 2, 8, rect.h - 4, 2, color, 256);
+                        }
+                    }
                 }
                 Control::ColorField(paint) => {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, FIELD_COLOR, 256);

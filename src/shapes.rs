@@ -128,6 +128,9 @@ pub struct Shape {
     /// how far across and down, how soft, how much larger, and its color
     /// with how opaque it is.
     pub shadow: Option<crate::frame::Layer>,
+    /// Whether its text is being typed into, which shows the hashes a
+    /// heading begins with; not kept in its file.
+    pub editing: bool,
     mask: RefCell<Option<Rc<Mask>>>,
     /// The same of what is inside the border of a rectangle or an oval
     /// that has both, which is drawn in its fill.
@@ -141,6 +144,35 @@ pub const BOLD: u8 = 1;
 pub const ITALIC: u8 = 2;
 pub const HIGHLIGHT: u8 = 4;
 pub const BULLETS: u8 = 8;
+/// Lines under the words, lines through them, and the words in capitals.
+pub const UNDERLINE: u8 = 32;
+pub const STRIKE: u8 = 64;
+pub const UPPER: u8 = 128;
+
+/// How much larger than the rest of the text a line is that begins with
+/// one, two or three hashes and a space: a heading, of the first, second
+/// or third level.
+pub const HEADINGS: [f32; 3] = [2.0, 1.5, 1.25];
+
+/// A line of text as it is shown: its words, at what size, how far down
+/// from the top of the text, how wide, and whether it is a heading.
+pub struct TextLine {
+    pub shown: String,
+    pub px: u32,
+    pub top: i32,
+    pub width: i32,
+    pub heading: bool,
+}
+
+/// What level of heading a line is, from the hashes it begins with, and
+/// the rest of it after them.
+pub fn heading_of(line: &str) -> Option<(usize, &str)> {
+    let hashes = line.chars().take_while(|&c| c == '#').count();
+    if !(1..=3).contains(&hashes) {
+        return None;
+    }
+    line[hashes..].strip_prefix(' ').map(|rest| (hashes, rest))
+}
 
 /// Where a border lies on the edge of a box or an oval.
 pub const CENTER: u8 = 0;
@@ -213,7 +245,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -329,6 +361,34 @@ impl Shape {
             slant: if self.style & ITALIC != 0 { 0.2 } else { 0.0 },
             opacity: self.opacity,
         }
+    }
+
+    /// How the letters of a line at a size are drawn: a heading heavy
+    /// whether or not the rest is.
+    pub fn look_at(&self, px: u32, heading: bool) -> Look {
+        Look { heavy: if self.style & BOLD != 0 || heading { (px as i32 / 14).max(1) } else { 0 }, ..self.look() }
+    }
+
+    /// The lines of its text as they are shown: a heading larger, its
+    /// hashes left out unless it is being typed into; in capitals if it is
+    /// set in them; each after its dot, with bullets.
+    pub fn text_lines(&self, text: &mut Text) -> Vec<TextLine> {
+        let mut lines = Vec::new();
+        let mut top = 0;
+        for line in self.text.split('\n') {
+            let (px, words, heading) = match heading_of(line) {
+                Some((level, rest)) => (((self.font_px as f32 * HEADINGS[level - 1]).round() as u32).max(1), if self.editing { line } else { rest }, true),
+                None => (self.font_px, line, false),
+            };
+            let words = if self.style & UPPER != 0 { words.to_uppercase() } else { words.to_owned() };
+            let shown = format!("{}{words}", self.lead());
+            text.look = self.look_at(px, heading);
+            let width = text.width_in(self.face, &shown, px);
+            text.look = Look::default();
+            lines.push(TextLine { shown, px, top, width, heading });
+            top += Text::line_height(px);
+        }
+        lines
     }
 
     /// What each line of its text begins with: a dot, with bullets.
@@ -565,12 +625,10 @@ impl Shape {
     pub fn local_bounds(&self, text: &mut Text) -> Rect {
         match self.tool {
             Tool::Text => {
-                let line = Text::line_height(self.font_px);
-                text.look = self.look();
-                let widths: Vec<i32> = self.text.split('\n').map(|line| text.width_in(self.face, &format!("{}{line}", self.lead()), self.font_px)).collect();
-                text.look = Look::default();
-                let width = widths.iter().copied().max().unwrap_or(0);
-                Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width.max(self.font_px as i32 / 4), line * widths.len() as i32)
+                let lines = self.text_lines(text);
+                let width = lines.iter().map(|line| line.width).max().unwrap_or(0);
+                let height = lines.last().map_or(Text::line_height(self.font_px), |line| line.top + Text::line_height(line.px));
+                Rect::new(self.points[0].0.round() as i32, self.points[0].1.round() as i32, width.max(self.font_px as i32 / 4), height)
             }
             Tool::Blur | Tool::Spotlight => self.frame_rect(),
             // A badge is as wide as its words, with a dot before them
@@ -1328,22 +1386,28 @@ impl Shape {
                     canvas.round_fill(place.x - room * 3 / 2, place.y - room / 2, place.w + room * 3, place.h + room, room, self.color, self.opacity);
                     ink = ink_on(self.color);
                 }
-                text.look = self.look();
                 // Lines set from the left, in the middle, or to the right
                 // of the widest of them.
-                let widths: Vec<i32> = self.text.split('\n').map(|line| text.width_in(self.face, &format!("{}{line}", self.lead()), self.font_px)).collect();
-                let widest = widths.iter().copied().max().unwrap_or(0);
-                for (index, line) in self.text.split('\n').enumerate() {
-                    let shown = format!("{}{line}", self.lead());
-                    let top = y + index as i32 * high;
-                    let x = x + (widest - widths[index]) * i32::from(self.align.min(2)) / 2;
+                let lines = self.text_lines(text);
+                let widest = lines.iter().map(|line| line.width).max().unwrap_or(0);
+                for line in &lines {
+                    let (px, high) = (line.px, Text::line_height(line.px));
+                    text.look = self.look_at(px, line.heading);
+                    let top = y + line.top;
+                    let x = x + (widest - line.width) * i32::from(self.align.min(2)) / 2;
                     // Gone over with a marker first, as wide as the
                     // words of the line are.
-                    if self.style & HIGHLIGHT != 0 && !line.is_empty() {
-                        let wide = text.width_in(self.face, &shown, self.font_px);
-                        canvas.round_fill(x - high / 8, top + high / 10, wide + high / 4, high - high / 5, high / 8, HIGHLIGHT_COLOR.0, HIGHLIGHT_COLOR.1 * self.opacity / 256);
+                    if self.style & HIGHLIGHT != 0 && !line.shown.is_empty() {
+                        canvas.round_fill(x - high / 8, top + high / 10, line.width + high / 4, high - high / 5, high / 8, HIGHLIGHT_COLOR.0, HIGHLIGHT_COLOR.1 * self.opacity / 256);
                     }
-                    text.draw_in(self.face, canvas, x, top, self.font_px, ink, &shown);
+                    text.draw_in(self.face, canvas, x, top, px, ink, &line.shown);
+                    // Lines under the words, or through them.
+                    let thick = (px as i32 / 14).max(1);
+                    for (bit, down) in [(UNDERLINE, 0.86), (STRIKE, 0.56)] {
+                        if self.style & bit != 0 && line.width > 0 {
+                            canvas.round_fill(x, top + (high as f32 * down) as i32, line.width, thick, 0, ink, self.opacity);
+                        }
+                    }
                 }
                 text.look = Look::default();
             }
@@ -2063,6 +2127,33 @@ mod tests {
         assert!((perimeter_along(0.0, 10.0, 20.0, 10.0, 0.0).0 - 80.0).abs() < 0.01);
         assert!((perimeter_along(-20.0, 0.0, 20.0, 10.0, 0.0).0 - 110.0).abs() < 0.01);
         assert!((perimeter_along(0.0, 0.0, 20.0, 10.0, 4.0).1 - (2.0 * 32.0 + 2.0 * 12.0 + std::f32::consts::TAU * 4.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn lines_after_hashes_are_headings_and_text_can_be_underlined_or_in_capitals() {
+        let mut text = Text::load();
+        assert_eq!(heading_of("## Two"), Some((2, "Two")));
+        assert_eq!((heading_of("#no"), heading_of("#### four"), heading_of("plain")), (None, None, None));
+        let mut words = Shape::new(Tool::Text, 0xFFFFFF, 2.0, (10.0, 10.0));
+        (words.text, words.font_px) = ("# Big\nsmall".into(), 20);
+        let lines = words.text_lines(&mut text);
+        assert_eq!((lines[0].px, lines[0].shown.as_str(), lines[0].heading, lines[1].px), (40, "Big", true, 20));
+        assert_eq!(lines[1].top, Text::line_height(40));
+        assert_eq!(words.local_bounds(&mut text).h, Text::line_height(40) + Text::line_height(20));
+        // Typed into, the hashes show; kept as typed either way.
+        words.editing = true;
+        assert_eq!(words.text_lines(&mut text)[0].shown, "# Big");
+        assert_eq!(Shape::read(&words.write()).unwrap().text, "# Big\nsmall");
+        words.editing = false;
+        let narrow = words.text_lines(&mut text)[1].width;
+        words.style |= UPPER | UNDERLINE;
+        let lines = words.text_lines(&mut text);
+        assert!(lines[1].shown == "SMALL" && lines[1].width > narrow);
+        // The line under it is drawn below the words.
+        words.text = "small".into();
+        let pixels = drawn(&words, 200, 60);
+        let under = 10 + (Text::line_height(20) as f32 * 0.86) as i32;
+        assert!(pixels[(under * 200 + 20) as usize] != 0);
     }
 
     #[test]

@@ -217,6 +217,7 @@ impl Studio {
         match self.doc.background {
             Fill::Color(_) => drop(rows.wide(Control::ColorField(Paint::Background))),
             Fill::Gradient(..) => {
+                rows.wide(Control::GradientBar);
                 rows.wide(Control::ColorField(Paint::From));
                 rows.wide(Control::ColorField(Paint::To));
                 rows.fields(&[Field::Angle], &[]);
@@ -288,7 +289,9 @@ impl Studio {
             Tool::Text | Tool::Badge => {
                 rows.section("Typography", "", None);
                 rows.split(&[(Control::Menu(MenuKind::Fonts), 0), (Control::Field(Field::FontSize), 76)]);
-                rows.buttons(&[&[act(Action::TextAlign(0)), act(Action::TextAlign(1)), act(Action::TextAlign(2))], &[act(Action::Bold), act(Action::Italic)], &[act(Action::Highlight), act(Action::Bullets)]]);
+                rows.buttons(&[&[act(Action::TextAlign(0)), act(Action::TextAlign(1)), act(Action::TextAlign(2))], &[act(Action::Bold), act(Action::Italic), act(Action::Underline), act(Action::Strike)]]);
+                rows.buttons(&[&[act(Action::Upper)], &[act(Action::Highlight), act(Action::Bullets)]]);
+                rows.note("Lines starting # , ## or ### are headings");
                 rows.section("Color", "", None);
                 rows.wide(Control::ColorField(Paint::Line));
                 rows.section("Background", "behind the text", None);
@@ -381,6 +384,9 @@ impl Studio {
             Action::Italic => shape.is_some_and(|shape| shape.style & shapes::ITALIC != 0),
             Action::Highlight => shape.is_some_and(|shape| shape.style & shapes::HIGHLIGHT != 0),
             Action::Bullets => shape.is_some_and(|shape| shape.style & shapes::BULLETS != 0),
+            Action::Underline => shape.is_some_and(|shape| shape.style & shapes::UNDERLINE != 0),
+            Action::Strike => shape.is_some_and(|shape| shape.style & shapes::STRIKE != 0),
+            Action::Upper => shape.is_some_and(|shape| shape.style & shapes::UPPER != 0),
             Action::Pill(on) => shape.is_some_and(|shape| (shape.style & shapes::BOXED != 0) == on),
             Action::TextAlign(align) => shape.is_some_and(|shape| shape.align == align),
             Action::Path(path) => shape.is_some_and(|shape| match path {
