@@ -57,6 +57,40 @@ fn timed(studio: &mut Studio, out: &mut [u32], steps: i32, mut step: impl FnMut(
         .collect()
 }
 
+/// The same canvas written to a file, to open in hotshot itself:
+/// `PERF_CANVAS=/some/where.hotshot cargo test --release write_full_canvas -- --ignored`.
+#[test]
+#[ignore]
+fn write_full_canvas() {
+    let Some(path) = std::env::var_os("PERF_CANVAS") else { return };
+    let mut studio = full(1400, 900);
+    studio.path = Some(PathBuf::from(path));
+    studio.save(false);
+}
+
+/// How long drawing the frame of the full canvas takes at the size of a
+/// 4K screen, all of it, and only its pictures or only its shapes.
+#[test]
+#[ignore]
+fn render_timings() {
+    let studio = full(3840, 2160);
+    let mut text = Text::load();
+    let times = 1.6;
+    let part = Rect::new(0, 0, 3840, 2160);
+    let pictures = Doc { layers: studio.doc.layers.iter().filter(|layer| matches!(layer.kind, Kind::Picture(_))).cloned().collect(), ..studio.doc.clone() };
+    let shapes = Doc { layers: studio.doc.layers.iter().filter(|layer| matches!(layer.kind, Kind::Shape(_))).cloned().collect(), ..studio.doc.clone() };
+    let empty = Doc { layers: Vec::new(), ..studio.doc.clone() };
+    let only = |tool: Tool| Doc { layers: studio.doc.layers.iter().filter(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.tool == tool)).cloned().collect(), ..studio.doc.clone() };
+    let (rects, ovals, arrows, words) = (only(Tool::Rect), only(Tool::Ellipse), only(Tool::Arrow), only(Tool::Text));
+    for (name, doc) in [("everything", &studio.doc), ("pictures", &pictures), ("shapes", &shapes), ("80 boxes", &rects), ("40 ovals", &ovals), ("40 arrows", &arrows), ("40 texts", &words), ("nothing", &empty)] {
+        figures(name, (0..5).map(|_| {
+            let began = Instant::now();
+            std::hint::black_box(doc.render_part(times, part, &mut text));
+            began.elapsed()
+        }).collect());
+    }
+}
+
 #[test]
 #[ignore]
 fn draw_timings() {

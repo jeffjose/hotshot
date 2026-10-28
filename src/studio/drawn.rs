@@ -100,7 +100,7 @@ impl Studio {
         let fits = index == self.active
             && drawn.stamp == *from
             && self.doc.stamp == *upto
-            && drawn.zoom == self.zoom
+            && same_zoom(drawn.zoom, self.zoom)
             && drawn.part.intersect(seen) == seen
             && drawn.reaches.len() == self.doc.layers.len()
             && list.iter().all(|&layer| layer < self.doc.layers.len())

@@ -85,6 +85,17 @@ fn wheel_zoom(down: f32) -> f32 {
 /// it is drawn sharp again, rather than shown from what was drawn before.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(130);
 
+/// How far round what is seen of a frame it is drawn, in pixels of the
+/// window, for a little panning to need nothing drawn: no more, as each
+/// pixel of it is as long drawing as one seen.
+const ROOM: i32 = 256;
+
+/// Whether two zooms are the same, but for what notches of the wheel in
+/// and as many out leave over: too little to move a pixel.
+fn same_zoom(a: f32, b: f32) -> bool {
+    (a / b - 1.0).abs() < 1e-5
+}
+
 /// Whether a part of a frame drawn at one zoom reaches over a part of it
 /// as it is seen at another, to a pixel: each counted from the frame's
 /// corner, at its own zoom.
@@ -478,6 +489,22 @@ impl Doc {
     pub fn render(&self, times: f32, text: &mut Text) -> (i32, i32, Vec<u32>) {
         let (wide, high) = (((self.width as f32 * times).round() as i32).max(1), ((self.height as f32 * times).round() as i32).max(1));
         (wide, high, self.render_part(times, Rect::new(0, 0, wide, high), text))
+    }
+
+    /// The same as `render_part`, drawn a band of rows at a time, and given
+    /// up between two, with nothing, when `stop` says to.
+    pub fn render_part_stopping(&self, times: f32, part: Rect, text: &mut Text, stop: &mut dyn FnMut() -> bool) -> Option<Vec<u32>> {
+        let mut out = vec![0u32; (part.w.max(0) * part.h.max(0)) as usize];
+        let band = ((part.h + 7) / 8).max(128);
+        for top in (0..part.h.max(0)).step_by(band as usize) {
+            if stop() {
+                return None;
+            }
+            let rows = Rect::new(part.x, part.y + top, part.w, band.min(part.h - top));
+            let pixels = self.render_part(times, rows, text);
+            out[(top * part.w) as usize..][..pixels.len()].copy_from_slice(&pixels);
+        }
+        Some(out)
     }
 
     /// Part of the artboard as a picture, `times` its size: the pixels of
@@ -4368,7 +4395,7 @@ impl Studio {
     // ---- The picture of the window ----
 
     /// A frame as it is shown, drawn at the size it is shown at: the part
-    /// of it in the view and as much again round that, so that a little
+    /// of it in the view and a little round that, so that a little
     /// panning needs nothing drawn. Drawn again when it changes, when the
     /// zoom does, or when the view goes past what was drawn. Gives where
     /// its corner is in the window, and how large it is shown.
@@ -4376,10 +4403,10 @@ impl Studio {
     /// While the page is being zoomed or moved, as Figma does, what was
     /// drawn last is shown larger or smaller rather than drawn afresh
     /// each step, so long as it reaches over what is seen; where it does
-    /// not, as the page grows smaller, it is drawn at half the size it is
-    /// shown and over far more round it, for the next steps to keep to.
+    /// not, as the page grows smaller or is moved far, it is drawn at half
+    /// the size it is shown and over more round it, for the next steps.
     /// Once the page is still, it is drawn sharp again.
-    fn shown_frame(&mut self, index: usize, view: Rect) -> ((i32, i32), i32, i32) {
+    fn shown_frame(&mut self, index: usize, view: Rect, stop: &mut dyn FnMut() -> bool) -> ((i32, i32), i32, i32) {
         let frame = self.frame(index);
         let (wide, high) = (((frame.width as f32 * self.zoom).round() as i32).max(1), ((frame.height as f32 * self.zoom).round() as i32).max(1));
         let origin = self.to_window_page((frame.x, frame.y));
@@ -4394,26 +4421,38 @@ impl Studio {
         let fresh = self.shown[index].as_ref().is_some_and(|drawn| {
             drawn.stamp == stamp
                 && (seen.is_empty()
-                    || match drawn.zoom == self.zoom {
+                    || match same_zoom(drawn.zoom, self.zoom) {
                         true => drawn.part.intersect(seen) == seen,
                         false => quick && reaches(drawn.part, drawn.zoom, seen, self.zoom),
                     })
         });
         if !fresh && !seen.is_empty() && !self.redraw_touched(index, seen) {
-            let kept_zoom = self.shown[index].as_ref().map(|drawn| drawn.zoom);
-            let (times, part) = match quick && kept_zoom != Some(self.zoom) {
+            let (times, part) = match quick {
                 true => {
                     let times = self.zoom / 2.0;
-                    let around = seen.inflate(view.w.max(view.h));
+                    let around = seen.inflate(view.w.max(view.h) / 4);
                     let halved = Rect::new(around.x.div_euclid(2), around.y.div_euclid(2), around.w / 2 + 1, around.h / 2 + 1);
                     (times, halved.intersect(Rect::new(0, 0, ((frame_w * times).round() as i32).max(1), ((frame_h * times).round() as i32).max(1))))
                 }
-                false => (self.zoom, seen.inflate(view.w.max(view.h) / 2).intersect(Rect::new(0, 0, wide, high))),
+                false => (self.zoom, seen.inflate(ROOM).intersect(Rect::new(0, 0, wide, high))),
             };
-            let (pixels, reaches) = match index == self.active {
-                true => (self.doc.render_part(times, part, &mut self.text), self.reaches(times)),
-                false => (self.pages[self.page].frames[index].render_part(times, part, &mut self.text), Vec::new()),
+            // Drawn sharp where only the view has changed since: a band at
+            // a time, and given up for the wheel or a key that comes
+            // meanwhile, what was drawn shown until it is done.
+            let only_view = !quick && self.shown[index].as_ref().is_some_and(|drawn| drawn.stamp == stamp);
+            let doc = if index == self.active { &self.doc } else { &self.pages[self.page].frames[index] };
+            let pixels = match only_view {
+                true => match doc.render_part_stopping(times, part, &mut self.text, stop) {
+                    Some(pixels) => pixels,
+                    // Given up: drawn sharp again once what came is heard.
+                    None => {
+                        self.dirty = true;
+                        return (origin, wide, high);
+                    }
+                },
+                false => doc.render_part(times, part, &mut self.text),
             };
+            let reaches = if index == self.active { self.reaches(times) } else { Vec::new() };
             self.shown[index] = Some(drawn::Drawn { stamp, zoom: times, part, pixels, reaches });
             if index == self.active {
                 self.touched = None;
@@ -4444,7 +4483,14 @@ impl Studio {
         }
     }
 
+    #[cfg(test)]
     pub fn draw(&mut self, out: &mut [u32]) {
+        self.draw_stopping(out, &mut || false);
+    }
+
+    /// The window drawn, a frame drawn sharp given up whenever `stop` says
+    /// something has come that it should be given up for.
+    pub fn draw_stopping(&mut self, out: &mut [u32], stop: &mut dyn FnMut() -> bool) {
         let (width, height) = (self.width, self.height);
         let layout = self.layout();
         let view = layout.view;
@@ -4459,12 +4505,12 @@ impl Studio {
             }
         }
         for index in 0..self.frame_count() {
-            let (origin, wide, high) = self.shown_frame(index, view);
+            let (origin, wide, high) = self.shown_frame(index, view, stop);
             let shown = Rect::new(origin.0, origin.1, wide, high).intersect(view);
             let Some(Some(drawn::Drawn { zoom: kept_zoom, part, pixels, .. })) = self.shown.get(index) else { continue };
             // Drawn at another zoom while the page moves: where each pixel
             // of the window falls in what was drawn, by the nearest one.
-            let by = kept_zoom / self.zoom;
+            let by = if same_zoom(*kept_zoom, self.zoom) { 1.0 } else { kept_zoom / self.zoom };
             let reach = match by == 1.0 {
                 true => part.moved(origin.0, origin.1),
                 false => {
@@ -5472,6 +5518,8 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let (mut size, mut title, mut cursor) = ((width, height), String::new(), None::<crate::editor::Cursor>);
     let mut time = 0u32;
     let mut saved = std::time::Instant::now();
+    // What came while a frame was being drawn sharp, still to be heard.
+    let mut held: Vec<Event> = Vec::new();
     loop {
         // What has happened: a run of the pointer's movements told as
         // where it last was, and a run of the wheel's notches all taken
@@ -5483,9 +5531,10 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in()].into_iter().flatten().min(),
             Shown::Home(_) => None,
         };
-        let mut events: Vec<Event> = match wait {
-            Some(wait) => event_within(conn, wait)?.into_iter().collect(),
-            None => vec![conn.wait_for_event()?],
+        let mut events: Vec<Event> = match (held.is_empty(), wait) {
+            (false, _) => std::mem::take(&mut held),
+            (true, Some(wait)) => event_within(conn, wait)?.into_iter().collect(),
+            (true, None) => vec![conn.wait_for_event()?],
         };
         if let Shown::Studio(studio) = &mut screen {
             studio.note_left();
@@ -5727,7 +5776,18 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         if dirty {
             match &mut screen {
                 Shown::Home(home) => home.draw(&mut frame),
-                Shown::Studio(studio) => studio.draw(&mut frame),
+                // Taken off the display while a frame is drawn sharp, to be
+                // heard next; the wheel, a click or a key gives it up.
+                Shown::Studio(studio) => studio.draw_stopping(&mut frame, &mut || {
+                    while let Ok(Some(event)) = conn.poll_for_event() {
+                        let stops = stops_drawing(&event);
+                        held.push(event);
+                        if stops {
+                            return true;
+                        }
+                    }
+                    false
+                }),
             }
             crate::x11::put(conn, window, gc, false, size.0, size.1, &frame)?;
         }
@@ -5796,6 +5856,21 @@ fn event_within(conn: &x11rb::rust_connection::RustConnection, wait: std::time::
         let mut socket = libc::pollfd { fd: conn.stream().as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: one pollfd, which lives through the call.
         unsafe { libc::poll(&mut socket, 1, left.as_millis().clamp(1, i32::MAX as u128) as i32) };
+    }
+}
+
+/// Whether something come while a frame is drawn sharp is worth giving
+/// that up for, to see to at once: the wheel or a trackpad's scrolling,
+/// a click, a key, a drag with the middle button, or the window changed;
+/// not the pointer only moved.
+fn stops_drawing(event: &x11rb::protocol::Event) -> bool {
+    use x11rb::protocol::Event;
+    match event {
+        Event::ButtonPress(_) | Event::KeyPress(_) | Event::ConfigureNotify(_) | Event::ClientMessage(_) | Event::XinputButtonPress(_) => true,
+        Event::MotionNotify(motion) => u16::from(motion.state) & 0x200 != 0,
+        // Scrolling axes are past the first two, across and down.
+        Event::XinputMotion(motion) => motion.valuator_mask.first().is_some_and(|mask| mask & !0b11 != 0) || motion.valuator_mask.iter().skip(1).any(|&mask| mask != 0) || motion.button_mask.first().is_some_and(|mask| mask & 0b100 != 0),
+        _ => false,
     }
 }
 
@@ -6607,6 +6682,40 @@ mod tests {
         studio.draw(&mut out);
         studio.pan.0 += 6000.0;
         studio.draw(&mut out);
+    }
+    #[test]
+    fn drawing_sharp_after_a_zoom_is_given_up_for_what_comes() {
+        let mut studio = studio();
+        studio.add_picture(checker(800, 600), "one");
+        let mut words = Shape::new(Tool::Text, 0x1A1A1A, 2.0, (100.0, 500.0));
+        words.text = "In bands".into();
+        studio.doc.layers.push(Layer::shape(words));
+        studio.changed();
+        // Drawn a band at a time, the same as all at once.
+        let part = Rect::new(30, 20, 700, 560);
+        let whole = studio.doc.render_part(1.3, part, &mut studio.text);
+        assert_eq!(studio.doc.render_part_stopping(1.3, part, &mut studio.text, &mut || false), Some(whole));
+        let mut bands = 0;
+        assert_eq!(studio.doc.render_part_stopping(1.3, part, &mut studio.text, &mut || { bands += 1; bands > 2 }), None);
+        let mut out = vec![0u32; 1400 * 900];
+        studio.draw(&mut out);
+        let before = studio.zoom;
+        studio.wheel_at(700, 450, Mods { ctrl: true, ..Mods::default() });
+        studio.scrolled(0.0, -3.0);
+        studio.draw(&mut out);
+        studio.moving = Some(std::time::Instant::now() - SETTLE);
+        studio.settle();
+        studio.take_dirty();
+        // Something came: what was drawn is shown still, and drawn sharp
+        // the next time round.
+        studio.draw_stopping(&mut out, &mut || true);
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.zoom), Some(before));
+        assert!(studio.take_dirty());
+        studio.draw(&mut out);
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.zoom), Some(studio.zoom));
+        // The same zoom but for a speck left over by notches in and out
+        // is the same zoom.
+        assert!(same_zoom(studio.zoom, studio.zoom * (1.0 + 1e-6)) && !same_zoom(studio.zoom, studio.zoom * 1.001));
     }
     #[test]
     fn zooming_shows_what_was_drawn_until_the_page_is_still() {
