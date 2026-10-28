@@ -5819,6 +5819,28 @@ mod tests {
     }
 
     #[test]
+    fn an_arrow_drawn_on_a_picture_is_kept_as_drawn() {
+        let mut studio = studio();
+        studio.add_picture(checker(400, 300), "pic");
+        let Kind::Picture(picture) = studio.doc.layers[0].kind.clone() else { panic!() };
+        // From near its middle to a spot further in: both ends on it.
+        let (from, to) = ((picture.cx - 10.0, picture.cy - 10.0), (picture.cx + 80.0, picture.cy + 60.0));
+        studio.key(Key::Char('a'), Mods::default(), true);
+        drag(&mut studio, from, to, Mods::default());
+        let Kind::Shape(arrow) = studio.doc.layers[1].kind.clone() else { panic!() };
+        let length = |shape: &Shape| (shape.points[1].0 - shape.points[0].0).hypot(shape.points[1].1 - shape.points[0].1);
+        assert!((length(&arrow) - 90f32.hypot(70.0)).abs() < 2.0, "{:?}", arrow.points);
+        // And it goes with the picture, as drawn.
+        studio.selected = vec![0];
+        studio.held = vec![studio.doc.layers[0].clone()];
+        studio.checkpoint();
+        studio.set_field(Field::X, 300.0);
+        let Kind::Shape(after) = studio.doc.layers[1].kind.clone() else { panic!() };
+        assert!((length(&after) - length(&arrow)).abs() < 2.0, "{:?} then {:?}", arrow.points, after.points);
+        assert!((after.points[0].0 - arrow.points[0].0 - (after.points[1].0 - arrow.points[1].0)).abs() < 1.0);
+    }
+
+    #[test]
     fn pages_and_frames_are_made_worked_in_undone_and_kept() {
         let mut studio = studio();
         studio.add_picture(checker(100, 80), "pic");

@@ -892,9 +892,23 @@ impl Shape {
             if dx.abs() > hw + reach || dy.abs() > hh + reach {
                 continue;
             }
+            let spot = |(x, y): Point| {
+                let (lx, ly) = turn_point((x, y), anchor.middle, -anchor.angle);
+                (anchor.id, ((lx - anchor.middle.0) / hw).clamp(-1.0, 1.0), ((ly - anchor.middle.1) / hh).clamp(-1.0, 1.0))
+            };
+            // Both ends on the same thing is a line drawn on it, as an
+            // arrow is drawn on a picture: each end kept at its spot, to
+            // go with it, and not pointed at its middle, which would
+            // leave no line at all.
+            let other = 1 - end.min(1);
+            if self.stuck[other].is_some_and(|(id, ..)| id == anchor.id) {
+                self.stuck[end] = Some(spot(at));
+                self.stuck[other] = Some(spot(self.points[other]));
+                break;
+            }
             self.stuck[end] = Some(match dx.abs() < hw * 0.6 && dy.abs() < hh * 0.6 {
                 true => (anchor.id, WHOLE, WHOLE),
-                false => (anchor.id, (dx / hw).clamp(-1.0, 1.0), (dy / hh).clamp(-1.0, 1.0)),
+                false => spot(at),
             });
             break;
         }
