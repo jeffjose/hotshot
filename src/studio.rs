@@ -29,6 +29,8 @@ pub use menu::parse_frame_size;
 mod panel;
 mod picker;
 mod place;
+/// The smallest the canvas and the projects are drawn.
+pub const MIN_SIZE: (i32, i32) = place::MIN;
 mod preview;
 mod rulers;
 mod snap;
@@ -1689,7 +1691,7 @@ impl Studio {
     pub fn resize(&mut self, width: i32, height: i32) {
         if (width, height) != (self.width, self.height) {
             let before = self.layout().view;
-            (self.width, self.height) = (width.max(400), height.max(300));
+            (self.width, self.height) = (width.max(place::MIN.0), height.max(place::MIN.1));
             // The artboard stays where it was in the middle of the view.
             let after = self.layout().view;
             self.pan = (self.pan.0 + (after.w - before.w) as f32 / 2.0, self.pan.1 + (after.h - before.h) as f32 / 2.0);
@@ -5007,7 +5009,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let text = Text::load();
     // Where it was when it was last closed, and as large.
     let place = place::last((display.width, display.height));
-    let (width, height) = (place.w, place.h);
+    let (width, height) = (place.w.max(place::MIN.0), place.h.max(place::MIN.1));
 
     let mut pages = None;
     let mut pictures = Vec::new();
@@ -5124,7 +5126,10 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     Shown::Studio(studio) => studio.dirty = true,
                 },
                 Event::ConfigureNotify(configured) if configured.window == window => {
-                    let now = (i32::from(configured.width), i32::from(configured.height));
+                    // Never drawn smaller than the canvas and the projects are
+                    // laid out for, however small the window is made: what
+                    // does not fit is cut off by the window.
+                    let now = (i32::from(configured.width).max(place::MIN.0), i32::from(configured.height).max(place::MIN.1));
                     if now != size {
                         size = now;
                         frame = vec![0u32; (now.0 * now.1) as usize];

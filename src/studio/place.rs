@@ -18,6 +18,10 @@ pub struct Place {
     pub maximized: bool,
 }
 
+/// The smallest the window is drawn, and asked of the window manager to
+/// be: the panels and the canvas between them need that much.
+pub const MIN: (i32, i32) = (960, 540);
+
 fn file() -> Option<PathBuf> {
     crate::output::state_file("canvas-window")
 }
@@ -87,7 +91,8 @@ pub fn keep(conn: &impl Connection, window: Window, root: Window) {
 pub fn ask(conn: &impl Connection, window: Window, place: Place) -> Result<(), x11rb::errors::ConnectionError> {
     use x11rb::protocol::xproto::PropMode;
     use x11rb::wrapper::ConnectionExt as _;
-    let sizes = [1 | 2, place.x as u32, place.y as u32, place.w as u32, place.h as u32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    // Where, how large, and how small it may be made.
+    let sizes = [1 | 2 | 16, place.x as u32, place.y as u32, place.w as u32, place.h as u32, MIN.0 as u32, MIN.1 as u32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     conn.change_property32(PropMode::REPLACE, window, AtomEnum::WM_NORMAL_HINTS, AtomEnum::WM_SIZE_HINTS, &sizes)?;
     if place.maximized {
         let atom = |name: &str| conn.intern_atom(false, name.as_bytes()).ok().and_then(|cookie| cookie.reply().ok()).map(|reply| reply.atom);

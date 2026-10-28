@@ -146,7 +146,7 @@ impl Home {
     }
 
     pub fn resize(&mut self, width: i32, height: i32) {
-        (self.width, self.height, self.dirty) = (width.max(400), height.max(300), true);
+        (self.width, self.height, self.dirty) = (width.max(crate::studio::MIN_SIZE.0), height.max(crate::studio::MIN_SIZE.1), true);
     }
 
     pub fn take_dirty(&mut self) -> bool {
