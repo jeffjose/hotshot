@@ -23,6 +23,7 @@ use crate::text::{icons, Text, FACES};
 mod actions;
 mod menu;
 mod panel;
+mod picker;
 
 use actions::custom_drop;
 use menu::{MenuKind, MenuState};
@@ -885,6 +886,8 @@ enum Drag {
     Crop { pull: (i32, i32), from: (f32, f32) },
     /// A slider dragged along, from where its track begins, so wide.
     Slide { field: Field, left: i32, wide: i32 },
+    /// A part of the color picker dragged along.
+    Picker { part: u8, rect: Rect },
 }
 
 /// A number in the panel of properties.
@@ -1015,6 +1018,8 @@ enum Control {
     Window(u8),
     Entry(Naming),
     Stuck(u8),
+    /// A part of the color picker: its square, its strips, its dropper.
+    Picker(u8),
     /// A part of a panel that is no control.
     Panel,
 }
@@ -1190,6 +1195,8 @@ enum Naming {
     /// the file of one of the frame's export sizes ends in.
     Title(usize),
     Suffix(usize),
+    /// A color as hex, in the picker.
+    Hex,
 }
 
 /// What the window has to do for the canvas, that the canvas cannot.
@@ -1240,6 +1247,10 @@ pub struct Studio {
     keep_ratio: bool,
     copied: Vec<Layer>,
     crop_aspect: usize,
+    /// The color being picked, as hue, saturation and value; and whether
+    /// the next click takes a color off the page.
+    hsv: (f32, f32, f32),
+    eyedropping: bool,
     text: Text,
     width: i32,
     height: i32,
@@ -1349,6 +1360,8 @@ impl Studio {
             keep_ratio: false,
             copied: Vec::new(),
             crop_aspect: 0,
+            hsv: (0.0, 0.0, 1.0),
+            eyedropping: false,
             path: None,
             edited: false,
             dir,
@@ -1667,17 +1680,7 @@ impl Studio {
         layout.rules.extend(part.rules.into_iter().filter(|rule| rule.y >= top && rule.y < panel.bottom()));
         // The colors, beside the panel at the color they are for.
         if let (Some(paint), Some(field)) = (self.palette, field) {
-            let colors: Vec<Option<u32>> = (paint == Paint::Fill).then_some(None).into_iter().chain(PALETTE.iter().map(|&(color, _)| Some(color))).collect();
-            let (each, across) = (24, 7);
-            let rows = (colors.len() as i32 + across - 1) / across;
-            let size = (across * (each + 4) + 16, rows * (each + 4) + 16);
-            let place = Rect::new(panel.x - 8 - size.0, (field.y - 8).clamp(INSET, self.height - INSET - size.1), size.0, size.1);
-            let swatches = colors.iter().enumerate().map(|(at, &color)| (Rect::new(place.x + 10 + at as i32 % across * (each + 4), place.y + 10 + at as i32 / across * (each + 4), each, each), Control::Swatch(paint, color)));
-            let mut first: Vec<(Rect, Control)> = swatches.collect();
-            first.push((place, Control::Panel));
-            first.append(&mut layout.controls);
-            layout.controls = first;
-            layout.popover = Some(place);
+            self.layout_picker(layout, panel, field, paint);
         }
         layout.controls.push((panel, Control::Panel));
     }
@@ -1813,7 +1816,7 @@ impl Studio {
         if !self.over_page(self.pointer) {
             return Cursor::Arrow;
         }
-        if self.framing {
+        if self.framing || self.eyedropping {
             return Cursor::Crosshair;
         }
         match self.tool {
@@ -1829,6 +1832,7 @@ impl Studio {
         (self.pointer, self.mods) = ((x, y), mods);
         let at = self.to_doc((x, y));
         match self.drag {
+            Drag::Picker { part, rect } => self.pick_at(part, rect, (x, y), false),
             Drag::Slide { field, left, wide } => self.slide_to(field, left, wide, x),
             Drag::None => {
                 // Over an open list, the list a row of it opens.
@@ -1981,6 +1985,15 @@ impl Studio {
             }
             return outcome;
         }
+        // A color taken off the page, for the paint the picker is open for.
+        if self.eyedropping {
+            self.eyedropping = false;
+            if let (Some(paint), Some(color)) = (self.palette, self.take_color(at_window)) {
+                self.paint(paint, Some(color));
+                self.hsv = picker::to_hsv(color);
+            }
+            return Outcome::Continue;
+        }
         // On the page.
         (self.palette, self.flyout) = (None, None);
         self.commit_name();
@@ -2125,7 +2138,7 @@ impl Studio {
     fn press_control(&mut self, control: Control, double: bool) -> Outcome {
         // The colors stay open while colors are picked, and a group's list
         // while it is picked from; anything else closes them.
-        if !matches!(control, Control::Swatch(..) | Control::ColorField(_)) {
+        if !matches!(control, Control::Swatch(..) | Control::ColorField(_) | Control::Picker(_) | Control::Entry(Naming::Hex)) {
             self.palette = None;
         }
         if !matches!(control, Control::Group(_) | Control::Pick(_)) {
@@ -2170,6 +2183,7 @@ impl Studio {
                     Naming::Suffix(index) => self.doc.exports.get(index).map_or(String::new(), |size| size.suffix.clone()),
                     Naming::Frame => self.doc.name.clone(),
                     Naming::Page(page) => self.pages[page].name.clone(),
+                    Naming::Hex => format!("{:06X}", self.palette.and_then(|paint| self.paint_color(paint)).unwrap_or(0)),
                 };
                 self.renaming = Some((naming, now));
             }
@@ -2210,7 +2224,17 @@ impl Studio {
                 self.set_tool(tool);
             }
 
-            Control::ColorField(paint) => self.palette = if self.palette == Some(paint) { None } else { Some(paint) },
+            Control::ColorField(paint) => match self.palette == Some(paint) {
+                true => self.palette = None,
+                false => self.open_picker(paint),
+            },
+            Control::Picker(picker::DROPPER) => self.eyedropping = !self.eyedropping,
+            Control::Picker(part) => {
+                let rect = self.control_rect(control).unwrap_or_default();
+                self.drag = Drag::Picker { part, rect };
+                let at = self.pointer;
+                self.pick_at(part, rect, at, true);
+            }
             Control::Tool(tool) => self.set_tool(tool),
             Control::Layer(index) => {
                 match self.mods.shift {
@@ -2276,7 +2300,12 @@ impl Studio {
                 self.doc.background = Fill::Backdrop(which);
                 self.changed();
             }
-            Control::Swatch(paint, color) => self.paint(paint, color),
+            Control::Swatch(paint, color) => {
+                self.paint(paint, color);
+                if let Some(color) = color {
+                    self.hsv = picker::to_hsv(color);
+                }
+            }
             Control::Shadow(which) => self.restyle(|layer| {
                 if let Kind::Picture(picture) = &mut layer.kind {
                     picture.shadow = which;
@@ -2950,6 +2979,16 @@ impl Studio {
         if typed.is_empty() && matches!(naming, Naming::Frame | Naming::Page(_)) {
             return;
         }
+        // A color typed as hex: the paint the picker is open for made it.
+        if naming == Naming::Hex {
+            let hex = typed.trim_start_matches('#');
+            if let (Some(paint), Ok(color)) = (self.palette, u32::from_str_radix(hex, 16)) {
+                let color = if hex.len() == 3 { (color >> 8 & 0xF) * 0x110000 | (color >> 4 & 0xF) * 0x1100 | (color & 0xF) * 0x11 } else { color & 0xFF_FFFF };
+                self.paint(paint, Some(color));
+                self.hsv = picker::to_hsv(color);
+            }
+            return;
+        }
         self.checkpoint();
         match naming {
             Naming::Frame => self.doc.name = typed,
@@ -2963,6 +3002,7 @@ impl Studio {
                     picture.title = typed;
                 }
             }
+            Naming::Hex => {}
             Naming::Suffix(index) => {
                 if let Some(size) = self.doc.exports.get_mut(index) {
                     size.suffix = typed.replace([' ', ':', '/'], "_");
@@ -3900,6 +3940,7 @@ impl Studio {
                             _ => String::new(),
                         }),
                         Naming::Suffix(index) => ("", self.doc.exports.get(index).map_or(String::new(), |size| size.suffix.clone())),
+                        Naming::Hex => ("Hex", format!("{:06X}", self.palette.and_then(|paint| self.paint_color(paint)).unwrap_or(0))),
                         _ => ("", String::new()),
                     };
                     let mut x = rect.x + 9;
@@ -3913,6 +3954,7 @@ impl Studio {
                         None => self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &now),
                     }
                 }
+                Control::Picker(part) => self.draw_picker(canvas, rect, part, hovered),
                 Control::Stuck(end) => {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
                     self.text.draw(canvas, rect.x + 9, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, if end == 0 { "Start" } else { "End" });
