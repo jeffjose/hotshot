@@ -4261,8 +4261,10 @@ impl Studio {
     fn scale_to(&mut self, pull: (i32, i32), from: (f32, f32), at: (f32, f32), mods: Mods) {
         let Some(index) = self.picked() else { return };
         let Some(before) = self.held.first().cloned() else { return };
-        // Widths and heights the rest have, for a side pulled to stop at.
-        let others = self.other_edges();
+        // Widths and heights the rest have, for a side pulled to stop at,
+        // in what is worked in and on the page round it.
+        let mut others = self.other_edges();
+        others.extend(self.outside_edges());
         let (widths, heights): (Vec<f32>, Vec<f32>) = others.iter().map(|edges| (edges[2] - edges[0], edges[3] - edges[1])).unzip();
         let reach = 6.0 / self.zoom;
         let fit = |size: f32, sizes: &[f32], pulled: bool| if pulled { snap::nearest_size(size, sizes, reach).unwrap_or(size) } else { size };
@@ -8084,6 +8086,44 @@ mod tests {
         drag(&mut studio, (50.0, 250.0), (50.0 + 2.0 * step, 250.0), Mods { ctrl: true, ..Mods::default() });
         assert!(studio.field(Field::X).unwrap() > 0.5);
         assert!(studio.guides.is_empty(), "the guides go when it is let go of");
+    }
+
+    /// A box on what is worked in, from one corner to the other.
+    fn boxed(studio: &mut Studio, (x0, y0): (f32, f32), (x1, y1): (f32, f32)) -> usize {
+        let mut shape = Shape::new(Tool::Rect, 0xE5484D, 3.0, (x0, y0));
+        shape.points[1] = (x1, y1);
+        studio.doc.layers.push(Layer::shape(shape));
+        studio.changed();
+        studio.doc.layers.len() - 1
+    }
+
+    #[test]
+    fn a_layer_in_a_frame_snaps_to_the_pages_own_and_they_to_the_layers_in_frames() {
+        let mut studio = studio();
+        // A box of the page's own, beside the frame.
+        studio.activate(LOOSE);
+        boxed(&mut studio, (900.0, 150.0), (1000.0, 250.0));
+        // In the frame: spaced evenly between one of the frame's and the
+        // page's box, its top on theirs.
+        studio.activate(0);
+        boxed(&mut studio, (100.0, 150.0), (200.0, 250.0));
+        let moved = boxed(&mut studio, (497.0, 153.0), (597.0, 253.0));
+        studio.selected = vec![moved];
+        studio.held = vec![studio.doc.layers[moved].clone()];
+        assert_eq!(studio.snap(0.0, 0.0), (3.0, -3.0), "an even gap with the page's box");
+        let widths: Vec<f32> = studio.gaps.iter().map(|gap| gap.to - gap.from).collect();
+        assert!(widths.len() == 2 && (widths[0] - widths[1]).abs() < 0.5 && studio.gaps[1].to > 890.0, "{:?}", studio.gaps);
+        // On the page, its box goes to the bottom of a frame's layer.
+        studio.activate(LOOSE);
+        studio.selected = vec![0];
+        studio.held = vec![studio.doc.layers[0].clone()];
+        let (_, dy) = studio.snap(0.0, 98.0);
+        assert_eq!(dy, 100.0, "its top to the bottom of the frame's layer at 250");
+        // And a frame moved goes to the page's box's edge.
+        studio.activate(0);
+        let left = studio.loose().layers[0].clone().bounds(&mut studio.text).0;
+        let at = studio.snap_frame((left - 800.0 + 2.0, 3.0), false);
+        assert_eq!(at, ((left - 800.0).round(), 3.0), "its right to the box's left");
     }
 
     #[test]

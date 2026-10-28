@@ -140,9 +140,10 @@ A file has pages, listed down the left, and each page has frames: the
 pictures you export, laid out side by side. `F`, or the frame tool,
 drags out a new one; drag a frame by its name to move it, double-click
 the name to rename it. A frame being moved snaps to the edges and
-middles of the other frames, with a red line across where it does, and
-to even gaps between them, marked in magenta with how wide; hold Ctrl
-not to snap, and Shift to keep it to across or down.
+middles of the other frames and of the page's own layers, with a red
+line across where it does, and to even gaps between them, marked in
+magenta with how wide; hold Ctrl not to snap, and Shift to keep it to
+across or down.
 
 As in Figma, a shape drawn, a picture pasted or dropped, or a label put down outside
 every frame is the page's own: drawn on the page, not cut off by a
@@ -272,7 +273,10 @@ a hard square rather than smoothed, to look at a screenshot pixel by
 pixel, and from 1600% a faint grid shows between the pixels. Shift-click or drag a box to select several,
 and line them up from the panel. Things being moved snap to the edges
 and middles of the artboard and of each other, with a guide drawn where
-they do; hold Ctrl not to snap. Boxes, ovals and text keep their handles
+they do, and across the page: a layer in a frame to the page's own
+layers beside it, their edges, middles and even gaps, and one of the
+page's own to the frames, to the others and to the layers in the frames;
+hold Ctrl not to snap. Boxes, ovals and text keep their handles
 when rotated, and text grows by its corners; arrows and lines have a
 handle at each end, and stick to pictures as well as shapes.
 

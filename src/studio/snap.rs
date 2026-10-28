@@ -20,6 +20,36 @@ impl Studio {
             .collect()
     }
 
+    /// The boxes of what is on the page beside what is worked in, where
+    /// they are on that, as Figma snaps to everything near: in a frame,
+    /// the page's own layers; on the page, the frames and the layers in
+    /// each.
+    pub(super) fn outside_edges(&mut self) -> Vec<Edges> {
+        let (x0, y0) = (self.doc.x, self.doc.y);
+        let mut boxes = Vec::new();
+        let add = |boxes: &mut Vec<Edges>, layers: &[Layer], (dx, dy): (f32, f32), text: &mut Text| {
+            for layer in layers.iter().filter(|layer| !layer.hidden) {
+                let (x, y, w, h) = layer.bounds(text);
+                boxes.push([x + dx, y + dy, x + w + dx, y + h + dy]);
+            }
+        };
+        match self.on_page() {
+            true => {
+                for index in 0..self.frame_count() {
+                    let frame = &self.pages[self.page].frames[index];
+                    let (fx, fy, layers) = (frame.x, frame.y, frame.layers.clone());
+                    boxes.push([fx, fy, fx + frame.width as f32, fy + frame.height as f32]);
+                    add(&mut boxes, &layers, (fx - x0, fy - y0), &mut self.text);
+                }
+            }
+            false => {
+                let layers = self.pages[self.page].loose.layers.clone();
+                add(&mut boxes, &layers, (-x0, -y0), &mut self.text);
+            }
+        }
+        boxes
+    }
+
     /// The boxes of the frames of the page but the one worked in, on it.
     pub(super) fn other_frames(&self) -> Vec<Edges> {
         (0..self.frame_count())
@@ -42,7 +72,14 @@ impl Studio {
             return (at.0.round(), at.1.round());
         }
         let (w, h) = (self.doc.width as f32, self.doc.height as f32);
-        let others = self.other_frames();
+        // The other frames, and the page's own layers, which are as much
+        // on the page.
+        let mut others = self.other_frames();
+        let loose = self.loose().layers.clone();
+        for layer in loose.iter().filter(|layer| !layer.hidden) {
+            let (x, y, w, h) = layer.bounds(&mut self.text);
+            others.push([x, y, x + w, y + h]);
+        }
         let (across, down) = spacing::lines_of(&others);
         let snapped = spacing::snap_box([at.0, at.1, at.0 + w, at.1 + h], &across, &down, &others, 6.0 / self.zoom);
         let at = ((at.0 + snapped.by.0).round(), (at.1 + snapped.by.1).round());
@@ -64,7 +101,8 @@ impl Studio {
         for &(x, y, w, h) in &held {
             (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h));
         }
-        let others = self.other_edges();
+        let mut others = self.other_edges();
+        others.extend(self.outside_edges());
         // The frame's edges and middles; on the page, outside the frames,
         // there is none, and the frames' own edges instead.
         let (mut across, mut down) = match self.on_page() {
