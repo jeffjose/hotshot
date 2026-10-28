@@ -1644,6 +1644,8 @@ pub struct Studio {
     tool: Tool,
     selected: Vec<usize>,
     hovered: Option<usize>,
+    /// The control the pointer was last over, as drawn.
+    hover_shown: Option<Control>,
     drag: Drag,
     pointer: (i32, i32),
     mods: Mods,
@@ -1755,6 +1757,7 @@ impl Studio {
             tool: Tool::Select,
             selected: Vec::new(),
             hovered: None,
+            hover_shown: None,
             drag: Drag::None,
             pointer: (0, 0),
             mods: Mods::default(),
@@ -2511,9 +2514,11 @@ impl Studio {
                     (Tool::Select, true) => self.layer_at(at),
                     _ => None,
                 };
-                self.dirty |= hovered != self.hovered;
-                self.hovered = hovered;
-                self.dirty = true;
+                // Drawn again only for what shows where the pointer is: the
+                // layer or the control it is over, or the text tool's caret
+                // that follows it; a move over nothing new draws nothing.
+                self.dirty |= hovered != self.hovered || over != self.hover_shown || self.tool == Tool::Text;
+                (self.hovered, self.hover_shown) = (hovered, over);
             }
             Drag::NewFrame { .. } => self.dirty = true,
             Drag::MoveFrame { from, origin, moved } => {
