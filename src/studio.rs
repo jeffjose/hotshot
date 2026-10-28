@@ -25,6 +25,7 @@ mod arrange;
 mod menu;
 mod panel;
 mod picker;
+mod place;
 mod preview;
 mod snap;
 mod search;
@@ -4526,7 +4527,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let mut display = crate::x11::Display::open()?;
     display.prepare()?;
     let text = Text::load();
-    let (width, height) = ((display.width * 4 / 5).clamp(900, 2400), (display.height * 4 / 5).clamp(600, 1600));
+    // Where it was when it was last closed, and as large.
+    let place = place::last((display.width, display.height));
+    let (width, height) = (place.w, place.h);
 
     let mut pages = None;
     let mut pictures = Vec::new();
@@ -4554,7 +4557,8 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let window = conn.generate_id()?;
     let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::KEY_PRESS | EventMask::KEY_RELEASE | EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE;
     let look = CreateWindowAux::new().background_pixel(VIEW_COLOR).event_mask(events);
-    conn.create_window(x11rb::COPY_FROM_PARENT as u8, window, display.root, ((display.width - width) / 2) as i16, ((display.height - height) / 2) as i16, width as u16, height as u16, 0, WindowClass::INPUT_OUTPUT, x11rb::COPY_FROM_PARENT, &look)?;
+    conn.create_window(x11rb::COPY_FROM_PARENT as u8, window, display.root, place.x as i16, place.y as i16, width as u16, height as u16, 0, WindowClass::INPUT_OUTPUT, x11rb::COPY_FROM_PARENT, &look)?;
+    place::ask(conn, window, place)?;
     conn.change_property8(PropMode::REPLACE, window, AtomEnum::WM_CLASS, AtomEnum::STRING, b"hotshot\0Hotshot\0")?;
     let (protocols, delete) = (atom("WM_PROTOCOLS")?, atom("WM_DELETE_WINDOW")?);
     conn.change_property32(PropMode::REPLACE, window, protocols, AtomEnum::ATOM, &[delete])?;
@@ -4756,6 +4760,8 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         }
         conn.flush()?;
     }
+    // Kept for the next time, as it is now.
+    place::keep(conn, window, display.root);
     Ok(())
 }
 /// A frame just the size of a picture, holding it.
