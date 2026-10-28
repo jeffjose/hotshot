@@ -592,8 +592,9 @@ pub struct Doc {
     pub below: usize,
     pub tier: u32,
     /// On a board, how it is drawn and on what, given it from its page as
-    /// it is drawn: its look and its ground. Not kept in its file.
-    pub board: Option<(u8, u8)>,
+    /// it is drawn: its look, its ground, and whether it is on the board's
+    /// paper rather than shown in Design. Not kept in its file.
+    pub board: Option<(u8, u8, bool)>,
 }
 
 /// A size a frame is exported at.
@@ -776,13 +777,18 @@ impl Doc {
                 Kind::Shape(shape) if effects::changes_beneath(shape.tool) => self.change_beneath_at_most(index, &mut out, part, times, text),
                 Kind::Shape(shape) => {
                     let mut shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
-                    if let Some((look, ground)) = self.board {
+                    if let Some((look, ground, _)) = self.board {
                         board::look::dress(&mut shape, look, ground, times);
                     }
                     if (part.x, part.y) != (0, 0) {
                         shape.translate(-part.x as f32, -part.y as f32);
                     }
-                    draw_shape(&mut out, part.w, part.h, &shape, text);
+                    // On a board's paper, which is under what is drawn.
+                    let paper = match (self.board, self.background) {
+                        (Some((_, ground, true)), Fill::None) => Some(board::look::PAPERS[usize::from(ground.min(2))].0),
+                        _ => None,
+                    };
+                    draw_shape_on(&mut out, part.w, part.h, &shape, text, paper);
                 }
             }
         }
@@ -1420,6 +1426,14 @@ fn sample(pixels: &[u32], width: i32, height: i32, x: f32, y: f32) -> u32 {
 /// covers made opaque, which the editor's drawing, on a screen, has no
 /// need to say.
 fn draw_shape(out: &mut [u32], wide: i32, high: i32, shape: &Shape, text: &mut Text) {
+    draw_shape_on(out, wide, high, shape, text, None);
+}
+
+/// The same, over what will be under it where nothing is yet, when that
+/// is known: a board's paper, which the edges of its lines are blended
+/// with rather than with black, so that a line is no heavier on the
+/// screen than in an export.
+fn draw_shape_on(out: &mut [u32], wide: i32, high: i32, shape: &Shape, text: &mut Text, under: Option<u32>) {
     if let Some(drop) = shape.shadow {
         draw_shape_shadow(out, wide, high, shape, drop, text);
     }
@@ -1428,13 +1442,26 @@ fn draw_shape(out: &mut [u32], wide: i32, high: i32, shape: &Shape, text: &mut T
         return;
     }
     let before: Vec<u32> = (place.y..place.bottom()).flat_map(|y| out[(y * wide + place.x) as usize..(y * wide + place.right()) as usize].to_vec()).collect();
+    if let Some(paper) = under {
+        for y in place.y..place.bottom() {
+            for pixel in &mut out[(y * wide + place.x) as usize..(y * wide + place.right()) as usize] {
+                if *pixel >> 24 == 0 {
+                    *pixel = paper & 0xFF_FFFF;
+                }
+            }
+        }
+    }
     shape.draw(&mut Canvas::new(out, wide, high), text);
     for (at, &was) in before.iter().enumerate() {
         let (x, y) = (place.x + at as i32 % place.w, place.y + at as i32 / place.w);
         let pixel = &mut out[(y * wide + x) as usize];
         // Drawn on, it is opaque; and over nothing, its color is the
         // color drawn, and not that color mixed with black.
-        *pixel = if *pixel & 0xFF_FFFF != was & 0xFF_FFFF { 0xFF00_0000 | (*pixel & 0xFF_FFFF) } else { was };
+        let laid = match under {
+            Some(paper) if was >> 24 == 0 => paper & 0xFF_FFFF,
+            _ => was & 0xFF_FFFF,
+        };
+        *pixel = if *pixel & 0xFF_FFFF != laid { 0xFF00_0000 | (*pixel & 0xFF_FFFF) } else { was };
     }
 }
 

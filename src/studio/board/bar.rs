@@ -8,7 +8,7 @@
 use super::*;
 
 /// How large the words can be: small, medium, large and huge.
-pub(in crate::studio) const WORD_SIZES: [u32; 4] = [16, 20, 28, 36];
+pub(in crate::studio) const WORD_SIZES: [u32; 4] = [13, 16, 22, 30];
 
 /// How large a swatch of the bar is, the room round them, and the gap
 /// between groups.

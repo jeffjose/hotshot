@@ -410,14 +410,21 @@ Its tools are along the bottom, each with its key: the pointer `V`, the
 hand `H`, a box `R`, an oval `O`, a diamond `D`, an arrow `A`, a line
 `L`, the pen `P`, text `T`, a sticky note `S`, and a picture `I`, which
 takes one off the clipboard (or drop one on the board). What a board
-draws is drawn by hand, a little rough, each line gone over twice, in
-a dark ink with a soft fill, and its words are in Architects Daughter;
-each shape keeps its own wobble wherever it is moved, as it is worked
-out from what the shape is called rather than where it is, and no two
-are alike. Each board has a look, from the bar of styles or `Ctrl+K`:
-Rounded, as it begins, by hand with soft corners and looser lines;
-Sketchy, by hand and angular; or Clean, hairline borders and Geist, as
-Linear's and Vercel's pages are. And a ground: light paper, dark gray
+draws is drawn by hand, in a dark ink two pixels wide with a soft fill,
+and its words are in Architects Daughter at a modest size: a box is
+gone round twice through its corners, each a pixel or two off where it
+is, the second time thinner and fainter, its fill a little off its
+line, and nothing past its corners; an oval is gone round again a
+little wider and turned back a degree or two; an arrow is one line,
+a little curved, its head two short strokes; and the pen's line is
+smooth through where it went, a little thinner at either end. Each
+shape keeps its own wobble wherever it is moved, as it is worked out
+from what the shape is called rather than where it is, and no two are
+alike, and zoomed in it is the same drawing larger. Each board has a
+look, from the bar of styles or `Ctrl+K`: Rounded, as it begins, by
+hand with its corners rounded off; Sketchy, by hand and angular; or
+Clean, one crisp line a pixel and a half wide, real round corners and
+Geist, as Linear's and Vercel's pages are. And a ground: light paper, dark gray
 or black, every color of the board turning to its shade for the dark,
 as Radix's light and dark scales do, so that red becomes a whitish
 red and nothing is picked again; exports follow it. Switching either

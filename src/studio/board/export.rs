@@ -152,7 +152,9 @@ impl Studio {
         let mut out = String::new();
         let opacity = shape.opacity as f32 / 256.0;
         let ink = hex(shape.color);
-        let line = |points: &[(f32, f32)], width: f32, closed: bool| format!("  <path d=\"{}\" fill=\"none\" stroke=\"{ink}\" stroke-width=\"{width:.2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" opacity=\"{opacity:.2}\"/>\n", path_of(points, closed));
+        // A stroke, laid down as strongly as it is drawn.
+        let stroke = |points: &[(f32, f32)], width: f32, strength: f32| format!("  <path d=\"{}\" fill=\"none\" stroke=\"{ink}\" stroke-width=\"{width:.2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" opacity=\"{:.2}\"/>\n", path_of(points, false), opacity * strength);
+        let line = |points: &[(f32, f32)], width: f32| stroke(points, width, 1.0);
         let (x, y, w, h) = shape.frame();
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
@@ -163,14 +165,17 @@ impl Studio {
                     out += &match (forms, shape.tool) {
                         (true, _) => shape.form_paths().0.iter().map(|path| format!("  <path d=\"{}\" fill=\"{fill}\" opacity=\"{opacity:.2}\"/>\n", path_of(path, true))).collect::<String>(),
                         (false, Tool::Ellipse) => format!("  <ellipse cx=\"{:.1}\" cy=\"{:.1}\" rx=\"{:.1}\" ry=\"{:.1}\" fill=\"{fill}\" opacity=\"{opacity:.2}\"/>\n", x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0),
-                        _ => format!("  <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"{:.1}\" fill=\"{fill}\" opacity=\"{opacity:.2}\"/>\n", if shape.sketch { 0.0 } else { shape.radius }),
+                        _ => match shape.sketch_fill() {
+                            Some(path) => format!("  <path d=\"{}\" fill=\"{fill}\" opacity=\"{opacity:.2}\"/>\n", path_of(&path, true)),
+                            None => format!("  <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"{:.1}\" fill=\"{fill}\" opacity=\"{opacity:.2}\"/>\n", if shape.sketch { 0.0 } else { shape.radius }),
+                        },
                     };
                 }
                 if shape.border || shape.placeholder() {
                     if shape.sketch && !shape.placeholder() {
                         let strokes = if forms { shape.form_strokes() } else { shape.sketch_strokes() };
-                        for (points, half) in strokes {
-                            out += &line(&points, half * 2.0, false);
+                        for (points, half, strength) in strokes {
+                            out += &stroke(&points, half * 2.0, strength);
                         }
                     } else {
                         let dash = if shape.placeholder() || shape.dashed { " stroke-dasharray=\"8 6\"" } else { "" };
@@ -189,20 +194,20 @@ impl Studio {
                 if shape.form == shapes::FORM_TABLE && shape.tool == Tool::Rect && !shape.titled {
                     let (_, rules, _) = shape.table(&mut self.text);
                     for down in rules {
-                        out += &line(&[(x, down), (x + w, down)], (shape.stroke * 0.7).max(1.0), false);
+                        out += &line(&[(x, down), (x + w, down)], (shape.stroke * 0.7).max(1.0));
                     }
                 }
             }
             Tool::Line | Tool::Arrow => {
                 if shape.sketch {
-                    for (points, half) in shape.sketch_strokes() {
-                        out += &line(&points, half * 2.0, false);
+                    for (points, half, strength) in shape.sketch_strokes() {
+                        out += &stroke(&points, half * 2.0, strength);
                     }
                 } else {
                     // Its way, dashed as it is, and its heads.
                     let dash = if shape.dashed { " stroke-dasharray=\"8 6\"" } else if shape.dotted { " stroke-dasharray=\"1 5\"" } else { "" };
                     for (at, points) in shape.line_strokes().into_iter().enumerate() {
-                        let drawn = line(&points, shape.stroke, false);
+                        let drawn = line(&points, shape.stroke);
                         out += &if at == 0 { drawn.replacen(" opacity=", &format!("{dash} opacity="), 1) } else { drawn };
                     }
                 }
@@ -213,7 +218,9 @@ impl Studio {
                     out += &format!("  <text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"Geist, sans-serif\" font-size=\"{:.0}\" fill=\"{}\">{}</text>\n", at.0, at.1, radius * 1.15, hex(shapes::ink_on(shape.color)), shape.votes);
                 }
             }
-            Tool::Pen => out += &line(&shape.points, shape.stroke, false),
+            // A pen's line as smooth as it is drawn, by hand.
+            Tool::Pen if shape.sketch => out += &line(&shapes::smooth_through(&shape.points, 2.0), shape.stroke),
+            Tool::Pen => out += &line(&shape.points, shape.stroke),
             _ => {}
         }
         // Its words, where they are drawn, in its face.

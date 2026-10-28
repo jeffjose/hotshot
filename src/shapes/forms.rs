@@ -254,15 +254,16 @@ impl Shape {
     }
 
     /// What its outline covers: drawn by hand, its lines gone over twice
-    /// a little off; or clean, its lines, or with no border its inside.
+    /// a little off, the second time fainter; or clean, its lines, or with
+    /// no border its inside.
     pub(super) fn form_mask(&self, bounds: Rect) -> Mask {
         let (closed, open) = self.form_paths();
         let half = self.stroke / 2.0;
         if self.sketched() {
             let mut mask = Mask { bounds, alpha: vec![0; bounds.w.max(0) as usize * bounds.h.max(0) as usize] };
-            for (points, thin) in self.form_strokes() {
+            for (points, thin, strength) in self.form_strokes() {
                 for pair in points.windows(2) {
-                    stamp(&mut mask, pair[0], pair[1], thin);
+                    stamp_weighted(&mut mask, pair[0], pair[1], thin, strength);
                 }
             }
             return mask;
@@ -279,37 +280,42 @@ impl Shape {
     }
 
     /// The strokes a hand draws its outline with, each run of points with
-    /// half its width.
-    pub fn form_strokes(&self) -> Vec<(Vec<Point>, f32)> {
+    /// half its width and how strongly it is laid down: twice round, the
+    /// corners of each a little off where they are, the second time
+    /// thinner and fainter; its corners rounded off in the Rounded look.
+    pub fn form_strokes(&self) -> Vec<(Vec<Point>, f32, f32)> {
         let (closed, open) = self.form_paths();
         let half = self.stroke / 2.0;
+        let scale = self.scale.max(1e-3);
+        let mut wobble = self.wobbler(0x68E3_1DA4);
+        let nudge = self.nudge(if self.rounded { 1.4 } else { 2.0 });
+        let (x, y, w, h) = self.frame();
+        let middle = (x + w / 2.0, y + h / 2.0);
         let mut strokes = Vec::new();
-        {
-            let mut seed = self.seed();
-            let mut wobble = move |amount: f32| {
-                seed ^= seed << 13;
-                seed ^= seed >> 17;
-                seed ^= seed << 5;
-                (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * amount
+        for pass in 0..2 {
+            let (thin, strength) = if pass == 0 { (half, 1.0) } else { ((half * 0.65).max(0.5 * scale.min(1.0)), 0.6) };
+            // A curve gone round again a little off as a whole; the
+            // corners of a few straight sides each on their own.
+            let (shift, grow) = match pass {
+                0 => ((0.0, 0.0), 1.0),
+                _ => ((wobble(nudge * 0.6), wobble(nudge * 0.6)), 1.0 + wobble(0.012)),
             };
-            let (x, y, w, h) = self.frame();
-            // Less unsteady, the smaller it is: a dot keeps its shape.
-            let reach = (self.stroke * 1.2 + 3.0).min(10.0) * (w.min(h) / 60.0).clamp(0.25, 1.0);
-            let middle = (x + w / 2.0, y + h / 2.0);
-            for pass in 0..2 {
-                let thin = if pass == 0 { half } else { (half * 0.7).max(0.6) };
-                let (shift, grow) = ((wobble(reach * 0.4), wobble(reach * 0.4)), 1.0 + wobble(0.02));
-                for path in closed.iter().chain(&open) {
-                    let moved: Vec<Point> = path.iter().map(|&(px, py)| (middle.0 + (px - middle.0) * grow + shift.0 * pass as f32, middle.1 + (py - middle.1) * grow + shift.1 * pass as f32)).collect();
-                    // A few points of it each a little off, and the line
-                    // between them bowed: a diamond's corners overshoot.
-                    for pair in moved.windows(2) {
-                        let jitter = if moved.len() < 8 { reach * 0.3 } else { 0.0 };
-                        let a = (pair[0].0 + wobble(jitter), pair[0].1 + wobble(jitter));
-                        let b = (pair[1].0 + wobble(jitter), pair[1].1 + wobble(jitter));
-                        strokes.push((vec![a, b], thin));
-                    }
+            for (path, shut) in closed.iter().map(|path| (path, true)).chain(open.iter().map(|path| (path, false))) {
+                let moved: Vec<Point> = path.iter().map(|&(px, py)| (middle.0 + (px - middle.0) * grow + shift.0, middle.1 + (py - middle.1) * grow + shift.1)).collect();
+                if moved.len() > 8 {
+                    strokes.push((moved, thin, strength));
+                    continue;
                 }
+                let corners: Vec<Point> = match shut && moved.len() > 2 && moved.first() == moved.last() {
+                    true => moved[..moved.len() - 1].to_vec(),
+                    false => moved,
+                };
+                let corners: Vec<Point> = corners.into_iter().map(|(px, py)| (px + wobble(nudge), py + wobble(nudge))).collect();
+                let run = match shut && corners.len() > 2 {
+                    true => round_corners(&corners, if self.rounded { (5.0 * scale).min(w.min(h) * 0.2) } else { 0.0 }),
+                    false => corners,
+                };
+                strokes.push((run, thin, strength));
             }
         }
         strokes

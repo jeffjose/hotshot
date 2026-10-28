@@ -112,7 +112,7 @@ pub(in crate::studio) fn dress(shape: &mut Shape, look: u8, ground: u8, times: f
             shape.rounded = shape.sketch && shape.tool == Tool::Rect;
             if shape.rounded {
                 let (_, _, w, h) = shape.frame();
-                shape.radius = (w.min(h) * 0.22).min(16.0 * times).max(2.0);
+                shape.radius = (w.min(h) * 0.3).min(7.0 * times).max(2.0);
                 shape.corners = None;
             }
         }
@@ -120,7 +120,7 @@ pub(in crate::studio) fn dress(shape: &mut Shape, look: u8, ground: u8, times: f
             // Clean: no hand, a hairline, rounded a little, in Geist.
             if shape.sketch {
                 shape.sketch = false;
-                shape.stroke = 1.25 * times;
+                shape.stroke = 1.5 * times;
                 if boxy {
                     shape.radius = 8.0 * times;
                 }
@@ -148,8 +148,8 @@ impl Studio {
         // A board made a page of frames is drawn crisp, as Clean on light
         // is, its shapes left as they were for when it is a board again.
         let style = match (page.board, page.styled) {
-            (true, _) => Some((page.look, page.ground)),
-            (false, true) => Some((2, 0)),
+            (true, _) => Some((page.look, page.ground, true)),
+            (false, true) => Some((2, 0, false)),
             (false, false) => None,
         };
         if self.doc.board != style {
@@ -249,5 +249,116 @@ mod tests {
         back[0].board = false;
         let back = read_pages(&write_pages(&back)).unwrap();
         assert_eq!((back[0].look, back[0].ground, back[0].styled), (2, 1, true));
+    }
+
+    #[test]
+    fn a_boards_line_is_two_pixels_of_its_ink_on_the_screen_and_its_words_modest() {
+        for look in [0, 1, 2] {
+            let mut studio = board();
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+            type_in(&mut studio, "Cache");
+            press_key(&mut studio, Key::Escape, Mods::default());
+            studio.selected.clear();
+            studio.set_look(Some(look), None);
+            assert_eq!(shape(&studio, 0).font_px, 16, "lettered at a modest size");
+            // Across its left side, half way down: a line about two pixels
+            // wide, its edges blended with the paper, never darker than
+            // its ink as edges over nothing once were.
+            let row: Vec<u32> = (90..112).map(|x| shown(&mut studio, (x as f32, 136.0))).collect();
+            let dark = row.iter().filter(|&&pixel| (pixel & 0xFF) < 0x80).count();
+            assert!((1..=3).contains(&dark), "{}: {dark} dark pixels across its line", LOOKS[usize::from(look)]);
+            assert!(row.iter().all(|&pixel| (pixel & 0xFF) >= 0x1A), "{}: an edge darker than its ink", LOOKS[usize::from(look)]);
+        }
+    }
+
+    #[test]
+    fn a_hand_drawn_box_is_gone_round_twice_the_second_time_fainter_with_no_ticks_past_its_corners() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        for rounded in [false, true] {
+            let mut box_ = shape(&studio, 0);
+            box_.rounded = rounded;
+            let strokes = box_.sketch_strokes();
+            assert_eq!(strokes.len(), 2, "two passes, each one closed run");
+            assert!(strokes[0].2 > strokes[1].2 && strokes[0].1 > strokes[1].1, "the second thinner and fainter");
+            // Nowhere more than a few pixels off the box: no tick marks
+            // past its corners.
+            for (points, ..) in &strokes {
+                assert!(points.iter().all(|&(x, y)| (97.0..=263.0).contains(&x) && (97.0..=175.0).contains(&y)));
+                assert_eq!(points.first(), points.last(), "closed");
+            }
+        }
+    }
+
+    /// A board of every kind of shape, with a Mermaid flowchart, written
+    /// as a PNG into `$HOTSHOT_SNAPSHOTS` in each look on each ground, at
+    /// `$HOTSHOT_TIMES` its size, or its own.
+    ///
+    ///     HOTSHOT_SNAPSHOTS=shots cargo test look_snapshots -- --ignored
+    #[test]
+    #[ignore]
+    fn look_snapshots() {
+        let Some(to) = std::env::var_os("HOTSHOT_SNAPSHOTS") else { return };
+        let to = std::path::PathBuf::from(to);
+        let times: f32 = std::env::var("HOTSHOT_TIMES").ok().and_then(|times| times.parse().ok()).unwrap_or(1.0);
+        std::fs::create_dir_all(&to).unwrap();
+        let mut studio = board();
+        assert!(studio.bring_mermaid("flowchart LR\n  API --> Database\n  API --> Cache"));
+        let boxes: Vec<(f32, f32, f32, f32)> = studio.doc.layers.iter().map(|layer| layer.bounds(&mut studio.text)).collect();
+        let (x, y, _, _) = crate::studio::actions::union(&boxes).unwrap();
+        for layer in &mut studio.doc.layers {
+            layer.translate(40.0 - x, 40.0 - y);
+        }
+        let mut add = |studio: &mut Studio, tool: Tool, form: u8, from: (f32, f32), to: (f32, f32), words: &str| {
+            let mut shape = Shape::new(tool, INK, LINE, from);
+            shape.points[1] = to;
+            studio.board_dress(&mut shape);
+            if tool == Tool::Rect {
+                shape.form = form;
+            }
+            if form == shapes::FORM_STICKY {
+                (shape.color, shape.fill, shape.shadow) = (QUIET, FILLS[0], Some(frame::Layer { x: 0, y: 3, blur: 8, spread: 0, color: 0x2E00_0000 }));
+            }
+            shape.text = words.into();
+            shape.touch();
+            studio.doc.layers.push(Layer::shape(shape));
+        };
+        add(&mut studio, Tool::Ellipse, 0, (40.0, 200.0), (160.0, 256.0), "Oval");
+        add(&mut studio, Tool::Rect, shapes::FORM_DIAMOND, (190.0, 190.0), (310.0, 266.0), "Ready?");
+        add(&mut studio, Tool::Rect, shapes::FORM_CYLINDER, (340.0, 192.0), (440.0, 268.0), "Postgres");
+        add(&mut studio, Tool::Rect, shapes::FORM_PERSON, (470.0, 186.0), (550.0, 276.0), "User");
+        add(&mut studio, Tool::Rect, shapes::FORM_CLOUD, (580.0, 190.0), (720.0, 270.0), "Internet");
+        add(&mut studio, Tool::Rect, shapes::FORM_STICKY, (40.0, 300.0), (170.0, 420.0), "Ship it Friday");
+        add(&mut studio, Tool::Rect, shapes::FORM_HEXAGON, (200.0, 310.0), (320.0, 366.0), "Retry");
+        add(&mut studio, Tool::Rect, shapes::FORM_STADIUM, (350.0, 310.0), (470.0, 366.0), "Start");
+        add(&mut studio, Tool::Arrow, 0, (200.0, 400.0), (340.0, 420.0), "");
+        add(&mut studio, Tool::Line, 0, (370.0, 400.0), (520.0, 400.0), "");
+        let mut dashed = Shape::new(Tool::Arrow, INK, LINE, (550.0, 330.0));
+        dashed.points[1] = (700.0, 360.0);
+        studio.board_dress(&mut dashed);
+        dashed.dashed = true;
+        studio.doc.layers.push(Layer::shape(dashed));
+        let mut pen = Shape::new(Tool::Pen, INK, LINE, (560.0, 420.0));
+        pen.points = (0..=24).map(|step| {
+            let t = step as f32 / 24.0;
+            (560.0 + t * 150.0, 420.0 - (t * 9.0).sin() * 14.0 + t * 10.0)
+        }).collect();
+        studio.board_dress(&mut pen);
+        studio.doc.layers.push(Layer::shape(pen));
+        studio.selected.clear();
+        for (look, name) in LOOKS.iter().enumerate() {
+            for (ground, paper) in GROUNDS.iter().enumerate() {
+                (studio.pages[0].look, studio.pages[0].ground) = (look as u8, ground as u8);
+                studio.changed();
+                let layers: Vec<Layer> = studio.doc.layers.clone();
+                let sheet = studio.part_sheet(&layers, (10.0, 10.0, 740.0, 450.0));
+                let (pw, ph, pixels) = sheet.render(times, &mut studio.text);
+                let file = format!("{}-{}.png", name.to_lowercase(), paper.to_lowercase().replace(' ', "-"));
+                std::fs::write(to.join(file), crate::output::encode(pw as u32, ph as u32, &pixels, false).unwrap()).unwrap();
+            }
+        }
     }
 }

@@ -868,7 +868,7 @@ impl Shape {
             Tool::Rect | Tool::Ellipse if self.sketch => self.stroke + 8.0,
             Tool::Rect | Tool::Ellipse if self.edge == OUTSIDE => self.stroke,
             Tool::Counter => self.disc(),
-            Tool::Pen | Tool::Marker => self.line_width() / 2.0,
+            Tool::Pen | Tool::Marker => self.line_width() / 2.0 + if self.sketch { 3.0 } else { 0.0 },
             _ => self.stroke / 2.0,
         } + 2.0;
         let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -1616,6 +1616,13 @@ impl Shape {
         let mask = match self.tool {
             _ if self.has_form() => self.form_mask(bounds),
             _ if self.sketched() => self.sketch_mask(bounds),
+            Tool::Pen if self.sketch => {
+                let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
+                for (a, b, half) in self.pen_strokes() {
+                    stamp(&mut mask, a, b, half);
+                }
+                mask
+            }
             Tool::Pen | Tool::Marker => {
                 let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
                 let half = self.line_width() / 2.0;
@@ -1666,195 +1673,245 @@ impl Shape {
         mask
     }
 
-    /// The strokes of a box, an oval, a line or an arrow drawn by hand:
-    /// each line a little bowed, going a little past its corner, and gone
-    /// over a second time a little off the first. Uneven the same way
-    /// every time it is drawn, by a seed taken from where it is.
+    /// The strokes of a box, an oval, a line or an arrow drawn by hand,
+    /// each laid down as strongly as it is drawn: the second pass of a box
+    /// fainter than the first, where it is not under it.
     fn sketch_mask(&self, bounds: Rect) -> Mask {
         let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
-        for (points, thin) in self.sketch_strokes() {
+        for (points, thin, strength) in self.sketch_strokes() {
             for pair in points.windows(2) {
-                stamp(&mut mask, pair[0], pair[1], thin);
+                stamp_weighted(&mut mask, pair[0], pair[1], thin, strength);
             }
         }
         mask
     }
 
-    /// The strokes a hand draws it with: runs of points, each with half
-    /// the width of its line; what its mask and an SVG of it are made of.
-    pub fn sketch_strokes(&self) -> Vec<(Vec<Point>, f32)> {
-        let mut seed = self.seed();
-        let mut wobble = move |amount: f32| {
+    /// Its wobble, from what it is called: a number from -1 to 1 times so
+    /// much at a time, the same every time it is drawn.
+    pub(super) fn wobbler(&self, salt: u32) -> impl FnMut(f32) -> f32 {
+        let mut seed = self.seed() ^ salt;
+        if seed == 0 {
+            seed = 0x9E37_79B9;
+        }
+        move |amount: f32| {
             seed ^= seed << 13;
             seed ^= seed >> 17;
             seed ^= seed << 5;
             (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * amount
-        };
+        }
+    }
+
+    /// How far a hand drawing it is off at most, in pixels of what it is
+    /// drawn on: a couple at its own size, less for a small one, so that a
+    /// dot keeps its shape.
+    pub(super) fn nudge(&self, most: f32) -> f32 {
+        let scale = self.scale.max(1e-3);
+        let (_, _, w, h) = self.frame();
+        (most * scale).min(w.min(h) * 0.06).max(0.0)
+    }
+
+    /// The corners a hand drawing a box goes through, each a little off
+    /// where it is, a set for each pass and one for its fill, which is a
+    /// little inside them; and the corners rounded off by so much in the
+    /// Rounded look.
+    fn box_corners(&self) -> ([[Point; 4]; 3], f32) {
+        let scale = self.scale.max(1e-3);
+        let (left, top, width, height) = self.frame();
+        let mut wobble = self.wobbler(0);
+        let nudge = self.nudge(if self.rounded { 1.4 } else { 2.2 });
+        let corners = [(left, top), (left + width, top), (left + width, top + height), (left, top + height)];
+        let middle = (left + width / 2.0, top + height / 2.0);
+        let mut sets = [[(0.0, 0.0); 4]; 3];
+        for (pass, set) in sets.iter_mut().enumerate() {
+            // The fill a pixel or so in from the line, never out past it.
+            let inward = if pass == 2 { (1.2 * scale).min(width.min(height) * 0.1) } else { 0.0 };
+            for (at, &(x, y)) in corners.iter().enumerate() {
+                let (dx, dy) = ((middle.0 - x).signum() * inward, (middle.1 - y).signum() * inward);
+                set[at] = (x + dx + wobble(nudge), y + dy + wobble(nudge));
+            }
+        }
+        let radius = if self.rounded { (7.0 * scale).min(width.min(height) * 0.3) } else { 0.0 };
+        (sets, radius)
+    }
+
+    /// What a box drawn by hand is filled in: its corners, a little off,
+    /// rounded off in the Rounded look.
+    pub fn sketch_fill(&self) -> Option<Vec<Point>> {
+        if !(self.sketched() && self.tool == Tool::Rect && !self.has_form() && self.angle == 0.0) {
+            return None;
+        }
+        let ([_, _, fill], radius) = self.box_corners();
+        Some(round_corners(&fill, radius))
+    }
+
+    /// The strokes a hand draws it with: runs of points, each with half
+    /// the width of its line and how strongly it is laid down, from 0 to
+    /// 1; what its mask and an SVG of it are made of. A box or an oval is
+    /// gone round twice, the second time thinner, fainter and a little
+    /// off; a line once, a little curved, its head two short strokes.
+    pub fn sketch_strokes(&self) -> Vec<(Vec<Point>, f32, f32)> {
+        let mut wobble = self.wobbler(0x2545_F491);
         // Worked out at its own size and made larger as it is drawn larger,
         // so that zoomed in it is the same drawing, and its runs of points
         // as many as keep each straight piece a few pixels long on screen.
         let scale = self.scale.max(1e-3);
-        let reach = ((self.stroke / scale) * 1.2 + 3.0).min(10.0) * scale;
         let pieces = |length: f32| ((length / 4.0).ceil() as usize).clamp(12, 4096);
-        // A stroke from one point to another, bowed out a little at its
-        // middle, as a list of points close enough to be drawn straight.
-        let stroke = |from: Point, to: Point, wobble: &mut dyn FnMut(f32) -> f32| -> Vec<Point> {
-            let length = (to.0 - from.0).hypot(to.1 - from.1).max(1.0);
-            let (nx, ny) = (-(to.1 - from.1) / length, (to.0 - from.0) / length);
-            let bow = wobble((length * 0.015).min(reach * 0.6));
-            let count = pieces(length);
-            (0..=count)
-                .map(|step| {
-                    let t = step as f32 / count as f32;
-                    let lift = bow * 4.0 * t * (1.0 - t);
-                    (from.0 + (to.0 - from.0) * t + nx * lift, from.1 + (to.1 - from.1) * t + ny * lift)
-                })
-                .collect()
-        };
-        let mut strokes: Vec<(Vec<Point>, f32)> = Vec::new();
         let half = self.stroke / 2.0;
+        let mut strokes: Vec<(Vec<Point>, f32, f32)> = Vec::new();
         let (left, top, width, height) = self.frame();
-        for pass in 0..2 {
-            let thin = if pass == 0 { half } else { (half * 0.7).max(0.6) };
-            let off = if pass == 0 { 0.0 } else { reach * 0.35 };
-            match self.tool {
-                // Rounded: one loose loop round its rounded corners, gone
-                // over twice a little apart, its ends overlapping.
-                Tool::Rect if self.rounded => {
-                    let r = (width.min(height) * 0.22).min(16.0 * scale).max(2.0 * scale);
-                    let mut loop_points: Vec<Point> = Vec::new();
-                    let corners = [(left + width - r, top + r, -std::f32::consts::FRAC_PI_2), (left + width - r, top + height - r, 0.0), (left + r, top + height - r, std::f32::consts::FRAC_PI_2), (left + r, top + r, std::f32::consts::PI)];
-                    let turn = pieces(r * std::f32::consts::FRAC_PI_2).min(256).max(6);
-                    for (at, (cx, cy, from)) in corners.into_iter().enumerate() {
-                        for step in 0..=turn {
-                            let angle = from + std::f32::consts::FRAC_PI_2 * step as f32 / turn as f32;
-                            loop_points.push((cx + r * angle.cos(), cy + r * angle.sin()));
-                        }
-                        // The straight side to the next corner, in pieces
-                        // too, so that the swells along it stay smooth.
-                        let next = corners[(at + 1) % 4];
-                        let end = loop_points[loop_points.len() - 1];
-                        let start = (next.0 + r * next.2.cos(), next.1 + r * next.2.sin());
-                        let count = pieces((start.0 - end.0).hypot(start.1 - end.1));
-                        for step in 1..count {
-                            let t = step as f32 / count as f32;
-                            loop_points.push((end.0 + (start.0 - end.0) * t, end.1 + (start.1 - end.1) * t));
-                        }
-                    }
-                    loop_points.push(loop_points[0]);
-                    // Low, slow swells along it, and its start a little on.
-                    let (phase, swell) = (wobble(6.0), reach * 0.45 + wobble(reach * 0.15).abs());
-                    // Where along the loop each point is, by distance, so
-                    // that the swells are the same however many points.
-                    let count = loop_points.len();
-                    let mut along = vec![0.0f32; count];
-                    for at in 1..count {
-                        along[at] = along[at - 1] + (loop_points[at].0 - loop_points[at - 1].0).hypot(loop_points[at].1 - loop_points[at - 1].1);
-                    }
-                    let total = along[count - 1].max(1e-3);
-                    let points: Vec<Point> = loop_points
-                        .iter()
-                        .enumerate()
-                        .map(|(at, &(x, y))| {
-                            let t = along[at] / total * std::f32::consts::TAU;
-                            let push = swell * (t * 2.0 + phase).sin() * 0.5 + off * (t + phase).cos();
-                            let (dx, dy) = (x - (left + width / 2.0), y - (top + height / 2.0));
-                            let long = dx.hypot(dy).max(1.0);
-                            (x + dx / long * push, y + dy / long * push)
-                        })
-                        .collect();
-                    let mut points = points;
-                    let over = (count / 10).max(2);
-                    points.extend(points.clone().into_iter().skip(1).take(over));
-                    strokes.push((points, thin));
-                }
-                Tool::Rect => {
-                    let corners = [(left, top), (left + width, top), (left + width, top + height), (left, top + height)];
-                    for side in 0..4 {
-                        let (from, to) = (corners[side], corners[(side + 1) % 4]);
-                        let length = (to.0 - from.0).hypot(to.1 - from.1).max(1.0);
-                        let (dx, dy) = ((to.0 - from.0) / length, (to.1 - from.1) / length);
-                        let (start, end) = (wobble(reach * 0.5).abs(), wobble(reach).abs());
-                        let from = (from.0 - dx * start + wobble(off), from.1 - dy * start + wobble(off));
-                        let to = (to.0 + dx * end + wobble(off), to.1 + dy * end + wobble(off));
-                        strokes.push((stroke(from, to, &mut wobble), thin));
-                    }
-                }
-                Tool::Ellipse => {
-                    let (cx, cy, rx, ry) = (left + width / 2.0, top + height / 2.0, width / 2.0, height / 2.0);
-                    let (begin, sweep) = (wobble(std::f32::consts::PI), std::f32::consts::TAU * (1.06 + wobble(0.04)));
-                    let (phase, swell) = (wobble(3.0), 0.025 + wobble(0.012).abs());
-                    let count = pieces(std::f32::consts::TAU * rx.max(ry)).max(64);
-                    let points = (0..=count)
+        // The second pass: thinner, and fainter where it is not under the
+        // first.
+        let (second, faint) = ((half * 0.65).max(0.5 * scale.min(1.0)), 0.7);
+        match self.tool {
+            Tool::Rect => {
+                let ([first, other, _], radius) = self.box_corners();
+                strokes.push((round_corners(&first, radius), half, 1.0));
+                strokes.push((round_corners(&other, radius * 1.1), second, faint));
+            }
+            Tool::Ellipse => {
+                let (cx, cy, rx, ry) = (left + width / 2.0, top + height / 2.0, width / 2.0, height / 2.0);
+                let count = pieces(std::f32::consts::TAU * rx.max(ry)).max(48);
+                let ring = |middle: Point, radii: (f32, f32), turn: f32| -> Vec<Point> {
+                    let (sin, cos) = turn.sin_cos();
+                    (0..=count)
                         .map(|step| {
-                            let angle = begin + sweep * step as f32 / count as f32;
-                            let grow = 1.0 + swell * (angle * 2.0 + phase).sin() + off / rx.max(ry).max(1.0);
-                            (cx + rx * grow * angle.cos(), cy + ry * grow * angle.sin())
+                            let angle = std::f32::consts::TAU * step as f32 / count as f32;
+                            let (x, y) = (radii.0 * angle.cos(), radii.1 * angle.sin());
+                            (middle.0 + x * cos - y * sin, middle.1 + x * sin + y * cos)
                         })
-                        .collect();
-                    strokes.push((points, thin));
-                }
-                _ => {
-                    let (a, b) = (self.points[0], self.points[1]);
-                    let path: Vec<Point> = match self.curve() {
-                        Some(curve) => curve.iter().map(|point| (point.0 + wobble(off * 0.5), point.1 + wobble(off * 0.5))).collect(),
-                        None => stroke((a.0 + wobble(off), a.1 + wobble(off)), (b.0 + wobble(off), b.1 + wobble(off)), &mut wobble),
-                    };
-                    // Each head as a hand draws it: an arrow's two strokes
-                    // back from the tip, the rest by their outlines; and
-                    // the line left out under those that are hollow.
+                        .collect()
+                };
+                strokes.push((ring((cx, cy), (rx, ry), 0.0), half, 1.0));
+                // Round again a little wider and flatter, turned a degree
+                // or two back, as a hand coming round again does.
+                let nudge = self.nudge(1.6);
+                let middle = (cx + wobble(nudge * 0.4), cy - nudge * 0.4 + wobble(nudge * 0.3));
+                let radii = (rx + nudge * 0.5 + wobble(nudge * 0.25).abs(), (ry - nudge * 0.5 + wobble(nudge * 0.3)).max(1.0));
+                let turn = -(1.5 + wobble(0.8)).to_radians();
+                strokes.push((ring(middle, radii, turn), second * 0.95, 0.6));
+            }
+            _ => {
+                let (a, b) = (self.points[0], self.points[self.far()]);
+                // Its way: through its bend, or a little curved, as a hand
+                // drawing a line does.
+                let path: Vec<Point> = match self.curve() {
+                    Some(curve) => curve.to_vec(),
+                    None => {
+                        let length = (b.0 - a.0).hypot(b.1 - a.1).max(1.0);
+                        let (nx, ny) = (-(b.1 - a.1) / length, (b.0 - a.0) / length);
+                        let bow = (0.8 * scale + length * 0.012).min(3.0 * scale) * if wobble(1.0) < 0.0 { -1.0 } else { 1.0 };
+                        let count = pieces(length);
+                        (0..=count)
+                            .map(|step| {
+                                let t = step as f32 / count as f32;
+                                let lift = bow * 2.0 * t * (1.0 - t);
+                                (a.0 + (b.0 - a.0) * t + nx * lift, a.1 + (b.1 - a.1) * t + ny * lift)
+                            })
+                            .collect()
+                    }
+                };
+                let mut path = path;
+                let along: f32 = path.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1)).sum();
+                for end in [1, 0] {
+                    if !self.heads[end] {
+                        continue;
+                    }
+                    let style = self.ends[end];
+                    // The way it comes in to the tip: from a point a head's
+                    // length back along it.
+                    let chevron = matches!(style, FILLED_HEAD | OPEN_HEAD);
+                    let long = if chevron { (self.stroke * 6.5).min(along * 0.4).max(1.0) } else { self.head().0 };
+                    let tip = if end == 1 { path[path.len() - 1] } else { path[0] };
+                    let mut from = tip;
+                    let mut gone = 0.0;
+                    let order: Vec<Point> = if end == 1 { path.iter().rev().copied().collect() } else { path.clone() };
+                    for pair in order.windows(2) {
+                        gone += (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+                        from = pair[1];
+                        if gone >= long {
+                            break;
+                        }
+                    }
+                    let length = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
+                    let way = ((tip.0 - from.0) / length, (tip.1 - from.1) / length);
+                    if chevron {
+                        // Two short strokes back from the tip, open, a
+                        // little heavier than the line.
+                        let (dx, dy) = way;
+                        let base = (tip.0 - dx * long, tip.1 - dy * long);
+                        let spread = long * 0.5;
+                        for side in [1.0, -1.0] {
+                            let wing = (base.0 - dy * spread * side, base.1 + dx * spread * side);
+                            strokes.push((vec![wing, tip], half * 1.2, 1.0));
+                        }
+                        continue;
+                    }
                     let (head, wide) = self.head();
-                    let mut path = path;
-                    for (end, tip, from) in [(1, path[path.len() - 1], path[path.len().saturating_sub(4)]), (0, path[0], path[3.min(path.len() - 1)])] {
-                        if !self.heads[end] {
-                            continue;
-                        }
-                        let length = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
-                        let way = ((tip.0 - from.0) / length, (tip.1 - from.1) / length);
-                        let (lines, cut) = head_strokes(self.ends[end], tip, way, head, wide);
-                        for line in lines {
-                            let line: Vec<Point> = line.into_iter().map(|(x, y)| (x + wobble(off * 0.5), y + wobble(off * 0.5))).collect();
-                            strokes.push((if line.len() == 2 { stroke(line[0], line[1], &mut wobble) } else { line }, thin));
-                        }
-                        if cut > 0.0 {
-                            path = cut_end(path, end, cut);
-                        }
+                    let (lines, cut) = head_strokes(style, tip, way, head, wide);
+                    for line in lines {
+                        strokes.push((line, half, 1.0));
                     }
-                    // Dashed, its path cut into dashes, each a stroke.
-                    if self.dashed || self.dotted {
-                        let (dash, gap) = if self.dotted { (scale, self.stroke * 2.5 + 3.0 * scale) } else { (self.stroke * 2.5 + 8.0 * scale, self.stroke * 2.0 + 6.0 * scale) };
-                        let mut run: Vec<Point> = Vec::new();
-                        let mut gone = 0.0f32;
-                        for pair in path.windows(2) {
-                            let long = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
-                            let steps = (long / 2.0).ceil().max(1.0) as usize;
-                            for step in 0..steps {
-                                let t = step as f32 / steps as f32;
-                                let p = (pair[0].0 + (pair[1].0 - pair[0].0) * t, pair[0].1 + (pair[1].1 - pair[0].1) * t);
-                                if gone.rem_euclid(dash + gap) < dash {
-                                    run.push(p);
-                                } else if !run.is_empty() {
-                                    let done = std::mem::take(&mut run);
-                                    strokes.push((if done.len() == 1 { vec![done[0], done[0]] } else { done }, thin));
-                                }
-                                gone += long / steps as f32;
+                    if cut > 0.0 {
+                        path = cut_end(path, end, cut);
+                    }
+                }
+                // Dashed, its path cut into even dashes, each a stroke.
+                if self.dashed || self.dotted {
+                    let (dash, gap) = if self.dotted { (0.01, self.stroke * 2.0 + 3.0 * scale) } else { (self.stroke * 2.0 + 6.0 * scale, self.stroke * 1.5 + 5.0 * scale) };
+                    let mut run: Vec<Point> = Vec::new();
+                    let mut gone = 0.0f32;
+                    for pair in path.windows(2) {
+                        let long = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+                        let steps = (long / (0.5 * scale.min(1.0))).ceil().max(1.0) as usize;
+                        for step in 0..steps {
+                            let t = step as f32 / steps as f32;
+                            let p = (pair[0].0 + (pair[1].0 - pair[0].0) * t, pair[0].1 + (pair[1].1 - pair[0].1) * t);
+                            if gone.rem_euclid(dash + gap) < dash.max(0.02) {
+                                run.push(p);
+                            } else if !run.is_empty() {
+                                let done = std::mem::take(&mut run);
+                                strokes.push((if done.len() == 1 { vec![done[0], done[0]] } else { done }, half, 1.0));
                             }
+                            gone += long / steps as f32;
                         }
-                        if !run.is_empty() {
-                            strokes.push((if run.len() == 1 { vec![run[0], run[0]] } else { run }, thin));
-                        }
-                    } else {
-                        strokes.push((path, thin));
                     }
+                    if !run.is_empty() {
+                        strokes.push((if run.len() == 1 { vec![run[0], run[0]] } else { run }, half, 1.0));
+                    }
+                } else {
+                    strokes.push((path, half, 1.0));
                 }
             }
         }
         strokes
     }
 
+    /// A pen's line drawn by hand: smooth through the points it went by,
+    /// a little thinner at either end; each piece with half its width.
+    pub fn pen_strokes(&self) -> Vec<(Point, Point, f32)> {
+        let smooth = smooth_through(&self.points, 2.0 * self.scale.max(1e-3));
+        let half = self.line_width() / 2.0;
+        let total: f32 = smooth.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1)).sum();
+        let taper = (6.0 * self.scale.max(1e-3)).min(total * 0.3).max(1e-3);
+        let mut gone = 0.0;
+        let mut pieces = Vec::new();
+        if smooth.len() == 1 {
+            return vec![(smooth[0], smooth[0], half)];
+        }
+        for pair in smooth.windows(2) {
+            let long = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+            let middle = gone + long / 2.0;
+            let thin = (middle.min(total - middle) / taper).clamp(0.0, 1.0);
+            pieces.push((pair[0], pair[1], half * (0.55 + 0.45 * thin)));
+            gone += long;
+        }
+        pieces
+    }
+
     /// What is inside the border of a rectangle or an oval, as far as the
     /// middle of its line, which the border is drawn over: kept as its
-    /// mask is.
+    /// mask is. A box drawn by hand is filled as its hand fills it, a
+    /// little off its line.
     fn inside_mask(&self) -> Rc<Mask> {
         if let Some(mask) = self.inside.borrow().as_ref() {
             return mask.clone();
@@ -1864,9 +1921,10 @@ impl Shape {
             angle => turned_around(self.extent(), self.centre_of_frame(), angle),
         };
         let (bounds, cut) = seen_part(bounds);
-        let mask = match self.has_form() {
-            true => Rc::new(self.form_inside(bounds)),
-            false => {
+        let mask = match (self.has_form(), self.sketch_fill()) {
+            (true, _) => Rc::new(self.form_inside(bounds)),
+            (false, Some(path)) => Rc::new(fill_path(bounds, &path)),
+            (false, None) => {
                 let outline = Outline { filled: true, stroke: 0.0, ..self.outline() };
                 Rc::new(covered(bounds, move |x, y| outline.distance(x, y)))
             }
@@ -2621,7 +2679,14 @@ fn covered(bounds: Rect, distance: impl Fn(f32, f32) -> f32 + Sync) -> Mask {
 /// has been covered by any line, so that where two of a stroke's lines
 /// meet it is no darker than along them.
 fn stamp(mask: &mut Mask, a: Point, b: Point, half: f32) {
+    stamp_weighted(mask, a, b, half, 1.0);
+}
+
+/// The same, laid down only so strongly, from 0 to 1: a fainter line,
+/// which what is laid down more strongly shows through.
+fn stamp_weighted(mask: &mut Mask, a: Point, b: Point, half: f32, strength: f32) {
     let reach = half + 1.0;
+    let strength = strength.clamp(0.0, 1.0) * 255.0;
     let (left, top) = ((a.0.min(b.0) - reach).floor() as i32, (a.1.min(b.1) - reach).floor() as i32);
     let (right, bottom) = ((a.0.max(b.0) + reach).ceil() as i32, (a.1.max(b.1) + reach).ceil() as i32);
     let part = Rect::new(left, top, right - left, bottom - top).intersect(mask.bounds);
@@ -2629,9 +2694,110 @@ fn stamp(mask: &mut Mask, a: Point, b: Point, half: f32) {
         let row = &mut mask.alpha[((y - mask.bounds.y) * mask.bounds.w + part.x - mask.bounds.x) as usize..][..part.w as usize];
         for (column, cover) in row.iter_mut().enumerate() {
             let far = segment(((part.x + column as i32) as f32 + 0.5, y as f32 + 0.5), a, b) - half;
-            *cover = (*cover).max(((0.5 - far).clamp(0.0, 1.0) * 255.0) as u8);
+            *cover = (*cover).max(((0.5 - far).clamp(0.0, 1.0) * strength) as u8);
         }
     }
+}
+
+/// A closed run of points through some corners, each rounded off by so
+/// much: straight between them, and curved round each as a hand going
+/// round it does; sharp with no rounding.
+pub fn round_corners(corners: &[Point], radius: f32) -> Vec<Point> {
+    let count = corners.len();
+    let mut points = Vec::new();
+    for at in 0..count {
+        let (before, corner, after) = (corners[(at + count - 1) % count], corners[at], corners[(at + 1) % count]);
+        if radius <= 0.0 {
+            points.push(corner);
+            continue;
+        }
+        let toward = |to: Point| {
+            let long = (to.0 - corner.0).hypot(to.1 - corner.1).max(1e-3);
+            let r = radius.min(long * 0.45);
+            (corner.0 + (to.0 - corner.0) / long * r, corner.1 + (to.1 - corner.1) / long * r)
+        };
+        let (from, to) = (toward(before), toward(after));
+        let steps = ((radius * 0.8).ceil() as usize).clamp(4, 64);
+        for step in 0..=steps {
+            let t = step as f32 / steps as f32;
+            let (u, v, w) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t), t * t);
+            points.push((from.0 * u + corner.0 * v + to.0 * w, from.1 * u + corner.1 * v + to.1 * w));
+        }
+    }
+    if let Some(&first) = points.first() {
+        points.push(first);
+    }
+    points
+}
+
+/// A smooth line through points a hand went by, as a Catmull-Rom curve
+/// through each, its pieces about `step` long; the points as they are
+/// when there are too few to curve.
+pub fn smooth_through(points: &[Point], step: f32) -> Vec<Point> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    let at = |index: isize| points[index.clamp(0, points.len() as isize - 1) as usize];
+    let mut out = vec![points[0]];
+    for index in 0..points.len() as isize - 1 {
+        let (p0, p1, p2, p3) = (at(index - 1), at(index), at(index + 1), at(index + 2));
+        let long = (p2.0 - p1.0).hypot(p2.1 - p1.1);
+        let count = ((long / step.max(0.25)).ceil() as usize).clamp(1, 64);
+        for piece in 1..=count {
+            let t = piece as f32 / count as f32;
+            let (t2, t3) = (t * t, t * t * t);
+            let blend = |a: f32, b: f32, c: f32, d: f32| 0.5 * (2.0 * b + (c - a) * t + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 + (3.0 * b - a - 3.0 * c + d) * t3);
+            out.push((blend(p0.0, p1.0, p2.0, p3.0), blend(p0.1, p1.1, p2.1, p3.1)));
+        }
+    }
+    out
+}
+
+/// How much of each pixel of a rectangle is inside a closed run of
+/// points, row by row: four lines across each row of pixels, each side
+/// of what is inside it shared by the pixel it falls in.
+pub fn fill_path(bounds: Rect, path: &[Point]) -> Mask {
+    let width = bounds.w.max(0) as usize;
+    let mut alpha = vec![0u8; width * bounds.h.max(0) as usize];
+    const ACROSS: usize = 4;
+    let mut row = vec![0.0f32; width + 1];
+    let mut crossings: Vec<f32> = Vec::new();
+    for y in 0..bounds.h.max(0) {
+        row.iter_mut().for_each(|cover| *cover = 0.0);
+        for sub in 0..ACROSS {
+            let line = (bounds.y + y) as f32 + (sub as f32 + 0.5) / ACROSS as f32;
+            crossings.clear();
+            for pair in path.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                if (a.1 > line) != (b.1 > line) {
+                    crossings.push(a.0 + (line - a.1) / (b.1 - a.1) * (b.0 - a.0) - bounds.x as f32);
+                }
+            }
+            crossings.sort_by(|a, b| a.total_cmp(b));
+            for span in crossings.chunks_exact(2) {
+                let (from, to) = (span[0].clamp(0.0, width as f32), span[1].clamp(0.0, width as f32));
+                if to <= from {
+                    continue;
+                }
+                let (first, last) = (from.floor() as usize, to.floor() as usize);
+                let share = 1.0 / ACROSS as f32;
+                if first == last {
+                    row[first] += (to - from) * share;
+                    continue;
+                }
+                row[first] += (first as f32 + 1.0 - from) * share;
+                for cover in &mut row[first + 1..last] {
+                    *cover += share;
+                }
+                row[last] += (to - last as f32) * share;
+            }
+        }
+        let out = &mut alpha[y as usize * width..][..width];
+        for (pixel, cover) in out.iter_mut().zip(&row) {
+            *pixel = (cover.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    Mask { bounds, alpha }
 }
 
 /// A line with round ends added to a mask, for what is drawn over a board.
@@ -2738,8 +2904,8 @@ mod tests {
                 *point = (point.0 * times, point.1 * times);
             }
             (big.stroke, big.scale) = (shape.stroke * times, times);
-            let reach = |strokes: Vec<(Vec<Point>, f32)>| {
-                let all: Vec<Point> = strokes.into_iter().flat_map(|(points, _)| points).collect();
+            let reach = |strokes: Vec<(Vec<Point>, f32, f32)>| {
+                let all: Vec<Point> = strokes.into_iter().flat_map(|(points, _, _)| points).collect();
                 let edges = |pick: fn(&Point) -> f32| (all.iter().map(pick).fold(f32::MAX, f32::min), all.iter().map(pick).fold(f32::MIN, f32::max));
                 (edges(|p| p.0), edges(|p| p.1))
             };
@@ -2749,11 +2915,16 @@ mod tests {
             for (small, large) in [(x0, bx0), (x1, bx1), (y0, by0), (y1, by1)] {
                 assert!((small * times - large).abs() < 2.0 * times, "{rounded}: {small} × {times} against {large}");
             }
-            // In pieces short enough on screen that no corner shows as facets.
-            for (points, _) in big.sketch_strokes() {
-                for pair in points.windows(2) {
-                    let long = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
-                    assert!(long <= 12.0, "{rounded}: a piece {long} long");
+            // Its round corners in pieces turning so little each that none
+            // shows as facets.
+            if rounded {
+                for (points, _, _) in big.sketch_strokes() {
+                    for three in points.windows(3) {
+                        let turn = |a: Point, b: Point| (b.1 - a.1).atan2(b.0 - a.0);
+                        let by = (turn(three[1], three[2]) - turn(three[0], three[1])).rem_euclid(std::f32::consts::TAU);
+                        let by = by.min(std::f32::consts::TAU - by);
+                        assert!(by < 0.12, "a corner turned {by} at once");
+                    }
                 }
             }
         }

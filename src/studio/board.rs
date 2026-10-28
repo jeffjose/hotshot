@@ -19,7 +19,7 @@ pub(super) const QUIET: u32 = 0x868E96;
 /// The lettering a board's words are in: Architects Daughter, by where it
 /// is among the faces; and how large, and how wide a line is.
 pub(super) const LETTERING: usize = 2;
-pub(super) const WORDS_PX: u32 = 20;
+pub(super) const WORDS_PX: u32 = 16;
 pub(super) const LINE: f32 = 2.0;
 /// How far apart the dots of the paper are, on the page.
 const DOT_STEP: f32 = 18.0;
@@ -349,6 +349,8 @@ impl Studio {
             }
             Tool::Arrow | Tool::Line => (shape.sketch, shape.routed) = (board.sketch, true),
             Tool::Text => shape.color = INK,
+            // The pen smooth, a little thinner at either end.
+            Tool::Pen => shape.sketch = board.sketch,
             _ => {}
         }
     }
