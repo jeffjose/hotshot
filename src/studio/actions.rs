@@ -399,7 +399,7 @@ impl Studio {
         pages.remove(page);
         let now = if self.page == page { page.min(pages.len() - 1) } else if self.page > page { self.page - 1 } else { self.page };
         let active = if self.page == page { 0 } else { self.active };
-        self.restore(Snapshot { pages, page: now, active });
+        self.restore(Snapshot { pages, page: now, active, when: std::time::SystemTime::now() });
         self.changed();
         self.fit();
     }

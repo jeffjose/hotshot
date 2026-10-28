@@ -43,6 +43,9 @@ impl Studio {
     /// The pointer moved with nothing held on a board: the box whose dots
     /// show, the one it is over or still near, or the one picked out.
     pub(in crate::studio) fn board_hover(&mut self, at: (i32, i32), over_control: bool) {
+        if self.board.history.as_ref().is_some_and(|history| history.sliding) {
+            return self.history_at(at.0);
+        }
         let shows = self.tool == Tool::Select && !self.space && !over_control && self.editing.is_none();
         let near = |studio: &Studio, index: usize| {
             let spots = studio.dot_spots(index);
@@ -71,7 +74,7 @@ impl Studio {
     /// The pointer moved as an arrow is pulled out of a side.
     pub(in crate::studio) fn pull_moved(&mut self) {
         if let Drag::Pull { from, side, moved: false } = self.drag {
-            let spot = self.dot_spots(from)[usize::from(side)];
+            let spot = self.pull_start(from, side);
             if (self.pointer.0 - spot.0).abs().max((self.pointer.1 - spot.1).abs()) > 4 {
                 self.drag = Drag::Pull { from, side, moved: true };
             }
@@ -97,7 +100,14 @@ impl Studio {
             return;
         }
         let (x, y, w, h) = self.box_frame(from);
-        let (dx, dy) = SIDES[usize::from(side)];
+        // A click on an arrow's middle picks the arrow out.
+        let branch = self.board.branching.take();
+        if let (Some(arrow), false) = (branch, moved) {
+            self.selected = vec![arrow];
+            self.guess(false);
+            return;
+        }
+        let (dx, dy) = SIDES[usize::from(side.min(3))];
         self.checkpoint();
         if moved {
             if let Some(onto) = self.pulled_onto(from) {
@@ -162,7 +172,7 @@ impl Studio {
     pub(in crate::studio) fn draw_board(&mut self, canvas: &mut Canvas, _view: Rect) {
         if let Drag::Pull { from, side, moved: true } = self.drag {
             if from < self.doc.layers.len() {
-                let spot = self.dot_spots(from)[usize::from(side)];
+                let spot = self.pull_start(from, side);
                 let onto = self.pulled_onto(from);
                 let to = match onto {
                     Some(index) => {
@@ -197,6 +207,9 @@ impl Studio {
     /// After a drag on a board is let go, as a board has it: an arrow's
     /// end let go on a box stuck to it as a whole.
     pub(in crate::studio) fn board_after_release(&mut self, drag: Drag) {
+        if let Some(history) = &mut self.board.history {
+            history.sliding = false;
+        }
         match drag {
             Drag::Scale { pull, .. } if pull.0 == END => {
                 if let Some(index) = self.picked() {

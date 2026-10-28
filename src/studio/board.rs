@@ -67,6 +67,10 @@ pub(super) enum Ctl {
     Words(u8),
     Guess,
     Status,
+    /// The history: its slider, Branch from here, and Back to now.
+    HistoryTrack,
+    Branch,
+    Now,
 }
 
 /// What a board keeps of its own, in the window rather than the file.
@@ -102,11 +106,15 @@ pub(super) struct Board {
     pub letting_go: bool,
     /// What it guesses comes next, offered faintly until kept or let go.
     pub ghost: Option<ghost::Ghost>,
+    /// The arrow a branch is being pulled from the middle of.
+    pub branching: Option<usize>,
+    /// The board's history, while it is gone through.
+    pub history: Option<change::History>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None }
     }
 }
 
@@ -115,6 +123,9 @@ mod dots;
 mod nest;
 mod map;
 mod ghost;
+mod change;
+mod act;
+pub(super) use act::Act;
 mod typing;
 
 /// Whether the last canvas switched to Board, kept in `canvas-mode` among
@@ -258,6 +269,15 @@ impl Studio {
         match ctl {
             Ctl::Mode(board) => self.set_mode(board),
             Ctl::Tool(which) => return self.take_board_tool(which),
+            Ctl::HistoryTrack => {
+                let x = self.pointer.0;
+                if let Some(history) = &mut self.board.history {
+                    history.sliding = true;
+                }
+                self.history_at(x);
+            }
+            Ctl::Branch => self.branch_here(),
+            Ctl::Now => self.history_now(),
             other => self.press_style(other),
         }
         Outcome::Continue
@@ -406,6 +426,7 @@ impl Studio {
                     self.text.draw(canvas, rect.right() - 9, rect.bottom() - 14, 9, if on { 0xFFFFFF } else { DIM_TEXT_COLOR }, &key);
                 }
             }
+            Ctl::HistoryTrack | Ctl::Branch | Ctl::Now => self.draw_history_control(canvas, rect, ctl, hovered),
             other => self.draw_style_control(canvas, rect, other, hovered),
         }
     }

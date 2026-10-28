@@ -57,6 +57,8 @@ fn nearest(p: Point, paths: &[Vec<Point>]) -> f32 {
 /// Whether a point is inside a closed run of points, by how many of its
 /// sides a line to its right crosses.
 fn inside(p: Point, path: &[Point]) -> bool {
+    // A hair off the line through it, never through a corner exactly.
+    let p = (p.0, p.1 + 1e-3);
     let mut odd = false;
     for pair in path.windows(2) {
         let (a, b) = (pair[0], pair[1]);

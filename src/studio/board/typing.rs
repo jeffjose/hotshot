@@ -41,6 +41,10 @@ impl Studio {
     /// to pull an arrow out of; a double click on a box or an arrow, its
     /// words to type into; on nothing, a label begun there.
     pub(in crate::studio) fn board_pressed(&mut self, at: (f32, f32), at_window: (i32, i32), double: bool) -> bool {
+        // While the history is gone through, the board is only looked at.
+        if self.board.history.is_some() {
+            return true;
+        }
         // A click on what is guessed keeps it; anywhere else lets it go.
         if self.board.ghost.is_some() {
             if self.on_ghost(at) {
@@ -56,7 +60,8 @@ impl Studio {
             return true;
         }
         if !double {
-            return false;
+            // A drag from an arrow's middle branches it.
+            return self.press_branch(at_window);
         }
         match self.layer_at(at) {
             Some(index) if self.has_words(index) => {
@@ -279,6 +284,10 @@ impl Studio {
             Key::Tab if !mods.shift && self.add_child() => return Some(Outcome::Continue),
             Key::Char('L' | 'l') if mods.shift => {
                 self.tidy();
+                return Some(Outcome::Continue);
+            }
+            Key::Char('S' | 's') if mods.shift && self.chosen().iter().any(|&index| self.is_box(index)) => {
+                self.reshape(None);
                 return Some(Outcome::Continue);
             }
             _ => {}

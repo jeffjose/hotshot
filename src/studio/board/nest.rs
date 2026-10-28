@@ -120,7 +120,13 @@ impl Studio {
         let tops: Vec<usize> = chosen.into_iter().filter(|&index| self.is_box(index) && self.holder_of(self.id_of(index)).is_none_or(|outer| !ids.contains(&outer))).collect();
         let before = self.box_frames();
         let mut changed = false;
+        let single = tops.len() == 1;
         for index in tops {
+            // One box let go on an arrow goes between its ends.
+            if single && self.split_arrow(index) {
+                changed = true;
+                continue;
+            }
             let id = self.id_of(index);
             let (x, y, w, h) = self.box_frame(index);
             let middle = (x + w / 2.0, y + h / 2.0);

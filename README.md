@@ -504,6 +504,26 @@ Esc, or doing anything else, lets it go, and typing over a number
 offered replaces it. The spark at the end of the bar of styles turns
 guessing off and on.
 
+Changing your mind is one gesture, and everything else stays as it
+was. Drag an arrow's head or tail onto another box and it is tied there
+instead, routed again. Drag from the middle of an arrow to branch it,
+"and it also goes there": let go on a box, and the box the arrow comes
+from is joined to it too; on empty board, to a new box there. Drop a
+box onto an arrow and it goes between its two ends, A to B becoming A
+to the new box to B, in line with them; if there is not room, B and
+everything after it move over along the arrow, keeping their gaps.
+Type `?` or `TBD` into a box and it is drawn dashed and hollow, clearly
+unfinished, and listed first in `Ctrl+K` under Placeholders, so none is
+forgotten. `Shift+S` makes the boxes picked out another shape, a box,
+an oval, a diamond, a database, a person or a cloud in turn, each also
+in `Ctrl+K`, keeping their words and their arrows. `Ctrl+Alt+Z` opens a
+slider over the board, back through what was done to it, each step
+saying how long ago; Left and Right step along it. Back to now, or Esc,
+returns as it was; Branch from here, or Enter, makes the board as it was
+there the board from now on and keeps the later version as a page of
+its own beside it, called the same and "later", rather than throwing
+it away. The branch is one step to undo.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

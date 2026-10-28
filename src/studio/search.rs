@@ -155,6 +155,12 @@ impl Studio {
                 acts.push((format!("Style: {name}"), "".into(), MenuAct::Style(at as u8)));
             }
         }
+        // What a board does, on a board.
+        if self.on_board() {
+            for (says, keys, act) in self.board_acts() {
+                acts.push((says, keys.into(), MenuAct::Board(act)));
+            }
+        }
         for (says, keys, act) in self.named_actions() {
             if !acts.iter().any(|(known, ..)| *known == says) {
                 acts.push((says, keys.into(), act));
@@ -169,6 +175,13 @@ impl Studio {
         // The layers worked in, and the page's own, outside the frames,
         // said to be the page's.
         let where_ = if self.on_page() { self.pages[self.page].name.clone() } else { self.doc.name.clone() };
+        // A board's boxes still to be filled in, first, so none is forgotten.
+        if self.on_board() {
+            for index in self.placeholders() {
+                let near = self.parent_box(self.id_of(index)).and_then(|parent| self.index_of(parent)).map(|parent| format!("after {}", self.doc.layers[parent].name())).unwrap_or_else(|| "on the board".to_owned());
+                hits.push(Hit { heading: "PLACEHOLDERS", says: format!("{} \u{b7} to fill in", self.doc.layers[index].name()), hint: near, found: Found::Layer(index) });
+            }
+        }
         for index in (0..self.doc.layers.len()).rev() {
             hits.push(Hit { heading: "LAYERS", says: self.doc.layers[index].name(), hint: where_.clone(), found: Found::Layer(index) });
         }

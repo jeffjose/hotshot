@@ -438,6 +438,8 @@ impl Layer {
         match &self.kind {
             Kind::Picture(picture) => picture.name.clone(),
             Kind::Shape(_) if self.named.is_some() => self.named.clone().unwrap_or_default(),
+            // A board's box or arrow by its words.
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Arrow | Tool::Line) && !shape.text.trim().is_empty() => shape.text.lines().next().unwrap_or("").chars().take(24).collect(),
             Kind::Shape(shape) => match shape.tool {
                 Tool::Text | Tool::Badge => shape.text.lines().next().unwrap_or("Text").chars().take(24).collect(),
                 tool => tool_name(tool).to_owned(),
@@ -2034,6 +2036,8 @@ struct Snapshot {
     pages: Vec<Page>,
     page: usize,
     active: usize,
+    /// When it was, for a board's history to say.
+    when: std::time::SystemTime,
 }
 
 /// What a name being typed is the name of.
@@ -2494,7 +2498,7 @@ impl Studio {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot { pages: self.gathered(), page: self.page, active: self.active }
+        Snapshot { pages: self.gathered(), page: self.page, active: self.active, when: std::time::SystemTime::now() }
     }
 
     /// The pages, with the frame worked in back in its place.
@@ -2789,6 +2793,7 @@ impl Studio {
         self.layout_search(&mut layout);
         if self.on_board() {
             self.layout_style_bar(&mut layout);
+            self.layout_history(&mut layout);
         }
         self.layout_menus(&mut layout);
         layout
@@ -5282,6 +5287,10 @@ impl Studio {
         if down && self.on_board() {
             self.ghost_keys(key, mods);
         }
+        // The history open takes the keys.
+        if down && self.on_board() && self.history_key(key) {
+            return Outcome::Continue;
+        }
         if self.search.is_some() {
             self.mods = mods;
             return if down { self.search_key(key, mods) } else { Outcome::Continue };
@@ -5430,6 +5439,7 @@ impl Studio {
             (Key::Char('s'), false) if !self.styling && self.styles_apply() => self.styling = true,
             (Key::Char('q' | 'w'), true) => return Outcome::Quit,
             (Key::Char('m'), true) => self.flip_mode(),
+            (Key::Char('z'), true) if mods.alt && self.on_board() => self.open_history(),
             (Key::Char('z'), true) if mods.shift => self.redo(),
             (Key::Char('z'), true) => self.undo(),
             (Key::Char('y'), true) => self.redo(),

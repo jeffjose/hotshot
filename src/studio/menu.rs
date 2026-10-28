@@ -97,6 +97,8 @@ pub(super) enum MenuAct {
     Style(u8),
     Act(Action),
     Do(Command),
+    /// Something only a board does.
+    Board(super::board::Act),
 }
 
 /// The things a menu does that are not buttons of the panel.
@@ -781,6 +783,7 @@ impl Studio {
             MenuAct::Style(style) => self.put_style(style),
             MenuAct::Act(action) => return self.act(action),
             MenuAct::Do(command) => return self.run_command(command),
+            MenuAct::Board(act) => return self.board_act(act),
         }
         Outcome::Continue
     }
