@@ -20,6 +20,13 @@ use crate::frame::{self, Shadow, BACKDROPS};
 use crate::shapes::{self, Shape, Tool};
 use crate::text::{icons, Text, FACES};
 
+mod actions;
+mod menu;
+mod panel;
+
+use actions::custom_drop;
+use menu::{MenuKind, MenuState};
+
 // Figma's dark colors, which the editor's are near.
 pub(crate) const TEXT_COLOR: u32 = 0xF0F0F0;
 pub(crate) const DIM_TEXT_COLOR: u32 = 0xA8A8A8;
@@ -54,7 +61,6 @@ const STROKES: [f32; 4] = [2.0, 3.5, 6.0, 10.0];
 const FONT_SIZES: [u32; 4] = [18, 26, 40, 64];
 
 /// The sizes an artboard can be set to at once, by what each is for.
-const PRESETS: [(&str, i32, i32); 5] = [("X post", 1200, 675), ("Square", 1080, 1080), ("16:9", 1920, 1080), ("Story", 1080, 1920), ("A4", 1240, 1754)];
 
 /// The tools down the side, with their keys.
 const TOOLS: [(Tool, &str, &str); 9] = [
@@ -156,12 +162,38 @@ pub struct Picture {
     pub flip: (bool, bool),
     /// What it is called, for the ends of arrows to be stuck to it by.
     pub id: u32,
+    /// The shadow it casts when `shadow` is `CUSTOM_SHADOW`: set number by
+    /// number, in pixels of the artboard.
+    pub drop: frame::Layer,
+    /// How much lighter, more contrasted and more colorful it is shown,
+    /// each from -1 to 1, nothing at 0.
+    pub adjust: [f32; 3],
+    /// A window drawn round it, its bar over the top of it; and what the
+    /// window is called, in its bar.
+    pub window: frame::Window,
+    pub title: String,
 }
+
+/// A picture's `shadow` when its shadow is set number by number.
+const CUSTOM_SHADOW: usize = frame::SHADOWS.len() + 1;
+
+/// The shadow a picture is given to begin with, when its numbers are first
+/// set: Tailwind's 2xl, as an artboard is mostly seen at half its size.
+const DROP: frame::Layer = frame::Layer { x: 0, y: 50, blur: 100, spread: -24, color: 0x4000_0000 };
 
 impl Picture {
     pub fn new(image: Arc<Image>, name: String, at: (f32, f32)) -> Picture {
         let (w, h) = (image.width() as f32, image.height() as f32);
-        Picture { image, name, cx: at.0, cy: at.1, w, h, angle: 0.0, crop: (0.0, 0.0, w, h), radius: 0.0, shadow: 0, opacity: 256, flip: (false, false), id: shapes::fresh_id() }
+        Picture { image, name, cx: at.0, cy: at.1, w, h, angle: 0.0, crop: (0.0, 0.0, w, h), radius: 0.0, shadow: 0, opacity: 256, flip: (false, false), id: shapes::fresh_id(), drop: DROP, adjust: [0.0; 3], window: frame::Window::None, title: String::new() }
+    }
+
+    /// How tall the bar of its window is, in pixels of the artboard: none
+    /// without a window.
+    fn bar(&self) -> f32 {
+        match self.window {
+            frame::Window::None => 0.0,
+            _ => (self.w * 0.04).clamp(18.0, 44.0).min(self.h / 3.0),
+        }
     }
 
     /// A point of the artboard as a point of the picture unturned, from
@@ -284,6 +316,23 @@ pub struct Doc {
     pub height: i32,
     pub background: Fill,
     pub layers: Vec<Layer>,
+    /// The sizes it is exported at, each with what its file's name ends in
+    /// before the kind, and the kind of file.
+    pub exports: Vec<ExportSize>,
+}
+
+/// A size a frame is exported at.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ExportSize {
+    pub times: f32,
+    pub suffix: String,
+    pub format: crate::output::Format,
+}
+
+impl ExportSize {
+    fn new(times: f32) -> ExportSize {
+        ExportSize { times, suffix: String::new(), format: crate::output::Format::Png }
+    }
 }
 
 /// A shape made larger or smaller by a factor, about the artboard's top
@@ -301,7 +350,7 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
 
 impl Doc {
     pub fn new(width: i32, height: i32) -> Doc {
-        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new() }
+        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(2.0)] }
     }
 
     /// The artboard as a picture, `times` its size: each pixel with how
@@ -342,7 +391,7 @@ impl Doc {
         }
         for layer in self.layers.iter().filter(|layer| !layer.hidden) {
             match &layer.kind {
-                Kind::Picture(picture) => draw_picture(&mut out, part, picture, times),
+                Kind::Picture(picture) => draw_picture(&mut out, part, picture, times, text),
                 Kind::Shape(shape) => {
                     let mut shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
                     if (part.x, part.y) != (0, 0) {
@@ -370,6 +419,8 @@ impl Doc {
     /// each picture by where it is among `images`, which it is added to.
     fn write_lines(&self, out: &mut String, images: &mut Vec<Arc<Image>>) {
         *out += &format!("size {} {}\n", self.width, self.height);
+        let sizes: Vec<String> = self.exports.iter().map(|size| format!("{}:{}:{}", size.times, size.format.ending(), size.suffix.replace([' ', ':'], "_"))).collect();
+        *out += &format!("exports {}\n", sizes.join(" "));
         *out += &match self.background {
             Fill::None => "background none\n".to_owned(),
             Fill::Color(color) => format!("background color {color:06X}\n"),
@@ -400,6 +451,15 @@ impl Doc {
                         picture.id,
                         one_line(&picture.name)
                     );
+                    let drop = picture.drop;
+                    *out += &format!("drop {} {} {} {} {:08X}\n", drop.x, drop.y, drop.blur, drop.spread, drop.color);
+                    if picture.adjust != [0.0; 3] {
+                        *out += &format!("adjust {} {} {}\n", picture.adjust[0], picture.adjust[1], picture.adjust[2]);
+                    }
+                    if picture.window != frame::Window::None {
+                        let which = frame::WINDOWS.iter().position(|(window, _)| *window == picture.window).unwrap_or(0);
+                        *out += &format!("window {which} {}\n", one_line(&picture.title));
+                    }
                 }
                 Kind::Shape(shape) => *out += &format!("shape {flags} {}\n", shape.write()),
             }
@@ -431,8 +491,39 @@ impl Doc {
                 let id = number()? as u32;
                 shapes::seen_id(id);
                 let name = words.collect::<Vec<_>>().join(" ");
-                let picture = Picture { image, name, cx, cy, w, h, angle, crop, radius, shadow: shadow.min(frame::SHADOWS.len()), opacity: opacity.min(256), flip, id };
+                let picture = Picture { shadow: shadow.min(CUSTOM_SHADOW), opacity: opacity.min(256), flip, id, radius, crop, angle, ..Picture::new(image, name, (cx, cy)) };
+                let picture = Picture { w, h, ..picture };
                 self.layers.push(Layer { kind: Kind::Picture(picture), hidden, locked });
+            }
+            // What a picture has besides, on lines after its own.
+            "drop" | "adjust" | "window" => {
+                let Some(Layer { kind: Kind::Picture(picture), .. }) = self.layers.last_mut() else { return None };
+                match line.split(' ').next()? {
+                    "drop" => {
+                        let mut number = || words.next().and_then(|word| word.parse::<i16>().ok());
+                        let (x, y, blur, spread) = (number()?, number()?, number()?, number()?);
+                        picture.drop = frame::Layer { x, y, blur, spread, color: u32::from_str_radix(words.next()?, 16).ok()? };
+                    }
+                    "adjust" => {
+                        for value in &mut picture.adjust {
+                            *value = words.next()?.parse::<f32>().ok()?.clamp(-1.0, 1.0);
+                        }
+                    }
+                    _ => {
+                        picture.window = frame::WINDOWS.get(words.next()?.parse::<usize>().ok()?)?.0;
+                        picture.title = words.collect::<Vec<_>>().join(" ");
+                    }
+                }
+            }
+            "exports" => {
+                let mut sizes = Vec::new();
+                for word in words.filter(|word| !word.is_empty()) {
+                    let mut parts = word.splitn(3, ':');
+                    let times = parts.next()?.parse::<f32>().ok()?.clamp(0.1, 8.0);
+                    let format = crate::output::Format::named(parts.next()?)?;
+                    sizes.push(ExportSize { times, format, suffix: parts.next().unwrap_or("").to_owned() });
+                }
+                self.exports = sizes;
             }
             "shape" => {
                 let rest = line.splitn(4, ' ').collect::<Vec<_>>();
@@ -610,16 +701,22 @@ fn over(under: u32, color: u32, amount: f32) -> u32 {
 /// A picture drawn onto the artboard at `times` its size: its shadow, then
 /// it, each pixel of it from the four nearest of the copy of it of about
 /// the size it is shown at, kept to its rounded corners.
-fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32) {
+fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text: &mut Text) {
     let (wide, high) = (part.w, part.h);
     let mut at = picture.clone();
     (at.cx, at.cy, at.w, at.h, at.radius) = (picture.cx * times - part.x as f32, picture.cy * times - part.y as f32, picture.w * times, picture.h * times, picture.radius * times);
     let picture = &at;
-    let shadow = Shadow::of_preset(picture.shadow.saturating_sub(1));
-    let layers = if picture.shadow == 0 { &[][..] } else { shadow.layers() };
+    let custom = [picture.drop];
+    let preset = Shadow::of_preset(picture.shadow.saturating_sub(1));
+    let layers = match picture.shadow {
+        0 => &[][..],
+        CUSTOM_SHADOW => &custom[..],
+        _ => preset.layers(),
+    };
     // Tailwind's shadows are for a page seen at its size; an artboard is
     // most often seen at half its own, and its shadows are twice as large.
-    let lift = times * SHADOW_SIZE;
+    // One set number by number is in pixels of the artboard.
+    let lift = if picture.shadow == CUSTOM_SHADOW { times } else { times * SHADOW_SIZE };
     // How far out from it anything of it goes: its shadow's reach.
     let reach = layers.iter().map(|layer| (f32::from(layer.blur) * 1.5 + f32::from(layer.spread) + f32::from(layer.x.abs().max(layer.y.abs()))) * lift).fold(0.0f32, f32::max);
     let corners = picture.corners();
@@ -632,12 +729,17 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32) {
         return;
     }
     let (hw, hh) = (picture.w / 2.0, picture.h / 2.0);
-    let radius = picture.radius.clamp(0.0, hw.min(hh));
+    // A window's bar over the top of it, and the picture in what is left.
+    let bar = picture.bar() * times;
+    let radius = if bar > 0.0 { picture.radius.max(10.0 * times) } else { picture.radius }.clamp(0.0, hw.min(hh));
     let (cx, cy, cw, ch) = picture.crop;
     let level = picture.image.level(cw / picture.w);
     let (lw, lh, pixels) = (level.0, level.1, &level.2);
     let (ratio_x, ratio_y) = (lw as f32 / picture.image.width() as f32, lh as f32 / picture.image.height() as f32);
     let opacity = picture.opacity as f32 / 256.0;
+    let dark = picture.window == frame::Window::Terminal || (bar > 0.0 && frame::darkish(pixels, lw, lh));
+    let bar_scale = bar / 30.0;
+    let adjusted = picture.adjust != [0.0; 3];
     out[(area.y * wide) as usize..(area.bottom() * wide) as usize].par_chunks_mut(wide as usize).enumerate().for_each(|(row, line)| {
         let y = area.y + row as i32;
         for x in area.x..area.right() {
@@ -656,21 +758,64 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32) {
             let inside = frame::round_box(lx, ly, hw, hh, radius);
             let cover = (0.5 - inside).clamp(0.0, 1.0);
             if cover > 0.0 {
-                // Where in the picture's own pixels, flipped if it is.
-                let (mut u, mut v) = ((lx + hw) / picture.w, (ly + hh) / picture.h);
-                if picture.flip.0 {
-                    u = 1.0 - u;
+                if ly + hh < bar {
+                    let color = frame::window_bar(picture.window, dark, lx + hw, ly + hh, picture.w, bar, bar_scale);
+                    pixel = over(pixel, color, cover * opacity);
+                } else {
+                    // Where in the picture's own pixels, flipped if it is.
+                    let (mut u, mut v) = ((lx + hw) / picture.w, (ly + hh - bar) / (picture.h - bar));
+                    if picture.flip.0 {
+                        u = 1.0 - u;
+                    }
+                    if picture.flip.1 {
+                        v = 1.0 - v;
+                    }
+                    let (fx, fy) = ((cx + u * cw) * ratio_x - 0.5, (cy + v * ch) * ratio_y - 0.5);
+                    let mut color = sample(pixels, lw, lh, fx, fy);
+                    if adjusted {
+                        color = adjust(color, picture.adjust);
+                    }
+                    pixel = over(pixel, color & 0xFF_FFFF, cover * (color >> 24) as f32 / 255.0 * opacity);
                 }
-                if picture.flip.1 {
-                    v = 1.0 - v;
-                }
-                let (fx, fy) = ((cx + u * cw) * ratio_x - 0.5, (cy + v * ch) * ratio_y - 0.5);
-                let color = sample(pixels, lw, lh, fx, fy);
-                pixel = over(pixel, color & 0xFF_FFFF, cover * (color >> 24) as f32 / 255.0 * opacity);
             }
             line[x as usize] = pixel;
         }
     });
+    // What the window is called, in the middle of its bar, square to the
+    // artboard only.
+    if bar >= 12.0 && !picture.title.is_empty() && picture.angle == 0.0 {
+        let px = ((bar * 0.42).round() as u32).max(7);
+        let (mid_x, mid_y) = ((picture.cx).round() as i32, (picture.cy - hh + bar / 2.0).round() as i32);
+        let band = Rect::new((picture.cx - hw) as i32 + (bar * 2.6) as i32, (picture.cy - hh) as i32, (picture.w - bar * 5.2).max(0.0) as i32, bar.ceil() as i32).intersect(Rect::new(0, 0, wide, high));
+        if !band.is_empty() {
+            let ink = if dark { 0xC9CCD3 } else { 0x4A4D57 };
+            let mut canvas = Canvas::new(out, wide, high);
+            canvas.set_clip(band);
+            text.draw_centered(&mut canvas, mid_x, mid_y, px, ink, &picture.title);
+            // Drawing on it left its pixels without how opaque they are.
+            for y in band.y..band.bottom() {
+                for pixel in &mut out[(y * wide + band.x) as usize..(y * wide + band.right()) as usize] {
+                    *pixel |= 0xFF00_0000;
+                }
+            }
+        }
+    }
+}
+
+/// A color of a picture made lighter or darker, more or less contrasted,
+/// and more or less colorful, each by -1 to 1.
+fn adjust(color: u32, [exposure, contrast, saturation]: [f32; 3]) -> u32 {
+    let gain = 2f32.powf(exposure * 1.5);
+    let spread = 1.0 + contrast * if contrast > 0.0 { 1.5 } else { 0.9 };
+    let channel = |shift: u32| (color >> shift & 0xFF) as f32 / 255.0;
+    let (mut r, mut g, mut b) = (channel(16), channel(8), channel(0));
+    for value in [&mut r, &mut g, &mut b] {
+        *value = ((*value * gain - 0.5) * spread + 0.5).clamp(0.0, 1.0);
+    }
+    let gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let color_by = 1.0 + saturation;
+    let back = |value: f32| (((gray + (value - gray) * color_by).clamp(0.0, 1.0)) * 255.0).round() as u32;
+    (color & 0xFF00_0000) | back(r) << 16 | back(g) << 8 | back(b)
 }
 
 /// A picture's color between its pixels, from the four nearest.
@@ -738,6 +883,8 @@ enum Drag {
     /// The crop of the picture being cropped, by a handle or, inside it,
     /// all of it.
     Crop { pull: (i32, i32), from: (f32, f32) },
+    /// A slider dragged along, from where its track begins, so wide.
+    Slide { field: Field, left: i32, wide: i32 },
 }
 
 /// A number in the panel of properties.
@@ -755,20 +902,55 @@ enum Field {
     /// Which way the background's gradient goes, as CSS says it: 0 up,
     /// 90 to the right, 180 down.
     Angle,
+    /// How a picture is shown: lighter, more contrasted, more colorful;
+    /// each a slider from -100 to 100.
+    Exposure,
+    Contrast,
+    Saturation,
+    /// A picture's shadow, number by number.
+    DropY,
+    DropBlur,
+    DropSpread,
+    DropAlpha,
+    /// How large text is; how wide a line is.
+    FontSize,
+    Stroke,
+    /// Where the ends of a line are.
+    StartX,
+    StartY,
+    EndX,
+    EndY,
+    /// How many times larger the frame is exported, at one of its sizes.
+    ExportTimes(u8),
 }
 
 impl Field {
     fn label(self) -> &'static str {
         match self {
-            Field::X => "X",
-            Field::Y => "Y",
+            Field::X | Field::StartX | Field::EndX => "X",
+            Field::Y | Field::StartY | Field::EndY => "Y",
             Field::W | Field::ArtW => "W",
             Field::H | Field::ArtH => "H",
             Field::Turn => "\u{b0}",
             Field::Radius => "Radius",
             Field::Opacity => "Opacity",
             Field::Angle => "Angle",
+            Field::Exposure => "Exposure",
+            Field::Contrast => "Contrast",
+            Field::Saturation => "Saturation",
+            Field::DropY => "Y",
+            Field::DropBlur => "Blur",
+            Field::DropSpread => "Spread",
+            Field::DropAlpha => "%",
+            Field::FontSize => "Size",
+            Field::Stroke => "W",
+            Field::ExportTimes(_) => "\u{d7}",
         }
+    }
+
+    /// Whether it is shown as a slider, rather than a number.
+    fn slides(self) -> bool {
+        matches!(self, Field::Exposure | Field::Contrast | Field::Saturation)
     }
 }
 
@@ -790,6 +972,10 @@ enum Paint {
     /// The colors a gradient goes from and to.
     From,
     To,
+    /// The color of a picture's shadow.
+    Shadow,
+    /// One color among what is picked out, to be another in all of them.
+    Recolor(u32),
 }
 
 /// What a click on the panels, or the bar along the top, does.
@@ -800,16 +986,11 @@ enum Control {
     Eye(usize),
     Lock(usize),
     Field(Field),
-    Preset(usize),
     Ground(Ground),
     Backdrop(usize),
     Swatch(Paint, Option<u32>),
-    Scale(u32),
     Shadow(usize),
-    Width(usize),
-    Head(usize, u8),
     Line(u8),
-    Face(usize),
     Action(Action),
     /// The way back to the projects; the pages, and a new one; the frames
     /// of the page, in the list of layers; the frame tool; the list of a
@@ -824,6 +1005,16 @@ enum Control {
     Pick(Tool),
     Zoom,
     ColorField(Paint),
+    /// A row of an open list, the list a level deep and the row in it; and
+    /// a field that opens a list.
+    MenuRow(u8, u16),
+    Menu(MenuKind),
+    /// One of the windows a picture can be set in, by where it is in
+    /// `frame::WINDOWS`; a name to type, in a field; and what an end of a
+    /// line is stuck to.
+    Window(u8),
+    Entry(Naming),
+    Stuck(u8),
     /// A part of a panel that is no control.
     Panel,
 }
@@ -847,11 +1038,66 @@ enum Action {
     Align(u8),
     Border,
     Halo,
-    Elbow,
     Sketch,
+    /// A new frame round what is picked out, and them in it.
+    FrameThem,
+    /// Width and height kept to each other, in the fields.
+    LockRatio,
+    /// What is picked out spaced evenly, across or down.
+    Distribute(u8),
+    /// The heads at the ends of a line swapped; its path straight, curved
+    /// or round a corner; an end let go of what it is stuck to.
+    Swap,
+    Path(u8),
+    Unstick(u8),
+    /// An export size more, or one fewer; the frame turned sideways.
+    AddExport,
+    RemoveExport(u8),
+    Sideways,
+    /// How text is set.
+    Bold,
+    Italic,
+    Highlight,
+    Bullets,
+    Pill(bool),
+    TextAlign(u8),
+    /// A shadow under a picture, or none; and its adjustments undone.
+    ShadowOn,
+    ShadowOff,
+    ResetAdjust,
+    /// The shape a crop is kept to, and the crop undone.
+    Aspect(u8),
+    ResetCrop,
 }
 
 impl Action {
+    /// The icon a square button of it shows, if it is one.
+    fn icon(self) -> Option<&'static str> {
+        Some(match self {
+            Action::Align(0) => icons::ALIGN_LEFT,
+            Action::Align(1) => icons::ALIGN_HCENTER,
+            Action::Align(2) => icons::ALIGN_RIGHT,
+            Action::Align(3) => icons::ALIGN_TOP,
+            Action::Align(4) => icons::ALIGN_VCENTER,
+            Action::Align(_) => icons::ALIGN_BOTTOM,
+            Action::Distribute(0) => icons::DIST_H,
+            Action::Distribute(_) => icons::DIST_V,
+            Action::LockRatio => icons::RATIO,
+            Action::FlipAcross | Action::FlipDown => icons::FLIP,
+            Action::Crop => icons::CROP,
+            Action::Swap => icons::SWAP,
+            Action::Unstick(_) => icons::LINK,
+            Action::RemoveExport(_) | Action::ShadowOff => icons::MINUS,
+            Action::AddExport | Action::ShadowOn => icons::PLUS,
+            Action::ResetAdjust => icons::UNDO,
+            Action::Sideways => icons::ROTATE,
+            Action::TextAlign(0) => icons::ALIGN_LEFT,
+            Action::TextAlign(1) => icons::ALIGN_HCENTER,
+            Action::TextAlign(_) => icons::ALIGN_RIGHT,
+            _ => return None,
+        })
+    }
+
     fn says(self) -> &'static str {
         match self {
             Action::Export => "Export",
@@ -860,7 +1106,33 @@ impl Action {
             Action::Crop => "Crop",
             Action::FlipAcross => "Flip \u{2194}",
             Action::FlipDown => "Flip \u{2195}",
-            Action::Actual => "100%",
+            Action::Actual => "1:1",
+            Action::FrameThem => "Frame them",
+            Action::LockRatio => "Keep proportions",
+            Action::Distribute(0) => "Space across",
+            Action::Distribute(_) => "Space down",
+            Action::Swap => "Swap ends",
+            Action::Path(0) => "Straight",
+            Action::Path(1) => "Curved",
+            Action::Path(_) => "Elbow",
+            Action::Unstick(_) => "Let go",
+            Action::AddExport => "Add a size",
+            Action::RemoveExport(_) => "Remove",
+            Action::Sideways => "Turn sideways",
+            Action::Bold => "B",
+            Action::Italic => "I",
+            Action::Highlight => "M",
+            Action::Bullets => "\u{2022}",
+            Action::Pill(true) => "Pill",
+            Action::Pill(false) => "None",
+            Action::TextAlign(0) => "Left",
+            Action::TextAlign(1) => "Center",
+            Action::TextAlign(_) => "Right",
+            Action::ShadowOn => "Add a shadow",
+            Action::ShadowOff => "No shadow",
+            Action::ResetAdjust => "Undo adjustments",
+            Action::Aspect(_) => "Aspect",
+            Action::ResetCrop => "Reset",
             Action::Forward => "Forward",
             Action::Backward => "Backward",
             Action::Duplicate => "Duplicate",
@@ -873,7 +1145,6 @@ impl Action {
             Action::Align(_) => "\u{2913}",
             Action::Border => "Border",
             Action::Halo => "White edge",
-            Action::Elbow => "Elbow",
             Action::Sketch => "Sketch",
         }
     }
@@ -897,6 +1168,8 @@ struct Layout {
     dock: Rect,
     flyout: Option<Rect>,
     popover: Option<Rect>,
+    /// The lists open, and where each is.
+    menus: Vec<(Rect, MenuKind)>,
 }
 
 /// The whole file as it was, to come back to with undo: its pages, the
@@ -913,6 +1186,10 @@ struct Snapshot {
 enum Naming {
     Frame,
     Page(usize),
+    /// The title in the bar of a picture's window, by its layer; and what
+    /// the file of one of the frame's export sizes ends in.
+    Title(usize),
+    Suffix(usize),
 }
 
 /// What the window has to do for the canvas, that the canvas cannot.
@@ -954,6 +1231,15 @@ pub struct Studio {
     renaming: Option<(Naming, String)>,
     /// Which tool of each group shows in the toolbar: the last one used.
     groups: [Tool; 2],
+    /// The list open, if one is; how large the screen is, for the frame
+    /// size of it; whether rulers are shown; whether width and height are
+    /// kept to each other; layers copied; and the shape crops keep to.
+    menu: Option<MenuState>,
+    pub screen: (i32, i32),
+    rulers: bool,
+    keep_ratio: bool,
+    copied: Vec<Layer>,
+    crop_aspect: usize,
     text: Text,
     width: i32,
     height: i32,
@@ -1057,6 +1343,12 @@ impl Studio {
             scroll: 0,
             renaming: None,
             groups: [Tool::Rect, Tool::Pen],
+            menu: None,
+            screen: (1920, 1080),
+            rulers: false,
+            keep_ratio: false,
+            copied: Vec::new(),
+            crop_aspect: 0,
             path: None,
             edited: false,
             dir,
@@ -1245,6 +1537,7 @@ impl Studio {
                 layout.controls.push((place, Control::Frame(index)));
             }
         }
+        self.layout_menus(&mut layout);
         layout
     }
 
@@ -1367,12 +1660,13 @@ impl Studio {
             return self.right_panel(layout);
         }
         let shows = |rect: Rect| rect.y >= top && rect.bottom() <= panel.bottom() - 4;
+        let field = self.palette.and_then(|paint| part.controls.iter().find(|(_, control)| *control == Control::ColorField(paint)).map(|(rect, _)| *rect));
         layout.controls.extend(part.controls.into_iter().filter(|(rect, _)| shows(*rect)));
         layout.words.extend(part.words.into_iter().filter(|((_, y), ..)| *y >= top && *y + 14 <= panel.bottom()));
         layout.icons.extend(part.icons.into_iter().filter(|((_, y), ..)| *y - 8 >= top && *y + 8 <= panel.bottom()));
         layout.rules.extend(part.rules.into_iter().filter(|rule| rule.y >= top && rule.y < panel.bottom()));
         // The colors, beside the panel at the color they are for.
-        if let (Some(paint), Some(field)) = (self.palette, part.popover) {
+        if let (Some(paint), Some(field)) = (self.palette, field) {
             let colors: Vec<Option<u32>> = (paint == Paint::Fill).then_some(None).into_iter().chain(PALETTE.iter().map(|&(color, _)| Some(color))).collect();
             let (each, across) = (24, 7);
             let rows = (colors.len() as i32 + across - 1) / across;
@@ -1386,177 +1680,6 @@ impl Studio {
             layout.popover = Some(place);
         }
         layout.controls.push((panel, Control::Panel));
-    }
-
-    /// The sections of the panel of properties, from `y` down: what is
-    /// picked out, or the frame. Gives where they end.
-    fn properties(&mut self, layout: &mut Layout, left: i32, inner: i32, mut y: i32, panel_w: i32) -> i32 {
-        let px = 12;
-        let line = Text::line_height(px);
-        let rule_x = left - 14;
-        let section = |layout: &mut Layout, y: &mut i32, title: &str, hint: &str| {
-            layout.rules.push(Rect::new(rule_x, *y, panel_w, 1));
-            *y += 12;
-            layout.words.push(((left, *y), title.to_owned(), TEXT_COLOR, 12));
-            if !hint.is_empty() {
-                layout.words.push(((left + inner - (hint.chars().count() as i32 * 6), *y + 1), hint.to_owned(), DIM_TEXT_COLOR, 11));
-            }
-            *y += line + 10;
-        };
-        let small = |layout: &mut Layout, y: &mut i32, says: &str| {
-            layout.words.push(((left, *y), says.to_owned(), DIM_TEXT_COLOR, 11));
-            *y += Text::line_height(11) + 6;
-        };
-        // Numbers side by side, each with its label to drag it by.
-        let fields = |layout: &mut Layout, y: &mut i32, row: &[Field]| {
-            let count = row.len() as i32;
-            let each = (inner - 8 * (count - 1)) / count;
-            for (index, &field) in row.iter().enumerate() {
-                layout.controls.push((Rect::new(left + index as i32 * (each + 8), *y, each, 28), Control::Field(field)));
-            }
-            *y += 36;
-        };
-        // Chips, as many to a row as fit, each as wide as what it says.
-        let chips = |layout: &mut Layout, text: &mut Text, y: &mut i32, items: Vec<(String, Control)>| {
-            let mut x = left;
-            for (says, control) in items {
-                let wide = text.width(&says, px) + 18;
-                if x + wide > left + inner && x > left {
-                    (x, *y) = (left, *y + 32);
-                }
-                layout.controls.push((Rect::new(x, *y, wide, 26), control));
-                layout.words.push(((x + 9, *y + (26 - line) / 2), says, TEXT_COLOR, px));
-                x += wide + 6;
-            }
-            *y += 34;
-        };
-        // A color, as Figma shows one: a swatch and its hex, which opens
-        // the colors beside the panel.
-        let color = |layout: &mut Layout, y: &mut i32, paint: Paint| {
-            let place = Rect::new(left, *y, inner, 28);
-            layout.controls.push((place, Control::ColorField(paint)));
-            if self.palette == Some(paint) {
-                layout.popover = Some(place);
-            }
-            *y += 36;
-        };
-        let actions = |list: &[Action]| list.iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect::<Vec<_>>();
-        let layer = |layout: &mut Layout, text: &mut Text, y: &mut i32| {
-            section(layout, y, "Layer", "");
-            chips(layout, text, y, actions(&[Action::Forward, Action::Backward, Action::Duplicate, Action::Delete]));
-        };
-        if self.cropping.is_some() {
-            section(layout, &mut y, "Crop", "");
-            small(layout, &mut y, "Drag the corners, or the picture inside");
-            chips(layout, &mut self.text, &mut y, vec![("Done".to_owned(), Control::Action(Action::Crop))]);
-            return y;
-        }
-        let chosen = self.chosen();
-        match chosen[..] {
-            [] => {
-                let name = self.doc.name.clone();
-                section(layout, &mut y, "Frame", &name);
-                let presets = PRESETS.iter().enumerate().map(|(index, (name, ..))| (name.to_string(), Control::Preset(index))).collect();
-                chips(layout, &mut self.text, &mut y, presets);
-                fields(layout, &mut y, &[Field::ArtW, Field::ArtH]);
-                section(layout, &mut y, "Background", "");
-                chips(layout, &mut self.text, &mut y, vec![("Color".into(), Control::Ground(Ground::Color)), ("Gradient".into(), Control::Ground(Ground::Gradient)), ("Backdrop".into(), Control::Ground(Ground::Backdrop)), ("None".into(), Control::Ground(Ground::None))]);
-                match self.doc.background {
-                    Fill::Color(_) => color(layout, &mut y, Paint::Background),
-                    Fill::Gradient(..) => {
-                        color(layout, &mut y, Paint::From);
-                        color(layout, &mut y, Paint::To);
-                        fields(layout, &mut y, &[Field::Angle]);
-                    }
-                    Fill::Backdrop(_) => {
-                        let (each, across) = (inner / 6, 6);
-                        for which in 0..BACKDROPS.len() {
-                            layout.controls.push((Rect::new(left + which as i32 % across * each, y + which as i32 / across * each, each - 4, each - 4), Control::Backdrop(which)));
-                        }
-                        y += BACKDROPS.len().div_ceil(across as usize) as i32 * each + 6;
-                    }
-                    Fill::None => {}
-                }
-                section(layout, &mut y, "Export", "");
-                chips(layout, &mut self.text, &mut y, (1..=3).map(|times| (format!("{times}\u{d7}"), Control::Scale(times))).collect());
-                chips(layout, &mut self.text, &mut y, actions(&[Action::Export, Action::Copy]));
-            }
-            [index] => match self.doc.layers[index].kind.clone() {
-                Kind::Picture(picture) => {
-                    section(layout, &mut y, "Picture", &format!("{} \u{d7} {} px", picture.image.width(), picture.image.height()));
-                    fields(layout, &mut y, &[Field::X, Field::Y, Field::Turn]);
-                    fields(layout, &mut y, &[Field::W, Field::H]);
-                    section(layout, &mut y, "Appearance", "");
-                    fields(layout, &mut y, &[Field::Opacity, Field::Radius]);
-                    chips(layout, &mut self.text, &mut y, actions(&[Action::Crop, Action::FlipAcross, Action::FlipDown, Action::Actual]));
-                    section(layout, &mut y, "Shadow", "");
-                    let shadows = (0..=frame::SHADOWS.len()).map(|which| (if which == 0 { "None".to_owned() } else { frame::SHADOWS[which - 1].0.to_owned() }, Control::Shadow(which))).collect();
-                    chips(layout, &mut self.text, &mut y, shadows);
-                    layer(layout, &mut self.text, &mut y);
-                }
-                Kind::Shape(shape) => {
-                    let name = TOOLS.iter().find(|(tool, ..)| *tool == shape.tool).map_or("Shape", |(_, name, _)| name);
-                    section(layout, &mut y, name, "");
-                    if shape.turnable() {
-                        fields(layout, &mut y, &[Field::X, Field::Y, Field::Turn]);
-                    } else {
-                        fields(layout, &mut y, &[Field::X, Field::Y]);
-                    }
-                    if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
-                        fields(layout, &mut y, &[Field::W, Field::H]);
-                    }
-                    section(layout, &mut y, "Appearance", "");
-                    if shape.tool == Tool::Rect {
-                        fields(layout, &mut y, &[Field::Opacity, Field::Radius]);
-                    } else {
-                        fields(layout, &mut y, &[Field::Opacity]);
-                    }
-                    match shape.tool {
-                        Tool::Rect | Tool::Ellipse => {
-                            section(layout, &mut y, "Fill", "");
-                            color(layout, &mut y, Paint::Fill);
-                            section(layout, &mut y, "Border", "");
-                            color(layout, &mut y, Paint::Line);
-                            chips(layout, &mut self.text, &mut y, STROKES.iter().enumerate().map(|(size, width)| (format!("{width}"), Control::Width(size))).collect());
-                            chips(layout, &mut self.text, &mut y, actions(&[Action::Border, Action::Sketch]));
-                        }
-                        Tool::Text | Tool::Badge => {
-                            section(layout, &mut y, "Type", "");
-                            color(layout, &mut y, Paint::Line);
-                            chips(layout, &mut self.text, &mut y, FACES.iter().enumerate().map(|(face, name)| (name.split(' ').next().unwrap_or(name).to_owned(), Control::Face(face))).collect());
-                            chips(layout, &mut self.text, &mut y, FONT_SIZES.iter().enumerate().map(|(size, px)| (px.to_string(), Control::Width(size))).collect());
-                        }
-                        _ => {
-                            section(layout, &mut y, "Stroke", "");
-                            color(layout, &mut y, Paint::Line);
-                            chips(layout, &mut self.text, &mut y, STROKES.iter().enumerate().map(|(size, width)| (format!("{width}"), Control::Width(size))).collect());
-                        }
-                    }
-                    if matches!(shape.tool, Tool::Line | Tool::Arrow) {
-                        chips(layout, &mut self.text, &mut y, ["Solid", "Dashed", "Dotted"].iter().enumerate().map(|(kind, name)| (name.to_string(), Control::Line(kind as u8))).collect());
-                        chips(layout, &mut self.text, &mut y, actions(&[Action::Halo, Action::Elbow, Action::Sketch]));
-                        let heads = |end: usize| -> Vec<(String, Control)> {
-                            let none = shapes::HEADS.len() as u8;
-                            [none].into_iter().chain(0..none).map(|style| (if style == none { "None".to_owned() } else { shapes::HEADS[usize::from(style)].to_owned() }, Control::Head(end, style))).collect()
-                        };
-                        section(layout, &mut y, "Ends", "");
-                        small(layout, &mut y, "Start");
-                        chips(layout, &mut self.text, &mut y, heads(0));
-                        small(layout, &mut y, "End");
-                        chips(layout, &mut self.text, &mut y, heads(1));
-                    }
-                    layer(layout, &mut self.text, &mut y);
-                }
-            },
-            _ => {
-                section(layout, &mut y, &format!("{} layers", chosen.len()), "");
-                fields(layout, &mut y, &[Field::X, Field::Y]);
-                section(layout, &mut y, "Line up", "");
-                chips(layout, &mut self.text, &mut y, (0..6).map(|way| (Action::Align(way).says().to_owned(), Control::Action(Action::Align(way)))).collect());
-                layer(layout, &mut self.text, &mut y);
-            }
-        }
-        y
     }
 
     /// The part of the window between the panels and over the toolbar,
@@ -1706,7 +1829,13 @@ impl Studio {
         (self.pointer, self.mods) = ((x, y), mods);
         let at = self.to_doc((x, y));
         match self.drag {
+            Drag::Slide { field, left, wide } => self.slide_to(field, left, wide, x),
             Drag::None => {
+                // Over an open list, the list a row of it opens.
+                if self.menu.is_some() {
+                    let control = self.control_at((x, y));
+                    self.hover_menu(control);
+                }
                 let hovered = match (self.tool, self.over_page((x, y)) && !self.framing) {
                     (Tool::Select, true) => self.layer_at(at),
                     _ => None,
@@ -1836,6 +1965,7 @@ impl Studio {
                 self.drag = Drag::Pan { from: at_window, origin: self.pan };
                 return Outcome::Continue;
             }
+            3 => return self.right_click(at_window),
             1 => {}
             _ => return Outcome::Continue,
         }
@@ -2004,8 +2134,56 @@ impl Studio {
         if !matches!(control, Control::Page(_) | Control::Frame(_)) {
             self.commit_name();
         }
+        if !matches!(control, Control::MenuRow(..)) {
+            self.menu = None;
+        }
         match control {
-            Control::Home => return Outcome::Home,
+            Control::Home => {
+                let place = self.control_rect(control).unwrap_or_default();
+                self.menu = Some(MenuState { kind: MenuKind::Main, at: (place.x, place.bottom() + 6), sub: None });
+            }
+            Control::Zoom => {
+                let place = self.control_rect(control).unwrap_or_default();
+                self.menu = Some(MenuState { kind: MenuKind::Zoom, at: (place.x, place.bottom() + 4), sub: None });
+            }
+            Control::MenuRow(level, row) => return self.press_menu(level, row),
+            Control::Menu(kind) => {
+                let place = self.control_rect(control).unwrap_or_default();
+                // Beside the panel, level with the field it opens from.
+                let at = (place.x - 8 - 280, place.y - 6);
+                self.menu = Some(MenuState { kind, at, sub: None });
+            }
+            Control::Window(which) => {
+                let window = frame::WINDOWS[usize::from(which).min(frame::WINDOWS.len() - 1)].0;
+                self.restyle(|layer| {
+                    if let Kind::Picture(picture) = &mut layer.kind {
+                        picture.window = window;
+                    }
+                });
+            }
+            Control::Entry(naming) => {
+                let now = match naming {
+                    Naming::Title(index) => match self.doc.layers.get(index).map(|layer| &layer.kind) {
+                        Some(Kind::Picture(picture)) => picture.title.clone(),
+                        _ => String::new(),
+                    },
+                    Naming::Suffix(index) => self.doc.exports.get(index).map_or(String::new(), |size| size.suffix.clone()),
+                    Naming::Frame => self.doc.name.clone(),
+                    Naming::Page(page) => self.pages[page].name.clone(),
+                };
+                self.renaming = Some((naming, now));
+            }
+            // What an end is stuck to, picked out.
+            Control::Stuck(end) => {
+                let stuck = self.picked().and_then(|index| match &self.doc.layers[index].kind {
+                    Kind::Shape(shape) => shape.stuck[usize::from(end).min(1)].map(|(id, ..)| id),
+                    Kind::Picture(_) => None,
+                });
+                if let Some(at) = stuck.and_then(|id| self.layer_by_id(id)) {
+                    self.selected = vec![at];
+                }
+            }
+
             Control::Page(index) => match double {
                 true => self.renaming = Some((Naming::Page(index), self.pages[index].name.clone())),
                 false => self.go_to_page(index),
@@ -2031,7 +2209,7 @@ impl Studio {
                 self.flyout = None;
                 self.set_tool(tool);
             }
-            Control::Zoom => self.fit(),
+
             Control::ColorField(paint) => self.palette = if self.palette == Some(paint) { None } else { Some(paint) },
             Control::Tool(tool) => self.set_tool(tool),
             Control::Layer(index) => {
@@ -2056,6 +2234,15 @@ impl Studio {
                 self.selected.retain(|&other| other != index);
                 self.dirty = true;
             }
+            Control::Field(field) if field.slides() => {
+                // A slider: the value where it is pressed, and dragged.
+                let place = self.control_rect(control).unwrap_or_default();
+                self.checkpoint();
+                self.drag = Drag::Slide { field, left: place.x + 80, wide: (place.w - 84).max(20) };
+                let (x, mods) = (self.pointer.0, self.mods);
+                self.slide_to(field, place.x + 80, (place.w - 84).max(20), x);
+                let _ = mods;
+            }
             Control::Field(field) => match double {
                 true => self.typing = Some((field, String::new())),
                 false => {
@@ -2064,12 +2251,6 @@ impl Studio {
                     self.drag = Drag::Scrub { field, from: self.pointer.0, start };
                 }
             },
-            Control::Preset(which) => {
-                self.checkpoint();
-                (self.doc.width, self.doc.height) = (PRESETS[which].1, PRESETS[which].2);
-                self.changed();
-                self.fit();
-            }
             Control::Ground(ground) => {
                 self.checkpoint();
                 self.doc.background = match ground {
@@ -2096,27 +2277,9 @@ impl Studio {
                 self.changed();
             }
             Control::Swatch(paint, color) => self.paint(paint, color),
-            Control::Scale(times) => self.export_scale = times,
             Control::Shadow(which) => self.restyle(|layer| {
                 if let Kind::Picture(picture) = &mut layer.kind {
                     picture.shadow = which;
-                }
-            }),
-            Control::Width(size) => {
-                self.size = size;
-                self.restyle(|layer| {
-                    if let Kind::Shape(shape) = &mut layer.kind {
-                        (shape.stroke, shape.font_px) = (STROKES[size], FONT_SIZES[size]);
-                    }
-                })
-            }
-            Control::Head(end, style) => self.restyle(|layer| {
-                if let Kind::Shape(shape) = &mut layer.kind {
-                    let on = usize::from(style) < shapes::HEADS.len();
-                    shape.heads[end] = on;
-                    if on {
-                        shape.ends[end] = style;
-                    }
                 }
             }),
             Control::Line(kind) => self.restyle(|layer| {
@@ -2124,14 +2287,6 @@ impl Studio {
                     (shape.dashed, shape.dotted) = (kind == 1, kind == 2);
                 }
             }),
-            Control::Face(face) => {
-                self.face = face;
-                self.restyle(|layer| {
-                    if let Kind::Shape(shape) = &mut layer.kind {
-                        shape.face = face;
-                    }
-                })
-            }
             Control::Action(action) => return self.act(action),
             Control::Panel => {}
         }
@@ -2191,6 +2346,36 @@ impl Studio {
                     }
                 });
             }
+            Paint::Shadow => {
+                let color = color.unwrap_or(0) & 0xFF_FFFF;
+                self.restyle(|layer| {
+                    if let Kind::Picture(picture) = &mut layer.kind {
+                        if picture.shadow != CUSTOM_SHADOW {
+                            picture.drop = custom_drop(picture.shadow);
+                            picture.shadow = CUSTOM_SHADOW;
+                        }
+                        picture.drop.color = (picture.drop.color & 0xFF00_0000) | color;
+                    }
+                });
+            }
+            // One color among what is picked out made another, in each of
+            // them, line and fill; and the colors follow it.
+            Paint::Recolor(was) => {
+                let Some(color) = color else { return };
+                self.restyle(|layer| {
+                    if let Kind::Shape(shape) = &mut layer.kind {
+                        if shape.color == was {
+                            shape.color = color;
+                        }
+                        if shape.filled && shape.fill == was {
+                            shape.fill = color;
+                        }
+                    }
+                });
+                if self.palette == Some(Paint::Recolor(was)) {
+                    self.palette = Some(Paint::Recolor(color));
+                }
+            }
         }
     }
 
@@ -2206,16 +2391,23 @@ impl Studio {
                     None => self.picked().filter(|&index| matches!(self.doc.layers[index].kind, Kind::Picture(_))),
                 }
             }
-            Action::FlipAcross => self.restyle(|layer| {
-                if let Kind::Picture(picture) = &mut layer.kind {
-                    picture.flip.0 = !picture.flip.0;
+            Action::FlipAcross | Action::FlipDown => {
+                let across = action == Action::FlipAcross;
+                let pictures = self.chosen().iter().any(|&index| matches!(self.doc.layers[index].kind, Kind::Picture(_)));
+                if pictures {
+                    self.restyle(|layer| {
+                        if let Kind::Picture(picture) = &mut layer.kind {
+                            if across {
+                                picture.flip.0 = !picture.flip.0;
+                            } else {
+                                picture.flip.1 = !picture.flip.1;
+                            }
+                        }
+                    });
+                } else {
+                    self.flip_shapes(across);
                 }
-            }),
-            Action::FlipDown => self.restyle(|layer| {
-                if let Kind::Picture(picture) = &mut layer.kind {
-                    picture.flip.1 = !picture.flip.1;
-                }
-            }),
+            }
             // The size its crop is in its own pixels: one to one.
             Action::Actual => self.restyle(|layer| {
                 if let Kind::Picture(picture) = &mut layer.kind {
@@ -2237,17 +2429,12 @@ impl Studio {
                     shape.halo = !shape.halo;
                 }
             }),
-            Action::Elbow => self.restyle(|layer| {
-                if let Kind::Shape(shape) = &mut layer.kind {
-                    shape.elbow = !shape.elbow;
-                    shape.points.truncate(2);
-                }
-            }),
             Action::Sketch => self.restyle(|layer| {
                 if let Kind::Shape(shape) = &mut layer.kind {
                     shape.sketch = !shape.sketch;
                 }
             }),
+            other => return self.act_more(other),
         }
         Outcome::Continue
     }
@@ -2584,6 +2771,9 @@ impl Studio {
                 _ => None,
             };
         }
+        if let Field::ExportTimes(index) = field {
+            return self.doc.exports.get(usize::from(index)).map(|size| size.times);
+        }
         let chosen = self.chosen();
         if chosen.len() > 1 {
             let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
@@ -2604,7 +2794,19 @@ impl Studio {
                 Field::Turn => picture.angle.to_degrees(),
                 Field::Radius => picture.radius,
                 Field::Opacity => picture.opacity as f32 * 100.0 / 256.0,
-                _ => 0.0,
+                Field::Exposure => picture.adjust[0] * 100.0,
+                Field::Contrast => picture.adjust[1] * 100.0,
+                Field::Saturation => picture.adjust[2] * 100.0,
+                Field::DropY | Field::DropBlur | Field::DropSpread | Field::DropAlpha => {
+                    let drop = if picture.shadow == CUSTOM_SHADOW { picture.drop } else { custom_drop(picture.shadow) };
+                    match field {
+                        Field::DropY => f32::from(drop.y),
+                        Field::DropBlur => f32::from(drop.blur),
+                        Field::DropSpread => f32::from(drop.spread),
+                        _ => (drop.color >> 24) as f32 * 100.0 / 255.0,
+                    }
+                }
+                _ => return None,
             },
             Kind::Shape(shape) => match field {
                 Field::X => bounds.0,
@@ -2614,7 +2816,13 @@ impl Studio {
                 Field::Turn => shape.angle.to_degrees(),
                 Field::Radius => shape.radius,
                 Field::Opacity => shape.opacity as f32 * 100.0 / 256.0,
-                _ => 0.0,
+                Field::FontSize => shape.font_px as f32,
+                Field::Stroke => shape.stroke,
+                Field::StartX => shape.points[0].0,
+                Field::StartY => shape.points[0].1,
+                Field::EndX => shape.points[1.min(shape.points.len() - 1)].0,
+                Field::EndY => shape.points[1.min(shape.points.len() - 1)].1,
+                _ => return None,
             },
         })
     }
@@ -2629,6 +2837,11 @@ impl Studio {
                     shape.touch();
                 }
             }
+            Field::ExportTimes(index) => {
+                if let Some(size) = self.doc.exports.get_mut(usize::from(index)) {
+                    size.times = (value * 2.0).round().clamp(1.0, 16.0) / 2.0;
+                }
+            }
             Field::ArtW => self.doc.width = (value.round() as i32).clamp(16, 8000),
             Field::ArtH => self.doc.height = (value.round() as i32).clamp(16, 8000),
             Field::Angle => {
@@ -2639,25 +2852,71 @@ impl Studio {
             _ => {
                 let Some(now) = self.field(field) else { return };
                 let chosen = self.chosen();
+                let keep = self.keep_ratio;
                 for index in chosen {
                     let layer = &mut self.doc.layers[index];
                     match (&mut layer.kind, field) {
                         (_, Field::X) => layer.translate((value - now).round(), 0.0),
                         (_, Field::Y) => layer.translate(0.0, (value - now).round()),
-                        (Kind::Picture(picture), Field::W) => picture.w = value.max(4.0),
-                        (Kind::Picture(picture), Field::H) => picture.h = value.max(4.0),
+                        (Kind::Picture(picture), Field::W) => {
+                            let ratio = picture.h / picture.w.max(1e-3);
+                            picture.w = value.max(4.0);
+                            if keep {
+                                picture.h = picture.w * ratio;
+                            }
+                        }
+                        (Kind::Picture(picture), Field::H) => {
+                            let ratio = picture.w / picture.h.max(1e-3);
+                            picture.h = value.max(4.0);
+                            if keep {
+                                picture.w = picture.h * ratio;
+                            }
+                        }
+                        (Kind::Picture(picture), Field::Exposure | Field::Contrast | Field::Saturation) => {
+                            let which = [Field::Exposure, Field::Contrast, Field::Saturation].iter().position(|known| *known == field).unwrap_or(0);
+                            picture.adjust[which] = (value / 100.0).clamp(-1.0, 1.0);
+                        }
+                        (Kind::Picture(picture), Field::DropY | Field::DropBlur | Field::DropSpread | Field::DropAlpha) => {
+                            if picture.shadow != CUSTOM_SHADOW {
+                                picture.drop = custom_drop(picture.shadow);
+                                picture.shadow = CUSTOM_SHADOW;
+                            }
+                            let number = value.round().clamp(-400.0, 400.0) as i16;
+                            match field {
+                                Field::DropY => picture.drop.y = number,
+                                Field::DropBlur => picture.drop.blur = number.max(0),
+                                Field::DropSpread => picture.drop.spread = number,
+                                _ => picture.drop.color = (picture.drop.color & 0xFF_FFFF) | (((value.clamp(0.0, 100.0) * 2.55).round() as u32) << 24),
+                            }
+                        }
+                        (Kind::Shape(shape), Field::FontSize) => shape.font_px = (value.round() as u32).clamp(6, 400),
+                        (Kind::Shape(shape), Field::Stroke) => shape.stroke = (value * 2.0).round().clamp(1.0, 80.0) / 2.0,
+                        (Kind::Shape(shape), Field::StartX | Field::StartY | Field::EndX | Field::EndY) => {
+                            let at = if matches!(field, Field::StartX | Field::StartY) { 0 } else { 1.min(shape.points.len() - 1) };
+                            if matches!(field, Field::StartX | Field::EndX) {
+                                shape.points[at].0 = value.round();
+                            } else {
+                                shape.points[at].1 = value.round();
+                            }
+                            if let Some(end) = [0, 1].get(at) {
+                                shape.stuck[*end] = None;
+                            }
+                        }
                         (Kind::Picture(picture), Field::Turn) => picture.angle = value.to_radians(),
                         (Kind::Picture(picture), Field::Radius) => picture.radius = value.max(0.0),
                         (Kind::Picture(picture), Field::Opacity) => picture.opacity = ((value.clamp(0.0, 100.0) * 2.56).round() as u32).min(256),
-                        (Kind::Shape(shape), Field::W) => {
-                            let x = shape.frame().0;
-                            shape.points[1].0 = x + value.max(1.0);
-                            shape.points[0].0 = x;
-                        }
-                        (Kind::Shape(shape), Field::H) => {
-                            let y = shape.frame().1;
-                            shape.points[1].1 = y + value.max(1.0);
-                            shape.points[0].1 = y;
+                        (Kind::Shape(shape), Field::W | Field::H) => {
+                            let (x, y, w, h) = shape.frame();
+                            let (mut w2, mut h2) = if field == Field::W { (value.max(1.0), h) } else { (w, value.max(1.0)) };
+                            if keep && w > 0.0 && h > 0.0 {
+                                if field == Field::W {
+                                    h2 = w2 * h / w;
+                                } else {
+                                    w2 = h2 * w / h;
+                                }
+                            }
+                            shape.points[0] = (x, y);
+                            shape.points[1] = (x + w2, y + h2);
                         }
                         (Kind::Shape(shape), Field::Turn) => shape.angle = value.to_radians(),
                         (Kind::Shape(shape), Field::Radius) => shape.radius = value.max(0.0),
@@ -2686,7 +2945,9 @@ impl Studio {
     fn commit_name(&mut self) {
         let Some((naming, typed)) = self.renaming.take() else { return };
         let typed = typed.trim().to_owned();
-        if typed.is_empty() {
+        // A frame or a page is called something; a title or a suffix may
+        // be nothing.
+        if typed.is_empty() && matches!(naming, Naming::Frame | Naming::Page(_)) {
             return;
         }
         self.checkpoint();
@@ -2695,6 +2956,16 @@ impl Studio {
             Naming::Page(page) => {
                 if let Some(page) = self.pages.get_mut(page) {
                     page.name = typed;
+                }
+            }
+            Naming::Title(index) => {
+                if let Some(Layer { kind: Kind::Picture(picture), .. }) = self.doc.layers.get_mut(index) {
+                    picture.title = typed;
+                }
+            }
+            Naming::Suffix(index) => {
+                if let Some(size) = self.doc.exports.get_mut(index) {
+                    size.suffix = typed.replace([' ', ':', '/'], "_");
                 }
             }
         }
@@ -2866,10 +3137,48 @@ impl Studio {
         crate::output::encode(wide as u32, high as u32, &pixels, clear).ok()
     }
 
+    /// The folder exports go in: beside the file, in `exports` and a folder
+    /// for its page; or, for a file kept nowhere yet, the pictures folder.
+    fn export_dir(&self) -> PathBuf {
+        match self.path.as_ref().and_then(|path| path.parent()) {
+            Some(dir) => dir.join("exports").join(one_line(&self.pages[self.page].name).replace('/', "-")),
+            None => self.dir.clone(),
+        }
+    }
+
+    /// Frames of the page shown written out, each at every size it is set
+    /// to be exported at, named for the frame and the size: in place of
+    /// what was written for them last. Gives what was written.
+    fn export_frames(&mut self, frames: &[usize]) -> Result<Vec<PathBuf>, String> {
+        let dir = self.export_dir();
+        std::fs::create_dir_all(&dir).map_err(|error| format!("cannot make {}: {error}", dir.display()))?;
+        let mut written = Vec::new();
+        let count = self.frame_count();
+        for &index in frames.iter().filter(|&&index| index < count) {
+            let frame = if index == self.active { self.doc.clone() } else { self.pages[self.page].frames[index].clone() };
+            let sizes = if frame.exports.is_empty() { vec![ExportSize::new(1.0)] } else { frame.exports.clone() };
+            for size in sizes {
+                let (wide, high, pixels) = frame.render(size.times, &mut self.text);
+                let clear = pixels.iter().any(|pixel| pixel >> 24 != 255);
+                let bytes = crate::output::pack(size.format, 90, wide as u32, high as u32, &pixels, clear)?;
+                let stem = match self.path {
+                    Some(_) => one_line(&frame.name).replace('/', "-"),
+                    None => format!("{}-{}", crate::output::dated(&self.filename), one_line(&frame.name).replace('/', "-")),
+                };
+                let name = format!("{stem}{}.{}", size.suffix, size.format.ending());
+                let path = dir.join(name);
+                std::fs::write(&path, bytes).map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+                written.push(path);
+            }
+        }
+        Ok(written)
+    }
+
     fn export(&mut self) {
-        let Some(png) = self.png() else { return };
-        match crate::output::save(&self.dir, &self.filename, "png", &png) {
-            Ok(path) => self.say(format!("Exported {}", shortened(&path))),
+        let active = self.active;
+        match self.export_frames(&[active]) {
+            Ok(written) if written.len() == 1 => self.say(format!("Exported {}", shortened(&written[0]))),
+            Ok(written) => self.say(format!("Exported {} pictures to {}", written.len(), shortened(&self.export_dir()))),
             Err(error) => self.say(error),
         }
     }
@@ -2922,7 +3231,7 @@ impl Studio {
     pub fn key(&mut self, key: Key, mods: Mods, down: bool) -> Outcome {
         self.mods = mods;
         self.dirty = true;
-        if key == Key::Char(' ') && self.editing.is_none() && self.typing.is_none() {
+        if key == Key::Char(' ') && self.editing.is_none() && self.typing.is_none() && self.renaming.is_none() {
             self.space = down;
             return Outcome::Continue;
         }
@@ -2982,7 +3291,12 @@ impl Studio {
             (Key::Char('y'), true) => self.redo(),
             (Key::Char('a'), true) => self.selected = (0..self.doc.layers.len()).filter(|&index| !self.doc.layers[index].locked).collect(),
             (Key::Char('d'), true) => self.duplicate(),
+            (Key::Char('c'), true) if mods.shift => self.copy(),
+            (Key::Char('c'), true) if !self.chosen().is_empty() => self.copy_layers(),
             (Key::Char('c'), true) => self.copy(),
+            (Key::Char('k'), true) => self.open_palette(),
+            (Key::Char('e'), true) if mods.shift => drop(self.run_command(menu::Command::ExportPage)),
+            (Key::Char('v'), true) if !self.copied.is_empty() && !mods.shift => self.paste_layers(),
             (Key::Char('v'), true) => return Outcome::Paste,
             (Key::Char('s'), true) => self.save(true),
             (Key::Char('e'), true) => self.export(),
@@ -3004,6 +3318,7 @@ impl Studio {
             }
             (Key::Delete | Key::Backspace, _) if self.frame_picked && self.chosen().is_empty() => self.delete_frame(),
             (Key::Delete | Key::Backspace, _) => self.delete(),
+            (Key::Escape, _) if self.menu.is_some() => self.menu = None,
             (Key::Escape, _) => {
                 if self.cropping.take().is_none() {
                     self.selected.clear();
@@ -3432,6 +3747,18 @@ impl Studio {
                         self.text.draw_centered(canvas, cx, cy, 14, if layer.locked { TEXT_COLOR } else { DIM_TEXT_COLOR }, icons::LOCK);
                     }
                 }
+                Control::Field(field) if field.slides() => {
+                    // A slider: its name, and a track with a knob on it at
+                    // its value, the middle being none.
+                    self.text.draw(canvas, rect.x, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, field.label());
+                    let (left, wide) = (rect.x + 80, (rect.w - 84).max(20));
+                    canvas.round_fill(left, cy - 2, wide, 4, 2, 0x4A4A4A, 256);
+                    let value = self.field(field).unwrap_or(0.0);
+                    let at = left + ((value + 100.0) / 200.0 * wide as f32).round() as i32;
+                    let middle = left + wide / 2;
+                    canvas.fill(at.min(middle), cy - 2, (at - middle).abs(), 4, ACCENT);
+                    canvas.disc(at, cy, 7, if hovered { 0xFFFFFF } else { 0xE8E8E8 }, 256);
+                }
                 Control::Field(field) => {
                     let typing = self.typing.as_ref().filter(|(typed, _)| *typed == field).map(|(_, typed)| typed.clone());
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, FIELD_COLOR, 256);
@@ -3465,6 +3792,8 @@ impl Studio {
                         (Paint::To, _, Fill::Gradient(_, to, _)) => Some(to),
                         (Paint::Line, Some(Layer { kind: Kind::Shape(shape), .. }), _) => Some(shape.color),
                         (Paint::Fill, Some(Layer { kind: Kind::Shape(shape), .. }), _) => shape.filled.then_some(shape.fill),
+                        (Paint::Shadow, Some(Layer { kind: Kind::Picture(picture), .. }), _) => Some(if picture.shadow == CUSTOM_SHADOW { picture.drop.color } else { custom_drop(picture.shadow).color } & 0xFF_FFFF),
+                        (Paint::Recolor(color), _, _) => Some(color),
                         _ => None,
                     };
                     let swatch = Rect::new(rect.x + 7, cy - 8, 16, 16);
@@ -3483,14 +3812,18 @@ impl Studio {
                         (None, _) => "None".to_owned(),
                     };
                     let label = match paint {
-                        Paint::From => "From",
-                        Paint::To => "To",
-                        _ => "",
+                        Paint::From => "From".to_owned(),
+                        Paint::To => "To".to_owned(),
+                        Paint::Recolor(color) => {
+                            let count = self.selection_colors().iter().find(|(known, _)| *known == color).map_or(0, |(_, count)| *count);
+                            format!("{count} {}", if count == 1 { "layer" } else { "layers" })
+                        }
+                        _ => String::new(),
                     };
                     self.text.draw(canvas, rect.x + 32, cy - line_high / 2, px, TEXT_COLOR, &says);
                     if !label.is_empty() {
-                        let wide = self.text.width(label, 11);
-                        self.text.draw(canvas, rect.right() - 10 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, label);
+                        let wide = self.text.width(&label, 11);
+                        self.text.draw(canvas, rect.right() - 10 - wide, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, &label);
                     }
                 }
                 Control::Swatch(paint, color) => {
@@ -3526,27 +3859,109 @@ impl Studio {
                     }
                 }
                 Control::Panel => {}
+                Control::Menu(kind) => {
+                    let open = self.menu.is_some_and(|menu| menu.kind == kind);
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, FIELD_COLOR, 256);
+                    if hovered || open {
+                        canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 1, if open { ACCENT } else { 0x555555 });
+                    }
+                    let (look, says, hint) = self.menu_value(kind);
+                    let mut x = rect.x + 9;
+                    match look {
+                        menu::Look::Head(style) => {
+                            menu::draw_head_sample(canvas, x, cy, style, TEXT_COLOR);
+                            x += 30;
+                        }
+                        menu::Look::Face(face) => {
+                            self.text.draw_in(face, canvas, x, cy - Text::line_height(13) / 2, 13, TEXT_COLOR, &says);
+                            x = rect.right();
+                        }
+                        _ => {}
+                    }
+                    if x < rect.right() {
+                        self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &says);
+                    }
+                    let mut right = rect.right() - 14;
+                    self.text.draw_centered(canvas, right, cy, 10, DIM_TEXT_COLOR, icons::DOWN);
+                    if !hint.is_empty() {
+                        right -= 10 + self.text.width(&hint, 11);
+                        self.text.draw(canvas, right, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, &hint);
+                    }
+                }
+                Control::Entry(naming) => {
+                    let typing = self.renaming.as_ref().filter(|(known, _)| *known == naming).map(|(_, typed)| typed.clone());
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, FIELD_COLOR, 256);
+                    if typing.is_some() || hovered {
+                        canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 1, if typing.is_some() { ACCENT } else { 0x555555 });
+                    }
+                    let (label, now) = match naming {
+                        Naming::Title(index) => ("Title", match self.doc.layers.get(index).map(|layer| &layer.kind) {
+                            Some(Kind::Picture(picture)) => picture.title.clone(),
+                            _ => String::new(),
+                        }),
+                        Naming::Suffix(index) => ("", self.doc.exports.get(index).map_or(String::new(), |size| size.suffix.clone())),
+                        _ => ("", String::new()),
+                    };
+                    let mut x = rect.x + 9;
+                    if !label.is_empty() {
+                        self.text.draw(canvas, x, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, label);
+                        x += self.text.width(label, 11) + 8;
+                    }
+                    match typing {
+                        Some(typed) => self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &format!("{typed}|")),
+                        None if now.is_empty() => self.text.draw(canvas, x, cy - line_high / 2, px, 0x777777, if label.is_empty() { "suffix" } else { "none" }),
+                        None => self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &now),
+                    }
+                }
+                Control::Stuck(end) => {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
+                    self.text.draw(canvas, rect.x + 9, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, if end == 0 { "Start" } else { "End" });
+                    let stuck = match &shown {
+                        Some(Layer { kind: Kind::Shape(shape), .. }) => shape.stuck[usize::from(end).min(1)],
+                        _ => None,
+                    };
+                    let says = match stuck.and_then(|(id, u, _)| self.layer_by_id(id).map(|index| (index, u))) {
+                        Some((index, u)) => format!("{}{}", self.doc.layers[index].name(), if u == shapes::WHOLE { "" } else { " \u{b7} edge" }),
+                        None => "nothing".to_owned(),
+                    };
+                    let name: String = says.chars().take(26).collect();
+                    self.text.draw(canvas, rect.x + 48, cy - line_high / 2, px, if stuck.is_some() { TEXT_COLOR } else { 0x777777 }, &name);
+                }
+                Control::Action(action) if rect.w <= 30 && rect.h <= 30 && rect.x > self.width / 2 => {
+                    // A square button of the panel: its icon, or its letter.
+                    let on = self.action_on(action, &shown);
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 5, if on { ROW_ON } else if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
+                    let ink = if on { 0xFFFFFF } else { TEXT_COLOR };
+                    match action.icon() {
+                        Some(icon) => {
+                            if action == Action::FlipDown {
+                                // The flip drawn across, turned: down.
+                                self.text.draw_centered(canvas, cx, cy, 14, ink, icons::FLIP);
+                                canvas.fill(rect.x + 4, cy, rect.w - 8, 1, FIELD_COLOR);
+                            } else {
+                                self.text.draw_centered(canvas, cx, cy, 14, ink, icon);
+                            }
+                        }
+                        None => self.text.draw_centered(canvas, cx, cy, 12, ink, action.says()),
+                    }
+                }
                 _ => {
                     // A chip: lit when it is what there is now.
                     let on = match control {
-                        Control::Preset(which) => (self.doc.width, self.doc.height) == (PRESETS[which].1, PRESETS[which].2),
                         Control::Ground(ground) => match self.doc.background {
                             Fill::None => ground == Ground::None,
                             Fill::Color(_) => ground == Ground::Color,
                             Fill::Backdrop(_) => ground == Ground::Backdrop,
                             Fill::Gradient(..) => ground == Ground::Gradient,
                         },
-                        Control::Scale(times) => self.export_scale == times,
                         Control::Shadow(which) => matches!(&shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.shadow == which),
-                        Control::Width(size) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if if matches!(shape.tool, Tool::Text | Tool::Badge) { shape.font_px == FONT_SIZES[size] } else { shape.stroke == STROKES[size] }),
-                        Control::Head(end, style) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if if shape.heads[end] { shape.ends[end] == style } else { usize::from(style) == shapes::HEADS.len() }),
                         Control::Line(kind) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if match kind { 2 => shape.dotted, 1 => shape.dashed && !shape.dotted, _ => !shape.dashed && !shape.dotted }),
-                        Control::Face(face) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.face == face),
                         Control::Action(Action::Halo) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.halo),
-                        Control::Action(Action::Elbow) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.elbow),
                         Control::Action(Action::Sketch) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.sketch),
                         Control::Action(Action::Border) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.border),
                         Control::Action(Action::Crop) => self.cropping.is_some(),
+                        Control::Window(which) => matches!(&shown, Some(Layer { kind: Kind::Picture(picture), .. }) if frame::WINDOWS[usize::from(which).min(frame::WINDOWS.len() - 1)].0 == picture.window),
+                        Control::Action(action) => self.action_on(action, &shown),
                         _ => false,
                     };
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ACCENT } else if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
@@ -3582,6 +3997,7 @@ impl Studio {
             canvas.round_fill(x.max(4), y, wide, line_high + 8, 6, 0x000000, 220);
             self.text.draw(canvas, x.max(4) + 8, y + 4, px, TEXT_COLOR, &says);
         }
+        self.draw_menus(canvas, layout, hover);
     }
 }
 
@@ -4042,9 +4458,12 @@ mod tests {
         assert_eq!((shape.filled, shape.fill), (true, 0xFFE629));
         // With nothing picked out, the panel is the artboard's.
         studio.key(Key::Escape, Mods::default(), true);
-        assert!(studio.layout().controls.iter().any(|(_, control)| *control == Control::Preset(0)));
-        studio.press_control(Control::Preset(2), false);
-        assert_eq!((studio.doc.width, studio.doc.height), (1920, 1080));
+        // Its size from the list of them, as Figma has it.
+        assert!(studio.layout().controls.iter().any(|(_, control)| *control == Control::Menu(MenuKind::Sizes)));
+        studio.press_control(Control::Menu(MenuKind::Sizes), false);
+        assert!(studio.menu.is_some());
+        studio.press_menu(0, 8);
+        assert_eq!((studio.doc.width, studio.doc.height, studio.menu.is_none()), (1920, 1080, true));
         studio.press_control(Control::Ground(Ground::Backdrop), false);
         assert!(matches!(studio.doc.background, Fill::Backdrop(_)));
     }
@@ -4184,6 +4603,58 @@ mod tests {
         let old = [OLD_MAGIC.as_bytes(), &old[old.iter().position(|&byte| byte == b'\n').unwrap()..]].concat();
         let old: Vec<u8> = String::from_utf8_lossy(&old).lines().filter(|line| !line.starts_with("page ") && !line.starts_with("frame ")).collect::<Vec<_>>().join("\n").into_bytes();
         assert_eq!(read_pages(&old).map(|pages| (pages.len(), pages[0].frames.len())), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_picture_keeps_its_shadow_numbers_adjustments_and_window() {
+        let mut text = Text::load();
+        let mut doc = Doc::new(300, 200);
+        let mut picture = Picture::new(Arc::new(checker(200, 120)), "pic".into(), (150.0, 100.0));
+        (picture.shadow, picture.drop) = (CUSTOM_SHADOW, frame::Layer { x: 4, y: 20, blur: 30, spread: -2, color: 0x80102030 });
+        (picture.adjust, picture.window, picture.title) = ([0.5, -0.25, 1.0], frame::Window::Mac, "main.rs".into());
+        doc.layers.push(Layer::picture(picture));
+        doc.exports = vec![ExportSize { times: 1.0, suffix: String::new(), format: crate::output::Format::Png }, ExportSize { times: 3.0, suffix: "@3x".into(), format: crate::output::Format::Webp }];
+        let back = Doc::read(&doc.write()).expect("read back");
+        let Kind::Picture(read) = &back.layers[0].kind else { panic!() };
+        assert_eq!((read.shadow, read.drop, read.adjust, read.window, read.title.as_str()), (CUSTOM_SHADOW, frame::Layer { x: 4, y: 20, blur: 30, spread: -2, color: 0x80102030 }, [0.5, -0.25, 1.0], frame::Window::Mac, "main.rs"));
+        assert_eq!(back.exports, doc.exports);
+        // The window's bar is over the top of it, and lighter is lighter.
+        let (_, _, out) = back.render(1.0, &mut text);
+        let top = out[(40 + 4) * 300 + 150];
+        assert!(top & 0xFF_FFFF == 0xE8E9EC || top & 0xFF_FFFF == 0x2B2D31, "{top:08x}");
+        assert!(adjust(0xFF808080, [0.5, 0.0, 0.0]) & 0xFF > 0x80 && adjust(0xFFFF0000, [0.0, 0.0, -1.0]) & 0xFF == (adjust(0xFFFF0000, [0.0, 0.0, -1.0]) >> 8) & 0xFF);
+    }
+
+    #[test]
+    fn layers_are_spaced_framed_copied_and_pasted_and_right_clicked() {
+        let mut studio = studio();
+        for at in [0.0, 100.0, 400.0] {
+            let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (at, 50.0));
+            boxed.points[1] = (at + 50.0, 100.0);
+            studio.doc.layers.push(Layer::shape(boxed));
+        }
+        studio.selected = vec![0, 1, 2];
+        studio.act(Action::Distribute(0));
+        let lefts: Vec<f32> = (0..3).map(|index| studio.doc.layers[index].bounds(&mut studio.text).0).collect();
+        assert!((lefts[1] - lefts[0] - (lefts[2] - lefts[1])).abs() <= 1.5, "{lefts:?}");
+        // Recolored at once, as the colors of the selection are.
+        studio.paint(Paint::Recolor(0xE5484D), Some(0x3E63DD));
+        assert_eq!(studio.selection_colors(), vec![(0x3E63DD, 3)]);
+        // Copied and pasted: three more, each its own.
+        studio.copy_layers();
+        studio.paste_layers();
+        assert_eq!((studio.doc.layers.len(), studio.selected.clone()), (6, vec![3, 4, 5]));
+        // Framed: a new frame just round them, them in it.
+        studio.act(Action::FrameThem);
+        assert_eq!((studio.frame_count(), studio.doc.layers.len()), (2, 3));
+        assert!(studio.doc.width >= 450 && studio.doc.width <= 470, "{}", studio.doc.width);
+        // A right click on one of them: the menu for it, and its order.
+        studio.fit();
+        let middle = studio.to_window((1.0, 25.0));
+        studio.right_click(middle);
+        assert!(matches!(studio.menu, Some(MenuState { kind: MenuKind::Context, .. })) && studio.selected.len() == 3);
+        let items = studio.menu_items(MenuKind::Context);
+        assert!(items.iter().any(|item| matches!(item, menu::Item::Entry { sub: Some(MenuKind::Order), .. })));
     }
 
     #[test]

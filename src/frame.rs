@@ -606,7 +606,7 @@ pub fn title(frame: Frame, framed: &mut [u32], wide: i32, picture: &[u32], (widt
 
 /// Whether a picture is dark along its top, where a window's bar would
 /// meet it: a few hundred of its pixels looked at.
-fn darkish(picture: &[u32], width: i32, height: i32) -> bool {
+pub(crate) fn darkish(picture: &[u32], width: i32, height: i32) -> bool {
     let rows = height.clamp(1, 24);
     let step = ((width * rows) / 300).max(1) as usize;
     let looked: Vec<u32> = picture[..(width * rows) as usize].iter().step_by(step).map(|pixel| ((pixel >> 16 & 0xFF) * 3 + (pixel >> 8 & 0xFF) * 6 + (pixel & 0xFF)) / 10).collect();
@@ -616,7 +616,7 @@ fn darkish(picture: &[u32], width: i32, height: i32) -> bool {
 /// A pixel of a window's bar, `x` along it and `y` down it, of a bar so
 /// wide and tall: its ground, and on it the three lights at its left, an
 /// address in a pill, or three buttons at its right.
-fn window_bar(window: Window, dark: bool, x: f32, y: f32, wide: f32, high: f32, scale: f32) -> u32 {
+pub(crate) fn window_bar(window: Window, dark: bool, x: f32, y: f32, wide: f32, high: f32, scale: f32) -> u32 {
     let ground = if dark { 0x2B2D31 } else { 0xE8E9EC };
     let middle = high / 2.0;
     // Something round, or a line, drawn smooth: how much of the pixel it

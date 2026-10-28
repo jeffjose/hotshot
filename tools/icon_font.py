@@ -43,6 +43,9 @@ PICKS = {
     "CLOCK": "clock-circle", "DRAFTS": "documents", "STAR": "star", "EXPORT": "export",
     "SEARCH": "magnifier", "LINK": "link-minimalistic-2", "RIGHT": "alt-arrow-right", "CROP": "crop",
     "LAYERS": "layers-minimalistic", "ADD_PICTURE": "gallery-add", "MENU": "menu-dots",
+    "ALIGN_LEFT": "align-left", "ALIGN_HCENTER": "align-horizontal-center", "ALIGN_RIGHT": "align-right",
+    "ALIGN_TOP": "align-top", "ALIGN_VCENTER": "align-vertical-center", "ALIGN_BOTTOM": "align-bottom",
+    "SWAP": "square-transfer-horizontal", "SETTINGS": "settings", "DOWNLOAD": "download-minimalistic",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
@@ -54,6 +57,10 @@ OWN = {
     # A frame, as Figma draws its tool: two lines each way.
     "HASH": f'<path d="M8 3.5v17M16 3.5v17M3.5 8h17M3.5 16h17" {LINE}/>',
     "PLUS": f'<path d="M12 5v14M5 12h14" {LINE}/>',
+    "MINUS": f'<path d="M5 12h14" {LINE}/>',
+    # Spaced evenly across, and down: three bars between two walls.
+    "DIST_H": f'<path d="M3.5 3.5v17M20.5 3.5v17" {LINE}/><rect x="9.5" y="7" width="5" height="10" rx="1.5" {LINE}/>',
+    "DIST_V": f'<path d="M3.5 3.5h17M3.5 20.5h17" {LINE}/><rect x="7" y="9.5" width="10" height="5" rx="1.5" {LINE}/>',
     # Turned, round, kept to its shape, and flipped: for the fields
     # that set each.
     "ROTATE": f'<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v3.5H8" {LINE}/>',

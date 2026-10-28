@@ -117,6 +117,9 @@ pub struct Shape {
     /// `WHOLE`, stuck to it as a whole, stopping at its edge on the way
     /// to the other end.
     pub stuck: [Option<(u32, f32, f32)>; 2],
+    /// How the lines of text are set: from the left, in the middle, or to
+    /// the right; 0, 1 or 2.
+    pub align: u8,
     mask: RefCell<Option<Rc<Mask>>>,
     /// The same of what is inside the border of a rectangle or an oval
     /// that has both, which is drawn in its fill.
@@ -185,7 +188,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -205,7 +208,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -219,7 +222,8 @@ impl Shape {
                 u8::from(self.sketch),
                 self.id,
                 stuck_word(self.stuck[0]),
-                stuck_word(self.stuck[1])
+                stuck_word(self.stuck[1]),
+                self.align
             ),
             self.fill,
             self.number,
@@ -273,6 +277,7 @@ impl Shape {
             seen_id(id);
         }
         shape.stuck = [more.next().and_then(stuck_read), more.next().and_then(stuck_read)];
+        shape.align = more.next().and_then(|align| align.parse::<u8>().ok()).unwrap_or(0).min(2);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -1256,9 +1261,14 @@ impl Shape {
                     ink = ink_on(self.color);
                 }
                 text.look = self.look();
+                // Lines set from the left, in the middle, or to the right
+                // of the widest of them.
+                let widths: Vec<i32> = self.text.split('\n').map(|line| text.width_in(self.face, &format!("{}{line}", self.lead()), self.font_px)).collect();
+                let widest = widths.iter().copied().max().unwrap_or(0);
                 for (index, line) in self.text.split('\n').enumerate() {
                     let shown = format!("{}{line}", self.lead());
                     let top = y + index as i32 * high;
+                    let x = x + (widest - widths[index]) * i32::from(self.align.min(2)) / 2;
                     // Gone over with a marker first, as wide as the
                     // words of the line are.
                     if self.style & HIGHLIGHT != 0 && !line.is_empty() {
