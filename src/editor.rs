@@ -5091,7 +5091,7 @@ pub fn draw_window_cell(canvas: &mut Canvas, place: Rect, style: frame::Window, 
     if place.w < 4 || place.h < 4 {
         return;
     }
-    let (wide, high) = (176, 120);
+    let (wide, high) = (140, 96);
     let dark = style == frame::Window::Terminal;
     let mut pixels = vec![0xFF00_0000 | crate::chrome::body(style, dark); (wide * high) as usize];
     let bar = crate::chrome::Bar { style, dark, title: "", address: "" };
