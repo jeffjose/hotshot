@@ -126,7 +126,7 @@ pub struct Home {
     /// is open, and where; a file being renamed, and what is typed; and
     /// how many pages each file has and what its frames are called.
     pub list: bool,
-    file_menu: Option<(PathBuf, (i32, i32))>,
+    file_menu: Option<(Menu, (i32, i32))>,
     renaming_file: Option<(PathBuf, String)>,
     facts: HashMap<PathBuf, (SystemTime, usize, String)>,
     dirty: bool,
@@ -339,11 +339,19 @@ impl Home {
         let double = time.wrapping_sub(self.last_press.0) < 400 && (at.0 - self.last_press.1 .0).abs().max((at.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at);
         let control = self.layout().into_iter().find(|(rect, _)| rect.contains(at.0, at.1)).map(|(_, control)| control);
-        // A right click on a file opens its menu; any other click closes it.
+        // A right click opens the menu of what is under it: a file, a
+        // project, or anywhere else, the menu of the place shown.
         if button == 3 {
+            if let Some((path, typed)) = self.renaming_file.take() {
+                rename_file(&path, &typed);
+            }
+            self.commit_name();
             self.file_menu = match control {
-                Some(Control::Open(path)) => Some((path, at)),
-                _ => None,
+                Some(Control::Open(path) | Control::More(path)) => Some((Menu::File(path), at)),
+                Some(Control::Go(Place::Project(dir))) => Some((Menu::Project(dir), at)),
+                Some(Control::FileAct(_)) => None,
+                _ if self.place == Place::Captures => None,
+                _ => Some((Menu::Empty, at)),
             };
             return Outcome::Continue;
         }
@@ -368,22 +376,25 @@ impl Home {
             Some(Control::Go(place)) => {
                 (self.place, self.scroll) = (place, 0);
             }
-            Some(Control::NewProject) => {
-                let dir = (1..).map(|count| library().join(if count == 1 { "New project".to_owned() } else { format!("New project {count}") })).find(|dir| !dir.exists()).unwrap_or_else(|| library().join("New project"));
-                if std::fs::create_dir_all(&dir).is_ok() {
-                    self.place = Place::Project(dir.clone());
-                    self.naming = Some((dir, String::new()));
-                }
-            }
+            Some(Control::NewProject) => self.new_project(),
             Some(Control::NewFile) => return Outcome::New(self.folder(), None),
             Some(Control::Open(path)) => return Outcome::Open(path),
             Some(Control::Capture(path)) => return Outcome::New(self.folder(), Some(path)),
             Some(Control::View(list)) => self.list = list,
-            Some(Control::More(path)) => self.file_menu = Some((path, at)),
+            Some(Control::More(path)) => self.file_menu = Some((Menu::File(path), at)),
             Some(Control::FileAct(act)) => return self.file_act(act),
             Some(Control::Panel) | None => {}
         }
         Outcome::Continue
+    }
+
+    /// A new project, shown, its name to be typed.
+    fn new_project(&mut self) {
+        let dir = (1..).map(|count| library().join(if count == 1 { "New project".to_owned() } else { format!("New project {count}") })).find(|dir| !dir.exists()).unwrap_or_else(|| library().join("New project"));
+        if std::fs::create_dir_all(&dir).is_ok() {
+            self.place = Place::Project(dir.clone());
+            self.naming = Some((dir, String::new()));
+        }
     }
 
     /// The project being named given the name typed, its folder renamed.
@@ -417,6 +428,10 @@ impl Home {
         }
         if key == Key::Escape && self.file_menu.take().is_some() {
             return Outcome::Continue;
+        }
+        // Enter opens the file whose menu is open, as the menu says.
+        if key == Key::Enter && matches!(self.file_menu, Some((Menu::File(_), _))) {
+            return self.file_act(0);
         }
         if let Some((_, typed)) = &mut self.naming {
             match key {
@@ -612,12 +627,42 @@ fn blit(canvas: &mut Canvas, pixels: &[u32], w: i32, h: i32, into: Rect) {
     }
 }
 
-/// What a file's menu says, and the keys for each.
-const FILE_MENU: [(&str, &str); 4] = [("Open", "Enter"), ("Rename", ""), ("Duplicate", ""), ("Move to trash", "")];
+/// What a menu of the projects is the menu of: a file, a project, or the
+/// place shown, right clicked where there is nothing.
+#[derive(Clone, PartialEq, Debug)]
+enum Menu {
+    File(PathBuf),
+    Project(PathBuf),
+    Empty,
+}
 
-/// How wide a file's menu is, and how high a row of it.
-const MENU_W: i32 = 200;
+/// What a row of a menu of the projects does.
+#[derive(Clone, PartialEq, Debug)]
+enum Act {
+    Open,
+    OpenWindow,
+    Rename,
+    Duplicate,
+    MoveTo(PathBuf),
+    ShowFolder,
+    Trash,
+    NewFileIn,
+    NewFile,
+    NewProject,
+    Paste,
+}
+
+/// A row of a menu: what it says, its keys and what it does; or a line
+/// between rows.
+enum Row {
+    Entry(String, &'static str, Act),
+    Rule,
+}
+
+/// How wide a menu is, and how high a row of it and a line between.
+const MENU_W: i32 = 220;
 const MENU_ROW: i32 = 28;
+const MENU_RULE: i32 = 9;
 
 /// A file renamed to what was typed, in its folder, unless there is one
 /// called that already or nothing was typed.
@@ -638,36 +683,100 @@ pub fn trash() -> PathBuf {
     library().join(".trash")
 }
 
+/// A file or a project put in the trash, under a name nothing there has.
+fn to_trash(path: &Path) {
+    let bin = trash();
+    if std::fs::create_dir_all(&bin).is_err() {
+        return;
+    }
+    let (stem, ending) = (path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned()), path.extension().map(|ending| format!(".{}", ending.to_string_lossy())).unwrap_or_default());
+    let mut to = bin.join(format!("{stem}{ending}"));
+    let mut count = 2;
+    while to.exists() {
+        to = bin.join(format!("{stem} {count}{ending}"));
+        count += 1;
+    }
+    let _ = std::fs::rename(path, to);
+}
+
+/// A folder opened in the file manager.
+fn show_folder(dir: &Path) {
+    let _ = std::process::Command::new("xdg-open").arg(dir).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+}
+
 impl Home {
-    /// A row of a file's menu chosen.
-    fn file_act(&mut self, act: u8) -> Outcome {
-        let Some((path, _)) = self.file_menu.take() else { return Outcome::Continue };
-        match act {
-            0 => return Outcome::Open(path),
-            1 => {
-                let name = path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned());
-                self.renaming_file = Some((path, name));
-            }
-            2 => {
-                let stem = path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned());
-                let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(drafts);
-                let _ = std::fs::copy(&path, fresh_file(&dir, &format!("{stem} copy")));
-            }
-            _ => {
-                let bin = trash();
-                if std::fs::create_dir_all(&bin).is_ok() {
-                    let name = path.file_name().map(|name| name.to_owned()).unwrap_or_default();
-                    let mut to = bin.join(&name);
-                    let mut count = 2;
-                    while to.exists() {
-                        to = bin.join(format!("{} {count}.hotshot", path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned())));
-                        count += 1;
+    /// What the open menu has in it.
+    fn menu_rows(&self) -> Vec<Row> {
+        let entry = |says: &str, keys: &'static str, act: Act| Row::Entry(says.to_owned(), keys, act);
+        match self.file_menu.as_ref().map(|(menu, _)| menu) {
+            None => Vec::new(),
+            Some(Menu::File(path)) => {
+                let mut rows = vec![entry("Open", "Enter", Act::Open), entry("Open in a new window", "", Act::OpenWindow), Row::Rule, entry("Rename", "", Act::Rename), entry("Duplicate", "", Act::Duplicate)];
+                // Into Drafts or another project, whichever it is not in.
+                let here = path.parent().map(Path::to_path_buf);
+                let places: Vec<PathBuf> = std::iter::once(drafts()).chain(self.projects()).filter(|dir| Some(dir) != here.as_ref()).take(6).collect();
+                if !places.is_empty() {
+                    rows.push(Row::Rule);
+                    for dir in places {
+                        let name = dir.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+                        rows.push(Row::Entry(format!("Move to {name}"), "", Act::MoveTo(dir)));
                     }
-                    let _ = std::fs::rename(&path, to);
+                }
+                rows.extend([Row::Rule, entry("Show in folder", "", Act::ShowFolder), Row::Rule, entry("Move to trash", "", Act::Trash)]);
+                rows
+            }
+            Some(Menu::Project(_)) => vec![entry("Open", "", Act::Open), entry("Rename", "Double-click", Act::Rename), entry("New file in it", "", Act::NewFileIn), Row::Rule, entry("Show in folder", "", Act::ShowFolder), Row::Rule, entry("Move to trash", "", Act::Trash)],
+            Some(Menu::Empty) => vec![entry("New file", "Ctrl N", Act::NewFile), entry("New project", "", Act::NewProject), Row::Rule, entry("Paste a picture", "Ctrl V", Act::Paste)],
+        }
+    }
+
+    /// A row of the open menu chosen, by where it is among the rows.
+    fn file_act(&mut self, row: u8) -> Outcome {
+        let act = match self.menu_rows().into_iter().nth(usize::from(row)) {
+            Some(Row::Entry(_, _, act)) => act,
+            _ => return Outcome::Continue,
+        };
+        let Some((menu, _)) = self.file_menu.take() else { return Outcome::Continue };
+        self.dirty = true;
+        let stem = |path: &Path| path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned());
+        match (menu, act) {
+            (Menu::File(path), Act::Open) => return Outcome::Open(path),
+            (Menu::Project(dir), Act::Open) => (self.place, self.scroll) = (Place::Project(dir), 0),
+            (Menu::File(path), Act::OpenWindow) => {
+                // A canvas of its own, as a hotshot of its own.
+                if let Ok(me) = std::env::current_exe() {
+                    let _ = std::process::Command::new(me).arg("--canvas").arg(&path).spawn();
                 }
             }
+            (Menu::File(path), Act::Rename) => self.renaming_file = Some((path.clone(), stem(&path))),
+            (Menu::Project(dir), Act::Rename) => {
+                let name = dir.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+                self.naming = Some((dir, name));
+            }
+            (Menu::File(path), Act::Duplicate) => {
+                let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(drafts);
+                let _ = std::fs::copy(&path, fresh_file(&dir, &format!("{} copy", stem(&path))));
+            }
+            (Menu::File(path), Act::MoveTo(dir)) => {
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    let _ = std::fs::rename(&path, fresh_file(&dir, &stem(&path)));
+                }
+            }
+            (Menu::File(path), Act::ShowFolder) => show_folder(path.parent().unwrap_or(&path)),
+            (Menu::Project(dir), Act::ShowFolder) => show_folder(&dir),
+            (Menu::File(path), Act::Trash) => to_trash(&path),
+            (Menu::Project(dir), Act::Trash) => {
+                to_trash(&dir);
+                if self.place == Place::Project(dir) {
+                    self.place = Place::Recent;
+                }
+            }
+            (Menu::Project(dir), Act::NewFileIn) => return Outcome::New(dir, None),
+            (_, Act::NewFile) => return Outcome::New(self.folder(), None),
+            (_, Act::NewProject) => self.new_project(),
+            (_, Act::Paste) => return Outcome::Paste(self.folder()),
+            _ => {}
         }
-        self.dirty = true;
         Outcome::Continue
     }
 
@@ -689,39 +798,64 @@ impl Home {
         (*pages, frames.clone())
     }
 
-    /// The menu of a file, where it opens.
-    fn file_menu_place(&self) -> Option<Rect> {
+    /// The open menu, where it opens, and each of its rows: where it is,
+    /// and the row it is.
+    fn menu_place(&self) -> Option<(Rect, Vec<(Rect, usize)>)> {
         let (_, at) = self.file_menu.as_ref()?;
-        let high = MENU_ROW * FILE_MENU.len() as i32 + 12;
-        Some(Rect::new(at.0.min(self.width - MENU_W - 8), at.1.min(self.height - high - 8), MENU_W, high))
+        let rows = self.menu_rows();
+        let high = rows.iter().map(|row| if let Row::Rule = row { MENU_RULE } else { MENU_ROW }).sum::<i32>() + 12;
+        let place = Rect::new(at.0.min(self.width - MENU_W - 8), at.1.min(self.height - high - 8), MENU_W, high);
+        let mut y = place.y + 6;
+        let mut entries = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            match row {
+                Row::Rule => y += MENU_RULE,
+                Row::Entry(..) => {
+                    entries.push((Rect::new(place.x + 5, y, place.w - 10, MENU_ROW - 2), index));
+                    y += MENU_ROW;
+                }
+            }
+        }
+        Some((place, entries))
     }
 
-    /// The rows of a file's menu, over everything else.
+    fn file_menu_place(&self) -> Option<Rect> {
+        self.menu_place().map(|(place, _)| place)
+    }
+
+    /// The rows of the open menu, over everything else.
     fn layout_file_menu(&self, controls: &mut Vec<(Rect, Control)>) {
-        let Some(place) = self.file_menu_place() else { return };
-        let mut front = Vec::new();
-        for (at, _) in FILE_MENU.iter().enumerate() {
-            front.push((Rect::new(place.x + 5, place.y + 6 + at as i32 * MENU_ROW, place.w - 10, MENU_ROW - 2), Control::FileAct(at as u8)));
-        }
+        let Some((place, entries)) = self.menu_place() else { return };
+        let mut front: Vec<(Rect, Control)> = entries.into_iter().map(|(rect, index)| (rect, Control::FileAct(index as u8))).collect();
         front.push((place, Control::Panel));
         front.append(controls);
         *controls = front;
     }
 
-    /// A file's menu drawn.
+    /// The open menu drawn.
     fn draw_file_menu(&mut self, canvas: &mut Canvas, hover: Option<&Control>) {
-        let Some(place) = self.file_menu_place() else { return };
+        let Some((place, entries)) = self.menu_place() else { return };
         for grow in (1..=5).rev() {
             canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 10 + grow, 0x000000, 16);
         }
         canvas.round_fill(place.x, place.y, place.w, place.h, 10, PANEL_COLOR, 256);
         canvas.round_outline(place.x, place.y, place.w, place.h, 10, 1, EDGE_COLOR);
-        for (at, (says, keys)) in FILE_MENU.iter().enumerate() {
-            let rect = Rect::new(place.x + 5, place.y + 6 + at as i32 * MENU_ROW, place.w - 10, MENU_ROW - 2);
-            if hover == Some(&Control::FileAct(at as u8)) {
+        let rows = self.menu_rows();
+        let mut y = place.y + 6;
+        for row in &rows {
+            if let Row::Rule = row {
+                canvas.fill(place.x + 9, y + 4, place.w - 18, 1, EDGE_COLOR);
+                y += MENU_RULE;
+            } else {
+                y += MENU_ROW;
+            }
+        }
+        for (rect, index) in entries {
+            let Some(Row::Entry(says, keys, act)) = rows.get(index) else { continue };
+            if hover == Some(&Control::FileAct(index as u8)) {
                 canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, ACCENT, 256);
             }
-            let ink = if at == 3 { 0xFF6B6B } else { TEXT_COLOR };
+            let ink = if *act == Act::Trash { 0xFF6B6B } else { TEXT_COLOR };
             self.text.draw(canvas, rect.x + 10, rect.y + (rect.h - Text::line_height(12)) / 2, 12, ink, says);
             let wide = self.text.width(keys, 11);
             self.text.draw(canvas, rect.right() - 10 - wide, rect.y + (rect.h - Text::line_height(11)) / 2, 11, DIM_TEXT_COLOR, keys);
@@ -781,10 +915,10 @@ mod tests {
         rename_file(&renamed, "  ");
         assert!(renamed.exists(), "nothing typed, nothing renamed");
         let mut home = Home::new(Text::load(), 1200, 800, dir.clone());
-        home.file_menu = Some((renamed.clone(), (10, 10)));
-        assert_eq!(home.file_act(2), Outcome::Continue);
+        home.file_menu = Some((Menu::File(renamed.clone()), (10, 10)));
+        assert_eq!(home.file_act(row(&home, "Duplicate")), Outcome::Continue);
         assert!(dir.join("Launch post copy.hotshot").exists());
-        home.file_menu = Some((renamed.clone(), (10, 10)));
+        home.file_menu = Some((Menu::File(renamed.clone()), (10, 10)));
         assert_eq!(home.file_act(0), Outcome::Open(renamed));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -796,18 +930,47 @@ mod tests {
         // Every place along the side, clicked with the menu open: each only
         // closes it, and the place shown stays.
         for y in (0..800).step_by(20) {
-            home.file_menu = Some((file.clone(), (600, 300)));
+            home.file_menu = Some((Menu::File(file.clone()), (600, 300)));
             home.pointer_moved(40, y);
             assert_eq!(home.pressed(1, 0), Outcome::Continue);
             assert!(home.file_menu.is_none() && home.place == Place::Recent && home.naming.is_none());
         }
-        // Inside it, it stays; a right click off any file closes it.
-        home.file_menu = Some((file.clone(), (600, 300)));
+        // Inside it, it stays; a right click off any file opens the menu
+        // of the place in its stead.
+        home.file_menu = Some((Menu::File(file.clone()), (600, 300)));
         home.pointer_moved(602, 302);
         home.pressed(1, 0);
         assert!(home.file_menu.is_some());
         home.pointer_moved(40, 790);
         home.pressed(3, 0);
+        assert!(matches!(home.file_menu, Some((Menu::Empty, _))));
+        home.key(Key::Escape, Mods::default());
         assert!(home.file_menu.is_none());
+    }
+
+    /// Where the row of the open menu that says something is.
+    fn row(home: &Home, says: &str) -> u8 {
+        home.menu_rows().iter().position(|row| matches!(row, Row::Entry(known, ..) if known == says)).unwrap_or_else(|| panic!("no {says}")) as u8
+    }
+
+    #[test]
+    fn a_project_and_the_place_shown_have_menus_of_their_own() {
+        let mut home = Home::new(Text::load(), 1200, 800, std::env::temp_dir());
+        let project = library().join("Somewhere");
+        home.file_menu = Some((Menu::Project(project.clone()), (600, 300)));
+        assert_eq!(home.file_act(row(&home, "New file in it")), Outcome::New(project.clone(), None));
+        home.file_menu = Some((Menu::Project(project.clone()), (600, 300)));
+        home.file_act(row(&home, "Open"));
+        assert_eq!((home.place.clone(), home.file_menu.is_none()), (Place::Project(project), true));
+        // A right click where there is nothing: a new file, or a picture
+        // pasted, in the place shown.
+        home.pointer_moved(900, 700);
+        home.pressed(3, 0);
+        assert!(matches!(home.file_menu, Some((Menu::Empty, _))));
+        assert_eq!(home.file_act(row(&home, "Paste a picture")), Outcome::Paste(home.folder()));
+        // A file not in Drafts can be moved there.
+        home.file_menu = Some((Menu::File(std::env::temp_dir().join("Elsewhere.hotshot")), (600, 300)));
+        row(&home, "Move to Drafts");
+        assert_eq!(home.key(Key::Enter, Mods::default()), Outcome::Open(std::env::temp_dir().join("Elsewhere.hotshot")));
     }
 }
