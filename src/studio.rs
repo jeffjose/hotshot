@@ -48,6 +48,7 @@ mod rulers;
 mod snap;
 mod view;
 mod search;
+mod sizes;
 mod style;
 mod wheel;
 #[cfg(test)]
@@ -1990,6 +1991,8 @@ pub struct Studio {
     filename: String,
     /// How each kind of file is written, by the config file's [convert].
     pub convert: crate::convert::Settings,
+    /// What the frame comes to in each kind of file, tried on a thread.
+    sizes: sizes::Sizes,
     /// What was last done, said along the bottom for a while.
     note: Option<(String, std::time::Instant)>,
     last_press: (u32, (i32, i32)),
@@ -2125,6 +2128,7 @@ impl Studio {
             dir,
             filename,
             convert: crate::convert::Settings::default(),
+            sizes: sizes::Sizes::default(),
             note: None,
             last_press: (0, (-100, -100)),
             guides: Vec::new(),
@@ -6109,7 +6113,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         // page zoomed or moved has been still a moment, a look then, to
         // draw it sharp. Otherwise nothing until something happens.
         let wait = match &mut screen {
-            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in()].into_iter().flatten().min(),
+            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in(), studio.sizes_wait()].into_iter().flatten().min(),
             Shown::Home(_) => None,
         };
         let mut events: Vec<Event> = match (held.is_empty(), wait) {
@@ -6120,6 +6124,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         if let Shown::Studio(studio) = &mut screen {
             studio.note_left();
             studio.settle();
+            studio.take_sizes();
         }
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);

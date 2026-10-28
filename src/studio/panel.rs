@@ -611,7 +611,7 @@ impl Studio {
                 };
                 (menu::Look::Plain, "Drop shadow".to_owned(), hint)
             }
-            MenuKind::Format(index) => (menu::Look::Plain, self.doc.exports.get(index).map_or("PNG", |size| size.format.title()).to_owned(), String::new()),
+            MenuKind::Format(index) => (menu::Look::Plain, self.doc.exports.get(index).map_or("PNG", |size| size.format.family()).to_owned(), String::new()),
             _ => (menu::Look::Plain, String::new(), String::new()),
         }
     }
@@ -658,6 +658,16 @@ impl Studio {
         rows.section("Export", "", Some((Control::Action(Action::AddExport), icons::PLUS)));
         for index in 0..self.doc.exports.len().min(6) {
             rows.split(&[(Control::Field(Field::ExportTimes(index as u8)), 52), (Control::Entry(Naming::Suffix(index)), 70), (Control::Menu(MenuKind::Format(index)), 0), (Control::Action(Action::RemoveExport(index as u8)), FIELD_H)]);
+            // Under it, what it writes, tried for real: how large, and
+            // how much smaller than a PNG or how good.
+            let (left, right, ink) = self.row_words(&self.doc.exports[index].clone());
+            rows.layout.words.push(((rows.left + 2, rows.y - 2), left, DIM_TEXT_COLOR, 11));
+            if !right.is_empty() {
+                let wide = self.text.width(&right, 11);
+                rows.layout.words.push(((rows.left + rows.inner - FIELD_H - 6 - wide, rows.y - 2), right, ink, 11));
+            }
+            rows.y += Text::line_height(11) + 6;
         }
+        self.want_sizes();
     }
 }

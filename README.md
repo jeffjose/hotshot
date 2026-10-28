@@ -265,6 +265,15 @@ picture.
 
 ![The canvas: a screenshot on a backdrop, rounded and shadowed, with an arrow over it and its properties on the right](docs/canvas.png)
 
+Each Export row has a format: PNG, JPEG XL or WebP lossless, or JPEG
+XL, AVIF, WebP or JPEG, smaller and nearly the same. Its list says what
+the frame comes to in each at its own size, tried for real on a thread
+of its own once the frame has been still a moment, and for the lossy
+ones how near the original it looks, as a SSIMULACRA2 score (85 is very
+good to the eye); the line under the row says what that row will
+write, "Lossless · 89 KB · −54% vs PNG" or "Quality 88 · 96 KB ·
+score 87".
+
 `Ctrl+E` exports the frame you are in to the screenshots folder at each
 size the panel's Export lists, a new frame at 1x; a size other than 1x
 with no suffix of its own is named for it, as Figma does, so twice the

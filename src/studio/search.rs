@@ -114,8 +114,8 @@ impl Studio {
     /// Everything that can be found, before what was typed narrows it.
     fn everything(&mut self) -> Vec<Hit> {
         let mut hits: Vec<Hit> = FOUND_TOOLS.iter().enumerate().map(|(at, (says, key, _))| Hit { heading: "TOOLS", says: (*says).to_owned(), hint: (*key).to_owned(), found: Found::Tool(at) }).collect();
-        let mut acts: Vec<(String, &'static str, MenuAct)> = Vec::new();
-        let gather = |items: Vec<menu::Item>, acts: &mut Vec<(String, &'static str, MenuAct)>| {
+        let mut acts: Vec<(String, std::borrow::Cow<'static, str>, MenuAct)> = Vec::new();
+        let gather = |items: Vec<menu::Item>, acts: &mut Vec<(String, std::borrow::Cow<'static, str>, MenuAct)>| {
             for item in items {
                 if let menu::Item::Entry { says, keys, act, sub: None, .. } = item {
                     if !matches!(act, MenuAct::Nothing | MenuAct::Do(menu::Command::Palette)) && !acts.iter().any(|(known, ..)| *known == says) {
@@ -132,16 +132,16 @@ impl Studio {
         // "gnome" typed put that one round it.
         if self.chosen().iter().any(|&index| matches!(self.doc.layers[index].kind, Kind::Picture(_))) {
             for (at, style) in chrome::CHOICES.iter().enumerate() {
-                acts.push((format!("Window: {}", style.long()), "", MenuAct::Window(at as u8)));
+                acts.push((format!("Window: {}", style.long()), "".into(), MenuAct::Window(at as u8)));
             }
         }
         if self.styles_apply() {
             for (at, name) in style::STYLE_NAMES.iter().enumerate() {
-                acts.push((format!("Style: {name}"), "", MenuAct::Style(at as u8)));
+                acts.push((format!("Style: {name}"), "".into(), MenuAct::Style(at as u8)));
             }
         }
         for (says, keys, act) in acts {
-            hits.push(Hit { heading: "ACTIONS", says, hint: keys.to_owned(), found: Found::Act(act) });
+            hits.push(Hit { heading: "ACTIONS", says, hint: keys.into_owned(), found: Found::Act(act) });
         }
         for index in (0..self.doc.layers.len()).rev() {
             hits.push(Hit { heading: "LAYERS", says: self.doc.layers[index].name(), hint: self.doc.name.clone(), found: Found::Layer(index) });

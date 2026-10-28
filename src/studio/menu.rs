@@ -60,7 +60,7 @@ pub(super) struct MenuState {
 pub(super) enum Item {
     Heading(&'static str),
     Rule,
-    Entry { says: String, keys: &'static str, act: MenuAct, on: bool, sub: Option<MenuKind>, look: Look },
+    Entry { says: String, keys: std::borrow::Cow<'static, str>, act: MenuAct, on: bool, sub: Option<MenuKind>, look: Look },
 }
 
 /// A small picture of what an entry is, beside it.
@@ -197,12 +197,12 @@ pub(super) const SIZE_GROUPS: [(&str, &str); 3] = [("SOCIAL", "Social"), ("DEVIC
 const ROW: i32 = 26;
 
 impl Item {
-    fn entry(says: impl Into<String>, keys: &'static str, act: MenuAct) -> Item {
-        Item::Entry { says: says.into(), keys, act, on: false, sub: None, look: Look::Plain }
+    fn entry(says: impl Into<String>, keys: impl Into<std::borrow::Cow<'static, str>>, act: MenuAct) -> Item {
+        Item::Entry { says: says.into(), keys: keys.into(), act, on: false, sub: None, look: Look::Plain }
     }
 
     fn sub(says: &str, kind: MenuKind) -> Item {
-        Item::Entry { says: says.into(), keys: "", act: MenuAct::Nothing, on: false, sub: Some(kind), look: Look::Plain }
+        Item::Entry { says: says.into(), keys: "".into(), act: MenuAct::Nothing, on: false, sub: Some(kind), look: Look::Plain }
     }
 
     fn on(self, on: bool) -> Item {
@@ -242,7 +242,7 @@ impl Studio {
                 let mut items = vec![Item::Heading("BUILT IN")];
                 for (face, name) in FACES.iter().enumerate() {
                     let what = ["sans", "serif", "hand", "mono", "impact"][face];
-                    items.push(Item::Entry { says: name.to_string(), keys: what, act: MenuAct::Face(face), on: face == now, sub: None, look: Look::Face(face) });
+                    items.push(Item::Entry { says: name.to_string(), keys: what.into(), act: MenuAct::Face(face), on: face == now, sub: None, look: Look::Face(face) });
                 }
                 items
             }
@@ -265,7 +265,7 @@ impl Studio {
                     items.push(Item::Heading("YOURS"));
                     for (index, (name, w, h, label)) in self.frame_sizes.iter().enumerate() {
                         let on = (self.doc.width, self.doc.height) == (*w, *h);
-                        items.push(Item::entry(name.clone(), label, MenuAct::MySize(index)).on(on));
+                        items.push(Item::entry(name.clone(), *label, MenuAct::MySize(index)).on(on));
                     }
                     items.push(Item::Rule);
                 }
@@ -294,7 +294,16 @@ impl Studio {
             }
             MenuKind::Format(index) => {
                 let now = self.doc.exports.get(index).map(|size| size.format);
-                crate::output::Format::ALL.iter().map(|&format| Item::entry(format.title(), "", MenuAct::Format(index, format)).on(Some(format) == now)).collect()
+                // Grouped by what they keep, each with what this frame
+                // comes to in it at its own size, tried for real.
+                let mut items = vec![Item::Heading("FORMAT \u{b7} THIS FRAME AT 1\u{d7}")];
+                for (at, &format) in crate::output::Format::ALL.iter().enumerate() {
+                    if at == 3 {
+                        items.extend([Item::Rule, Item::Heading("SMALLER, NOT EXACT")]);
+                    }
+                    items.push(Item::entry(format.title(), self.listed_words(format), MenuAct::Format(index, format)).on(Some(format) == now));
+                }
+                items
             }
             MenuKind::Styles => style::STYLE_NAMES.iter().enumerate().map(|(at, name)| Item::entry(*name, ["Q", "W", "E", "R", "T", "A", "S", "D", "G", "H"][at], MenuAct::Style(at as u8))).collect(),
             MenuKind::Edge => {
