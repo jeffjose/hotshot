@@ -88,8 +88,13 @@ impl Studio {
         self.checkpoint();
         self.selected.clear();
         let mut copies = Vec::new();
+        let mut joins = Vec::new();
         for index in chosen {
             let mut copy = self.doc.layers[index].clone();
+            joins.push(match &copy.kind {
+                Kind::Shape(shape) => shape.stuck,
+                Kind::Picture(_) => [None; 2],
+            });
             match &mut copy.kind {
                 Kind::Picture(picture) => picture.id = shapes::fresh_id(),
                 Kind::Shape(shape) => *shape = shape.copied(),
@@ -102,6 +107,18 @@ impl Studio {
         // A copy of something in a stack goes next after it there, with
         // the stack's gap, rather than beside it.
         let pairs: Vec<(u32, u32)> = sources.iter().copied().zip(copies.iter().copied()).collect();
+        // An arrow copied with what it joins joins the copies.
+        for (&index, stuck) in self.selected.clone().iter().zip(joins) {
+            if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
+                for (end, stuck) in stuck.into_iter().enumerate() {
+                    if let Some((id, u, v)) = stuck {
+                        if let Some(&(_, copy)) = pairs.iter().find(|(source, _)| *source == id) {
+                            shape.stuck[end] = Some((copy, u, v));
+                        }
+                    }
+                }
+            }
+        }
         self.stack_copies(&pairs);
         self.repeat = Some(Repeat::Layers { frame: (self.page, self.active), sources, copies });
         self.changed();

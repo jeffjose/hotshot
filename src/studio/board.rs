@@ -95,16 +95,22 @@ pub(super) struct Board {
     pub dots_of: Option<usize>,
     /// C pressed: the next key a color of the style bar.
     pub coloring: bool,
+    /// What is in what is being moved, carried along with it, each with
+    /// how it was when the move began.
+    pub carried: Vec<(usize, Layer)>,
+    /// What was moved is being let go, and not yet in or out of a box.
+    pub letting_go: bool,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false }
     }
 }
 
 mod bar;
 mod dots;
+mod nest;
 mod typing;
 
 /// Whether the last canvas switched to Board, kept in `canvas-mode` among

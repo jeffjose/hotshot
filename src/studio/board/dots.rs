@@ -195,12 +195,26 @@ impl Studio {
     /// After a drag on a board is let go, as a board has it: an arrow's
     /// end let go on a box stuck to it as a whole.
     pub(in crate::studio) fn board_after_release(&mut self, drag: Drag) {
-        if let Drag::Scale { pull, .. } = drag {
-            if pull.0 == END {
+        match drag {
+            Drag::Scale { pull, .. } if pull.0 == END => {
                 if let Some(index) = self.picked() {
                     self.board_stick(index, &[pull.1 as usize]);
                 }
             }
+            // A box sized by hand is that size from now on, its words
+            // growing it from there.
+            Drag::Scale { .. } => {
+                for index in self.chosen() {
+                    let (_, _, w, h) = self.box_frame(index);
+                    if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
+                        if !shape.titled {
+                            shape.base = (w, h);
+                        }
+                    }
+                }
+            }
+            Drag::Move { moved: true, .. } => self.nest_moved(),
+            _ => self.board.carried.clear(),
         }
     }
 }

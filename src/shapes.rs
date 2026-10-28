@@ -163,6 +163,9 @@ pub struct Shape {
     /// Whether the words of a box sit at its top left as a title, over
     /// what is put in it, rather than in its middle.
     pub titled: bool,
+    /// Whether its words are a title always, as a lane's or a group's
+    /// are, whether or not anything is in it yet.
+    pub heading: bool,
     /// A dot at a box's corner saying how it is: none, red, amber or green.
     pub status: u8,
     /// How many votes a sticky note has, each a dot along its top.
@@ -368,7 +371,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, status: 0, votes: 0, routed: false, base: (0.0, 0.0), mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, status: 0, votes: 0, routed: false, base: (0.0, 0.0), mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -388,7 +391,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -414,7 +417,8 @@ impl Shape {
                 self.votes,
                 u8::from(self.routed),
                 self.base.0,
-                self.base.1
+                self.base.1,
+                u8::from(self.heading)
             ),
             self.fill,
             self.number,
@@ -486,6 +490,7 @@ impl Shape {
         let mut small = |most: u8| more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(most);
         (shape.form, shape.titled, shape.status, shape.votes, shape.routed) = (small(FORM_STICKY), small(1) == 1, small(3), small(99), small(1) == 1);
         shape.base = more.next().and_then(|word| word.split_once(':')).and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))).filter(|(w, h)| w.is_finite() && h.is_finite()).unwrap_or((0.0, 0.0));
+        shape.heading = more.next() == Some("1");
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -2463,7 +2468,7 @@ mod tests {
         assert_eq!((back.edge, back.shadow, back.align), (OUTSIDE, boxed.shadow, boxed.align));
         // And one from before either has neither.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
         assert_eq!((back.edge, back.shadow), (CENTER, None));

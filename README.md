@@ -451,6 +451,24 @@ the words, carries on to the next shape drawn. A box let go a few
 pixels off a neighbor's line or gap slides onto it, with no guides
 drawn; hold Alt as it is let go to put it exactly where it is.
 
+A board is fluid rather than rigid: things hold on to each other. Move
+a box and the arrows tied to it follow, each end sliding round to the
+side nearest the other box. Drop a box inside another and it is in it:
+the outer box grows to hold it with room round it, its words slide to
+its top left as a title, and dragging the box moves everything in it,
+the arrows between them too; drag one out and the outer box shrinks
+back to the size it was drawn. Boxes go as deep in each other as you
+like. Type more into a box than fits and it grows, as wide as a line
+of words goes and then taller, and what is to its right or under it
+moves over to keep the gaps it had; take the words out and they close
+up again. A box sized by hand grows from that size. Nothing is forced
+onto a grid: only what has to move moves, and only as far as it must.
+Hold Alt during a drag to stop all of it for that drag: the one thing
+moves, nothing nests and nothing makes room. Underneath, a box holding
+others is an auto layout stack in a loose form, whose members stay
+where they are put and whose box only grows round them; it is kept in
+the file as one.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

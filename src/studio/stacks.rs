@@ -50,6 +50,11 @@ pub struct Stack {
     /// is called for which way it goes; kept in its file on a line of its
     /// own after it.
     pub name: Option<String>,
+    /// On a board, the box what is in it is in, by what it is called: a
+    /// loose stack, whose members stay where they are put and whose box
+    /// only grows round them, rather than laying them out. Kept in its
+    /// file on a line of its own after it.
+    pub holder: Option<u32>,
 }
 
 impl Stack {
@@ -87,6 +92,7 @@ impl Stack {
             members,
             seen: Vec::new(),
             name: None,
+            holder: None,
         })
     }
 
@@ -95,6 +101,7 @@ impl Stack {
     pub(super) fn title(&self) -> String {
         match &self.name {
             Some(name) => name.clone(),
+            None if self.holder.is_some() => "Inside".to_owned(),
             None => ["Row", "Column", "Stack"][usize::from(self.way.min(WRAP))].to_owned(),
         }
     }
@@ -233,7 +240,8 @@ impl Studio {
         }
         chosen.sort_unstable();
         let mut best: Option<(usize, usize)> = None;
-        for (index, stack) in self.doc.stacks.iter().enumerate() {
+        // A board's box holding others is picked out as itself.
+        for (index, stack) in self.doc.stacks.iter().enumerate().filter(|(_, stack)| stack.holder.is_none()) {
             let mut leaves = self.leaves(stack.id);
             leaves.sort_unstable();
             if leaves == chosen {
@@ -257,7 +265,7 @@ impl Studio {
     /// The innermost stack whose box a point of the frame is in.
     pub(super) fn stack_at(&self, (x, y): (f32, f32)) -> Option<usize> {
         let inside = |stack: &Stack| x >= stack.x && x <= stack.x + stack.w && y >= stack.y && y <= stack.y + stack.h;
-        self.doc.stacks.iter().enumerate().filter(|(_, stack)| inside(stack)).max_by_key(|(_, stack)| self.depth(stack.id)).map(|(index, _)| index)
+        self.doc.stacks.iter().enumerate().filter(|(_, stack)| stack.holder.is_none() && inside(stack)).max_by_key(|(_, stack)| self.depth(stack.id)).map(|(index, _)| index)
     }
 
     /// Shift+A: what is picked out made a stack, a row or a column as it
@@ -312,7 +320,7 @@ impl Studio {
         for stack in &mut self.doc.stacks {
             stack.members.retain(|member| !members.contains(member) || stack.id == id);
         }
-        let stack = Stack { id, members, way: if row { ROW } else { COLUMN }, gap, pad, align: 3, sizing: HUG, x: left - pad, y: top - pad, w: right - left + 2.0 * pad, h: bottom - top + 2.0 * pad, fill: None, radius: 0.0, seen: Vec::new(), name: None };
+        let stack = Stack { id, members, way: if row { ROW } else { COLUMN }, gap, pad, align: 3, sizing: HUG, x: left - pad, y: top - pad, w: right - left + 2.0 * pad, h: bottom - top + 2.0 * pad, fill: None, radius: 0.0, seen: Vec::new(), name: None, holder: None };
         self.doc.stacks.push(stack);
         self.changed();
         self.say(format!("Auto layout: a {} of {}", if row { "row" } else { "column" }, units.len()));
@@ -374,7 +382,8 @@ impl Studio {
             Drag::Move { moved: true, .. } => self.chosen_ids(),
             _ => Vec::new(),
         };
-        let mut order: Vec<u32> = self.doc.stacks.iter().map(|stack| stack.id).collect();
+        // A board's boxes holding others are laid out by the board.
+        let mut order: Vec<u32> = self.doc.stacks.iter().filter(|stack| stack.holder.is_none()).map(|stack| stack.id).collect();
         order.sort_by_key(|&id| std::cmp::Reverse(self.depth(id)));
         let mut moved = false;
         for id in order {
@@ -521,6 +530,8 @@ impl Studio {
             let Some((x, y, w, h)) = self.unit_bounds(unit) else { continue };
             let middle = (x + w / 2.0, y + h / 2.0);
             match self.stack_of(unit) {
+                // In a board's box, the board sees to it.
+                Some(index) if self.doc.stacks[index].holder.is_some() => {}
                 Some(index) => {
                     // Dragged out: wholly off its box.
                     let stack = &self.doc.stacks[index];
@@ -535,7 +546,7 @@ impl Studio {
                     let inside: Vec<usize> = (0..self.doc.stacks.len())
                         .filter(|&index| {
                             let stack = &self.doc.stacks[index];
-                            stack.id != unit && !self.leaves(unit).contains(&stack.id) && !self.inside_of(stack.id, unit) && middle.0 >= stack.x && middle.0 <= stack.x + stack.w && middle.1 >= stack.y && middle.1 <= stack.y + stack.h
+                            stack.holder.is_none() && stack.id != unit && !self.leaves(unit).contains(&stack.id) && !self.inside_of(stack.id, unit) && middle.0 >= stack.x && middle.0 <= stack.x + stack.w && middle.1 >= stack.y && middle.1 <= stack.y + stack.h
                         })
                         .collect();
                     if let Some(&index) = inside.iter().max_by_key(|&&index| self.depth(self.doc.stacks[index].id)) {
@@ -612,6 +623,7 @@ impl Studio {
             });
         }
         (stack.id, stack.members, stack.seen) = (shapes::fresh_id(), members, Vec::new());
+        stack.holder = stack.holder.map(|holder| pairs.iter().find(|(source, _)| *source == holder).map_or(holder, |&(_, copy)| copy));
         (stack.x, stack.y) = (stack.x + dx, stack.y + dy);
         let copied = stack.id;
         self.doc.stacks.push(stack);
@@ -831,7 +843,7 @@ mod tests {
     use super::*;
 
     fn stack(way: u8, sizing: u8, align: u8) -> Stack {
-        Stack { id: 1, members: vec![], way, gap: 10.0, pad: 20.0, align, sizing, x: 100.0, y: 50.0, w: 200.0, h: 300.0, fill: None, radius: 0.0, seen: Vec::new(), name: None }
+        Stack { id: 1, members: vec![], way, gap: 10.0, pad: 20.0, align, sizing, x: 100.0, y: 50.0, w: 200.0, h: 300.0, fill: None, radius: 0.0, seen: Vec::new(), name: None, holder: None }
     }
 
     #[test]

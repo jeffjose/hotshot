@@ -87,6 +87,11 @@ impl Studio {
                 self.pull_released(from, side, moved);
                 true
             }
+            // What is let go is not grown round until it is in or out.
+            Drag::Move { moved: true, .. } => {
+                self.board.letting_go = true;
+                false
+            }
             _ => false,
         }
     }
@@ -200,7 +205,7 @@ impl Studio {
     /// A box's words changed as they are typed.
     pub(in crate::studio) fn words_changed(&mut self, index: usize) {
         self.changed_layers(&[index]);
-        self.changed();
+        self.grow_for_words(index);
     }
 
     /// A key on a board, before Design's would take it: with a box picked

@@ -866,6 +866,9 @@ impl Doc {
             if let Some(name) = &stack.name {
                 *out += &format!("stack-named {}\n", one_line(name));
             }
+            if let Some(holder) = stack.holder {
+                *out += &format!("stack-holds {holder}\n");
+            }
         }
     }
 
@@ -957,6 +960,7 @@ impl Doc {
             }
             "stack" => self.stacks.push(stacks::Stack::read(&line["stack ".len().min(line.len())..])?),
             "stack-named" => self.stacks.last_mut()?.name = Some(line["stack-named ".len().min(line.len())..].to_owned()),
+            "stack-holds" => self.stacks.last_mut()?.holder = Some(words.next()?.parse().ok()?),
             "stacking" => (self.below, self.tier) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?),
             "shape" => {
                 let rest = line.splitn(4, ' ').collect::<Vec<_>>();
@@ -2690,6 +2694,10 @@ impl Studio {
     /// Figma. Nothing while a picture is cropped, or on or by what is
     /// picked out.
     fn press_target(&mut self, at: (i32, i32)) -> Option<usize> {
+        // On a board, everything is the page's, frames or not.
+        if self.on_board() && self.cropping.is_none() {
+            return (!self.on_page()).then_some(LOOSE);
+        }
         if self.cropping.is_some() || self.near_selection(at) {
             return None;
         }
@@ -2729,6 +2737,11 @@ impl Studio {
     /// over, or onto the page outside them all, if that is not where it
     /// was, as Figma moves a layer let go over a frame into it.
     fn drop_into_place(&mut self) {
+        // A board's frames are only what of it is exported: what is moved
+        // on a board stays the page's.
+        if self.on_board() {
+            return;
+        }
         let point = self.to_page(self.pointer);
         let target = self.frame_at(point).unwrap_or(LOOSE);
         let chosen = self.chosen();
@@ -2744,6 +2757,10 @@ impl Studio {
         // The stacks laid out again, before what is stuck to what is in
         // them follows it.
         self.stacks_moved = self.reflow();
+        // On a board, a box holding others grown round them.
+        if self.on_board() {
+            self.settle_nests();
+        }
         self.follow();
         self.version += 1;
         self.doc.stamp = self.version;
@@ -3407,6 +3424,10 @@ impl Studio {
                 }
                 if !moved {
                     // With Alt, a copy is made where it is, and that moved.
+                    // On a board, what is in a box goes with it.
+                    if self.on_board() {
+                        self.begin_carry(copy);
+                    }
                     match copy {
                         true => {
                             self.copy_layers_by((0.0, 0.0));
@@ -3438,6 +3459,9 @@ impl Studio {
                         layer.translate(dx, dy);
                         self.doc.layers[chosen] = layer;
                     }
+                }
+                if self.on_board() {
+                    self.carry(dx, dy);
                 }
                 let chosen = self.chosen();
                 self.changed_layers(&chosen);
@@ -3692,7 +3716,7 @@ impl Studio {
         // to turn it, come before what is under them.
         let near = |a: (i32, i32), b: (i32, i32), reach: i32| (a.0 - b.0).abs() <= reach && (a.1 - b.1).abs() <= reach;
         // The dots inside the corners of a box, which round them, first.
-        if self.press_radius(at, at_window) {
+        if !self.on_board() && self.press_radius(at, at_window) {
             return;
         }
         let handles = self.handles();
@@ -5834,7 +5858,7 @@ impl Studio {
             if chosen.len() > 1 {
                 canvas.round_outline(left, top, right - left + 1, bottom - top + 1, 0, 1, ACCENT);
             }
-            if let Some((w, h)) = size {
+            if let Some((w, h)) = size.filter(|_| !self.on_board()) {
                 self.size_label(&mut canvas, (left + right) / 2, bottom, w, h);
             }
         }
@@ -5847,7 +5871,10 @@ impl Studio {
                     canvas.fill(spot.0 - 3, spot.1 - 3, 6, 6, 0xFFFFFF);
                 }
             }
-            self.draw_radius_handles(&mut canvas);
+            // A board keeps to what it needs: no dots to round corners by.
+            if !self.on_board() {
+                self.draw_radius_handles(&mut canvas);
+            }
             self.draw_turn_label(&mut canvas);
         }
         if let Some(index) = self.cropping {
