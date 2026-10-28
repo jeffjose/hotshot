@@ -71,6 +71,8 @@ pub(super) enum Ctl {
     HistoryTrack,
     Branch,
     Now,
+    /// Present, at the top right.
+    Present,
 }
 
 /// What a board keeps of its own, in the window rather than the file.
@@ -110,11 +112,18 @@ pub(super) struct Board {
     pub branching: Option<usize>,
     /// The board's history, while it is gone through.
     pub history: Option<change::History>,
+    /// What is lit, by what each is called, the rest faded; the parts being
+    /// presented; and the laser, its trail, and a box it made glow.
+    pub focus: Option<Vec<u32>>,
+    pub present: Option<explain::Present>,
+    pub laser: Option<explain::Laser>,
+    pub trail: Vec<((i32, i32), std::time::Instant)>,
+    pub glow: Option<(u32, std::time::Instant)>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None }
     }
 }
 
@@ -124,6 +133,7 @@ mod nest;
 mod map;
 mod ghost;
 mod change;
+mod explain;
 mod act;
 pub(super) use act::Act;
 mod typing;
@@ -160,7 +170,7 @@ impl Studio {
 
     /// Whether the board is being presented, a step at a time.
     pub(super) fn presenting(&self) -> bool {
-        false
+        self.board.present.is_some()
     }
 
     /// The page shown made a board, or a page of frames again: its layers
@@ -201,6 +211,10 @@ impl Studio {
 
     pub(super) fn layout_switch(&mut self, layout: &mut Layout) {
         let place = self.switch_place();
+        if self.on_board() && !self.zen && !self.shows_right() {
+            let beside = self.side_button(1);
+            layout.controls.push((Rect::new(beside.x - 14 - 96, beside.y - 1, 96, 30), Control::Board(Ctl::Present)));
+        }
         layout.controls.push((Rect::new(place.x, place.y, place.w / 2, place.h), Control::Board(Ctl::Mode(false))));
         layout.controls.push((Rect::new(place.x + place.w / 2, place.y, place.w - place.w / 2, place.h), Control::Board(Ctl::Mode(true))));
     }
@@ -269,6 +283,7 @@ impl Studio {
         match ctl {
             Ctl::Mode(board) => self.set_mode(board),
             Ctl::Tool(which) => return self.take_board_tool(which),
+            Ctl::Present => self.present(),
             Ctl::HistoryTrack => {
                 let x = self.pointer.0;
                 if let Some(history) = &mut self.board.history {
@@ -427,6 +442,17 @@ impl Studio {
                 }
             }
             Ctl::HistoryTrack | Ctl::Branch | Ctl::Now => self.draw_history_control(canvas, rect, ctl, hovered),
+            Ctl::Present => {
+                soft_shadow(canvas, rect, 9);
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, if hovered { HOVER_COLOR } else { PANEL_COLOR }, 256);
+                canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 9, 1, EDGE_COLOR);
+                // A play mark, and the word.
+                for row in -5..=5 {
+                    let reach = 8 - (row as i32).abs() * 8 / 5;
+                    canvas.fill(rect.x + 14, cy + row, reach, 1, TEXT_COLOR);
+                }
+                self.text.draw(canvas, rect.x + 30, cy - Text::line_height(12) / 2, 12, TEXT_COLOR, "Present");
+            }
             other => self.draw_style_control(canvas, rect, other, hovered),
         }
     }

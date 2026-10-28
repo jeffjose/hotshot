@@ -182,20 +182,22 @@ impl Studio {
             return self.say("Nothing joined to it to tidy");
         }
         self.checkpoint();
-        self.lay_out_tree(root, self.goes_down(root));
+        self.lay_out_tree(root, self.goes_down(root), true);
         self.changed();
         self.say("Tidied");
     }
 
     /// A tree laid out from its top, which stays where it is.
-    pub(in crate::studio) fn lay_out_tree(&mut self, root: u32, down: bool) {
+    /// With `sides`, a mind map's children either side of it stay on their
+    /// side; without, all go after it.
+    pub(in crate::studio) fn lay_out_tree(&mut self, root: u32, down: bool, sides: bool) {
         let Some(at) = self.index_of(root) else { return };
         let (rx, ry, rw, rh) = self.box_frame(at);
         let middle = (rx + rw / 2.0, ry + rh / 2.0);
         let children = self.child_boxes(root);
         // A mind map's children either side of it stay on their side.
         let (before, after): (Vec<u32>, Vec<u32>) = children.into_iter().partition(|&child| {
-            self.index_of(child).is_some_and(|index| {
+            sides && self.index_of(child).is_some_and(|index| {
                 let (x, y, w, h) = self.box_frame(index);
                 if down { y + h / 2.0 < middle.1 } else { x + w / 2.0 < middle.0 }
             })
@@ -218,6 +220,11 @@ impl Studio {
 
     /// How much room a box and all under it take across the way the tree
     /// goes: as tall as its children are stacked, or as itself.
+    /// How wide a tree that goes down is under a box.
+    pub(in crate::studio) fn span_of(&self, id: u32) -> f32 {
+        self.span(id, true, &mut Vec::new())
+    }
+
     fn span(&self, id: u32, down: bool, seen: &mut Vec<u32>) -> f32 {
         let Some(index) = self.index_of(id) else { return 0.0 };
         seen.push(id);
@@ -322,7 +329,7 @@ impl Studio {
         self.changed();
         for root in roots {
             let id = self.id_of(root);
-            self.lay_out_tree(id, false);
+            self.lay_out_tree(id, false, true);
         }
         self.selected.clear();
         self.changed();

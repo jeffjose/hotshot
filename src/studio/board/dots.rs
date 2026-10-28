@@ -169,7 +169,13 @@ impl Studio {
 
     /// What a board shows over everything on it: the dots of a box's sides,
     /// and the arrow being pulled out of one, with the box it would make.
-    pub(in crate::studio) fn draw_board(&mut self, canvas: &mut Canvas, _view: Rect) {
+    pub(in crate::studio) fn draw_board(&mut self, canvas: &mut Canvas, view: Rect) {
+        self.draw_focus(canvas, view);
+        if self.presenting() {
+            self.draw_present(canvas, view);
+            self.draw_laser(canvas);
+            return;
+        }
         if let Drag::Pull { from, side, moved: true } = self.drag {
             if from < self.doc.layers.len() {
                 let spot = self.pull_start(from, side);
@@ -194,6 +200,7 @@ impl Studio {
             }
         }
         self.draw_ghost(canvas);
+        self.draw_laser(canvas);
         if self.drag == Drag::None {
             if let Some(index) = self.board.dots_of.filter(|&index| self.is_box(index)) {
                 for spot in self.dot_spots(index) {

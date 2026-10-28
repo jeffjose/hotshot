@@ -16,6 +16,15 @@ pub(in crate::studio) enum Act {
     Guessing,
     /// A status dot for the boxes picked out: none, red, amber, green.
     Status(u8),
+    /// What is joined to what is picked out lit; the board presented; a
+    /// 2x2, lanes or Before / After laid out; notes gathered; a vote; and
+    /// how a box lays out what is put in it.
+    Focus,
+    Present,
+    Template(u8),
+    Group,
+    Vote(bool),
+    Region(u8),
 }
 
 impl Studio {
@@ -23,6 +32,10 @@ impl Studio {
     pub(in crate::studio) fn board_acts(&self) -> Vec<(String, &'static str, Act)> {
         let mut acts: Vec<(String, &'static str, Act)> = vec![
             ("History: go back and branch".to_owned(), "Ctrl+Alt+Z", Act::History),
+            ("Present the board".to_owned(), "", Act::Present),
+            ("Insert a 2\u{d7}2".to_owned(), "", Act::Template(0)),
+            ("Insert Now / Next / Later lanes".to_owned(), "", Act::Template(1)),
+            ("Insert Before / After".to_owned(), "", Act::Template(2)),
             (if self.board.guessing { "Stop guessing what comes next" } else { "Guess what comes next" }.to_owned(), "", Act::Guessing),
         ];
         if self.chosen().iter().any(|&index| self.is_box(index)) {
@@ -31,6 +44,17 @@ impl Studio {
                 acts.push((format!("Shape: {name}"), "", Act::Shape(at as u8)));
             }
             acts.push(("Tidy the map".to_owned(), "Shift+L", Act::Tidy));
+            acts.push(("Focus: light what it is joined to".to_owned(), "F", Act::Focus));
+            acts.push(("Lay out what is in it: as it is put".to_owned(), "", Act::Region(0)));
+            acts.push(("Lay out what is in it: left to right".to_owned(), "", Act::Region(1)));
+            acts.push(("Lay out what is in it: as a tree, top down".to_owned(), "", Act::Region(2)));
+            if self.chosen().len() > 1 {
+                acts.push(("Gather into a group".to_owned(), "G", Act::Group));
+            }
+            if self.chosen().iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.form == shapes::FORM_STICKY)) {
+                acts.push(("Vote".to_owned(), "D", Act::Vote(true)));
+                acts.push(("Take a vote away".to_owned(), "Shift+D", Act::Vote(false)));
+            }
             for (at, name) in ["No status", "Status: red", "Status: amber", "Status: green"].iter().enumerate() {
                 acts.push(((*name).to_owned(), "", Act::Status(at as u8)));
             }
@@ -46,6 +70,12 @@ impl Studio {
             Act::History => self.open_history(),
             Act::Tidy => self.tidy(),
             Act::Guessing => self.press_style(Ctl::Guess),
+            Act::Focus => self.focus(),
+            Act::Present => self.present(),
+            Act::Template(which) => self.template(which),
+            Act::Group => self.group(),
+            Act::Vote(more) => self.vote(more),
+            Act::Region(region) => self.set_region(region),
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {

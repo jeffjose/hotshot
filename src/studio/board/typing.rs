@@ -41,6 +41,10 @@ impl Studio {
     /// to pull an arrow out of; a double click on a box or an arrow, its
     /// words to type into; on nothing, a label begun there.
     pub(in crate::studio) fn board_pressed(&mut self, at: (f32, f32), at_window: (i32, i32), double: bool) -> bool {
+        // The laser held: a box clicked glows.
+        if self.laser_press(at) {
+            return true;
+        }
         // While the history is gone through, the board is only looked at.
         if self.board.history.is_some() {
             return true;
@@ -251,6 +255,10 @@ impl Studio {
     /// a key colors; and a letter takes up one of the board's tools.
     /// Nothing, for what is not a board's.
     pub(in crate::studio) fn board_key(&mut self, key: Key, lower: Key, mods: Mods) -> Option<Outcome> {
+        if key == Key::Escape && self.board.focus.take().is_some() {
+            self.dirty = true;
+            return Some(Outcome::Continue);
+        }
         if mods.ctrl || mods.alt {
             return None;
         }
@@ -288,6 +296,20 @@ impl Studio {
             }
             Key::Char('S' | 's') if mods.shift && self.chosen().iter().any(|&index| self.is_box(index)) => {
                 self.reshape(None);
+                return Some(Outcome::Continue);
+            }
+            // F lights it and what it is joined to, or the paths between two;
+            // G gathers several into a box; D votes on a note.
+            Key::Char('f') if !mods.shift && (self.board.focus.is_some() || self.chosen().iter().any(|&index| self.is_box(index))) => {
+                self.focus();
+                return Some(Outcome::Continue);
+            }
+            Key::Char('g') if !mods.shift && self.chosen().len() > 1 => {
+                self.group();
+                return Some(Outcome::Continue);
+            }
+            Key::Char('d' | 'D') if self.chosen().iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.form == shapes::FORM_STICKY)) => {
+                self.vote(!mods.shift);
                 return Some(Outcome::Continue);
             }
             _ => {}

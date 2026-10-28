@@ -524,6 +524,30 @@ there the board from now on and keeps the later version as a page of
 its own beside it, called the same and "later", rather than throwing
 it away. The branch is one step to undo.
 
+For explaining live, to a room or on a call: `F` on a box keeps it and
+everything joined to it lit and fades the rest; with two picked out,
+only the paths between them, to trace one through a system; `F` again
+or Esc brings it all back. Hold `L` for a laser that fades as it goes;
+a box clicked with it glows a moment, and nothing is added to the board
+or to undo; a tap of `L` is still the line tool. Present, at the top
+right or in `Ctrl+K`, walks the board's frames, or else its numbered
+parts (counters, or boxes whose words begin 1, 2. or Step 3), one at a
+time, each zoomed to and the rest dimmed, with nothing else on screen:
+Right or Space the next, Left the one before, Esc back as it was.
+
+What each reaches for: a status dot, red, amber or green, on any box
+from the bar of styles or `Ctrl+K`; the sticky note tool `S`, and with
+a pile of notes picked out `G` gathers them into a box round them,
+titled with the word their words share most; `D` on a note adds a vote
+dot, `Shift+D` takes one away; a 2x2 with its axes, Now / Next / Later
+lanes and Before / After come ready from `Ctrl+K`. Type "button",
+"input", "card" or "nav" into a box and it becomes a rough piece of a
+screen; Alt-drag a box with boxes in it, or anything, to leave Option A
+where it is and make Option B beside it, everything in it and the
+arrows between them copied too. A box can keep what is put in it laid
+out, from `Ctrl+K`: in a row left to right, or as a tree top down, as
+it is added; the rest of the board stays free.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

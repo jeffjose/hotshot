@@ -2777,6 +2777,10 @@ impl Studio {
     fn layout(&mut self) -> Layout {
         let view = Rect::new(0, 0, self.width, self.height);
         let mut layout = Layout { view, ..Layout::default() };
+        // Presenting, the board and nothing else.
+        if self.presenting() {
+            return layout;
+        }
         self.toolbar(&mut layout);
         self.left_panel(&mut layout);
         self.right_panel(&mut layout);
@@ -3332,6 +3336,9 @@ impl Studio {
         self.crop_window();
         let mods = self.steady_mods(mods);
         (self.pointer, self.mods) = ((x, y), mods);
+        if self.on_board() && self.drag == Drag::None && self.laser_moved((x, y)) {
+            return;
+        }
         if self.fine.is_some() && self.drag == Drag::None {
             return self.fine_moved(x, y);
         }
@@ -5291,6 +5298,14 @@ impl Studio {
         if down && self.on_board() && self.history_key(key) {
             return Outcome::Continue;
         }
+        if down && self.on_board() && self.present_key(key) {
+            return Outcome::Continue;
+        }
+        // L held on a board is a laser.
+        if self.on_board() && self.laser_wants(key, mods) {
+            self.laser_key(down);
+            return Outcome::Continue;
+        }
         if self.search.is_some() {
             self.mods = mods;
             return if down { self.search_key(key, mods) } else { Outcome::Continue };
@@ -6973,7 +6988,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         // page zoomed or moved has been still a moment, a look then, to
         // draw it sharp. Otherwise nothing until something happens.
         let wait = match &mut screen {
-            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in(), studio.sizes_wait(), studio.fine_wait()].into_iter().flatten().min(),
+            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in(), studio.sizes_wait(), studio.fine_wait(), studio.board_wait()].into_iter().flatten().min(),
             Shown::Home(home) => home.wait(),
         };
         let mut events: Vec<Event> = match (held.is_empty(), wait) {
@@ -6984,6 +6999,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         if let Shown::Studio(studio) = &mut screen {
             studio.note_left();
             studio.settle();
+            studio.board_tick();
             studio.take_sizes();
             studio.take_fine();
         }

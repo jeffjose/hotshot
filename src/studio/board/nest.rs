@@ -208,7 +208,14 @@ impl Studio {
         self.doc.stacks.retain(|stack| stack.holder.is_none_or(|holder| ids.contains(&holder) && !stack.members.is_empty()));
         let mut held: Vec<u32> = self.doc.stacks.iter().filter_map(|stack| stack.holder).collect();
         held.sort_by_key(|&holder| std::cmp::Reverse(self.nest_depth(holder)));
+        let dragged: Vec<u32> = match self.drag {
+            _ if self.board.letting_go => self.chosen().iter().map(|&index| self.id_of(index)).collect(),
+            Drag::Move { moved: true, .. } => self.chosen().iter().map(|&index| self.id_of(index)).collect(),
+            _ => Vec::new(),
+        };
         for holder in &held {
+            // A box that lays out what is in it does, before it grows.
+            self.arrange_region(*holder, &dragged);
             self.grow_round(*holder);
         }
         for index in 0..self.doc.layers.len() {
@@ -244,7 +251,8 @@ impl Studio {
         let mut boxes = Vec::new();
         for &member in stack.members.iter().filter(|member| !dragged.contains(member)) {
             if let Some(index) = self.index_of(member) {
-                boxes.push(self.doc.layers[index].bounds(&mut self.text));
+                // A box by its own edges, not the room its wobble takes.
+                boxes.push(if self.is_box(index) { self.box_frame(index) } else { self.doc.layers[index].bounds(&mut self.text) });
             }
         }
         let Some((cx, cy, cw, ch)) = actions::union(&boxes) else { return };
@@ -393,7 +401,7 @@ mod tests {
         // The outer one moved, the inner goes with it, and stays inside.
         let (before, outer_before) = (shape(&studio, auth).frame(), shape(&studio, backend).frame());
         // By its bottom: the bar of styles floats over its top.
-        pull(&mut studio, (120.0, 218.0), (220.0, 518.0), Mods::default());
+        pull(&mut studio, (120.0, 208.0), (220.0, 508.0), Mods::default());
         let (after, outer_after) = (shape(&studio, auth).frame(), shape(&studio, backend).frame());
         assert!(after.1 - before.1 > 250.0, "moved down with it");
         assert!(((after.0 - before.0) - (outer_after.0 - outer_before.0)).abs() < 0.01 && ((after.1 - before.1) - (outer_after.1 - outer_before.1)).abs() < 0.01);
