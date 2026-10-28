@@ -68,6 +68,10 @@ pub struct Shape {
     pub filled: bool,
     /// The radius of a rectangle's corners.
     pub radius: f32,
+    /// The radius of each of its corners, when they are not all the same:
+    /// top left, top right, bottom right and bottom left, as Figma has
+    /// them. None when every corner is `radius`.
+    pub corners: Option<[f32; 4]>,
     /// Two for most: where the drag began and where it is. A pen stroke
     /// has as many as the pointer made; text has the top-left of its
     /// first line; a counter its middle and where it points.
@@ -190,6 +194,29 @@ fn shadow_read(word: &str) -> Option<crate::frame::Layer> {
     let [x, y, blur, spread, color] = parts[..] else { return None };
     Some(crate::frame::Layer { x: x.parse().ok()?, y: y.parse().ok()?, blur: blur.parse::<i16>().ok()?.max(0), spread: spread.parse().ok()?, color: u32::from_str_radix(color, 16).ok()? })
 }
+/// The radius of each corner as a word of a file: the four with colons
+/// between, or a dash when they are all the one radius.
+pub fn corners_word(corners: Option<[f32; 4]>) -> String {
+    corners.map_or("-".to_owned(), |[a, b, c, d]| format!("{a}:{b}:{c}:{d}"))
+}
+
+pub fn corners_read(word: &str) -> Option<[f32; 4]> {
+    let parts: Vec<f32> = word.split(':').map(|part| part.parse::<f32>().ok().filter(|radius| radius.is_finite())).collect::<Option<_>>()?;
+    let [a, b, c, d] = parts[..] else { return None };
+    Some([a, b, c, d].map(|radius| radius.max(0.0)))
+}
+
+/// The radius of the corner of a box nearest a point, counted from its
+/// middle: of the four, top left, top right, bottom right, bottom left.
+pub fn corner_of(x: f32, y: f32, radii: [f32; 4]) -> f32 {
+    match (x >= 0.0, y >= 0.0) {
+        (true, false) => radii[1],
+        (true, true) => radii[2],
+        (false, true) => radii[3],
+        (false, false) => radii[0],
+    }
+}
+
 /// On a patch of its own color, its letters in whichever of white and
 /// black reads on that.
 pub const BOXED: u8 = 16;
@@ -245,7 +272,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -265,7 +292,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -282,7 +309,8 @@ impl Shape {
                 stuck_word(self.stuck[1]),
                 self.align,
                 self.edge,
-                shadow_word(self.shadow)
+                shadow_word(self.shadow),
+                corners_word(self.corners)
             ),
             self.fill,
             self.number,
@@ -341,6 +369,9 @@ impl Shape {
         // from before either has not.
         shape.edge = more.next().and_then(|edge| edge.parse::<u8>().ok()).unwrap_or(CENTER).min(OUTSIDE);
         shape.shadow = more.next().and_then(shadow_read);
+        // And the radius of each corner, when they differ, which a file
+        // from before has not: all of them are its one radius then.
+        shape.corners = more.next().and_then(corners_read);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -474,6 +505,21 @@ impl Shape {
             }
             _ => (x, y),
         }
+    }
+
+    /// The radius of each of its corners: top left, top right, bottom
+    /// right, bottom left.
+    pub fn radii(&self) -> [f32; 4] {
+        self.corners.unwrap_or([self.radius; 4])
+    }
+
+    /// Its corners made as round as these: one radius, if they are all
+    /// the same, or each its own. Its `radius` is the first of them.
+    pub fn set_radii(&mut self, radii: [f32; 4]) {
+        let radii = radii.map(|radius| radius.max(0.0));
+        self.radius = radii[0];
+        self.corners = radii.iter().any(|&radius| radius != radii[0]).then_some(radii);
+        self.touch();
     }
 
     /// To be called when anything about its outline has changed.
@@ -701,7 +747,7 @@ impl Shape {
         // With a border as well as a fill, the outline is the border's:
         // what is inside it has a mask of its own.
         let filled = self.filled && !self.bordered_fill();
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radius: self.radius, head, heads: self.heads, ends: self.ends, dashed: self.dashed && !self.dotted, dotted: self.dotted, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0), edge: self.edge }
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radii: self.radii(), head, heads: self.heads, ends: self.ends, dashed: self.dashed && !self.dotted, dotted: self.dotted, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0), edge: self.edge }
     }
 
     /// Which of its points is the far one of the two it is between: the
@@ -990,7 +1036,9 @@ struct Outline {
     b: Point,
     stroke: f32,
     filled: bool,
-    radius: f32,
+    /// The radius of each corner of a box: top left, top right, bottom
+    /// right, bottom left.
+    radii: [f32; 4],
     head: (f32, f32),
     heads: [bool; 2],
     ends: [u8; 2],
@@ -1153,9 +1201,10 @@ impl Outline {
             Tool::Rect | Tool::Ellipse => {
                 let (left, top, w, h) = (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs());
                 let (px, py, hw, hh) = (x - left - w / 2.0, y - top - h / 2.0, w / 2.0, h / 2.0);
-                let radius = self.radius.min(hw).min(hh).max(0.0);
+                // Each corner no rounder than half the shorter side.
+                let radii = self.radii.map(|radius| radius.min(hw).min(hh).max(0.0));
                 let inside = match self.tool {
-                    Tool::Rect => round_box(px, py, hw, hh, radius),
+                    Tool::Rect => round_box(px, py, hw, hh, corner_of(px, py, radii)),
                     _ => ellipse(px, py, hw, hh),
                 };
                 if self.filled {
@@ -1175,7 +1224,7 @@ impl Outline {
                 // Dashes and dots counted along the edge, spaced to go
                 // round it a whole number of times.
                 let (along, whole) = match self.tool {
-                    Tool::Rect => perimeter_along(px, py, hw, hh, radius),
+                    Tool::Rect => perimeter_along(px, py, hw, hh, radii),
                     _ => {
                         let turn = (py / hh.max(0.5)).atan2(px / hw.max(0.5)) + std::f32::consts::PI;
                         (turn * (hw + hh) / 2.0, std::f32::consts::TAU * (hw + hh) / 2.0)
@@ -2015,32 +2064,45 @@ fn round_box(x: f32, y: f32, half_w: f32, half_h: f32, radius: f32) -> f32 {
 
 /// How far round the edge of a box with round corners a point is, from
 /// where its top edge begins at the left and going clockwise; and how
-/// far it is all the way round. Counted from the middle of the box.
-fn perimeter_along(x: f32, y: f32, half_w: f32, half_h: f32, radius: f32) -> (f32, f32) {
+/// far it is all the way round. Counted from the middle of the box, whose
+/// corners have each a radius of their own: top left, top right, bottom
+/// right, bottom left.
+fn perimeter_along(x: f32, y: f32, half_w: f32, half_h: f32, radii: [f32; 4]) -> (f32, f32) {
     use std::f32::consts::{FRAC_PI_2, PI};
+    let [tl, tr, br, bl] = radii;
+    // Each edge between its corners, and each corner, going round from
+    // the top edge's left end: where each begins.
+    let (top, right) = ((2.0 * half_w - tl - tr).max(0.0), (2.0 * half_h - tr - br).max(0.0));
+    let (bottom, left) = ((2.0 * half_w - br - bl).max(0.0), (2.0 * half_h - bl - tl).max(0.0));
+    let at_tr = top;
+    let at_right = at_tr + tr * FRAC_PI_2;
+    let at_br = at_right + right;
+    let at_bottom = at_br + br * FRAC_PI_2;
+    let at_bl = at_bottom + bottom;
+    let at_left = at_bl + bl * FRAC_PI_2;
+    let at_tl = at_left + left;
+    let whole = at_tl + tl * FRAC_PI_2;
+    let radius = corner_of(x, y, radii);
     let (inner_w, inner_h) = ((half_w - radius).max(0.0), (half_h - radius).max(0.0));
-    let (top, side, corner) = (2.0 * inner_w, 2.0 * inner_h, radius * FRAC_PI_2);
-    let whole = 2.0 * top + 2.0 * side + 4.0 * corner;
-    let (out_x, out_y) = (x.abs() - inner_w, y.abs() - inner_h);
-    let along = if out_x > 0.0 && out_y > 0.0 && radius > 0.0 {
+    let along = if x.abs() > inner_w && y.abs() > inner_h && radius > 0.0 {
         // On a corner: how far round it, about its middle.
         let (cx, cy) = (inner_w.copysign(x), inner_h.copysign(y));
         let angle = (y - cy).atan2(x - cx);
-        match (x > 0.0, y > 0.0) {
-            (true, false) => top + (angle + FRAC_PI_2) * radius,
-            (true, true) => top + corner + side + angle * radius,
-            (false, true) => 2.0 * top + 2.0 * corner + side + (angle - FRAC_PI_2) * radius,
-            (false, false) => 2.0 * top + 3.0 * corner + 2.0 * side + (angle + PI) * radius,
+        match (x >= 0.0, y >= 0.0) {
+            (true, false) => at_tr + (angle + FRAC_PI_2) * radius,
+            (true, true) => at_br + angle * radius,
+            (false, true) => at_bl + (angle - FRAC_PI_2) * radius,
+            (false, false) => at_tl + (angle.rem_euclid(2.0 * PI) - PI) * radius,
         }
-    } else if out_y >= out_x {
+    } else if y.abs() - half_h >= x.abs() - half_w {
         match y < 0.0 {
-            true => x + inner_w,
-            false => top + 2.0 * corner + side + (inner_w - x),
+            true => x + half_w - tl,
+            false => at_bottom + (half_w - br - x),
         }
     } else {
         match x > 0.0 {
-            true => top + corner + (y + inner_h),
-            false => 2.0 * top + 3.0 * corner + side + (inner_h - y),
+            true => at_right + (y + half_h - tr),
+            false => at_left + (half_h - bl - y),
         }
     };
     (along.clamp(0.0, whole), whole.max(1.0))
@@ -2136,11 +2198,11 @@ mod tests {
         let dots = runs(&boxed);
         assert!(dashes >= 3 && dots > dashes, "{dashes} dashes, {dots} dots");
         // Round the corners too, evenly, with a round box or an oval.
-        assert!((perimeter_along(0.0, -10.0, 20.0, 10.0, 0.0).0 - 20.0).abs() < 0.01);
-        assert!((perimeter_along(20.0, 0.0, 20.0, 10.0, 0.0).0 - 50.0).abs() < 0.01);
-        assert!((perimeter_along(0.0, 10.0, 20.0, 10.0, 0.0).0 - 80.0).abs() < 0.01);
-        assert!((perimeter_along(-20.0, 0.0, 20.0, 10.0, 0.0).0 - 110.0).abs() < 0.01);
-        assert!((perimeter_along(0.0, 0.0, 20.0, 10.0, 4.0).1 - (2.0 * 32.0 + 2.0 * 12.0 + std::f32::consts::TAU * 4.0)).abs() < 0.01);
+        assert!((perimeter_along(0.0, -10.0, 20.0, 10.0, [0.0; 4]).0 - 20.0).abs() < 0.01);
+        assert!((perimeter_along(20.0, 0.0, 20.0, 10.0, [0.0; 4]).0 - 50.0).abs() < 0.01);
+        assert!((perimeter_along(0.0, 10.0, 20.0, 10.0, [0.0; 4]).0 - 80.0).abs() < 0.01);
+        assert!((perimeter_along(-20.0, 0.0, 20.0, 10.0, [0.0; 4]).0 - 110.0).abs() < 0.01);
+        assert!((perimeter_along(0.0, 0.0, 20.0, 10.0, [4.0; 4]).1 - (2.0 * 32.0 + 2.0 * 12.0 + std::f32::consts::TAU * 4.0)).abs() < 0.01);
     }
 
     #[test]
@@ -2179,7 +2241,7 @@ mod tests {
         assert_eq!((back.edge, back.shadow, back.align), (OUTSIDE, boxed.shadow, boxed.align));
         // And one from before either has neither.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-\t", "\t", 1);
+        let older = plain.replacen(",0,-,-\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
         assert_eq!((back.edge, back.shadow), (CENTER, None));

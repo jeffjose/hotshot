@@ -111,16 +111,13 @@ impl Studio {
 
 /// How round a layer's corners are, made another's.
 fn match_corners(layer: &mut Layer, like: &Layer) {
-    let radius = match &like.kind {
-        Kind::Picture(picture) => picture.radius,
-        Kind::Shape(shape) => shape.radius,
+    let radii = match &like.kind {
+        Kind::Picture(picture) => picture.radii(),
+        Kind::Shape(shape) => shape.radii(),
     };
     match &mut layer.kind {
-        Kind::Picture(picture) => picture.radius = radius,
-        Kind::Shape(shape) => {
-            shape.radius = radius;
-            shape.touch();
-        }
+        Kind::Picture(picture) => picture.set_radii(radii),
+        Kind::Shape(shape) => shape.set_radii(radii),
     }
 }
 

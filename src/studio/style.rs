@@ -65,7 +65,7 @@ pub(super) fn apply_style(shape: &mut Shape, style: u8, base: u32, dark: bool) {
                 7 => {
                     solid(shape);
                     let (_, _, w, h) = shape.frame();
-                    shape.radius = w.min(h) / 2.0;
+                    shape.set_radii([w.min(h) / 2.0; 4]);
                 }
                 GLOW => {
                     tinted(shape);

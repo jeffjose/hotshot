@@ -155,7 +155,11 @@ Pictures come from files given on the command line, from the clipboard
 window while you take one). Drag to move, drag a handle to resize
 (corners keep proportions unless Shift is held), and drag just outside a
 corner to rotate. Every number in the panel can be typed into with a
-double click, or scrubbed by dragging it sideways. Pictures can be
+double click, or scrubbed by dragging it sideways. A box or a picture
+picked out has a dot inside each corner, as in Figma, once it is large
+enough on screen: drag one in to round all four corners, or Alt-drag it
+to round that corner alone. The panel has the radius for all of them,
+and a button beside it that shows one for each corner. Pictures can be
 rounded, shadowed, flipped, faded and cropped: double-click one, or
 press Enter, to crop it. The markup tools draw over everything, with the
 same arrow heads, fills and sketched lines as the editor. Space or the

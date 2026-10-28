@@ -204,7 +204,7 @@ impl Studio {
                     rows.fields(&[Field::W, Field::H], &[act(Action::LockRatio)]);
                     rows.buttons(&[&[act(Action::FlipAcross), act(Action::FlipDown)], &[act(Action::Crop)], &[act(Action::Actual)]]);
                     rows.section("Appearance", "", None);
-                    rows.fields(&[Field::Opacity, Field::Radius], &[]);
+                    self.radius_rows(&mut rows);
                     rows.section("Adjust", "", Some((act(Action::ResetAdjust), icons::UNDO)));
                     for field in [Field::Exposure, Field::Contrast, Field::Saturation] {
                         rows.wide(Control::Field(field));
@@ -345,7 +345,7 @@ impl Studio {
         }
         rows.section("Appearance", "", None);
         if shape.tool == Tool::Rect {
-            rows.fields(&[Field::Opacity, Field::Radius], &[]);
+            self.radius_rows(rows);
         } else {
             rows.fields(&[Field::Opacity], &[]);
         }
@@ -399,6 +399,17 @@ impl Studio {
         let _ = index;
         self.effects_section(rows, shape.shadow.is_some());
         self.layer_section(rows);
+    }
+
+    /// How opaque it is and how round its corners, with a button that
+    /// shows a radius for each corner, as Figma's does: top left and right
+    /// over bottom left and right.
+    fn radius_rows(&mut self, rows: &mut Rows) {
+        rows.fields(&[Field::Opacity, Field::Radius], &[Control::Action(Action::Corners)]);
+        if self.corners_open {
+            rows.fields(&[Field::Corner(0), Field::Corner(1)], &[]);
+            rows.fields(&[Field::Corner(3), Field::Corner(2)], &[]);
+        }
     }
 
     /// The shadow a layer casts: a plus for one, or which it is and its
@@ -483,6 +494,7 @@ impl Studio {
         };
         match action {
             Action::LockRatio => self.keep_ratio,
+            Action::Corners => self.corners_open,
             Action::Halo => shape.is_some_and(|shape| shape.halo),
             Action::Crop => self.cropping.is_some(),
             Action::Bold => shape.is_some_and(|shape| shape.style & shapes::BOLD != 0),

@@ -22,6 +22,7 @@ use crate::text::{icons, Text, FACES};
 
 mod actions;
 mod arrange;
+mod corners;
 mod crop_bar;
 mod drawn;
 mod duplicate;
@@ -251,6 +252,8 @@ pub struct Picture {
     /// The part of it that is shown, in its own pixels.
     pub crop: (f32, f32, f32, f32),
     pub radius: f32,
+    /// The radius of each corner when they differ, as a box's are.
+    pub corners: Option<[f32; 4]>,
     /// Which of the shadows there are under it: 0 for none, or one more
     /// than where it is in `frame::SHADOWS`.
     pub shadow: usize,
@@ -280,7 +283,20 @@ const DROP: frame::Layer = frame::Layer { x: 0, y: 50, blur: 100, spread: -24, c
 impl Picture {
     pub fn new(image: Arc<Image>, name: String, at: (f32, f32)) -> Picture {
         let (w, h) = (image.width() as f32, image.height() as f32);
-        Picture { image, name, cx: at.0, cy: at.1, w, h, angle: 0.0, crop: (0.0, 0.0, w, h), radius: 0.0, shadow: 0, opacity: 256, flip: (false, false), id: shapes::fresh_id(), drop: DROP, adjust: [0.0; 3], window: frame::Window::None, title: String::new() }
+        Picture { image, name, cx: at.0, cy: at.1, w, h, angle: 0.0, crop: (0.0, 0.0, w, h), radius: 0.0, corners: None, shadow: 0, opacity: 256, flip: (false, false), id: shapes::fresh_id(), drop: DROP, adjust: [0.0; 3], window: frame::Window::None, title: String::new() }
+    }
+
+    /// The radius of each of its corners: top left, top right, bottom
+    /// right, bottom left.
+    pub fn radii(&self) -> [f32; 4] {
+        self.corners.unwrap_or([self.radius; 4])
+    }
+
+    /// Its corners made as round as these, as a box's are.
+    pub fn set_radii(&mut self, radii: [f32; 4]) {
+        let radii = radii.map(|radius| radius.max(0.0));
+        self.radius = radii[0];
+        self.corners = radii.iter().any(|&radius| radius != radii[0]).then_some(radii);
     }
 
     /// How tall the bar of its window is, in pixels of the artboard: none
@@ -474,6 +490,7 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
         *point = (point.0 * times, point.1 * times);
     }
     (shape.stroke, shape.radius) = (shape.stroke * times, shape.radius * times);
+    shape.corners = shape.corners.map(|corners| corners.map(|radius| radius * times));
     shape.font_px = ((shape.font_px as f32 * times).round() as u32).max(1);
     if let Some(drop) = &mut shape.shadow {
         let by = |value: i16| (f32::from(value) * times).round() as i16;
@@ -611,6 +628,9 @@ impl Doc {
                     );
                     let drop = picture.drop;
                     *out += &format!("drop {} {} {} {} {:08X}\n", drop.x, drop.y, drop.blur, drop.spread, drop.color);
+                    if let Some([a, b, c, d]) = picture.corners {
+                        *out += &format!("corners {a} {b} {c} {d}\n");
+                    }
                     if picture.adjust != [0.0; 3] {
                         *out += &format!("adjust {} {} {}\n", picture.adjust[0], picture.adjust[1], picture.adjust[2]);
                     }
@@ -654,9 +674,14 @@ impl Doc {
                 self.layers.push(Layer { kind: Kind::Picture(picture), hidden, locked });
             }
             // What a picture has besides, on lines after its own.
-            "drop" | "adjust" | "window" => {
+            "drop" | "adjust" | "window" | "corners" => {
                 let Some(Layer { kind: Kind::Picture(picture), .. }) = self.layers.last_mut() else { return None };
                 match line.split(' ').next()? {
+                    "corners" => {
+                        let mut number = || words.next().and_then(|word| word.parse::<f32>().ok()).filter(|radius| radius.is_finite());
+                        let radii = [number()?, number()?, number()?, number()?];
+                        picture.set_radii(radii);
+                    }
                     "drop" => {
                         let mut number = || words.next().and_then(|word| word.parse::<i16>().ok());
                         let (x, y, blur, spread) = (number()?, number()?, number()?, number()?);
@@ -866,6 +891,7 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
     let (wide, high) = (part.w, part.h);
     let mut at = picture.clone();
     (at.cx, at.cy, at.w, at.h, at.radius) = (picture.cx * times - part.x as f32, picture.cy * times - part.y as f32, picture.w * times, picture.h * times, picture.radius * times);
+    at.corners = picture.corners.map(|corners| corners.map(|radius| radius * times));
     let picture = &at;
     let custom = [picture.drop];
     let preset = Shadow::of_preset(picture.shadow.saturating_sub(1));
@@ -892,7 +918,7 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
     let (hw, hh) = (picture.w / 2.0, picture.h / 2.0);
     // A window's bar over the top of it, and the picture in what is left.
     let bar = picture.bar() * times;
-    let radius = if bar > 0.0 { picture.radius.max(10.0 * times) } else { picture.radius }.clamp(0.0, hw.min(hh));
+    let radii = picture.radii().map(|radius| if bar > 0.0 { radius.max(10.0 * times) } else { radius }.clamp(0.0, hw.min(hh)));
     let (cx, cy, cw, ch) = picture.crop;
     let level = picture.image.level(cw / picture.w);
     let (lw, lh, pixels) = (level.0, level.1, &level.2);
@@ -910,13 +936,13 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
                 let shifted = (point.0 - f32::from(layer.x) * lift, point.1 - f32::from(layer.y) * lift);
                 let (sx, sy) = picture.local(shifted);
                 let grow = f32::from(layer.spread) * lift;
-                let away = frame::round_box(sx, sy, (hw + grow).max(0.0), (hh + grow).max(0.0), (radius + grow).max(0.0));
+                let away = frame::round_box(sx, sy, (hw + grow).max(0.0), (hh + grow).max(0.0), (shapes::corner_of(sx, sy, radii) + grow).max(0.0));
                 let deviation = f32::from(layer.blur.max(0)) * lift / 2.0;
                 let near = if deviation < 0.5 { (0.5 - away).clamp(0.0, 1.0) } else { 0.5 * (1.0 - frame::erf(away / (deviation * std::f32::consts::SQRT_2))) };
                 pixel = over(pixel, layer.color & 0xFF_FFFF, near * (layer.color >> 24) as f32 / 255.0 * opacity);
             }
             let (lx, ly) = picture.local(point);
-            let inside = frame::round_box(lx, ly, hw, hh, radius);
+            let inside = frame::round_box(lx, ly, hw, hh, shapes::corner_of(lx, ly, radii));
             let cover = (0.5 - inside).clamp(0.0, 1.0);
             if cover > 0.0 {
                 if ly + hh < bar {
@@ -1159,6 +1185,10 @@ enum Drag {
     Reorder { index: usize, from: i32, moved: bool },
     /// A part of the color picker dragged along.
     Picker { part: u8, rect: Rect },
+    /// A corner of the box or picture picked out made rounder by its dot:
+    /// the one corner with `single`, or all of them; taken hold of `slack`
+    /// further in than its radius.
+    Radius { corner: usize, single: bool, slack: f32 },
 }
 
 /// The last copy made, and what it was made from.
@@ -1216,6 +1246,9 @@ enum Field {
     Dim,
     /// How many times larger a zoom lens shows what it is of.
     Magnify,
+    /// The radius of one corner of a box or a picture: top left, top
+    /// right, bottom right, bottom left.
+    Corner(u8),
 }
 
 impl Field {
@@ -1244,6 +1277,7 @@ impl Field {
             Field::Dim => "Dim",
             Field::Magnify => "Larger",
             Field::ExportTimes(_) => "\u{d7}",
+            Field::Corner(_) => "",
         }
     }
 
@@ -1412,6 +1446,8 @@ enum Action {
     /// A blur made a mosaic, or smooth; a spotlight round, or square.
     BlurStyle(u8),
     Round(bool),
+    /// A radius for each corner shown in the panel, or one for them all.
+    Corners,
 }
 
 impl Action {
@@ -1520,6 +1556,7 @@ impl Action {
             Action::BlurStyle(_) => "Mosaic",
             Action::Round(true) => "Round",
             Action::Round(false) => "Square",
+            Action::Corners => "Independent corners",
         }
     }
 }
@@ -1743,6 +1780,8 @@ pub struct Studio {
     color_open: Option<u32>,
     /// Whether the grid of styles is open.
     styling: bool,
+    /// Whether the panel shows a radius for each corner, not one for all.
+    corners_open: bool,
     /// The library, while it is open; and whether what a label put down
     /// from it says is all picked out, for the first letter to type over.
     library: Option<library::Library>,
@@ -1840,6 +1879,7 @@ impl Studio {
             exported: None,
             color_open: None,
             styling: false,
+            corners_open: false,
             library: None,
             words_picked: false,
             search: None,
@@ -2676,6 +2716,7 @@ impl Studio {
                 self.set_field(field, start + (x - from) as f32 * step);
             }
             Drag::Crop { pull, from } => self.crop_to(pull, from, at),
+            Drag::Radius { corner, single, slack } => self.drag_radius(corner, single, slack, at),
         }
     }
 
@@ -2860,6 +2901,10 @@ impl Studio {
         // The handles of the one picked out, and just outside its corners
         // to turn it, come before what is under them.
         let near = |a: (i32, i32), b: (i32, i32), reach: i32| (a.0 - b.0).abs() <= reach && (a.1 - b.1).abs() <= reach;
+        // The dots inside the corners of a box, which round them, first.
+        if self.press_radius(at, at_window) {
+            return;
+        }
         let handles = self.handles();
         if let Some(&(_, pull)) = handles.iter().find(|&&(spot, _)| near(spot, at_window, 6)) {
             self.checkpoint();
@@ -3370,7 +3415,7 @@ impl Studio {
         self.dirty = true;
         // A handle, a crop or a number taken hold of and let go of where it
         // was leaves no step to undo that would undo nothing.
-        if matches!(drag, Drag::Scale { .. } | Drag::Turn { .. } | Drag::Crop { .. } | Drag::Scrub { .. }) && self.version == self.pressed_at {
+        if matches!(drag, Drag::Scale { .. } | Drag::Turn { .. } | Drag::Crop { .. } | Drag::Scrub { .. } | Drag::Radius { .. }) && self.version == self.pressed_at {
             self.undo.pop();
         }
         match drag {
@@ -3711,7 +3756,8 @@ impl Studio {
                 Field::W => picture.w,
                 Field::H => picture.h,
                 Field::Turn => picture.angle.to_degrees(),
-                Field::Radius => picture.radius,
+                Field::Radius => return self.radius_field(None),
+                Field::Corner(corner) => return self.radius_field(Some(usize::from(corner))),
                 Field::Opacity => picture.opacity as f32 * 100.0 / 256.0,
                 Field::Exposure => picture.adjust[0] * 100.0,
                 Field::Contrast => picture.adjust[1] * 100.0,
@@ -3724,7 +3770,8 @@ impl Studio {
                 Field::W => shape.frame().2,
                 Field::H => shape.frame().3,
                 Field::Turn => shape.angle.to_degrees(),
-                Field::Radius => shape.radius,
+                Field::Radius => return self.radius_field(None),
+                Field::Corner(corner) => return self.radius_field(Some(usize::from(corner))),
                 Field::Opacity => shape.opacity as f32 * 100.0 / 256.0,
                 Field::FontSize => shape.font_px as f32,
                 Field::Stroke => shape.stroke,
@@ -3750,14 +3797,9 @@ impl Studio {
 
     fn set_field(&mut self, field: Field, value: f32) {
         match field {
-            // The next rectangle as round as this one is made.
-            Field::Radius if self.picked().is_some_and(|index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.tool == Tool::Rect)) => {
-                self.radius = value.max(0.0);
-                if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.picked().and_then(|index| self.doc.layers.get_mut(index)) {
-                    shape.radius = value.max(0.0);
-                    shape.touch();
-                }
-            }
+            // All the corners, or one; and the next rectangle as round.
+            Field::Radius => self.set_radius_field(None, value),
+            Field::Corner(corner) => self.set_radius_field(Some(usize::from(corner)), value),
             Field::ExportTimes(index) => {
                 if let Some(size) = self.doc.exports.get_mut(usize::from(index)) {
                     size.times = (value * 2.0).round().clamp(1.0, 16.0) / 2.0;
@@ -3835,7 +3877,6 @@ impl Studio {
                             }
                         }
                         (Kind::Picture(picture), Field::Turn) => picture.angle = value.to_radians(),
-                        (Kind::Picture(picture), Field::Radius) => picture.radius = value.max(0.0),
                         (Kind::Picture(picture), Field::Opacity) => picture.opacity = ((value.clamp(0.0, 100.0) * 2.56).round() as u32).min(256),
                         (Kind::Shape(shape), Field::W | Field::H) => {
                             let (x, y, w, h) = shape.frame();
@@ -3851,7 +3892,6 @@ impl Studio {
                             shape.points[1] = (x + w2, y + h2);
                         }
                         (Kind::Shape(shape), Field::Turn) => shape.angle = value.to_radians(),
-                        (Kind::Shape(shape), Field::Radius) => shape.radius = value.max(0.0),
                         (Kind::Shape(shape), Field::Opacity) => shape.opacity = ((value.clamp(0.0, 100.0) * 2.56).round() as u32).min(256),
                         _ => {}
                     }
@@ -4694,6 +4734,7 @@ impl Studio {
                     canvas.fill(spot.0 - 3, spot.1 - 3, 6, 6, 0xFFFFFF);
                 }
             }
+            self.draw_radius_handles(&mut canvas);
         }
         if let Some(index) = self.cropping {
             self.draw_crop(&mut canvas, index);
@@ -5134,6 +5175,8 @@ impl Studio {
                     }
                     let value = match typing {
                         Some(typed) => format!("{typed}|"),
+                        // Corners that differ, as Figma says of them.
+                        None if field == Field::Radius && self.radius_mixed() => "Mixed".to_owned(),
                         None => self.field(field).map_or("\u{2014}".to_owned(), |value| match field {
                             Field::Opacity | Field::Dim => format!("{}%", value.round() as i32),
                             Field::Magnify => format!("{:.1}\u{d7}", value),
@@ -5144,10 +5187,15 @@ impl Studio {
                     let (label, icon) = match field {
                         Field::Turn | Field::Angle | Field::LineAngle => (icons::ROTATE, true),
                         Field::Radius => (icons::RADIUS, true),
+                        Field::Corner(_) => ("", true),
                         Field::Opacity => (icons::EYE, true),
                         other => (other.label(), false),
                     };
                     field_text(&mut self.text, canvas, rect, label, icon, &value, DIM_TEXT_COLOR);
+                    if let Field::Corner(corner) = field {
+                        let (sx, sy) = corners::INWARD[usize::from(corner).min(3)];
+                        corners::corner_glyph(canvas, (rect.x + 15 - (sx * 5.0) as i32, rect.y + rect.h / 2 - (sy * 5.0) as i32), usize::from(corner), 10, DIM_TEXT_COLOR);
+                    }
                 }
                 Control::Style(style) => self.draw_style_tile(canvas, rect, style, hovered),
                 // The library draws its own.
@@ -5389,6 +5437,12 @@ impl Studio {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 5, if on { ROW_ON } else if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
                     let ink = if on { 0xFFFFFF } else { TEXT_COLOR };
                     match action.icon() {
+                        // Four corners apart, as Figma's button for them is.
+                        None if action == Action::Corners => {
+                            for (corner, (dx, dy)) in [(-6, -6), (5, -6), (5, 5), (-6, 5)].into_iter().enumerate() {
+                                corners::corner_glyph(canvas, (cx + dx, cy + dy), corner, 4, ink);
+                            }
+                        }
                         Some(icon) => {
                             if action == Action::FlipDown {
                                 // The flip drawn across, turned: down.
