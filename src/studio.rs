@@ -27,6 +27,7 @@ mod panel;
 mod picker;
 mod preview;
 mod snap;
+mod search;
 mod style;
 
 
@@ -1180,6 +1181,9 @@ enum Control {
     ColorOpen(u32),
     /// A style of the grid of them, by where it is in it.
     Style(u8),
+    /// A tab of the search, and a row of what it found.
+    SearchTab(u8),
+    Found(u16),
     ColorLayer(usize, &'static str),
     /// The strip a gradient is shown on, its stops at its ends.
     GradientBar,
@@ -1377,6 +1381,8 @@ struct Layout {
     /// The lists open, and where each is.
     /// The grid of styles, while it is open.
     styles: Option<Rect>,
+    /// The search over everything, while it is open.
+    search: Option<Rect>,
     menus: Vec<(Rect, MenuKind)>,
 }
 
@@ -1414,6 +1420,8 @@ pub enum Outcome {
     /// A picture of the screen is wanted, from a capture with the window
     /// out of the way, to be handed to `captured`.
     Capture,
+    /// Another file is wanted in place of this one, kept: `open_next`.
+    Open,
     /// The projects are wanted, this file kept.
     Home,
 }
@@ -1518,6 +1526,10 @@ pub struct Studio {
     color_open: Option<u32>,
     /// Whether the grid of styles is open.
     styling: bool,
+    /// The search over everything, while it is open; and a file it chose
+    /// to be opened in place of this one.
+    search: Option<search::Search>,
+    pub open_next: Option<PathBuf>,
     dirty: bool,
 }
 
@@ -1587,6 +1599,8 @@ impl Studio {
             fitted_frame: false,
             color_open: None,
             styling: false,
+            search: None,
+            open_next: None,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -1769,6 +1783,7 @@ impl Studio {
             }
         }
         self.layout_styles(&mut layout);
+        self.layout_search(&mut layout);
         self.layout_menus(&mut layout);
         layout
     }
@@ -2164,6 +2179,12 @@ impl Studio {
 
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
         self.end_preview();
+        // With the search open, a click off it closes it.
+        if self.search.is_some() && !matches!(self.control_at(self.pointer), Some(Control::Found(_) | Control::SearchTab(_) | Control::Panel)) {
+            self.search = None;
+            self.dirty = true;
+            return Outcome::Continue;
+        }
         let at_window = self.pointer;
         let double = time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at_window);
@@ -2450,6 +2471,12 @@ impl Studio {
                 self.put_style(style);
                 self.styling = false;
             }
+            Control::SearchTab(tab) => {
+                if let Some(search) = &mut self.search {
+                    (search.tab, search.row) = (tab, 0);
+                }
+            }
+            Control::Found(row) => return self.choose_hit(usize::from(row)),
             Control::ColorOpen(color) => self.color_open = if self.color_open == Some(color) { None } else { Some(color) },
             Control::ColorLayer(index, _) => self.selected = vec![index],
             Control::GradientBar => {
@@ -3558,6 +3585,10 @@ impl Studio {
         if down {
             self.end_preview();
         }
+        if self.search.is_some() {
+            self.mods = mods;
+            return if down { self.search_key(key, mods) } else { Outcome::Continue };
+        }
         self.mods = mods;
         self.dirty = true;
         if key == Key::Char(' ') && self.editing.is_none() && self.typing.is_none() && self.renaming.is_none() {
@@ -3960,7 +3991,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock), layout.flyout, layout.popover, layout.styles].into_iter().flatten() {
+        for place in [Some(layout.dock), layout.flyout, layout.popover, layout.styles, layout.search].into_iter().flatten() {
             for grow in (1..=6).rev() {
                 canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 12 + grow, 0x000000, 14);
             }
@@ -3972,6 +4003,9 @@ impl Studio {
         }
         if let Some(place) = layout.styles {
             self.draw_styles_frame(canvas, place);
+        }
+        if let Some(place) = layout.search {
+            self.draw_search(canvas, place, hover);
         }
         // The group's divider in the bar of tools.
         let divider = layout.controls.iter().find(|(_, control)| *control == Control::Action(Action::Capture)).map(|(rect, _)| rect.x - 6);
@@ -4168,6 +4202,8 @@ impl Studio {
                     field_text(&mut self.text, canvas, rect, label, icon, &value, DIM_TEXT_COLOR);
                 }
                 Control::Style(style) => self.draw_style_tile(canvas, rect, style, hovered),
+                Control::Found(row) => self.draw_hit(canvas, rect, usize::from(row), hovered),
+                Control::SearchTab(_) => {}
                 Control::ColorOpen(color) => {
                     let open = self.color_open == Some(color);
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
@@ -4618,6 +4654,12 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                 Shown::Studio(Box::new(studio))
             }
             (Shown::Home(_), crate::home::Outcome::Quit) => break,
+            (Shown::Studio(mut studio), _) if outcome == Outcome::Open && studio.open_next.is_some() => {
+                studio.save(false);
+                let path = studio.open_next.take().unwrap_or_default();
+                let pages = std::fs::read(&path).ok().and_then(|bytes| read_pages(&bytes));
+                Shown::Studio(Box::new(opened(pages, Vec::new(), path, studio.into_text(), size, options)))
+            }
             (Shown::Studio(mut studio), _) if outcome == Outcome::Home => {
                 studio.save(false);
                 let place = studio.path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf);
@@ -4657,7 +4699,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     conn.flush()?;
                     studio.captured(&file);
                 }
-                Outcome::Continue | Outcome::Home => {}
+                Outcome::Continue | Outcome::Home | Outcome::Open => {}
             }
             // Kept as it is changed, as Figma keeps its files: once it
             // has been still a moment.
@@ -4833,6 +4875,30 @@ mod tests {
         assert_eq!(studio.color_uses(0x1A1A1A), vec![(2, "text")]);
         studio.paint(Paint::Recolor(0xE5484D), Some(0xFFC53D));
         assert_eq!(studio.selection_colors(), vec![(0xFFC53D, 2), (0x1A1A1A, 1)]);
+    }
+
+    #[test]
+    fn ctrl_k_finds_actions_and_layers_by_what_is_typed() {
+        let mut studio = studio();
+        studio.add_picture(checker(40, 40), "Shadow catcher");
+        studio.selected.clear();
+        studio.key(Key::Char('k'), Mods { ctrl: true, ..Mods::default() }, true);
+        for letter in "catch".chars() {
+            studio.key(Key::Char(letter), Mods::default(), true);
+        }
+        let hits = studio.hits();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].found, search::Found::Layer(0));
+        studio.key(Key::Enter, Mods::default(), true);
+        assert_eq!((studio.search.is_none(), studio.selected.clone()), (true, vec![0]));
+        // An action, done from it: what is picked out deleted.
+        studio.key(Key::Char('k'), Mods { ctrl: true, ..Mods::default() }, true);
+        for letter in "delete".chars() {
+            studio.key(Key::Char(letter), Mods::default(), true);
+        }
+        assert!(matches!(studio.hits()[0].found, search::Found::Act(_)));
+        studio.key(Key::Enter, Mods::default(), true);
+        assert!(studio.doc.layers.is_empty());
     }
 
     #[test]

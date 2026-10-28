@@ -34,7 +34,7 @@ impl Studio {
             Control::MenuRow(level, row) => {
                 let Some(menu) = self.menu else { return false };
                 let kind = if level == 0 { menu.kind } else { menu.sub.map_or(menu.kind, |(_, kind)| kind) };
-                if !matches!(kind, MenuKind::Shadows | MenuKind::Dash | MenuKind::Edge | MenuKind::Hand | MenuKind::Window | MenuKind::Heads(_) | MenuKind::Fonts) {
+                if !matches!(kind, MenuKind::Shadows | MenuKind::Styles | MenuKind::Dash | MenuKind::Edge | MenuKind::Hand | MenuKind::Window | MenuKind::Heads(_) | MenuKind::Fonts) {
                     return false;
                 }
                 matches!(self.menu_items(kind).get(usize::from(row)), Some(menu::Item::Entry { sub: None, .. }))

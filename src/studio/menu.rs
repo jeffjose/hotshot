@@ -34,6 +34,8 @@ pub(super) enum MenuKind {
     Hand,
     Window,
     Shadows,
+    /// The styles of Style Mode.
+    Styles,
 }
 
 /// An open list: where it hangs from, and the one open beside it.
@@ -75,6 +77,7 @@ pub(super) enum MenuAct {
     Hand(bool),
     Window(u8),
     Shadow(usize),
+    Style(u8),
     Act(Action),
     Do(Command),
 }
@@ -215,6 +218,7 @@ impl Studio {
                 let now = self.doc.exports.get(index).map(|size| size.format);
                 [crate::output::Format::Png, crate::output::Format::Jpeg, crate::output::Format::Webp].iter().map(|&format| Item::entry(format.ending().to_ascii_uppercase(), "", MenuAct::Format(index, format)).on(Some(format) == now)).collect()
             }
+            MenuKind::Styles => style::STYLE_NAMES.iter().enumerate().map(|(at, name)| Item::entry(*name, ["Q", "W", "E", "R", "T", "A", "S", "D", "G", "H"][at], MenuAct::Style(at as u8))).collect(),
             MenuKind::Edge => {
                 let now = match &picked {
                     Some(Kind::Shape(shape)) => shape.edge,
@@ -275,6 +279,7 @@ impl Studio {
                         items.push(Item::entry("Flip down", "Shift V", MenuAct::Act(Action::FlipDown)));
                         items.push(Item::entry("Actual size", "", MenuAct::Act(Action::Actual)));
                     } else if matches!(picked, Some(Kind::Shape(_))) {
+                        items.push(Item::sub("Apply style", MenuKind::Styles));
                         items.push(Item::Rule);
                         items.push(Item::entry("Flip across", "Shift H", MenuAct::Act(Action::FlipAcross)));
                         items.push(Item::entry("Flip down", "Shift V", MenuAct::Act(Action::FlipDown)));
@@ -518,6 +523,7 @@ impl Studio {
             }),
             MenuAct::Window(which) => return self.press_control(Control::Window(which), false),
             MenuAct::Shadow(which) => return self.press_control(Control::Shadow(which), false),
+            MenuAct::Style(style) => self.put_style(style),
             MenuAct::Act(action) => return self.act(action),
             MenuAct::Do(command) => return self.run_command(command),
         }

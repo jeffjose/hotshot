@@ -366,12 +366,6 @@ impl Studio {
 }
 
 impl Studio {
-    pub(super) fn open_palette(&mut self) {
-        self.say("Search");
-    }
-}
-
-impl Studio {
     /// Where a control is in the panel, as it is laid out now.
     pub(super) fn control_rect(&mut self, control: Control) -> Option<Rect> {
         self.layout().controls.iter().find(|(_, known)| *known == control).map(|(rect, _)| *rect)
