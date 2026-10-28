@@ -37,6 +37,7 @@ pub const MIN_SIZE: (i32, i32) = place::MIN;
 mod preview;
 mod rulers;
 mod snap;
+mod view;
 mod search;
 mod style;
 mod wheel;
@@ -5543,6 +5544,8 @@ fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: Pa
     if !studio.left_open || !studio.right_open {
         studio.fit();
     }
+    // Shown where it was left, if it has been opened before.
+    studio.recall_view();
     // Pictures after the first a little down and to the right of it.
     for (index, (image, name)) in pictures.into_iter().enumerate() {
         studio.add_picture(image, &name);
@@ -5826,6 +5829,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             (Shown::Home(_), crate::home::Outcome::Quit) => break,
             (Shown::Studio(mut studio), _) if outcome == Outcome::Open && studio.open_next.is_some() => {
                 studio.finish();
+                studio.keep_view();
                 studio.save(false);
                 let path = studio.open_next.take().unwrap_or_default();
                 let pages = std::fs::read(&path).ok().and_then(|bytes| read_pages(&bytes));
@@ -5833,6 +5837,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             }
             (Shown::Studio(mut studio), _) if outcome == Outcome::Home => {
                 studio.finish();
+                studio.keep_view();
                 studio.save(false);
                 let place = studio.path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf);
                 let mut home = crate::home::Home::new(studio.into_text(), size.0, size.1, options.dir.clone());
@@ -5849,6 +5854,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             match outcome {
                 Outcome::Quit => {
                     studio.finish();
+                    studio.keep_view();
                     studio.save(false);
                     break;
                 }
