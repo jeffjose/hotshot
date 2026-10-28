@@ -23,6 +23,7 @@ use crate::text::{icons, Text, FACES};
 mod actions;
 mod arrange;
 mod menu;
+pub use menu::parse_frame_size;
 mod panel;
 mod picker;
 mod place;
@@ -1531,6 +1532,8 @@ pub struct Studio {
     /// to be opened in place of this one.
     search: Option<search::Search>,
     pub open_next: Option<PathBuf>,
+    /// The sizes of frames of the user's own, each with what it measures.
+    frame_sizes: Vec<(String, i32, i32, &'static str)>,
     dirty: bool,
 }
 
@@ -1602,6 +1605,7 @@ impl Studio {
             styling: false,
             search: None,
             open_next: None,
+            frame_sizes: Vec::new(),
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -4498,6 +4502,9 @@ fn opened(pages: Option<Vec<Page>>, pictures: Vec<(Image, String)>, path: PathBu
     });
     let dir = options.places.first().cloned().unwrap_or_else(|| options.dir.clone());
     let mut studio = Studio::with_pages(pages, text, size.0, size.1, dir, options.filename.clone());
+    for (name, w, h) in &options.frame_sizes {
+        studio.add_size(name.clone(), *w, *h);
+    }
     studio.path = Some(path);
     let fresh = !pictures.is_empty();
     for (index, (image, name)) in pictures.into_iter().enumerate() {
@@ -5175,7 +5182,9 @@ mod tests {
         assert!(studio.layout().controls.iter().any(|(_, control)| *control == Control::Menu(MenuKind::Sizes)));
         studio.press_control(Control::Menu(MenuKind::Sizes), false);
         assert!(studio.menu.is_some());
-        studio.press_menu(0, 8);
+        // A section of them opens beside it: docs and slides, 16:9.
+        studio.press_menu(0, 2);
+        studio.press_menu(1, 1);
         assert_eq!((studio.doc.width, studio.doc.height, studio.menu.is_none()), (1920, 1080, true));
         studio.press_control(Control::Ground(Ground::Backdrop), false);
         assert!(matches!(studio.doc.background, Fill::Backdrop(_)));

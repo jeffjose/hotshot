@@ -11,8 +11,9 @@ pub(super) enum MenuKind {
     Fonts,
     /// The heads an end of a line can have.
     Heads(usize),
-    /// The sizes a frame can be.
+    /// The sizes a frame can be; and one section of them.
     Sizes,
+    SizeGroup(u8),
     /// The kinds of file an export size can be written as.
     Format(usize),
     /// What can be done with what is under a right click.
@@ -70,6 +71,10 @@ pub(super) enum MenuAct {
     Head(usize, u8),
     Size(usize),
     ScreenSize,
+    /// One of the sizes of the user's own; and the size of the frame
+    /// kept as one of them.
+    MySize(usize),
+    SaveSize,
     FitContent,
     Format(usize, crate::output::Format),
     Edge(u8),
@@ -118,16 +123,45 @@ pub(super) enum Command {
 }
 
 /// The sizes a frame can be, by what each is for.
-pub(super) const SIZES: [(&str, &str, i32, i32); 8] = [
+pub(super) const SIZES: [(&str, &str, i32, i32); 34] = [
     ("SOCIAL", "X post", 1200, 675),
+    ("SOCIAL", "X header", 1500, 500),
     ("SOCIAL", "LinkedIn post", 1200, 627),
+    ("SOCIAL", "LinkedIn banner", 1584, 396),
     ("SOCIAL", "Instagram post", 1080, 1350),
-    ("SOCIAL", "Story", 1080, 1920),
+    ("SOCIAL", "Instagram square", 1080, 1080),
+    ("SOCIAL", "Story / Reel", 1080, 1920),
+    ("SOCIAL", "Facebook post", 1200, 630),
     ("SOCIAL", "YouTube thumbnail", 1280, 720),
+    ("SOCIAL", "YouTube banner", 2560, 1440),
+    ("SOCIAL", "Pinterest pin", 1000, 1500),
+    ("SOCIAL", "Open Graph image", 1200, 630),
+    ("SOCIAL", "Dribbble shot", 1600, 1200),
+    ("SOCIAL", "Product Hunt gallery", 1270, 760),
+    ("DEVICES", "iPhone 16 Pro", 1206, 2622),
+    ("DEVICES", "iPhone 16 Pro Max", 1320, 2868),
+    ("DEVICES", "iPhone SE", 750, 1334),
+    ("DEVICES", "Pixel 9", 1080, 2424),
+    ("DEVICES", "Pixel 9 Pro XL", 1344, 2992),
+    ("DEVICES", "iPad Pro 13\"", 2064, 2752),
+    ("DEVICES", "iPad mini", 1488, 2266),
+    ("DEVICES", "MacBook Air 13\"", 2560, 1664),
+    ("DEVICES", "MacBook Pro 14\"", 3024, 1964),
+    ("DEVICES", "MacBook Pro 16\"", 3456, 2234),
+    ("DEVICES", "1080p", 1920, 1080),
+    ("DEVICES", "1440p", 2560, 1440),
+    ("DEVICES", "4K", 3840, 2160),
     ("DOCS AND SLIDES", "Slide 16:9", 1920, 1080),
+    ("DOCS AND SLIDES", "Slide 4:3", 1600, 1200),
     ("DOCS AND SLIDES", "README banner", 1280, 640),
+    ("DOCS AND SLIDES", "Blog header", 1600, 900),
     ("DOCS AND SLIDES", "A4", 1240, 1754),
+    ("DOCS AND SLIDES", "US Letter", 1275, 1650),
+    ("DOCS AND SLIDES", "Docs screenshot", 1440, 900),
 ];
+
+/// The sections of the sizes, each a list of its own beside the first.
+pub(super) const SIZE_GROUPS: [(&str, &str); 3] = [("SOCIAL", "Social"), ("DEVICES", "Devices"), ("DOCS AND SLIDES", "Docs and slides")];
 
 const ROW: i32 = 26;
 
@@ -196,22 +230,35 @@ impl Studio {
             }
             MenuKind::Sizes => {
                 let mut items = Vec::new();
-                let mut section = "";
-                for (index, (heading, name, w, h)) in SIZES.iter().enumerate() {
-                    if *heading != section {
-                        if !section.is_empty() {
-                            items.push(Item::Rule);
-                        }
-                        items.push(Item::Heading(heading));
-                        section = heading;
+                if !self.frame_sizes.is_empty() {
+                    items.push(Item::Heading("YOURS"));
+                    for (index, (name, w, h, label)) in self.frame_sizes.iter().enumerate() {
+                        let on = (self.doc.width, self.doc.height) == (*w, *h);
+                        items.push(Item::entry(name.clone(), label, MenuAct::MySize(index)).on(on));
                     }
-                    let on = (self.doc.width, self.doc.height) == (*w, *h);
-                    items.push(Item::Entry { says: name.to_string(), keys: "", act: MenuAct::Size(index), on, sub: None, look: Look::Plain });
+                    items.push(Item::Rule);
+                }
+                for (group, (heading, says)) in SIZE_GROUPS.iter().enumerate() {
+                    let on = SIZES.iter().any(|(known, _, w, h)| known == heading && (self.doc.width, self.doc.height) == (*w, *h));
+                    items.push(Item::sub(says, MenuKind::SizeGroup(group as u8)).on(on));
                 }
                 items.push(Item::Rule);
                 items.push(Item::Heading("FROM THE SCREEN"));
                 items.push(Item::entry(format!("This display · {} × {}", self.screen.0, self.screen.1), "", MenuAct::ScreenSize));
                 items.push(Item::entry("Fit what is in it", "", MenuAct::FitContent));
+                items.push(Item::Rule);
+                items.push(Item::entry(format!("Save {} × {} as a size", self.doc.width, self.doc.height), "", MenuAct::SaveSize).look(Look::Icon(icons::PLUS)));
+                items
+            }
+            MenuKind::SizeGroup(group) => {
+                let (heading, _) = SIZE_GROUPS[usize::from(group).min(SIZE_GROUPS.len() - 1)];
+                let mut items = vec![Item::Heading(heading)];
+                for (index, (known, name, w, h)) in SIZES.iter().enumerate() {
+                    if known == &heading {
+                        let on = (self.doc.width, self.doc.height) == (*w, *h);
+                        items.push(Item::entry(*name, size_label(index), MenuAct::Size(index)).on(on));
+                    }
+                }
                 items
             }
             MenuKind::Format(index) => {
@@ -497,6 +544,23 @@ impl Studio {
                 }
             }),
             MenuAct::Size(index) => self.resize_frame(SIZES[index].2, SIZES[index].3),
+            MenuAct::MySize(index) => {
+                if let Some(&(_, w, h, _)) = self.frame_sizes.get(index) {
+                    self.resize_frame(w, h);
+                }
+            }
+            MenuAct::SaveSize => {
+                let (w, h) = (self.doc.width, self.doc.height);
+                // Called what the frame is, unless that is only its number.
+                let name = if self.doc.name.starts_with("Frame ") { format!("{w} \u{d7} {h}") } else { self.doc.name.clone() };
+                match crate::options::add_frame_size(&name, w, h) {
+                    Ok(()) => {
+                        self.add_size(name.clone(), w, h);
+                        self.say(format!("Saved {name} as a size"));
+                    }
+                    Err(error) => self.say(format!("Could not save the size: {error}")),
+                }
+            }
             MenuAct::ScreenSize => self.resize_frame(self.screen.0, self.screen.1),
             MenuAct::FitContent => self.fit_frame_to_content(),
             MenuAct::Format(index, format) => {
@@ -655,5 +719,48 @@ pub(super) fn dash_of(shape: &Shape) -> u8 {
         1
     } else {
         0
+    }
+}
+
+/// What each of `SIZES` measures, said as its keys are.
+pub(super) fn size_label(index: usize) -> &'static str {
+    static LABELS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    LABELS.get_or_init(|| SIZES.iter().map(|(_, _, w, h)| format!("{w} \u{d7} {h}")).collect())[index].as_str()
+}
+
+/// A size of the user's own from a line of the config file, as
+/// `Pixel 11 = 1080x2424`: what it is called, and how wide and high.
+pub fn parse_frame_size(text: &str) -> Option<(String, i32, i32)> {
+    let (name, size) = text.rsplit_once('=')?;
+    let (w, h) = size.trim().split_once(['x', 'X', '\u{d7}'])?;
+    let (w, h) = (w.trim().parse::<i32>().ok()?, h.trim().parse::<i32>().ok()?);
+    let name = name.trim();
+    (!name.is_empty() && (16..=16000).contains(&w) && (16..=16000).contains(&h)).then(|| (name.to_owned(), w, h))
+}
+
+impl Studio {
+    /// A size of the user's own, to be in the list of sizes, unless it is
+    /// there already.
+    pub fn add_size(&mut self, name: String, width: i32, height: i32) {
+        if self.frame_sizes.iter().any(|(known, w, h, _)| *known == name && (*w, *h) == (width, height)) {
+            return;
+        }
+        // What it measures, said once and kept for as long as the window.
+        let label: &'static str = Box::leak(format!("{width} \u{d7} {height}").into_boxed_str());
+        self.frame_sizes.push((name, width, height, label));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_size_of_ones_own_is_read_from_its_line_and_the_sizes_are_each_in_a_section() {
+        assert_eq!(parse_frame_size("Pixel 11 = 1080x2424"), Some(("Pixel 11".into(), 1080, 2424)));
+        assert_eq!(parse_frame_size("A = b = 300 x 200"), Some(("A = b".into(), 300, 200)));
+        assert_eq!((parse_frame_size("1080x2424"), parse_frame_size("Tiny = 2x2")), (None, None));
+        assert!(SIZES.iter().all(|(heading, ..)| SIZE_GROUPS.iter().any(|(known, _)| known == heading)));
+        assert_eq!(size_label(0), "1200 \u{d7} 675");
     }
 }

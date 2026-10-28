@@ -139,6 +139,23 @@ they do; hold Ctrl not to snap. Boxes, ovals and text keep their handles
 when rotated, and text grows by its corners; arrows and lines have a
 handle at each end, and stick to pictures as well as shapes.
 
+Hover a button, a swatch, a shadow or a style and the canvas shows what
+it would do; only a click keeps it. While moving, a layer also snaps to
+even gaps between its neighbors, marked in magenta; while resizing, to
+widths and heights other layers have. `Shift+1` fits the frame, then the
+selection; `Shift+2` the selection. With several selected the panel
+arranges them as a row or a column (equal gaps, packed), matches width,
+height, size, corners, shadow or the whole look to the first one picked,
+puts them to the frame, turns them, and lists their colors once each:
+hover one to see who uses it. `S` with a shape selected opens Style
+Mode, ten styles from its own color picked with Q W E R T / A S D G H.
+`Ctrl+K` searches actions, layers, pages, frames and files. Lines of
+text starting `# `, `## ` or `### ` are headings. A frame's size comes
+from a list of social, device and document sizes; "Save W×H as a size"
+adds yours to the config file as `frame-size = "Pixel 11 = 1080x2424"`,
+shown under Yours. `Ctrl+V` on the projects starts a file from a copied
+picture.
+
 ![The canvas: a screenshot on a backdrop, rounded and shadowed, with an arrow over it and its properties on the right](docs/canvas.png)
 
 `Ctrl+E` exports the frame you are in as a PNG to the screenshots folder at 1x, 2x or 3x, `Ctrl+C`

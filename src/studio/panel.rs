@@ -514,7 +514,8 @@ impl Studio {
                 _ => (menu::Look::Head(shapes::HEADS.len() as u8), "None".to_owned(), String::new()),
             },
             MenuKind::Sizes => {
-                let name = menu::SIZES.iter().find(|(_, _, w, h)| (*w, *h) == (self.doc.width, self.doc.height)).map_or("Custom".to_owned(), |(_, name, ..)| name.to_string());
+                let size = (self.doc.width, self.doc.height);
+                let name = self.frame_sizes.iter().find(|(_, w, h, _)| (*w, *h) == size).map(|(name, ..)| name.clone()).or_else(|| menu::SIZES.iter().find(|(_, _, w, h)| (*w, *h) == size).map(|(_, name, ..)| name.to_string())).unwrap_or_else(|| "Custom".to_owned());
                 (menu::Look::Plain, name, format!("{} \u{d7} {}", self.doc.width, self.doc.height))
             }
             MenuKind::Edge => (menu::Look::Plain, menu::EDGES[usize::from(shape.map_or(0, |shape| shape.edge)).min(2)].to_owned(), String::new()),

@@ -290,6 +290,9 @@ pub struct Options {
     pub places: Vec<PathBuf>,
     /// Which of them Save saves to, as it was last left.
     pub save_to: Option<PathBuf>,
+    /// Sizes of frames of the user's own, each what it is called and how
+    /// wide and high: as many as the config file names.
+    pub frame_sizes: Vec<(String, i32, i32)>,
     /// How round the corners are of a picture taken at once: what the
     /// config file and the command line say, and not what was last in
     /// hand in the editor.
@@ -372,6 +375,7 @@ fn defaults() -> Options {
         output: None,
         dir: home().join("Pictures/Screenshots"),
         places: Vec::new(),
+        frame_sizes: Vec::new(),
         save_to: None,
         plain_corners: 0.0,
         filename: "screenshot-%Y-%m-%d-%H%M%S".into(),
@@ -437,7 +441,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -526,6 +530,12 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         }
         // Another folder Save can save to: as many as are named.
         "place" => options.places.push(path(&value()?)),
+        // A size of frame of their own, as many as are named: "Name = WxH".
+        "frame-size" => {
+            let text = value()?;
+            let size = crate::studio::parse_frame_size(&text).ok_or(format!("invalid frame size '{text}', expected something like \"Pixel 11 = 1080x2424\""))?;
+            options.frame_sizes.push(size);
+        }
         // The one of them it saves to, by its path: looked for once
         // they have all been named.
         "save-to" => options.save_to = Some(path(&value()?)),
@@ -914,6 +924,14 @@ fn parse_accent(text: &str) -> Result<u32, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn frame_sizes_of_ones_own_are_read_as_many_as_there_are() {
+        let mut options = defaults();
+        read_config(&mut options, "frame-size = \"Pixel 11 = 1080x2424\"\nframe-size = \"Wide = 3000x1000\"\n").unwrap();
+        assert_eq!(options.frame_sizes, vec![("Pixel 11".to_owned(), 1080, 2424), ("Wide".to_owned(), 3000, 1000)]);
+        assert!(read_config(&mut options, "frame-size = \"no size\"").is_err());
+    }
+
     fn run(args: &[&str]) -> Result<Options, String> {
         match parse(args.iter().map(OsString::from))? {
             Parsed::Run(options) => Ok(*options),
@@ -1056,4 +1074,17 @@ mod tests {
         assert!(read_config(&mut options, "size = 9").unwrap_err().starts_with("line 1"));
         assert!(read_config(&mut options, "nothing").is_err());
     }
+}
+
+/// A size of frame kept in the config file, as a line of its own at its
+/// end, for every canvas from now on.
+pub fn add_frame_size(name: &str, width: i32, height: i32) -> std::io::Result<()> {
+    use std::io::Write;
+    let file = config_file();
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let ends_in_line = std::fs::read(&file).map_or(true, |bytes| bytes.is_empty() || bytes.ends_with(b"\n"));
+    let mut out = std::fs::OpenOptions::new().create(true).append(true).open(&file)?;
+    write!(out, "{}frame-size = \"{} = {width}x{height}\"\n", if ends_in_line { "" } else { "\n" }, name.replace('"', "'"))
 }

@@ -152,3 +152,8 @@
 # fps = 60
 # record-pointer = true
 # keys = false
+
+# Sizes of frames of your own for the canvas, as many lines as you like,
+# each "Name = WIDTHxHEIGHT"; they are listed under Yours in the frame's
+# sizes, and "Save W × H as a size" there adds a line here.
+# frame-size = "Pixel 11 = 1080x2424"
