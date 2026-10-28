@@ -184,6 +184,11 @@ pub struct Shape {
     /// its words, none for a light board's.
     pub rounded: bool,
     pub paper: u32,
+    /// How many times its size it is being drawn at, for what is drawn by
+    /// hand: its wobble is worked out at its own size and made larger with
+    /// it, so that zoomed in it is the same drawing, not a coarser one.
+    /// Never kept in a file.
+    pub scale: f32,
     mask: RefCell<Option<Rc<Mask>>>,
     /// The same of what is inside the border of a rectangle or an oval
     /// that has both, which is drawn in its fill.
@@ -411,7 +416,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -1685,16 +1690,22 @@ impl Shape {
             seed ^= seed << 5;
             (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * amount
         };
-        let reach = (self.stroke * 1.2 + 3.0).min(10.0);
+        // Worked out at its own size and made larger as it is drawn larger,
+        // so that zoomed in it is the same drawing, and its runs of points
+        // as many as keep each straight piece a few pixels long on screen.
+        let scale = self.scale.max(1e-3);
+        let reach = ((self.stroke / scale) * 1.2 + 3.0).min(10.0) * scale;
+        let pieces = |length: f32| ((length / 4.0).ceil() as usize).clamp(12, 4096);
         // A stroke from one point to another, bowed out a little at its
         // middle, as a list of points close enough to be drawn straight.
         let stroke = |from: Point, to: Point, wobble: &mut dyn FnMut(f32) -> f32| -> Vec<Point> {
             let length = (to.0 - from.0).hypot(to.1 - from.1).max(1.0);
             let (nx, ny) = (-(to.1 - from.1) / length, (to.0 - from.0) / length);
             let bow = wobble((length * 0.015).min(reach * 0.6));
-            (0..=12)
+            let count = pieces(length);
+            (0..=count)
                 .map(|step| {
-                    let t = step as f32 / 12.0;
+                    let t = step as f32 / count as f32;
                     let lift = bow * 4.0 * t * (1.0 - t);
                     (from.0 + (to.0 - from.0) * t + nx * lift, from.1 + (to.1 - from.1) * t + ny * lift)
                 })
@@ -1710,24 +1721,42 @@ impl Shape {
                 // Rounded: one loose loop round its rounded corners, gone
                 // over twice a little apart, its ends overlapping.
                 Tool::Rect if self.rounded => {
-                    let r = (width.min(height) * 0.22).min(16.0).max(2.0);
+                    let r = (width.min(height) * 0.22).min(16.0 * scale).max(2.0 * scale);
                     let mut loop_points: Vec<Point> = Vec::new();
                     let corners = [(left + width - r, top + r, -std::f32::consts::FRAC_PI_2), (left + width - r, top + height - r, 0.0), (left + r, top + height - r, std::f32::consts::FRAC_PI_2), (left + r, top + r, std::f32::consts::PI)];
-                    for (cx, cy, from) in corners {
-                        for step in 0..=6 {
-                            let angle = from + std::f32::consts::FRAC_PI_2 * step as f32 / 6.0;
+                    let turn = pieces(r * std::f32::consts::FRAC_PI_2).min(256).max(6);
+                    for (at, (cx, cy, from)) in corners.into_iter().enumerate() {
+                        for step in 0..=turn {
+                            let angle = from + std::f32::consts::FRAC_PI_2 * step as f32 / turn as f32;
                             loop_points.push((cx + r * angle.cos(), cy + r * angle.sin()));
+                        }
+                        // The straight side to the next corner, in pieces
+                        // too, so that the swells along it stay smooth.
+                        let next = corners[(at + 1) % 4];
+                        let end = loop_points[loop_points.len() - 1];
+                        let start = (next.0 + r * next.2.cos(), next.1 + r * next.2.sin());
+                        let count = pieces((start.0 - end.0).hypot(start.1 - end.1));
+                        for step in 1..count {
+                            let t = step as f32 / count as f32;
+                            loop_points.push((end.0 + (start.0 - end.0) * t, end.1 + (start.1 - end.1) * t));
                         }
                     }
                     loop_points.push(loop_points[0]);
                     // Low, slow swells along it, and its start a little on.
                     let (phase, swell) = (wobble(6.0), reach * 0.45 + wobble(reach * 0.15).abs());
+                    // Where along the loop each point is, by distance, so
+                    // that the swells are the same however many points.
                     let count = loop_points.len();
+                    let mut along = vec![0.0f32; count];
+                    for at in 1..count {
+                        along[at] = along[at - 1] + (loop_points[at].0 - loop_points[at - 1].0).hypot(loop_points[at].1 - loop_points[at - 1].1);
+                    }
+                    let total = along[count - 1].max(1e-3);
                     let points: Vec<Point> = loop_points
                         .iter()
                         .enumerate()
                         .map(|(at, &(x, y))| {
-                            let t = at as f32 / count as f32 * std::f32::consts::TAU;
+                            let t = along[at] / total * std::f32::consts::TAU;
                             let push = swell * (t * 2.0 + phase).sin() * 0.5 + off * (t + phase).cos();
                             let (dx, dy) = (x - (left + width / 2.0), y - (top + height / 2.0));
                             let long = dx.hypot(dy).max(1.0);
@@ -1755,9 +1784,10 @@ impl Shape {
                     let (cx, cy, rx, ry) = (left + width / 2.0, top + height / 2.0, width / 2.0, height / 2.0);
                     let (begin, sweep) = (wobble(std::f32::consts::PI), std::f32::consts::TAU * (1.06 + wobble(0.04)));
                     let (phase, swell) = (wobble(3.0), 0.025 + wobble(0.012).abs());
-                    let points = (0..=64)
+                    let count = pieces(std::f32::consts::TAU * rx.max(ry)).max(64);
+                    let points = (0..=count)
                         .map(|step| {
-                            let angle = begin + sweep * step as f32 / 64.0;
+                            let angle = begin + sweep * step as f32 / count as f32;
                             let grow = 1.0 + swell * (angle * 2.0 + phase).sin() + off / rx.max(ry).max(1.0);
                             (cx + rx * grow * angle.cos(), cy + ry * grow * angle.sin())
                         })
@@ -1792,7 +1822,7 @@ impl Shape {
                     }
                     // Dashed, its path cut into dashes, each a stroke.
                     if self.dashed || self.dotted {
-                        let (dash, gap) = if self.dotted { (1.0, self.stroke * 2.5 + 3.0) } else { (self.stroke * 2.5 + 8.0, self.stroke * 2.0 + 6.0) };
+                        let (dash, gap) = if self.dotted { (scale, self.stroke * 2.5 + 3.0 * scale) } else { (self.stroke * 2.5 + 8.0 * scale, self.stroke * 2.0 + 6.0 * scale) };
                         let mut run: Vec<Point> = Vec::new();
                         let mut gone = 0.0f32;
                         for pair in path.windows(2) {
@@ -2696,6 +2726,38 @@ fn ellipse(x: f32, y: f32, rx: f32, ry: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hand_drawn_box_zoomed_in_is_the_same_drawing_larger_and_as_smooth() {
+        for rounded in [false, true] {
+            let mut shape = Shape::new(Tool::Rect, 0x1E1E1E, 2.0, (10.0, 10.0));
+            (shape.points[1], shape.sketch, shape.rounded) = ((130.0, 70.0), true, rounded);
+            let mut big = shape.clone();
+            let times = 16.0;
+            for point in &mut big.points {
+                *point = (point.0 * times, point.1 * times);
+            }
+            (big.stroke, big.scale) = (shape.stroke * times, times);
+            let reach = |strokes: Vec<(Vec<Point>, f32)>| {
+                let all: Vec<Point> = strokes.into_iter().flat_map(|(points, _)| points).collect();
+                let edges = |pick: fn(&Point) -> f32| (all.iter().map(pick).fold(f32::MAX, f32::min), all.iter().map(pick).fold(f32::MIN, f32::max));
+                (edges(|p| p.0), edges(|p| p.1))
+            };
+            // The same drawing, sixteen times as large.
+            let ((x0, x1), (y0, y1)) = reach(shape.sketch_strokes());
+            let ((bx0, bx1), (by0, by1)) = reach(big.sketch_strokes());
+            for (small, large) in [(x0, bx0), (x1, bx1), (y0, by0), (y1, by1)] {
+                assert!((small * times - large).abs() < 2.0 * times, "{rounded}: {small} × {times} against {large}");
+            }
+            // In pieces short enough on screen that no corner shows as facets.
+            for (points, _) in big.sketch_strokes() {
+                for pair in points.windows(2) {
+                    let long = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+                    assert!(long <= 12.0, "{rounded}: a piece {long} long");
+                }
+            }
+        }
+    }
 
     /// The pixels a shape covers on a dark canvas so large: where each is
     /// lit, and with what.

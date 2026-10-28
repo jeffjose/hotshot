@@ -649,6 +649,7 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
         *point = (point.0 * times, point.1 * times);
     }
     (shape.stroke, shape.radius) = (shape.stroke * times, shape.radius * times);
+    shape.scale *= times;
     shape.corners = shape.corners.map(|corners| corners.map(|radius| radius * times));
     shape.font_px = ((shape.font_px as f32 * times).round() as u32).max(1);
     if let Some(drop) = &mut shape.shadow {
