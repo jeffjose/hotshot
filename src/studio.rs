@@ -1994,6 +1994,9 @@ pub struct Studio {
     tool: Tool,
     selected: Vec<usize>,
     hovered: Option<usize>,
+    /// One of the page's own layers under the pointer, while a frame is
+    /// worked in.
+    hovered_page: Option<usize>,
     /// The control the pointer was last over, as drawn.
     hover_shown: Option<Control>,
     drag: Drag,
@@ -2141,6 +2144,7 @@ impl Studio {
             tool: Tool::Select,
             selected: Vec::new(),
             hovered: None,
+            hovered_page: None,
             hover_shown: None,
             drag: Drag::None,
             pointer: (0, 0),
@@ -3087,15 +3091,22 @@ impl Studio {
                     let control = self.control_at((x, y));
                     self.hover_menu(control);
                 }
-                let hovered = match (self.tool, self.over_page((x, y)) && !self.framing) {
-                    (Tool::Select, true) => self.layer_at(at),
-                    _ => None,
+                let selecting = self.tool == Tool::Select && self.over_page((x, y)) && !self.framing && over.is_none();
+                // One of the page's own layers, over the frames, before one
+                // of the frame worked in.
+                let hovered_page = match selecting && !self.on_page() {
+                    true => self.page_layer_at(self.to_page((x, y))),
+                    false => None,
+                };
+                let hovered = match selecting && hovered_page.is_none() {
+                    true => self.layer_at(at),
+                    false => None,
                 };
                 // Drawn again only for what shows where the pointer is: the
                 // layer or the control it is over, or the text tool's caret
                 // that follows it; a move over nothing new draws nothing.
-                self.dirty |= hovered != self.hovered || over != self.hover_shown || self.tool == Tool::Text;
-                (self.hovered, self.hover_shown) = (hovered, over);
+                self.dirty |= hovered != self.hovered || hovered_page != self.hovered_page || over != self.hover_shown || self.tool == Tool::Text;
+                (self.hovered, self.hovered_page, self.hover_shown) = (hovered, hovered_page, over);
             }
             Drag::NewFrame { .. } => self.dirty = true,
             Drag::MoveFrame { from, origin, moved, copy } => {
@@ -5369,6 +5380,13 @@ impl Studio {
         if let Some(index) = self.hovered.filter(|index| !self.selected.contains(index) && *index < self.doc.layers.len()) {
             self.outline(&mut canvas, index, 2);
         }
+        // One of the page's own layers, while a frame is worked in, ringed
+        // by its box.
+        if let Some(layer) = self.hovered_page.filter(|_| !self.on_page()).and_then(|index| self.loose().layers.get(index).cloned()) {
+            let (x, y, w, h) = layer.bounds(&mut self.text);
+            let (a, b) = (self.to_window_page((x, y)), self.to_window_page((x + w, y + h)));
+            canvas.round_outline(a.0, a.1, b.0 - a.0, b.1 - a.1, 0, 2, ACCENT);
+        }
         // A color of the selection hovered in the panel: the layers in it
         // ringed, and the rest of the frame dimmed.
         let lit: Vec<usize> = match layout.controls.iter().find(|(rect, _)| rect.contains(self.pointer.0, self.pointer.1)).map(|(_, control)| *control) {
@@ -7444,6 +7462,8 @@ mod tests {
         click(&mut studio, at);
         assert!(!studio.on_page() && studio.selected.is_empty());
         let at = studio.to_window_page((1000.0, 180.0));
+        studio.pointer_moved(at.0, at.1, Mods::default());
+        assert_eq!((studio.hovered_page, studio.hovered), (Some(0), None), "ringed as the pointer comes over it");
         click(&mut studio, at);
         assert!(studio.on_page() && studio.selected == vec![0]);
         let before = corner_of(&studio.doc.layers[0]);
