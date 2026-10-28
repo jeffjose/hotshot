@@ -2766,7 +2766,7 @@ impl Studio {
                 } * if mods.shift { 10.0 } else { 1.0 };
                 self.set_field(field, start + (x - from) as f32 * step);
             }
-            Drag::Crop { pull, from } => self.crop_to(pull, from, at),
+            Drag::Crop { pull, from } => self.crop_to(pull, from, at, mods),
             Drag::Radius { corner, single, slack } => self.drag_radius(corner, single, slack, at),
         }
     }
@@ -3740,7 +3740,7 @@ impl Studio {
 
     /// The crop of the picture being cropped pulled by a handle, or moved
     /// whole: in the picture's own pixels, kept within it.
-    fn crop_to(&mut self, pull: (i32, i32), from: (f32, f32), at: (f32, f32)) {
+    fn crop_to(&mut self, pull: (i32, i32), from: (f32, f32), at: (f32, f32), mods: Mods) {
         let Some(index) = self.cropping else { return };
         let Some(Layer { kind: Kind::Picture(was), .. }) = self.held.first().cloned() else { return };
         let (fx, fy) = was.local(from);
@@ -3767,6 +3767,40 @@ impl Studio {
                     _ => {}
                 }
             }
+        }
+        // Kept to a shape: the one chosen over the picture, or with Shift
+        // the one it had, as Figma keeps it. The side or corner across
+        // stays where it was, and a side pulled keeps its middle.
+        let ratio = match panel::CROP_ASPECTS[self.crop_aspect].1 {
+            chosen if chosen > 0.0 => Some(chosen),
+            chosen if chosen < 0.0 => Some(iw / ih),
+            _ if mods.shift => Some(was.crop.2 / was.crop.3.max(1e-3)),
+            _ => None,
+        };
+        if let (Some(ratio), false) = (ratio, pull == (0, 0)) {
+            let (mut w, mut h) = (right - left, bottom - top);
+            match pull {
+                (_, 0) => h = w / ratio,
+                (0, _) => w = h * ratio,
+                _ if w / was.crop.2.max(1e-3) > h / was.crop.3.max(1e-3) => h = w / ratio,
+                _ => w = h * ratio,
+            }
+            let (mx, my) = (was.crop.0 + was.crop.2 / 2.0, was.crop.1 + was.crop.3 / 2.0);
+            let room = |pulled: i32, low: f32, high: f32, middle: f32, whole: f32| match pulled {
+                -1 => high,
+                1 => whole - low,
+                _ => 2.0 * middle.min(whole - middle),
+            };
+            let (room_w, room_h) = (room(pull.0, left, right, mx, iw), room(pull.1, top, bottom, my, ih));
+            let shrink = (room_w / w.max(1e-3)).min(room_h / h.max(1e-3)).min(1.0);
+            (w, h) = ((w * shrink).max(8.0), (h * shrink).max(8.0));
+            let place = |pulled: i32, low: f32, high: f32, middle: f32, size: f32| match pulled {
+                -1 => (high - size, high),
+                1 => (low, low + size),
+                _ => (middle - size / 2.0, middle + size / 2.0),
+            };
+            (left, right) = place(pull.0, left, right, mx, w);
+            (top, bottom) = place(pull.1, top, bottom, my, h);
         }
         let mut picture = was.clone();
         picture.crop = (left, top, right - left, bottom - top);
@@ -6873,6 +6907,41 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn a_crop_keeps_its_shape_with_shift_or_the_shape_chosen() {
+        let mut studio = studio();
+        studio.doc.layers.push(Layer::picture(Picture::new(Arc::new(checker(400, 200)), "pic".into(), (300.0, 200.0))));
+        studio.cropping = Some(0);
+        let crop = |studio: &Studio| match &studio.doc.layers[0].kind {
+            Kind::Picture(picture) => picture.crop,
+            Kind::Shape(_) => panic!(),
+        };
+        let start = |studio: &mut Studio| {
+            if let Kind::Picture(picture) = &mut studio.doc.layers[0].kind {
+                picture.crop = (0.0, 0.0, 400.0, 200.0);
+                (picture.w, picture.h) = (400.0, 200.0);
+            }
+            studio.held = vec![studio.doc.layers[0].clone()];
+        };
+        // The bottom right corner pulled in, mostly across: free, it goes
+        // out of shape; with Shift it keeps two to one.
+        start(&mut studio);
+        studio.crop_to((1, 1), (500.0, 300.0), (400.0, 290.0), Mods::default());
+        let (_, _, w, h) = crop(&studio);
+        assert!((w / h - 2.0).abs() > 0.2, "{w}x{h}");
+        start(&mut studio);
+        studio.crop_to((1, 1), (500.0, 300.0), (400.0, 290.0), Mods { shift: true, ..Mods::default() });
+        let (x, y, w, h) = crop(&studio);
+        assert!((w / h - 2.0).abs() < 0.01 && (x, y) == (0.0, 0.0), "{x},{y} {w}x{h}");
+        // A shape chosen, 1:1, holds without Shift; a side pulled keeps
+        // its middle, and it never leaves the picture.
+        studio.crop_aspect = panel::CROP_ASPECTS.iter().position(|(name, _)| *name == "1:1").unwrap();
+        start(&mut studio);
+        studio.crop_to((1, 0), (500.0, 200.0), (300.0, 200.0), Mods::default());
+        let (x, y, w, h) = crop(&studio);
+        assert!((w - h).abs() < 0.01 && y >= 0.0 && y + h <= 200.01 && x == 0.0, "{x},{y} {w}x{h}");
+    }
     #[test]
     fn shift_pressed_partway_through_a_resize_keeps_the_shape_until_let_go() {
         let mut studio = studio();
