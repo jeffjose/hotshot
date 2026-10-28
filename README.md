@@ -92,9 +92,14 @@ away or it is moved on its own. With
 a tool in hand and nothing selected, the same bar sits above the main
 one, for how the next shape is drawn. The keys work too: `Ctrl+D`
 duplicates, and `Ctrl+]` and `Ctrl+[` move a shape above or below
-another. Drag the dot in the middle of an arrow or line to bend it, and
-just outside a corner of a shape to rotate it. Shapes snap to each other,
-and the selection snaps to window edges. As in Figma, hold Shift to keep
+another. A duplicate goes beside the shape, to its right or, with no
+room there in the picture, below it; move it and duplicate again, and
+the next goes as far from it again, as on the canvas. Drag the dot in
+the middle of an arrow or line to bend it, and just outside a corner of
+a shape to rotate it. A shape being moved snaps to the edges and middles
+of the others and of the picture, with a guide where it does, and to
+even gaps between shapes, marked in magenta; hold Ctrl not to snap. The
+selection snaps to window edges. As in Figma, hold Shift to keep
 proportions (or rotate in 15° steps) and Alt to draw or resize from the
 center.
 

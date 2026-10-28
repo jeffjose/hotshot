@@ -8,6 +8,7 @@ use std::ops::DerefMut;
 
 use crate::canvas::{self, Canvas, Rect};
 use crate::shapes::{self, Shape, Tool};
+use crate::spacing;
 use crate::frame::{self, Backdrop, Frame, Photo, Shadow, BACKDROPS, FIRST, PADS};
 use crate::text::{icons, Text, FACES};
 
@@ -797,6 +798,12 @@ pub struct Editor {
     /// lines they have gone to, across and down, to be shown.
     moving: Vec<(usize, Shape)>,
     guides: Vec<(bool, i32)>,
+    /// The gaps they are spaced evenly by, as Figma marks them.
+    gaps: Vec<spacing::Gap>,
+    /// The last copies made, and what they were made from, each by what
+    /// it is called: for the next copy of them to go as far from them
+    /// again, until anything but moving them is done.
+    repeat: Option<(Vec<u32>, Vec<u32>)>,
     /// Where the selection being put in place lines up with something
     /// elsewhere on the screen: whether the line runs down it, where it
     /// is, and from where to where along it, to be shown as Figma shows
@@ -1073,6 +1080,8 @@ impl Editor {
             square,
             moving: Vec::new(),
             guides: Vec::new(),
+            gaps: Vec::new(),
+            repeat: None,
             lines: Vec::new(),
             query: String::new(),
             scroll: 0,
@@ -2215,12 +2224,12 @@ impl Editor {
                 // away from it again leaves nothing behind.
                 let (index, by) = (*index, (at.0 - last.0, at.1 - last.1));
                 if !std::mem::replace(moved, true) {
-                    self.checkpoint();
                     // All that are picked out go with the one held.
                     let mut going = self.chosen();
                     if !going.contains(&index) {
                         going = vec![index];
                     }
+                    self.checkpoint_move(&going);
                     self.moving = going.into_iter().map(|index| (index, self.shapes[index].clone())).collect();
                     // A line moved without what it is stuck to lets go of it.
                     let ids: Vec<u32> = self.moving.iter().map(|(_, shape)| shape.id).collect();
@@ -2235,30 +2244,36 @@ impl Editor {
                 // Shift keeps it to across or down, whichever it has gone
                 // further, as Figma does.
                 let by = if mods.shift { if by.0.abs() >= by.1.abs() { (by.0, 0) } else { (0, by.1) } } else { by };
-                let (mut by, mut guides) = (by, Vec::new());
+                let (mut by, mut guides, mut gaps) = (by, Vec::new(), Vec::new());
                 if !mods.ctrl {
                     // The box round what is moving, where it would be;
                     // and the edges and middles of everything else, and
-                    // of the selection, for its own to go to.
+                    // of the selection, for its own to go to; or where it
+                    // is spaced evenly with the rest, as on the canvas.
                     let mut around: Option<Rect> = None;
                     for (_, shape) in &self.moving {
                         let place = shape.bounds(&mut self.text).moved(by.0, by.1);
                         around = Some(around.map_or(place, |all| Rect::spanning((all.x.min(place.x), all.y.min(place.y)), (all.right().max(place.right()), all.bottom().max(place.bottom())))));
                     }
                     let held: Vec<usize> = self.moving.iter().map(|(index, _)| *index).collect();
-                    let mut others: Vec<Rect> = (0..self.shapes.len()).filter(|index| !held.contains(index)).map(|index| self.shapes[index].bounds(&mut self.text)).collect();
-                    others.extend(self.selection);
+                    let edges = |rect: Rect| [rect.x as f32, rect.y as f32, rect.right() as f32, rect.bottom() as f32];
+                    let others: Vec<spacing::Edges> = (0..self.shapes.len()).filter(|index| !held.contains(index)).map(|index| edges(self.shapes[index].bounds(&mut self.text))).collect();
+                    let (mut across, mut down) = spacing::lines_of(&others);
+                    let (picture_across, picture_down) = spacing::lines_of(&self.selection.map(edges).into_iter().collect::<Vec<_>>());
+                    across.extend(picture_across);
+                    down.extend(picture_down);
                     if let Some(around) = around {
-                        let lines = |from: i32, size: i32| [from, from + size / 2, from + size];
-                        let nearest = |mine: [i32; 3], theirs: Vec<i32>| mine.iter().flat_map(|&at| theirs.iter().map(move |&line| (line - at, line))).filter(|(off, _)| off.abs() <= 6).min_by_key(|(off, _)| off.abs());
-                        if let Some((off, line)) = nearest(lines(around.x, around.w), others.iter().flat_map(|rect| lines(rect.x, rect.w)).collect()) {
-                            by.0 += off;
-                            guides.push((true, line));
+                        let snapped = spacing::snap_box(edges(around), &across, &down, &others, 6.0);
+                        // Kept to one way by Shift, it is not taken the other.
+                        let (free_x, free_y) = (!mods.shift || by.1 == 0, !mods.shift || by.0 == 0);
+                        if free_x {
+                            by.0 += snapped.by.0.round() as i32;
                         }
-                        if let Some((off, line)) = nearest(lines(around.y, around.h), others.iter().flat_map(|rect| lines(rect.y, rect.h)).collect()) {
-                            by.1 += off;
-                            guides.push((false, line));
+                        if free_y {
+                            by.1 += snapped.by.1.round() as i32;
                         }
+                        guides = snapped.guides.into_iter().filter(|&(upright, _)| if upright { free_x } else { free_y }).map(|(upright, line)| (upright, line.round() as i32)).collect();
+                        gaps = snapped.gaps.into_iter().filter(|gap| if gap.down { free_y } else { free_x }).collect();
                     }
                 }
                 for (index, before) in &self.moving {
@@ -2266,7 +2281,7 @@ impl Editor {
                     shape.translate(by.0 as f32, by.1 as f32);
                     self.shapes[*index] = shape;
                 }
-                self.guides = guides;
+                (self.guides, self.gaps) = (guides, gaps);
                 self.dirty = true;
             }
         }
@@ -2611,7 +2626,7 @@ impl Editor {
             }
             Drag::Scale { .. } | Drag::Turn { .. } => self.scaling = None,
             Drag::End { index, point, moved: true, .. } if point < 2 => self.stick(index, &[point]),
-            Drag::Shape { .. } => (self.moving, self.guides) = (Vec::new(), Vec::new()),
+            Drag::Shape { .. } => (self.moving, self.guides, self.gaps) = (Vec::new(), Vec::new(), Vec::new()),
             // A click on the frame, not a drag of it, opens what there
             // is to choose about it.
             Drag::Room { moved: false, opens: true, .. } => outcome = self.activate(Button::Frame),
@@ -2937,7 +2952,7 @@ impl Editor {
         let (dx, dy) = (dx * step, dy * step);
         let chosen = self.chosen();
         if !chosen.is_empty() {
-            self.checkpoint();
+            self.checkpoint_move(&chosen);
             chosen.iter().for_each(|&index| self.shapes[index].translate(dx as f32, dy as f32));
         } else if let Some(area) = self.selection {
             let screen = self.screen();
@@ -3313,18 +3328,63 @@ impl Editor {
         }
     }
 
+    /// The box round the shapes called these, if they are all still there.
+    fn box_of(&mut self, ids: &[u32]) -> Option<spacing::Edges> {
+        let mut all: Option<spacing::Edges> = None;
+        for &id in ids {
+            let index = self.shapes.iter().position(|shape| shape.id == id)?;
+            let place = self.shapes[index].bounds(&mut self.text);
+            let (x, y, right, bottom) = (place.x as f32, place.y as f32, place.right() as f32, place.bottom() as f32);
+            all = Some(all.map_or([x, y, right, bottom], |was| [was[0].min(x), was[1].min(y), was[2].max(right), was[3].max(bottom)]));
+        }
+        all
+    }
+
+    /// The shapes picked out copied, as Figma copies: the last copies
+    /// made, picked out, as far from themselves again as they are from
+    /// what they were copied from; anything else beside itself, to the
+    /// right or else below, inside the picture where there is room and
+    /// past the other shapes. The copies are picked out.
     fn duplicate(&mut self) {
         let chosen = self.chosen();
         if chosen.is_empty() {
             return;
         }
+        let ids: Vec<u32> = chosen.iter().map(|&index| self.shapes[index].id).collect();
+        let sorted = |ids: &[u32]| {
+            let mut ids = ids.to_vec();
+            ids.sort_unstable();
+            ids
+        };
+        let again = match self.repeat.take() {
+            Some((sources, copies)) if sorted(&copies) == sorted(&ids) => self.box_of(&sources).zip(self.box_of(&copies)).map(|(from, to)| (to[0] - from[0], to[1] - from[1])),
+            _ => None,
+        };
+        let (dx, dy) = match again {
+            Some(by) => by,
+            None => {
+                let me = self.box_of(&ids).unwrap_or_default();
+                let others: Vec<spacing::Edges> = (0..self.shapes.len())
+                    .filter(|index| !chosen.contains(index))
+                    .map(|index| {
+                        let place = self.shapes[index].bounds(&mut self.text);
+                        [place.x as f32, place.y as f32, place.right() as f32, place.bottom() as f32]
+                    })
+                    .collect();
+                let area = self.selection.map(|area| [area.x as f32, area.y as f32, area.right() as f32, area.bottom() as f32]);
+                // About 20 apart on a screen 1080 high, more on larger.
+                let gap = (ui_px(self.monitor().h) * 3 / 2) as f32;
+                spacing::beside(me, &others, area, gap)
+            }
+        };
         self.checkpoint();
-        let by = ui_px(self.monitor().h) as f32;
         let mut counters = self.shapes.iter().filter(|shape| shape.tool == Tool::Counter).count() as u32;
         self.selected.clear();
+        let mut copies = Vec::new();
         for index in chosen {
             let mut copy = self.shapes[index].copied();
-            copy.translate(by, by);
+            copy.translate(dx, dy);
+            copies.push(copy.id);
             // A counter copied counts on.
             if copy.tool == Tool::Counter {
                 counters += 1;
@@ -3333,6 +3393,7 @@ impl Editor {
             self.shapes.push(copy);
             self.selected.push(self.shapes.len() - 1);
         }
+        self.repeat = Some((ids, copies));
         self.tool = Tool::Select;
         self.dirty = true;
     }
@@ -3495,13 +3556,30 @@ impl Editor {
     }
 
     /// Keeps the shapes as they are, to come back to with undo.
+    /// Anything done but moving the last copies made forgets them.
     fn checkpoint(&mut self) {
         self.undo.push(self.shapes.clone());
         self.redo.clear();
+        self.repeat = None;
+    }
+
+    /// The same, for shapes about to be moved: the last copies made, if
+    /// these are those, still remembered.
+    fn checkpoint_move(&mut self, going: &[usize]) {
+        let mut ids: Vec<u32> = going.iter().map(|&index| self.shapes[index].id).collect();
+        ids.sort_unstable();
+        let kept = self.repeat.take().filter(|(_, copies)| {
+            let mut copies = copies.clone();
+            copies.sort_unstable();
+            copies == ids
+        });
+        self.checkpoint();
+        self.repeat = kept;
     }
 
     fn undo(&mut self) {
         self.commit_text();
+        self.repeat = None;
         if let Some(before) = self.undo.pop() {
             self.redo.push(std::mem::replace(&mut self.shapes, before));
             self.selected.clear();
@@ -3510,6 +3588,7 @@ impl Editor {
 
     fn redo(&mut self) {
         self.commit_text();
+        self.repeat = None;
         if let Some(after) = self.redo.pop() {
             self.undo.push(std::mem::replace(&mut self.shapes, after));
             self.selected.clear();
@@ -4020,6 +4099,10 @@ impl Editor {
                     false => canvas.fill(selection.x, at, selection.w, 1, soft(accent)),
                 }
             }
+            // And the gaps it is spaced evenly by, in magenta, each with
+            // how wide it is.
+            let gaps = self.gaps.clone();
+            spacing::draw_gaps(&mut canvas, &mut self.text, &gaps, (px * 4 / 5).max(11), |(x, y)| (x.round() as i32, y.round() as i32));
             // How round, in pixels, while a corner is being rounded:
             // of a rectangle, or of the picture.
             let rounding = match self.drag {
@@ -5522,11 +5605,12 @@ mod tests {
         click(&mut editor, (200, 200), 50_000);
         assert_eq!(editor.shapes[0].heads, [false, true]);
 
-        // Ctrl+D is a copy of it, a little down and to the right, and
-        // the copy is what is picked out.
+        // Ctrl+D is a copy of it, beside it to the right, and the copy
+        // is what is picked out.
         editor.key(Key::Char('d'), ctrl);
         assert_eq!((editor.shapes.len(), editor.selected.clone()), (2, vec![1]));
-        assert_eq!(editor.shapes[1].points[0], (213.5, 213.5));
+        let (start, end) = (editor.shapes[1].points[0], editor.shapes[0].points[1]);
+        assert!(start.1 == 200.5 && start.0 > end.0, "{start:?}");
 
         // A box dragged out with Shift held picks out what it touches.
         editor.key(Key::Escape, PLAIN);
@@ -6028,6 +6112,89 @@ mod tests {
         assert_eq!(editor.shapes[1].bounds(&mut editor.text).x, first.x + 4);
         editor.released();
         assert!(editor.guides.is_empty());
+    }
+
+    /// A shape taken hold of at a point and moved so far, with these keys.
+    /// Pressed with none, as Ctrl or Shift at the press pick out by a box.
+    fn move_shape(editor: &mut Editor, at: (i32, i32), by: (i32, i32), mods: Mods, time: u32) {
+        editor.pointer_moved(at.0, at.1, PLAIN);
+        editor.pressed(time);
+        editor.pointer_moved(at.0 + by.0 / 2, at.1 + by.1 / 2, mods);
+        editor.pointer_moved(at.0 + by.0, at.1 + by.1, mods);
+    }
+
+    #[test]
+    fn a_shape_copied_goes_beside_itself_and_a_copy_moved_is_copied_as_far_again() {
+        let mut editor = editor(1600, 900);
+        let ctrl = Mods { ctrl: true, ..PLAIN };
+        drag(&mut editor, (100, 100), (899, 699));
+        editor.key(Key::Char('r'), PLAIN);
+        drag(&mut editor, (200, 200), (260, 240));
+        let first = editor.shapes[0].bounds(&mut editor.text);
+        // Beside it to the right, a gap away, and picked out.
+        editor.key(Key::Char('d'), ctrl);
+        let gap = (ui_px(editor.monitor().h) * 3 / 2) as i32;
+        let copy = editor.shapes[1].bounds(&mut editor.text);
+        assert_eq!((copy.x, copy.y, editor.selected.clone()), (first.right() + gap, first.y, vec![1]));
+        // Moved down 100 by its top edge, and copied: as far again, twice.
+        let across = copy.x - first.x;
+        move_shape(&mut editor, (230 + across, 200), (0, 100), ctrl, 10_000);
+        editor.released();
+        assert_eq!(editor.shapes[1].bounds(&mut editor.text).y, first.y + 100);
+        editor.key(Key::Char('d'), ctrl);
+        editor.key(Key::Char('d'), ctrl);
+        let (third, fourth) = (editor.shapes[2].bounds(&mut editor.text), editor.shapes[3].bounds(&mut editor.text));
+        assert_eq!((third.x, third.y, fourth.x, fourth.y), (first.x + 2 * across, first.y + 200, first.x + 3 * across, first.y + 300));
+        // One step to undo each.
+        editor.key(Key::Char('z'), ctrl);
+        assert_eq!(editor.shapes.len(), 3);
+        // Anything else done in between starts over: beside it again.
+        editor.selected = vec![2];
+        editor.key(Key::Char('d'), ctrl);
+        editor.key(Key::Char(']'), ctrl);
+        editor.key(Key::Char('d'), ctrl);
+        let last = editor.shapes.len() - 1;
+        let (was, now) = (editor.shapes[last - 1].bounds(&mut editor.text), editor.shapes[last].bounds(&mut editor.text));
+        assert_eq!((now.x, now.y), (was.right() + gap, was.y));
+    }
+
+    #[test]
+    fn a_shape_with_no_room_to_its_right_is_copied_below_it() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (499, 499));
+        editor.key(Key::Char('r'), PLAIN);
+        drag(&mut editor, (400, 200), (480, 240));
+        let first = editor.shapes[0].bounds(&mut editor.text);
+        editor.key(Key::Char('d'), Mods { ctrl: true, ..PLAIN });
+        let copy = editor.shapes[1].bounds(&mut editor.text);
+        assert_eq!((copy.x, copy.y), (first.x, first.bottom() + (ui_px(editor.monitor().h) * 3 / 2) as i32));
+    }
+
+    #[test]
+    fn a_shape_moved_between_two_stops_with_the_same_gap_either_side() {
+        let mut editor = editor(1600, 900);
+        drag(&mut editor, (100, 100), (899, 699));
+        for (index, (x, y)) in [(200, 500), (400, 500), (250, 650)].into_iter().enumerate() {
+            editor.key(Key::Char('r'), PLAIN);
+            editor.pointer_moved(x, y, PLAIN);
+            editor.pressed(index as u32 * 5000);
+            editor.pointer_moved(x + 60, y + 40, PLAIN);
+            editor.released();
+        }
+        // The third, below the others, taken up level with them and to
+        // within a few pixels of halfway between: halfway, the two gaps
+        // marked.
+        let [a, b, c] = [0, 1, 2].map(|index| editor.shapes[index].bounds(&mut editor.text));
+        let halfway = a.right() + (b.x - a.right() - c.w) / 2;
+        move_shape(&mut editor, (280, 650), (halfway - c.x + 3, -150), PLAIN, 50_000);
+        let moved = editor.shapes[2].bounds(&mut editor.text);
+        assert!((moved.x - a.right() - (b.x - moved.right())).abs() <= 1, "{a:?} {moved:?} {b:?}");
+        assert_eq!(editor.gaps.len(), 2);
+        // Ctrl: where it is put, no gaps.
+        editor.pointer_moved(280 + halfway - c.x + 3, 500, Mods { ctrl: true, ..PLAIN });
+        assert!(editor.gaps.is_empty());
+        editor.released();
+        assert!(editor.gaps.is_empty() && editor.guides.is_empty());
     }
 
     #[test]
