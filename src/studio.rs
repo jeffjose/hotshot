@@ -23,6 +23,7 @@ use crate::text::{icons, Text, FACES};
 mod actions;
 mod arrange;
 mod crop_bar;
+mod drawn;
 mod export;
 mod menu;
 pub use menu::parse_frame_size;
@@ -37,6 +38,8 @@ mod snap;
 mod search;
 mod style;
 mod wheel;
+#[cfg(test)]
+mod perf;
 
 
 use menu::{MenuKind, MenuState};
@@ -1601,7 +1604,11 @@ pub struct Studio {
     /// which change, at which zoom, and which part.
     /// Each frame of the page as drawn last, at the size it is shown: at
     /// which change to it, at which zoom, and which part of it.
-    shown: Vec<Option<(u64, f32, Rect, Vec<u32>)>>,
+    shown: Vec<Option<drawn::Drawn>>,
+    /// The layers of the frame worked in that alone have changed since
+    /// the change it was at, up to the change it is at now, if that is
+    /// all that has: where they are is all that needs drawing again.
+    touched: Option<(u64, u64, Vec<usize>)>,
     /// When the page was last zoomed or moved by the wheel or the hand,
     /// while it is shown from what was drawn before rather than drawn
     /// sharp: until it has been still a moment.
@@ -1690,6 +1697,7 @@ impl Studio {
             version: 0,
             shown: Vec::new(),
             moving: None,
+            touched: None,
             pages: if pages.is_empty() { vec![Page { name: "Page 1".into(), frames: vec![Doc::new(1200, 675)] }] } else { pages },
             page: 0,
             active: 0,
@@ -1937,6 +1945,7 @@ impl Studio {
 
     /// Something has changed: drawn again, and the file is behind.
     fn changed(&mut self) {
+        self.touched = None;
         self.follow();
         self.version += 1;
         self.doc.stamp = self.version;
@@ -2455,7 +2464,8 @@ impl Studio {
                         self.doc.layers[chosen] = layer;
                     }
                 }
-                self.changed();
+                let chosen = self.chosen();
+                self.changed_layers(&chosen);
             }
             Drag::Scale { pull, from } => self.scale_to(pull, from, at, mods),
             Drag::Turn { about, began } => {
@@ -2475,7 +2485,7 @@ impl Studio {
                     Kind::Shape(shape) => shape.turn(by, about, &mut self.text),
                 }
                 self.doc.layers[index] = layer;
-                self.changed();
+                self.changed_layers(&[index]);
             }
             Drag::Draw { from } => {
                 let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.last_mut() else { return };
@@ -2487,7 +2497,8 @@ impl Studio {
                     }
                 }
                 shape.touch();
-                self.changed();
+                let last = self.doc.layers.len() - 1;
+                self.changed_layers(&[last]);
             }
             Drag::Marquee { .. } => self.dirty = true,
             Drag::Scrub { field, from, start } => {
@@ -3469,7 +3480,7 @@ impl Studio {
             }
         }
         self.doc.layers[index] = layer;
-        self.changed();
+        self.changed_layers(&[index]);
     }
 
     /// The crop of the picture being cropped pulled by a handle, or moved
@@ -3515,7 +3526,7 @@ impl Studio {
             (picture.cx, picture.cy) = (was.cx + sx * cos - sy * sin, was.cy + sx * sin + sy * cos);
         }
         self.doc.layers[index].kind = Kind::Picture(picture);
-        self.changed();
+        self.changed_layers(&[index]);
     }
 
     /// A number of what is picked out, or of the artboard.
@@ -4127,7 +4138,12 @@ impl Studio {
                 if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
                     shape.touch();
                 }
-                self.changed();
+                // A letter typed changes that text alone; Esc may have
+                // done more.
+                match key {
+                    Key::Escape => self.changed(),
+                    _ => self.changed_layers(&[index]),
+                }
             }
             return Outcome::Continue;
         }
@@ -4324,16 +4340,16 @@ impl Studio {
             self.shown.resize_with(self.frame_count(), || None);
         }
         let quick = self.moving.is_some();
-        let fresh = self.shown[index].as_ref().is_some_and(|(kept, zoom, part, _)| {
-            *kept == stamp
+        let fresh = self.shown[index].as_ref().is_some_and(|drawn| {
+            drawn.stamp == stamp
                 && (seen.is_empty()
-                    || match *zoom == self.zoom {
-                        true => part.intersect(seen) == seen,
-                        false => quick && reaches(*part, *zoom, seen, self.zoom),
+                    || match drawn.zoom == self.zoom {
+                        true => drawn.part.intersect(seen) == seen,
+                        false => quick && reaches(drawn.part, drawn.zoom, seen, self.zoom),
                     })
         });
-        if !fresh && !seen.is_empty() {
-            let kept_zoom = self.shown[index].as_ref().map(|(_, zoom, _, _)| *zoom);
+        if !fresh && !seen.is_empty() && !self.redraw_touched(index, seen) {
+            let kept_zoom = self.shown[index].as_ref().map(|drawn| drawn.zoom);
             let (times, part) = match quick && kept_zoom != Some(self.zoom) {
                 true => {
                     let times = self.zoom / 2.0;
@@ -4343,8 +4359,14 @@ impl Studio {
                 }
                 false => (self.zoom, seen.inflate(view.w.max(view.h) / 2).intersect(Rect::new(0, 0, wide, high))),
             };
-            let pixels = if index == self.active { self.doc.render_part(times, part, &mut self.text) } else { self.pages[self.page].frames[index].render_part(times, part, &mut self.text) };
-            self.shown[index] = Some((stamp, times, part, pixels));
+            let (pixels, reaches) = match index == self.active {
+                true => (self.doc.render_part(times, part, &mut self.text), self.reaches(times)),
+                false => (self.pages[self.page].frames[index].render_part(times, part, &mut self.text), Vec::new()),
+            };
+            self.shown[index] = Some(drawn::Drawn { stamp, zoom: times, part, pixels, reaches });
+            if index == self.active {
+                self.touched = None;
+            }
         }
         (origin, wide, high)
     }
@@ -4388,7 +4410,7 @@ impl Studio {
         for index in 0..self.frame_count() {
             let (origin, wide, high) = self.shown_frame(index, view);
             let shown = Rect::new(origin.0, origin.1, wide, high).intersect(view);
-            let Some(Some((_, kept_zoom, part, pixels))) = self.shown.get(index) else { continue };
+            let Some(Some(drawn::Drawn { zoom: kept_zoom, part, pixels, .. })) = self.shown.get(index) else { continue };
             // Drawn at another zoom while the page moves: where each pixel
             // of the window falls in what was drawn, by the nearest one.
             let by = kept_zoom / self.zoom;
@@ -6530,14 +6552,14 @@ mod tests {
         let sharp = studio.zoom;
         let at = (560, 450);
         let before = out[(at.1 * 1400 + at.0) as usize];
-        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(sharp));
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.zoom), Some(sharp));
         // Zoomed in by the wheel: what was drawn, shown larger, the point
         // under the pointer the same color still; nothing drawn afresh.
         studio.wheel_at(at.0, at.1, Mods { ctrl: true, ..Mods::default() });
         studio.scrolled(0.0, -12.0);
         assert!(studio.settle_in().is_some_and(|wait| wait <= SETTLE));
         studio.draw(&mut out);
-        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(sharp));
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.zoom), Some(sharp));
         assert_eq!(out[(at.1 * 1400 + at.0) as usize], before);
         // Still a moment: drawn sharp at the zoom it is at, and no more
         // waiting to be.
@@ -6547,22 +6569,22 @@ mod tests {
         studio.settle();
         assert!(studio.moving.is_none() && studio.settle_in().is_none() && studio.dirty);
         studio.draw(&mut out);
-        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(studio.zoom));
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.zoom), Some(studio.zoom));
         assert_eq!(out[(at.1 * 1400 + at.0) as usize], before);
         // Zoomed far out, past what was drawn: drawn again, at half the
         // size it is shown, for the next steps out to keep to.
         studio.scrolled(0.0, 12.0);
         studio.draw(&mut out);
-        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(studio.zoom / 2.0));
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.zoom), Some(studio.zoom / 2.0));
         let half = studio.zoom / 2.0;
         studio.scrolled(0.0, 2.0);
         studio.draw(&mut out);
-        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.1), Some(half));
+        assert_eq!(studio.shown[0].as_ref().map(|kept| kept.zoom), Some(half));
         // A change to the frame is drawn at once, moving or not.
         studio.doc.layers[0].hidden = true;
         studio.changed();
         studio.draw(&mut out);
-        assert!(studio.shown[0].as_ref().is_some_and(|kept| kept.0 == studio.doc.stamp));
+        assert!(studio.shown[0].as_ref().is_some_and(|kept| kept.stamp == studio.doc.stamp));
         assert_eq!(out[(at.1 * 1400 + at.0) as usize] & 0xFF_FFFF, 0xFFFFFF);
     }
     #[test]

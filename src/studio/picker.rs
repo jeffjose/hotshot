@@ -247,8 +247,11 @@ impl Studio {
             let frame = self.frame(index);
             self.to_window_page((frame.x, frame.y))
         };
-        let (_, _, part, pixels) = self.shown.get(index)?.as_ref()?;
-        let (x, y) = (at.0 - origin.0 - part.x, at.1 - origin.1 - part.y);
+        let drawn = self.shown.get(index)?.as_ref()?;
+        let (part, pixels) = (drawn.part, &drawn.pixels);
+        // Drawn at another zoom, while the page moves: where in that.
+        let by = drawn.zoom / self.zoom;
+        let (x, y) = ((((at.0 - origin.0) as f32 + 0.5) * by).floor() as i32 - part.x, (((at.1 - origin.1) as f32 + 0.5) * by).floor() as i32 - part.y);
         if x < 0 || y < 0 || x >= part.w || y >= part.h {
             return None;
         }
