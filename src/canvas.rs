@@ -303,6 +303,33 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// The same, in a color that differs from pixel to pixel, as `paint`
+    /// says for each, by where it is.
+    pub fn mask_painted(&mut self, mask: &Mask, amount: u32, paint: impl Fn(i32, i32) -> u32 + Sync) {
+        let part = mask.bounds.intersect(self.clip);
+        if part.is_empty() {
+            return;
+        }
+        let (width, across) = (self.width as usize, mask.bounds.w as usize);
+        let (left, skip) = (part.x as usize, (part.x - mask.bounds.x) as usize);
+        let first = (part.y - mask.bounds.y) as usize;
+        let amount = amount.min(256);
+        let draw = |(row, out): (usize, &mut [u32])| {
+            let alpha = &mask.alpha[(first + row) * across + skip..][..part.w as usize];
+            let y = part.y + row as i32;
+            for (at, (pixel, &cover)) in out[left..left + part.w as usize].iter_mut().zip(alpha).enumerate() {
+                if cover > 0 {
+                    *pixel = mix(*pixel, paint(part.x + at as i32, y), ((u32::from(cover) + u32::from(cover >> 7)) * amount) >> 8);
+                }
+            }
+        };
+        let rows = &mut self.pixels[part.y as usize * width..part.bottom() as usize * width];
+        match part.w as usize * part.h as usize >= SHARE {
+            true => rows.par_chunks_exact_mut(width).enumerate().for_each(draw),
+            false => rows.chunks_exact_mut(width).enumerate().for_each(draw),
+        }
+    }
+
     /// Turns what is in a rectangle into a mosaic of squares `cell`
     /// across, each the average of what was under it: what was there can
     /// no longer be read.

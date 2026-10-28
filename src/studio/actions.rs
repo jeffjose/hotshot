@@ -182,6 +182,7 @@ impl Studio {
                 self.changed();
             }
             Action::Corners => self.corners_open = !self.corners_open,
+            Action::FillKind(kind) => self.set_fill_kind(kind),
             other => self.act_effect(other),
         }
         self.dirty = true;

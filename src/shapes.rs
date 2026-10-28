@@ -72,6 +72,10 @@ pub struct Shape {
     /// top left, top right, bottom right and bottom left, as Figma has
     /// them. None when every corner is `radius`.
     pub corners: Option<[f32; 4]>,
+    /// What a box or an oval is filled with, when it is filled with more
+    /// than one color: a gradient from its `fill` to another. None for its
+    /// `fill` alone.
+    pub gradient: Option<Gradient>,
     /// Two for most: where the drag began and where it is. A pen stroke
     /// has as many as the pointer made; text has the top-left of its
     /// first line; a counter its middle and where it points.
@@ -206,6 +210,53 @@ pub fn corners_read(word: &str) -> Option<[f32; 4]> {
     Some([a, b, c, d].map(|radius| radius.max(0.0)))
 }
 
+/// A fill of more than one color, as Figma's are: from a shape's `fill` to
+/// `to`, straight across it the way `angle` says in degrees, as CSS's
+/// linear-gradient goes (0 up, 90 to the right); or `radial`, out from its
+/// middle to its edge.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Gradient {
+    pub to: u32,
+    pub angle: f32,
+    pub radial: bool,
+}
+
+/// A gradient as a word of a file: its color, its angle, and l or r for
+/// straight or round; or a dash for none.
+fn gradient_word(gradient: Option<Gradient>) -> String {
+    gradient.map_or("-".to_owned(), |gradient| format!("{:06X}:{}:{}", gradient.to, gradient.angle, if gradient.radial { "r" } else { "l" }))
+}
+
+fn gradient_read(word: &str) -> Option<Gradient> {
+    let parts: Vec<&str> = word.split(':').collect();
+    let [to, angle, kind] = parts[..] else { return None };
+    let angle = angle.parse::<f32>().ok().filter(|angle| angle.is_finite())?;
+    Some(Gradient { to: u32::from_str_radix(to, 16).ok()? & 0xFF_FFFF, angle, radial: kind == "r" })
+}
+
+/// A color part of the way from one to another, 0 to 1.
+pub fn between(from: u32, to: u32, along: f32) -> u32 {
+    let along = along.clamp(0.0, 1.0);
+    let part = |shift: u32| {
+        let (a, b) = ((from >> shift & 0xFF) as f32, (to >> shift & 0xFF) as f32);
+        ((a + (b - a) * along).round() as u32).min(255) << shift
+    };
+    part(16) | part(8) | part(0)
+}
+
+/// How far along a gradient a point is, from 0 to 1, in a box `w` by `h`
+/// with the point counted from its middle: straight across at `angle`
+/// degrees as CSS has it, the line long enough to reach its corners; or
+/// round, out from the middle to the edge of the oval it holds.
+pub fn along_gradient(x: f32, y: f32, w: f32, h: f32, angle: f32, radial: bool) -> f32 {
+    if radial {
+        return (x / (w / 2.0).max(0.5)).hypot(y / (h / 2.0).max(0.5));
+    }
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let length = (w * sin).abs() + (h * cos).abs();
+    (x * sin - y * cos) / length.max(1.0) + 0.5
+}
+
 /// The radius of the corner of a box nearest a point, counted from its
 /// middle: of the four, top left, top right, bottom right, bottom left.
 pub fn corner_of(x: f32, y: f32, radii: [f32; 4]) -> f32 {
@@ -272,7 +323,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -292,7 +343,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -310,7 +361,8 @@ impl Shape {
                 self.align,
                 self.edge,
                 shadow_word(self.shadow),
-                corners_word(self.corners)
+                corners_word(self.corners),
+                gradient_word(self.gradient)
             ),
             self.fill,
             self.number,
@@ -372,6 +424,9 @@ impl Shape {
         // And the radius of each corner, when they differ, which a file
         // from before has not: all of them are its one radius then.
         shape.corners = more.next().and_then(corners_read);
+        // And what it is filled with besides one color, which a file from
+        // before has not: it is filled in its one color.
+        shape.gradient = more.next().and_then(gradient_read);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -1430,6 +1485,26 @@ impl Shape {
         mask
     }
 
+    /// What a box or an oval covers laid down in its fill: its one color,
+    /// or its gradient, worked out where each pixel is in it as it is
+    /// unturned, so that it turns with it and is as smooth at any size.
+    fn lay_fill(&self, canvas: &mut Canvas, mask: &Mask) {
+        let Some(gradient) = self.gradient else { return canvas.mask(mask, self.fill, self.opacity) };
+        let (x, y, w, h) = self.frame();
+        let centre = (x + w / 2.0, y + h / 2.0);
+        let (sin, cos) = (-self.angle).sin_cos();
+        let (from, to) = (self.fill, gradient.to);
+        canvas.mask_painted(mask, self.opacity, move |px, py| {
+            // The pixel's middle, from the box's, turned back square.
+            let (dx, dy) = (px as f32 + 0.5 - centre.0, py as f32 + 0.5 - centre.1);
+            let (lx, ly) = (dx * cos - dy * sin, dx * sin + dy * cos);
+            // A little unevenness, less than a step of color, so that a
+            // wide gradient shows no bands.
+            let noise = (((px * 7 + py * 13).rem_euclid(16)) as f32 / 16.0 - 0.5) / 255.0;
+            between(from, to, along_gradient(lx, ly, w, h, gradient.angle, gradient.radial) + noise)
+        });
+    }
+
     pub fn draw(&self, canvas: &mut Canvas, text: &mut Text) {
         match self.tool {
             // Words turned: drawn straight on a sheet of their own, and
@@ -1525,10 +1600,12 @@ impl Shape {
             // Its fill, and its border over that; or the one it has.
             Tool::Rect | Tool::Ellipse => {
                 if self.fill_apart() {
-                    canvas.mask(&self.inside_mask(), self.fill, self.opacity);
+                    self.lay_fill(canvas, &self.inside_mask());
                 }
-                if self.border || !self.sketch {
-                    canvas.mask(&self.mask(), if self.border { self.color } else { self.fill }, self.opacity);
+                match self.border {
+                    true => canvas.mask(&self.mask(), self.color, self.opacity),
+                    false if !self.sketch => self.lay_fill(canvas, &self.mask()),
+                    false => {}
                 }
             }
             // An edge of white first, a little wider all round, and the
@@ -2241,7 +2318,7 @@ mod tests {
         assert_eq!((back.edge, back.shadow, back.align), (OUTSIDE, boxed.shadow, boxed.align));
         // And one from before either has neither.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
         assert_eq!((back.edge, back.shadow), (CENTER, None));

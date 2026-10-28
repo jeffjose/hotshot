@@ -135,9 +135,13 @@ under it. The tools float along the bottom, grouped as Figma's are, and
 the right panel holds the properties of whatever is selected, a section
 at a time. With nothing selected it belongs to the frame:
 its size (X post, square, 16:9, story, A4, or typed), its background (a
-color, a two-color gradient at any angle, one of the frame box's
-backdrops, or nothing), and the export
-scale.
+solid color, a linear gradient at any angle, a radial one out from the
+middle, one of the frame box's backdrops, or nothing), and the export
+scale. A box or an oval is filled the same way, as in Figma: Solid,
+Linear or Radial, from the panel or along the top of the colors, with
+a strip showing the gradient whose stops are clicked to color them; a
+gradient turns with its shape, and is drawn smooth at any zoom and in
+exports at any scale.
 
 Each panel has a button at its top corner that hides it, as Claude's
 sidebar button does: the button stays where it is, alone, and the page

@@ -290,14 +290,18 @@ impl Studio {
         rows.fields(&[Field::FrameX, Field::FrameY], &[]);
         rows.fields(&[Field::ArtW, Field::ArtH], &[Control::Action(Action::Sideways)]);
         rows.section("Background", "", None);
-        rows.chips(&mut self.text, vec![("Color".into(), Control::Ground(Ground::Color)), ("Gradient".into(), Control::Ground(Ground::Gradient)), ("Backdrop".into(), Control::Ground(Ground::Backdrop)), ("None".into(), Control::Ground(Ground::None))]);
+        // The kinds a shape's fill has too, as Figma names them.
+        let grounds = [("Solid", Ground::Color), ("Linear", Ground::Gradient), ("Radial", Ground::Radial), ("Backdrop", Ground::Backdrop), ("None", Ground::None)];
+        rows.chips(&mut self.text, grounds.iter().map(|&(says, ground)| (says.to_owned(), Control::Ground(ground))).collect());
         match self.doc.background {
             Fill::Color(_) => drop(rows.wide(Control::ColorField(Paint::Background))),
-            Fill::Gradient(..) => {
+            Fill::Gradient(..) | Fill::Radial(..) => {
                 rows.wide(Control::GradientBar);
                 rows.wide(Control::ColorField(Paint::From));
                 rows.wide(Control::ColorField(Paint::To));
-                rows.fields(&[Field::Angle], &[]);
+                if matches!(self.doc.background, Fill::Gradient(..)) {
+                    rows.fields(&[Field::Angle], &[]);
+                }
             }
             Fill::Backdrop(_) => {
                 let (each, across) = (rows.inner / 6, 6);
@@ -354,7 +358,20 @@ impl Studio {
                 let filled = shape.filled;
                 rows.section("Fill", "", Some(if filled { (act(Action::FillOff), icons::MINUS) } else { (act(Action::FillOn), icons::PLUS) }));
                 if filled {
-                    rows.wide(Control::ColorField(Paint::Fill));
+                    // One color, or a gradient from one to another, as
+                    // the frame's background is chosen.
+                    rows.chips(&mut self.text, (0..3).map(|kind| (Action::FillKind(kind).says().to_owned(), act(Action::FillKind(kind)))).collect());
+                    match shape.gradient {
+                        None => drop(rows.wide(Control::ColorField(Paint::Fill))),
+                        Some(gradient) => {
+                            rows.wide(Control::FillBar);
+                            rows.wide(Control::ColorField(Paint::Fill));
+                            rows.wide(Control::ColorField(Paint::FillTo));
+                            if !gradient.radial {
+                                rows.fields(&[Field::FillAngle], &[]);
+                            }
+                        }
+                    }
                 } else {
                     rows.note("No fill: what is under it shows");
                 }
@@ -462,6 +479,9 @@ impl Studio {
                 }
                 if shape.filled {
                     colors.push((shape.fill, "fill"));
+                    if let Some(gradient) = shape.gradient {
+                        colors.push((gradient.to, "fill"));
+                    }
                 }
                 colors
             }
@@ -495,6 +515,7 @@ impl Studio {
         match action {
             Action::LockRatio => self.keep_ratio,
             Action::Corners => self.corners_open,
+            Action::FillKind(kind) => shape.and_then(Studio::fill_kind) == Some(kind),
             Action::Halo => shape.is_some_and(|shape| shape.halo),
             Action::Crop => self.cropping.is_some(),
             Action::Bold => shape.is_some_and(|shape| shape.style & shapes::BOLD != 0),

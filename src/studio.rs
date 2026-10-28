@@ -24,6 +24,7 @@ mod actions;
 mod arrange;
 mod corners;
 mod crop_bar;
+mod fills;
 mod turning;
 mod drawn;
 mod duplicate;
@@ -447,6 +448,28 @@ pub enum Fill {
     /// From one color to another, going the way an angle in degrees
     /// says, as CSS's linear-gradient does.
     Gradient(u32, u32, f32),
+    /// From one color in the middle to another at the edges, as CSS's
+    /// radial-gradient does.
+    Radial(u32, u32),
+}
+
+impl Fill {
+    /// The colors a gradient goes from and to, if it is one.
+    fn stops(self) -> Option<(u32, u32)> {
+        match self {
+            Fill::Gradient(from, to, _) | Fill::Radial(from, to) => Some((from, to)),
+            _ => None,
+        }
+    }
+
+    /// The same gradient between two other colors.
+    fn with_stops(self, from: u32, to: u32) -> Fill {
+        match self {
+            Fill::Gradient(_, _, angle) => Fill::Gradient(from, to, angle),
+            Fill::Radial(..) => Fill::Radial(from, to),
+            other => other,
+        }
+    }
 }
 
 /// The artboard: how large, on what, and what is on it, the first layer
@@ -563,6 +586,15 @@ impl Doc {
                     *pixel = 0xFF00_0000 | gradient(from, to, angle, (x as f32 + 0.5, y as f32 + 0.5), (wide, high), (x * 7 + y * 13) % 16);
                 }
             }),
+            Fill::Radial(from, to) => out.par_chunks_mut(part.w as usize).enumerate().for_each(|(y, row)| {
+                let y = y + part.y as usize;
+                for (x, pixel) in row.iter_mut().enumerate() {
+                    let x = x + part.x as usize;
+                    let noise = (((x * 7 + y * 13) % 16) as f32 / 16.0 - 0.5) / 255.0;
+                    let along = shapes::along_gradient(x as f32 + 0.5 - wide / 2.0, y as f32 + 0.5 - high / 2.0, wide, high, 0.0, true);
+                    *pixel = 0xFF00_0000 | shapes::between(from, to, along + noise);
+                }
+            }),
         }
         for (index, layer) in self.layers[..count.min(self.layers.len())].iter().enumerate().filter(|(_, layer)| !layer.hidden) {
             match &layer.kind {
@@ -602,6 +634,7 @@ impl Doc {
             Fill::Color(color) => format!("background color {color:06X}\n"),
             Fill::Backdrop(which) => format!("background backdrop {}\n", BACKDROPS[which.min(BACKDROPS.len() - 1)].0),
             Fill::Gradient(from, to, angle) => format!("background gradient {from:06X} {to:06X} {angle}\n"),
+            Fill::Radial(from, to) => format!("background radial {from:06X} {to:06X}\n"),
         };
         for layer in &self.layers {
             let flags = format!("{} {}", u8::from(layer.hidden), u8::from(layer.locked));
@@ -656,6 +689,7 @@ impl Doc {
                     "color" => Fill::Color(u32::from_str_radix(words.next()?, 16).ok()?),
                     "backdrop" => Fill::Backdrop(frame::named(words.next()?)?),
                     "gradient" => Fill::Gradient(u32::from_str_radix(words.next()?, 16).ok()?, u32::from_str_radix(words.next()?, 16).ok()?, words.next()?.parse().ok()?),
+                    "radial" => Fill::Radial(u32::from_str_radix(words.next()?, 16).ok()?, u32::from_str_radix(words.next()?, 16).ok()?),
                     _ => Fill::None,
                 }
             }
@@ -1250,6 +1284,8 @@ enum Field {
     /// The radius of one corner of a box or a picture: top left, top
     /// right, bottom right, bottom left.
     Corner(u8),
+    /// Which way the gradient a box or an oval is filled with goes.
+    FillAngle,
 }
 
 impl Field {
@@ -1279,6 +1315,7 @@ impl Field {
             Field::Magnify => "Larger",
             Field::ExportTimes(_) => "\u{d7}",
             Field::Corner(_) => "",
+            Field::FillAngle => "Angle",
         }
     }
 
@@ -1295,6 +1332,7 @@ enum Ground {
     Color,
     Backdrop,
     Gradient,
+    Radial,
 }
 
 /// What a color in the panel is for.
@@ -1302,6 +1340,9 @@ enum Ground {
 enum Paint {
     Line,
     Fill,
+    /// The color the gradient a box or an oval is filled with goes to; it
+    /// goes from its `Fill`.
+    FillTo,
     Background,
     /// The colors a gradient goes from and to.
     From,
@@ -1366,6 +1407,8 @@ enum Control {
     ColorLayer(usize, &'static str),
     /// The strip a gradient is shown on, its stops at its ends.
     GradientBar,
+    /// The same of the fill of the box or oval picked out.
+    FillBar,
     /// The button that hides or shows a panel: the left one, or the right.
     SidePanel(u8),
     /// A shelf of the library; one of the labels and notes in it, by
@@ -1449,6 +1492,9 @@ enum Action {
     Round(bool),
     /// A radius for each corner shown in the panel, or one for them all.
     Corners,
+    /// A box or an oval filled in one color, a linear gradient or a radial
+    /// one: 0, 1 or 2.
+    FillKind(u8),
 }
 
 impl Action {
@@ -1558,6 +1604,9 @@ impl Action {
             Action::Round(true) => "Round",
             Action::Round(false) => "Square",
             Action::Corners => "Independent corners",
+            Action::FillKind(0) => "Solid",
+            Action::FillKind(1) => "Linear",
+            Action::FillKind(_) => "Radial",
         }
     }
 }
@@ -1720,6 +1769,8 @@ pub struct Studio {
     /// How the next shape is drawn.
     color: u32,
     fill: Option<u32>,
+    /// The gradient the next box or oval is filled with, from its `fill`.
+    gradient: Option<shapes::Gradient>,
     size: usize,
     /// How round the corners of the next rectangle are.
     radius: f32,
@@ -1834,6 +1885,7 @@ impl Studio {
             cropping: None,
             color: 0xE5484D,
             fill: None,
+            gradient: None,
             size: 1,
             radius: 8.0,
             face: 0,
@@ -2846,6 +2898,7 @@ impl Studio {
                 let mut shape = Shape::new(tool, self.color, STROKES[self.size], at);
                 if matches!(tool, Tool::Rect | Tool::Ellipse) {
                     (shape.filled, shape.fill) = (self.fill.is_some(), self.fill.unwrap_or(0xFFFFFF));
+                    shape.gradient = self.gradient.filter(|_| shape.filled);
                     shape.radius = if tool == Tool::Rect { self.radius } else { 0.0 };
                 }
                 shape.number = self.doc.layers.iter().filter(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.tool == Tool::Counter)).count() as u32 + 1;
@@ -3028,7 +3081,14 @@ impl Studio {
         }
         // The colors stay open while colors are picked, and a group's list
         // while it is picked from; anything else closes them.
-        if !matches!(control, Control::Swatch(..) | Control::ColorField(_) | Control::Picker(_) | Control::Entry(Naming::Hex)) {
+        // So do they while the kind of fill they are for is changed, from
+        // their top or the panel, or a gradient's stop is pressed.
+        let kind_of_fill = match control {
+            Control::Action(Action::FillKind(_)) | Control::FillBar => matches!(self.palette, Some(Paint::Fill | Paint::FillTo)),
+            Control::Ground(_) | Control::GradientBar => matches!(self.palette, Some(Paint::Background | Paint::From | Paint::To)),
+            _ => false,
+        };
+        if !matches!(control, Control::Swatch(..) | Control::ColorField(_) | Control::Picker(_) | Control::Entry(Naming::Hex)) && !kind_of_fill {
             self.palette = None;
         }
         if !matches!(control, Control::Group(_) | Control::Pick(_)) {
@@ -3139,6 +3199,7 @@ impl Studio {
             Control::ExportDone(done) => self.press_exported(done),
             Control::ColorOpen(color) => self.color_open = if self.color_open == Some(color) { None } else { Some(color) },
             Control::ColorLayer(index, _) => self.selected = vec![index],
+            Control::FillBar => self.press_fill_bar(),
             Control::GradientBar => {
                 // The stop nearer where it was pressed, to color.
                 let rect = self.control_rect(control).unwrap_or_default();
@@ -3221,8 +3282,21 @@ impl Studio {
                     // Indigo to pink, down and to the right, to begin with.
                     Ground::Gradient => match self.doc.background {
                         Fill::Gradient(..) => self.doc.background,
+                        Fill::Radial(from, to) => Fill::Gradient(from, to, 135.0),
                         _ => Fill::Gradient(0x3E63DD, 0xD6409F, 135.0),
                     },
+                    // A gradient's colors kept, out from the middle.
+                    Ground::Radial => match self.doc.background.stops() {
+                        Some((from, to)) => Fill::Radial(from, to),
+                        None => Fill::Radial(0xE1E9FF, 0x3E63DD),
+                    },
+                };
+                // The colors, open from the top of them, go on to what
+                // there is to color now.
+                self.palette = match (self.palette, self.doc.background) {
+                    (Some(Paint::From | Paint::To), Fill::Color(_)) => Some(Paint::Background),
+                    (Some(Paint::Background), Fill::Gradient(..) | Fill::Radial(..)) => Some(Paint::From),
+                    (palette, _) => palette,
                 };
                 self.changed();
             }
@@ -3274,10 +3348,10 @@ impl Studio {
                 self.changed();
             }
             Paint::From | Paint::To => {
-                let Fill::Gradient(from, to, angle) = self.doc.background else { return };
+                let Some((from, to)) = self.doc.background.stops() else { return };
                 let color = color.unwrap_or(0xFFFFFF);
                 self.checkpoint();
-                self.doc.background = if paint == Paint::From { Fill::Gradient(color, to, angle) } else { Fill::Gradient(from, color, angle) };
+                self.doc.background = if paint == Paint::From { self.doc.background.with_stops(color, to) } else { self.doc.background.with_stops(from, color) };
                 self.changed();
             }
             Paint::Line => {
@@ -3300,6 +3374,7 @@ impl Studio {
                     }
                 });
             }
+            Paint::FillTo => self.paint_fill_to(color),
             Paint::Shadow => {
                 let color = color.unwrap_or(0) & 0xFF_FFFF;
                 self.restyle(|layer| layer.change_drop(|drop| drop.color = (drop.color & 0xFF00_0000) | color));
@@ -3315,6 +3390,9 @@ impl Studio {
                         }
                         if shape.filled && shape.fill == was {
                             shape.fill = color;
+                        }
+                        if let Some(gradient) = shape.gradient.as_mut().filter(|gradient| gradient.to == was) {
+                            gradient.to = color;
                         }
                     }
                 });
@@ -3705,6 +3783,9 @@ impl Studio {
         if let Field::ExportTimes(index) = field {
             return self.doc.exports.get(usize::from(index)).map(|size| size.times);
         }
+        if field == Field::FillAngle {
+            return self.fill_angle();
+        }
         if let Field::FrameX | Field::FrameY = field {
             return Some(if field == Field::FrameX { self.doc.x } else { self.doc.y });
         }
@@ -3782,6 +3863,7 @@ impl Studio {
             // All the corners, or one; and the next rectangle as round.
             Field::Radius => self.set_radius_field(None, value),
             Field::Corner(corner) => self.set_radius_field(Some(usize::from(corner)), value),
+            Field::FillAngle => self.set_fill_angle(value),
             Field::ExportTimes(index) => {
                 if let Some(size) = self.doc.exports.get_mut(usize::from(index)) {
                     size.times = (value * 2.0).round().clamp(1.0, 16.0) / 2.0;
@@ -5163,12 +5245,12 @@ impl Studio {
                         None => self.field(field).map_or("\u{2014}".to_owned(), |value| match field {
                             Field::Opacity | Field::Dim => format!("{}%", value.round() as i32),
                             Field::Magnify => format!("{:.1}\u{d7}", value),
-                            Field::Turn | Field::Angle | Field::LineAngle => format!("{}\u{b0}", value.round() as i32),
+                            Field::Turn | Field::Angle | Field::LineAngle | Field::FillAngle => format!("{}\u{b0}", value.round() as i32),
                             _ => format!("{}", value.round() as i32),
                         }),
                     };
                     let (label, icon) = match field {
-                        Field::Turn | Field::Angle | Field::LineAngle => (icons::ROTATE, true),
+                        Field::Turn | Field::Angle | Field::LineAngle | Field::FillAngle => (icons::ROTATE, true),
                         Field::Radius => (icons::RADIUS, true),
                         Field::Corner(_) => ("", true),
                         Field::Opacity => (icons::EYE, true),
@@ -5248,18 +5330,13 @@ impl Studio {
                     }
                 }
                 Control::GradientBar => {
-                    if let Fill::Gradient(from, to, _) = self.doc.background {
-                        let inner = rect.inflate(-1);
-                        for x in 0..inner.w {
-                            let along = (x * 256 / inner.w.max(1)) as u32;
-                            canvas.fill(inner.x + x, inner.y + 3, 1, inner.h - 6, crate::canvas::mix(from, to, along));
-                        }
-                        // A stop at each end, ringed; lit while its color is open.
-                        for (x, paint, color) in [(rect.x + 1, Paint::From, from), (rect.right() - 13, Paint::To, to)] {
-                            let lit = self.palette == Some(paint);
-                            canvas.round_fill(x - 1, rect.y - 1, 14, rect.h + 2, 4, if lit { ACCENT } else { 0xFFFFFF }, 256);
-                            canvas.round_fill(x + 2, rect.y + 2, 8, rect.h - 4, 2, color, 256);
-                        }
+                    if let Some(stops) = self.doc.background.stops() {
+                        self.draw_stops(canvas, rect, stops, (Paint::From, Paint::To));
+                    }
+                }
+                Control::FillBar => {
+                    if let Some(stops) = self.fill_stops() {
+                        self.draw_stops(canvas, rect, stops, (Paint::Fill, Paint::FillTo));
                     }
                 }
                 Control::ColorField(paint) => {
@@ -5269,10 +5346,11 @@ impl Studio {
                     }
                     let now = match (paint, &shown, self.doc.background) {
                         (Paint::Background, _, Fill::Color(color)) => Some(color),
-                        (Paint::From, _, Fill::Gradient(from, ..)) => Some(from),
-                        (Paint::To, _, Fill::Gradient(_, to, _)) => Some(to),
+                        (Paint::From, _, Fill::Gradient(from, ..) | Fill::Radial(from, _)) => Some(from),
+                        (Paint::To, _, Fill::Gradient(_, to, _) | Fill::Radial(_, to)) => Some(to),
                         (Paint::Line, Some(Layer { kind: Kind::Shape(shape), .. }), _) => Some(shape.color),
                         (Paint::Fill, Some(Layer { kind: Kind::Shape(shape), .. }), _) => shape.filled.then_some(shape.fill),
+                        (Paint::FillTo, _, _) => self.fill_stops().map(|(_, to)| to),
                         (Paint::Shadow, Some(layer), _) => layer.drop().map(|drop| drop.color & 0xFF_FFFF),
                         (Paint::Recolor(color), _, _) => Some(color),
                         _ => None,
@@ -5294,7 +5372,8 @@ impl Studio {
                     };
                     let label = match paint {
                         Paint::From => "From".to_owned(),
-                        Paint::To => "To".to_owned(),
+                        Paint::To | Paint::FillTo => "To".to_owned(),
+                        Paint::Fill if self.fill_stops().is_some() => "From".to_owned(),
                         Paint::Recolor(color) => {
                             let count = self.selection_colors().iter().find(|(known, _)| *known == color).map_or(0, |(_, count)| *count);
                             format!("{count} {}", if count == 1 { "layer" } else { "layers" })
@@ -5310,10 +5389,11 @@ impl Studio {
                 Control::Swatch(paint, color) => {
                     let now = match (paint, &shown, self.doc.background) {
                         (Paint::Background, _, Fill::Color(c)) => Some(c) == color,
-                        (Paint::From, _, Fill::Gradient(c, ..)) => Some(c) == color,
-                        (Paint::To, _, Fill::Gradient(_, c, _)) => Some(c) == color,
+                        (Paint::From, _, Fill::Gradient(c, ..) | Fill::Radial(c, _)) => Some(c) == color,
+                        (Paint::To, _, Fill::Gradient(_, c, _) | Fill::Radial(_, c)) => Some(c) == color,
                         (Paint::Line, Some(Layer { kind: Kind::Shape(shape), .. }), _) => Some(shape.color) == color,
                         (Paint::Fill, Some(Layer { kind: Kind::Shape(shape), .. }), _) => if shape.filled { Some(shape.fill) == color } else { color.is_none() },
+                        (Paint::FillTo, _, _) => self.fill_stops().map(|(_, to)| to) == color,
                         _ => false,
                     };
                     if now || hovered {
@@ -5446,6 +5526,7 @@ impl Studio {
                             Fill::Color(_) => ground == Ground::Color,
                             Fill::Backdrop(_) => ground == Ground::Backdrop,
                             Fill::Gradient(..) => ground == Ground::Gradient,
+                            Fill::Radial(..) => ground == Ground::Radial,
                         },
                         Control::Shadow(which) => matches!(&shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.shadow == which),
                         Control::Action(Action::Halo) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.halo),

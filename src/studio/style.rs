@@ -37,7 +37,7 @@ pub(super) fn apply_style(shape: &mut Shape, style: u8, base: u32, dark: bool) {
     let lift = frame::Layer { x: 0, y: 6, blur: 16, spread: 0, color: 0x4000_0000 };
     let colored = frame::Layer { x: 0, y: 8, blur: 20, spread: 0, color: 0x9900_0000 | (base & 0xFF_FFFF) };
     let glow = frame::Layer { x: 0, y: 0, blur: 28, spread: 2, color: 0xCC00_0000 | (base & 0xFF_FFFF) };
-    (shape.dashed, shape.dotted, shape.sketch, shape.shadow) = (false, false, false, None);
+    (shape.dashed, shape.dotted, shape.sketch, shape.shadow, shape.gradient) = (false, false, false, None, None);
     shape.stroke = shape.stroke.max(2.0);
     match shape.tool {
         Tool::Rect | Tool::Ellipse => {
@@ -138,7 +138,7 @@ impl Studio {
         }
         let ground = match self.doc.background {
             Fill::Color(color) => color,
-            Fill::Gradient(from, to, _) => crate::canvas::mix(from, to, 128),
+            Fill::Gradient(from, to, _) | Fill::Radial(from, to) => crate::canvas::mix(from, to, 128),
             Fill::Backdrop(which) => frame::shade(which, 0.5, 0.5, 0.5),
             Fill::None => 0xFFFFFF,
         };

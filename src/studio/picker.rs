@@ -53,11 +53,12 @@ impl Studio {
         let shown = self.picked().map(|index| &self.doc.layers[index].kind);
         match (paint, shown, self.doc.background) {
             (Paint::Background, _, Fill::Color(color)) => Some(color),
-            (Paint::From, _, Fill::Gradient(from, ..)) => Some(from),
-            (Paint::To, _, Fill::Gradient(_, to, _)) => Some(to),
+            (Paint::From, _, Fill::Gradient(from, ..) | Fill::Radial(from, _)) => Some(from),
+            (Paint::To, _, Fill::Gradient(_, to, _) | Fill::Radial(_, to)) => Some(to),
             (Paint::Line, Some(Kind::Shape(shape)), _) => Some(shape.color),
             (Paint::Line, None, _) => Some(self.color),
             (Paint::Fill, Some(Kind::Shape(shape)), _) => shape.filled.then_some(shape.fill),
+            (Paint::FillTo, _, _) => self.fill_stops().map(|(_, to)| to),
             (Paint::Shadow, Some(_), _) => self.picked().and_then(|index| self.doc.layers[index].drop()).map(|drop| drop.color & 0xFF_FFFF),
             (Paint::Recolor(color), _, _) => Some(color),
             _ => None,
@@ -68,7 +69,7 @@ impl Studio {
     /// with the color: a shape, and a picture's shadow.
     fn paint_alpha(&self, paint: Paint) -> Option<f32> {
         match (paint, self.picked().map(|index| &self.doc.layers[index].kind)) {
-            (Paint::Line | Paint::Fill, Some(Kind::Shape(shape))) => Some(shape.opacity as f32 * 100.0 / 256.0),
+            (Paint::Line | Paint::Fill | Paint::FillTo, Some(Kind::Shape(shape))) => Some(shape.opacity as f32 * 100.0 / 256.0),
             (Paint::Shadow, Some(_)) => self.field_value(Field::DropAlpha),
             _ => None,
         }
@@ -103,7 +104,7 @@ impl Studio {
                 let frame = if std::ptr::eq(page, &self.pages[self.page]) && index == self.active { &self.doc } else { &page.frames[index] };
                 match frame.background {
                     Fill::Color(color) => add(color),
-                    Fill::Gradient(from, to, _) => {
+                    Fill::Gradient(from, to, _) | Fill::Radial(from, to) => {
                         add(from);
                         add(to);
                     }
@@ -114,6 +115,9 @@ impl Studio {
                         add(shape.color);
                         if shape.filled {
                             add(shape.fill);
+                            if let Some(gradient) = shape.gradient {
+                                add(gradient.to);
+                            }
                         }
                     }
                 }
@@ -133,11 +137,18 @@ impl Studio {
         let across = 9;
         let rows = |count: usize| (count as i32 + across - 1) / across;
         let alpha = self.paint_alpha(paint).is_some();
-        let high = 10 + square + 12 + 12 + if alpha { 20 } else { 0 } + 12 + 26 + 14 + rows(palette.len()) * (swatch + 4) + if used.is_empty() { 0 } else { 22 + rows(used.len()) * (swatch + 4) } + 8;
+        // Solid, Linear and Radial along the top, for what can be any.
+        let kinds = match paint {
+            Paint::Fill | Paint::FillTo if self.picked_fillable().is_some() => panel::FIELD_H + 10,
+            Paint::Background | Paint::From | Paint::To => panel::FIELD_H + 10,
+            _ => 0,
+        };
+        let high = kinds + 10 + square + 12 + 12 + if alpha { 20 } else { 0 } + 12 + 26 + 14 + rows(palette.len()) * (swatch + 4) + if used.is_empty() { 0 } else { 22 + rows(used.len()) * (swatch + 4) } + 8;
         let place = Rect::new(panel.x - 8 - WIDE, (field.y - 8).clamp(INSET, self.height - INSET - high), WIDE, high);
         let (left, inner) = (place.x + 10, WIDE - 20);
         let mut front = Vec::new();
         let mut y = place.y + 10;
+        y += self.picker_kinds(paint, (left, y), inner, &mut front, &mut layout.words);
         front.push((Rect::new(left, y, inner, square), Control::Picker(SQUARE)));
         y += square + 12;
         front.push((Rect::new(left + 34, y - 4, inner - 34, 20), Control::Picker(HUE)));
