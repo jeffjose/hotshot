@@ -3767,6 +3767,11 @@ impl Studio {
                 self.doc.layers.remove(index);
                 self.selected.clear();
             }
+            // The text tool puts down one text, as Figma's does: once it is
+            // done with, by Esc or a click off it, the pointer is back.
+            if self.tool == Tool::Text {
+                self.tool = Tool::Select;
+            }
             self.changed();
         }
     }
@@ -6155,6 +6160,34 @@ mod tests {
         let mut studio = Studio::with_pages(vec![Page { name: "Page 1".into(), frames: vec![frame] }], Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
         let png = studio.png().unwrap();
         assert_eq!(Image::open(&png).map(|image| (image.width(), image.height())), Some((120, 80)));
+    }
+
+    #[test]
+    fn the_text_tool_puts_down_one_text_and_gives_back_the_pointer() {
+        let mut studio = studio();
+        let click = |studio: &mut Studio, at: (f32, f32)| {
+            let at = studio.to_window(at);
+            studio.pointer_moved(at.0, at.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            studio.released();
+        };
+        studio.key(Key::Char('t'), Mods::default(), true);
+        click(&mut studio, (100.0, 100.0));
+        for letter in "Hi".chars() {
+            studio.key(Key::Char(letter), Mods::default(), true);
+        }
+        studio.key(Key::Escape, Mods::default(), true);
+        assert_eq!((studio.tool, studio.editing, studio.doc.layers.len()), (Tool::Select, None, 1));
+        // A click elsewhere then puts down no more text.
+        click(&mut studio, (500.0, 400.0));
+        assert_eq!(studio.doc.layers.len(), 1);
+        // Nor does a click off text being typed, which ends it.
+        studio.key(Key::Char('t'), Mods::default(), true);
+        click(&mut studio, (300.0, 300.0));
+        studio.key(Key::Char('Y'), Mods::default(), true);
+        click(&mut studio, (600.0, 500.0));
+        assert_eq!((studio.tool, studio.editing, studio.doc.layers.len()), (Tool::Select, None, 2));
     }
 
     #[test]
