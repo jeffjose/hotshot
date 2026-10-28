@@ -744,7 +744,14 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     let mut options = defaults();
     let file = config_file();
     if let Ok(text) = std::fs::read_to_string(&file) {
-        read_config(&mut options, &text).map_err(|error| format!("{}: {error}", file.display()))?;
+        // A line that cannot be made sense of is said and passed over,
+        // so that one wrong line does not stop hotshot altogether.
+        for (number, line) in text.lines().enumerate() {
+            if let Err(error) = read_config(&mut options, line) {
+                let error = error.strip_prefix("line 1: ").unwrap_or(&error);
+                eprintln!("hotshot: {}: line {}: {error} (passed over)", file.display(), number + 1);
+            }
+        }
     }
     // What was in hand last time comes after the config file, which
     // says how things are to begin with, and before the command line,
