@@ -119,11 +119,15 @@ pub(super) struct Board {
     pub laser: Option<explain::Laser>,
     pub trail: Vec<((i32, i32), std::time::Instant)>,
     pub glow: Option<(u32, std::time::Instant)>,
+    /// What the box tool would draw round, outlined.
+    pub pick: Option<pick::Pick>,
+    /// What letting go of the box being moved would do to an arrow.
+    pub drop: Option<change::Drop>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None }
     }
 }
 
@@ -134,6 +138,7 @@ mod map;
 mod ghost;
 mod change;
 mod explain;
+mod pick;
 mod act;
 pub(super) use act::Act;
 mod typing;

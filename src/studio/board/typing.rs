@@ -122,6 +122,15 @@ impl Studio {
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return };
         let boxy = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
         let (slight, sticky) = (shape.is_slight(), shape.form == shapes::FORM_STICKY);
+        // A click on what the box tool outlines: a box exactly round it.
+        if let (true, true, Some((x, y, w, h))) = (slight, boxy, self.picked_round(from)) {
+            if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
+                shape.points = vec![(x, y), (x + w, y + h)];
+                shape.touch();
+            }
+            self.board.pick = None;
+            return self.board_drawn_box(index);
+        }
         if slight {
             let run = if boxy { self.run_size() } else { None };
             let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return };
@@ -143,15 +152,7 @@ impl Studio {
         }
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return };
         match shape.tool {
-            Tool::Rect | Tool::Ellipse => {
-                let (_, _, w, h) = shape.frame();
-                shape.base = (w, h);
-                self.note_size((w, h));
-                self.selected = vec![index];
-                self.edit_text(index);
-                self.changed();
-                self.guess(true);
-            }
+            Tool::Rect | Tool::Ellipse => self.board_drawn_box(index),
             Tool::Arrow | Tool::Line => {
                 self.selected = vec![index];
                 self.tool = Tool::Select;
@@ -165,6 +166,20 @@ impl Studio {
                 self.changed();
             }
         }
+    }
+
+    /// A box drawn: the size it was drawn kept, typed into, and what comes
+    /// next guessed.
+    fn board_drawn_box(&mut self, index: usize) {
+        let (_, _, w, h) = self.box_frame(index);
+        if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
+            shape.base = (w, h);
+        }
+        self.note_size((w, h));
+        self.selected = vec![index];
+        self.edit_text(index);
+        self.changed();
+        self.guess(true);
     }
 
     /// Ends of a line on a board stuck to what they are put down on: a

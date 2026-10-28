@@ -431,6 +431,12 @@ instead, the caret at the end; `C`, `F`, `D` on a note, `Shift+S` and
 into it, an arrow's words sitting across its middle on a patch of the
 paper; double-click empty board for a label.
 
+With the box tool in hand, the pointer over a box of the board, or over
+a part of a screenshot the edge finder sees as a box (a window, a pane,
+a card, a button), outlines it at once; a click draws the new box
+exactly round it, and a drag still draws freely. Where boxes are nested
+and share edges, Alt goes out to the one round it, and round again.
+
 Hover a box and a dot shows on each side. Drag one out and let go on
 another box, and the two are joined by an arrow that goes from the side
 of one nearest the other, curving into it, as they move; let go on
@@ -509,9 +515,14 @@ was. Drag an arrow's head or tail onto another box and it is tied there
 instead, routed again. Drag from the middle of an arrow to branch it,
 "and it also goes there": let go on a box, and the box the arrow comes
 from is joined to it too; on empty board, to a new box there. Drop a
-box onto an arrow and it goes between its two ends, A to B becoming A
-to the new box to B, in line with them; if there is not room, B and
-everything after it move over along the arrow, keeping their gaps.
+box right on an arrow and it goes between its two ends, A to B becoming
+A to the new box to B, in line with them; if there is not room, B and
+everything after it move over along the arrow, keeping their gaps. Drop
+it a little above or below the line instead and it joins as a branch
+from A, the arrow kept as it was. While it is dragged, what letting go
+would do is shown: the arrow broken round it with Between, or an
+orange branch to it with Branch beside; the zone it is in holds a few
+pixels past its edge, so it does not flicker.
 Type `?` or `TBD` into a box and it is drawn dashed and hollow, clearly
 unfinished, and listed first in `Ctrl+K` under Placeholders, so none is
 forgotten. `Shift+S` makes the boxes picked out another shape, a box,

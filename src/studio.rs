@@ -5294,6 +5294,10 @@ impl Studio {
         if down && self.on_board() {
             self.ghost_keys(key, mods);
         }
+        // Alt with the box tool over nested boxes: the one round it.
+        if down && self.on_board() && key == Key::Other && self.pick_out() {
+            return Outcome::Continue;
+        }
         // The history open takes the keys.
         if down && self.on_board() && self.history_key(key) {
             return Outcome::Continue;

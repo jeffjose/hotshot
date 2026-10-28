@@ -97,31 +97,10 @@ impl Studio {
     /// goes between them, the arrow to it and another on from it; what the
     /// arrow went to, and what comes after that, moving over along it if
     /// there is not room. Whether it did.
-    pub(in crate::studio) fn split_arrow(&mut self, index: usize) -> bool {
+    pub(in crate::studio) fn split_arrow(&mut self, index: usize, (arrow, from, to): (usize, u32, u32)) -> bool {
         let id = self.id_of(index);
-        let links = self.links();
-        if links.iter().any(|&(_, from, to)| from == id || to == id) {
-            return false;
-        }
         let (x, y, w, h) = self.box_frame(index);
         let middle = (x + w / 2.0, y + h / 2.0);
-        let reach = w.min(h) / 2.0;
-        let mut found = None;
-        for &(arrow, from, to) in &links {
-            let Some(at) = self.index_of(arrow) else { continue };
-            let Kind::Shape(shape) = &self.doc.layers[at].kind else { continue };
-            let near = shape.hit(middle.0.round() as i32, middle.1.round() as i32, &mut self.text) || {
-                let (a, b) = (shape.points[0], shape.points[1]);
-                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-                let t = (((middle.0 - a.0) * dx + (middle.1 - a.1) * dy) / (dx * dx + dy * dy).max(1.0)).clamp(0.0, 1.0);
-                (a.0 + t * dx - middle.0).hypot(a.1 + t * dy - middle.1) <= reach
-            };
-            if near {
-                found = Some((at, from, to));
-                break;
-            }
-        }
-        let Some((arrow, from, to)) = found else { return false };
         let (Some(a), Some(b)) = (self.index_of(from), self.index_of(to)) else { return false };
         let (fa, fb) = (self.box_frame(a), self.box_frame(b));
         // The way the arrow goes, across or down, and the room there is.
@@ -181,6 +160,117 @@ impl Studio {
         self.changed();
         self.say("In between");
         true
+    }
+
+    /// Where a box being moved would go if let go, over an arrow between
+    /// two others: right on its line, between its ends; a little above or
+    /// below it, beside it, as a branch off where it comes from. The zone it
+    /// is in now holds a few pixels longer, so it does not flicker.
+    pub(in crate::studio) fn drop_target(&mut self) -> Option<Drop> {
+        let index = self.picked().filter(|&index| self.is_box(index))?;
+        let id = self.id_of(index);
+        let links = self.links();
+        if links.iter().any(|&(_, from, to)| from == id || to == id) || !self.inside(id).is_empty() {
+            return None;
+        }
+        let (x, y, w, h) = self.box_frame(index);
+        let middle = (x + w / 2.0, y + h / 2.0);
+        let was = self.board.drop;
+        let mut best: Option<(f32, Drop)> = None;
+        for &(arrow, from, to) in &links {
+            let Some(at) = self.index_of(arrow) else { continue };
+            let Kind::Shape(shape) = &self.doc.layers[at].kind else { continue };
+            // How far its middle is from the arrow's path, and whether it is
+            // along it rather than past an end.
+            let path: Vec<(f32, f32)> = match shape.points.get(2) {
+                Some(&bend) => vec![shape.points[0], bend, shape.points[1]],
+                None => vec![shape.points[0], shape.points[1]],
+            };
+            let mut far = f32::MAX;
+            let mut along = false;
+            for pair in path.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let t = ((middle.0 - a.0) * dx + (middle.1 - a.1) * dy) / (dx * dx + dy * dy).max(1.0);
+                let tc = t.clamp(0.0, 1.0);
+                let d = (a.0 + tc * dx - middle.0).hypot(a.1 + tc * dy - middle.1);
+                if d < far {
+                    (far, along) = (d, (-0.05..=1.05).contains(&t));
+                }
+            }
+            if !along {
+                continue;
+            }
+            let held = |split: bool| was.is_some_and(|drop: Drop| drop.arrow == at && drop.split == split);
+            let on_line = 14.0 + if held(true) { 8.0 } else { 0.0 };
+            let beside = h.max(w) / 2.0 + 60.0 + if held(false) { 12.0 } else { 0.0 };
+            let drop = match far {
+                far if far <= on_line => Drop { arrow: at, from, to, split: true },
+                far if far <= beside => Drop { arrow: at, from, to, split: false },
+                _ => continue,
+            };
+            if best.is_none_or(|(near, _)| far < near) {
+                best = Some((far, drop));
+            }
+        }
+        best.map(|(_, drop)| drop)
+    }
+
+    /// A box let go beside an arrow: joined as a branch off where the arrow
+    /// comes from, the arrow kept as it was.
+    pub(in crate::studio) fn route_around(&mut self, index: usize, from: u32) -> bool {
+        let Some(start) = self.index_of(from) else { return false };
+        self.join(start, index);
+        self.changed();
+        self.say("A branch beside it");
+        true
+    }
+
+    /// What letting go where the box being moved is would do to an arrow,
+    /// shown faintly: the arrow broken round it, or a branch to it.
+    pub(in crate::studio) fn draw_drop(&mut self, canvas: &mut Canvas) {
+        let (Some(drop), Drag::Move { moved: true, .. }) = (self.board.drop, self.drag) else { return };
+        let Some(index) = self.picked() else { return };
+        let (Some(a), Some(b)) = (self.index_of(drop.from), self.index_of(drop.to)) else { return };
+        let (x, y, w, h) = self.box_frame(index);
+        let mid = self.to_window_page((x + w / 2.0, y + h / 2.0));
+        let center = |studio: &Studio, i: usize| {
+            let (fx, fy, fw, fh) = studio.box_frame(i);
+            studio.to_window_page((fx + fw / 2.0, fy + fh / 2.0))
+        };
+        let (ca, cb) = (center(self, a), center(self, b));
+        let dashed = |canvas: &mut Canvas, p: (i32, i32), q: (i32, i32), color: u32| {
+            let long = (((q.0 - p.0) as f32).hypot((q.1 - p.1) as f32)).max(1.0);
+            let mut t = 0.0;
+            while t < long {
+                let s = (t + 7.0).min(long);
+                let at = |u: f32| (p.0 + ((q.0 - p.0) as f32 * u / long) as i32, p.1 + ((q.1 - p.1) as f32 * u / long) as i32);
+                for shift in [0, 1] {
+                    line(canvas, (at(t).0, at(t).1 + shift), (at(s).0, at(s).1 + shift), color);
+                }
+                t += 12.0;
+            }
+        };
+        let (color, says) = match drop.split {
+            true => {
+                // The arrow broken where the box goes: a gap of paper across it.
+                if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(drop.arrow) {
+                    let gap = self.to_window(shape.middle());
+                    canvas.disc(gap.0, gap.1, 9, shapes::PAPER, 256);
+                }
+                dashed(canvas, ca, mid, ACCENT);
+                dashed(canvas, mid, cb, ACCENT);
+                (ACCENT, "Between")
+            }
+            false => {
+                dashed(canvas, ca, mid, 0xF08C00);
+                (0xF08C00, "Branch beside")
+            }
+        };
+        let wide = self.text.width(says, 11) + 12;
+        let (cx, top) = (mid.0 - wide / 2, (mid.1 - (h * self.zoom / 2.0) as i32 - 26).max(4));
+        canvas.round_fill(cx, top, wide, 18, 4, color, 256);
+        self.text.draw(canvas, cx + 6, top + 9 - Text::line_height(11) / 2, 11, 0xFFFFFF, says);
     }
 
     /// The boxes still to be filled in: those whose words are "?" or TBD.
@@ -317,6 +407,16 @@ impl Studio {
 /// out of a box's side.
 pub(in crate::studio) const BRANCH: u8 = 4;
 
+/// A box let go over an arrow: the arrow, the boxes it joins, and whether
+/// the box goes between them or beside, as a branch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::studio) struct Drop {
+    pub arrow: usize,
+    pub from: u32,
+    pub to: u32,
+    pub split: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +516,36 @@ mod tests {
             let _ = shown(&mut studio, (160.0, 130.0));
             studio.selected = vec![a];
         }
+    }
+
+    #[test]
+    fn a_box_let_go_just_beside_an_arrow_branches_off_it_the_arrow_kept() {
+        let mut studio = board();
+        let a = put(&mut studio, (100.0, 100.0, 120.0, 60.0), "A");
+        let b = put(&mut studio, (500.0, 100.0, 120.0, 60.0), "B");
+        studio.join(a, b);
+        let new = put(&mut studio, (200.0, 400.0, 100.0, 40.0), "Audit");
+        studio.changed();
+        // Dragged to a little under the line: the branch is what is shown.
+        let from = studio.to_window_page((250.0, 420.0));
+        studio.pointer_moved(from.0, from.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        let near = studio.to_window_page((360.0, 190.0));
+        studio.pointer_moved(near.0, near.1 + 20, Mods::default());
+        studio.pointer_moved(near.0, near.1, Mods::default());
+        assert_eq!(studio.board.drop.map(|drop| drop.split), Some(false));
+        // Right on it: between; and back out a hair, still between.
+        let on = studio.to_window_page((360.0, 133.0));
+        studio.pointer_moved(on.0, on.1, Mods::default());
+        assert_eq!(studio.board.drop.map(|drop| drop.split), Some(true));
+        studio.pointer_moved(on.0, on.1 + 12, Mods::default());
+        assert_eq!(studio.board.drop.map(|drop| drop.split), Some(true), "it holds a little past");
+        studio.pointer_moved(near.0, near.1, Mods::default());
+        studio.released();
+        let (ida, idb, idn) = (shape(&studio, a).id, shape(&studio, b).id, shape(&studio, new).id);
+        assert_eq!(studio.parent_box(idb), Some(ida), "the arrow kept");
+        assert_eq!(studio.parent_box(idn), Some(ida), "a branch to it");
     }
 
     #[test]

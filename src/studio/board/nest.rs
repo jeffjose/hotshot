@@ -95,6 +95,8 @@ impl Studio {
     /// What is carried along with a move, moved as far; with Alt held,
     /// left where it was.
     pub(in crate::studio) fn carry(&mut self, dx: f32, dy: f32) {
+        // Over an arrow, what letting go would do, shown.
+        self.board.drop = if self.mods.alt { None } else { self.drop_target() };
         let by = if self.mods.alt { (0.0, 0.0) } else { (dx, dy) };
         for (index, layer) in self.board.carried.clone() {
             if index < self.doc.layers.len() {
@@ -113,6 +115,7 @@ impl Studio {
         self.board.carried.clear();
         self.board.letting_go = false;
         if self.mods.alt {
+            self.board.drop = None;
             return;
         }
         let chosen = self.chosen();
@@ -122,10 +125,14 @@ impl Studio {
         let mut changed = false;
         let single = tops.len() == 1;
         for index in tops {
-            // One box let go on an arrow goes between its ends.
-            if single && self.split_arrow(index) {
-                changed = true;
-                continue;
+            // One box let go on an arrow goes between its ends, or beside it.
+            let drop = self.board.drop.take();
+            if let (true, Some(drop)) = (single, drop) {
+                let done = if drop.split { self.split_arrow(index, (drop.arrow, drop.from, drop.to)) } else { self.route_around(index, drop.from) };
+                if done {
+                    changed = true;
+                    continue;
+                }
             }
             let id = self.id_of(index);
             let (x, y, w, h) = self.box_frame(index);

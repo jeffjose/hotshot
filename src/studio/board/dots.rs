@@ -46,6 +46,7 @@ impl Studio {
         if self.board.history.as_ref().is_some_and(|history| history.sliding) {
             return self.history_at(at.0);
         }
+        self.hover_pick(at, over_control);
         let shows = self.tool == Tool::Select && !self.space && !over_control && self.editing.is_none();
         let near = |studio: &Studio, index: usize| {
             let spots = studio.dot_spots(index);
@@ -200,6 +201,8 @@ impl Studio {
             }
         }
         self.draw_ghost(canvas);
+        self.draw_pick(canvas);
+        self.draw_drop(canvas);
         self.draw_laser(canvas);
         if self.drag == Drag::None {
             if let Some(index) = self.board.dots_of.filter(|&index| self.is_box(index)) {
