@@ -1174,8 +1174,19 @@ pub fn side_towards(anchor: &Anchor, to: Point) -> (Point, (f32, f32)) {
 /// of that nearest the first, bent so as to come into it square, as a
 /// hand draws one between two boxes; straight where the two are in line.
 pub fn route(shape: &mut Shape, from: &Anchor, to: &Anchor) {
-    let (start, _) = side_towards(from, to.middle);
-    let (end, way) = side_towards(to, from.middle);
+    // Side to side where they are clear of each other across, as a map's
+    // levels are, though one is well under the other; top to bottom where
+    // they are clear down and not across; else the nearest sides.
+    let gap = |a: f32, ha: f32, b: f32, hb: f32| (a - b).abs() - ha - hb;
+    let (across, down) = (gap(from.middle.0, from.half.0, to.middle.0, to.half.0), gap(from.middle.1, from.half.1, to.middle.1, to.half.1));
+    let toward = |anchor: &Anchor, other: Point| match (across > 8.0, down > 8.0) {
+        (true, false) => (other.0, anchor.middle.1),
+        (true, true) if across >= down * 0.6 => (other.0, anchor.middle.1),
+        (false, true) => (anchor.middle.0, other.1),
+        _ => other,
+    };
+    let (start, _) = side_towards(from, toward(from, to.middle));
+    let (end, way) = side_towards(to, toward(to, from.middle));
     // What the curve is pulled towards: in line with its end, half way.
     let pull = match way.0.abs() >= way.1.abs() {
         true => ((start.0 + end.0) / 2.0, end.1),

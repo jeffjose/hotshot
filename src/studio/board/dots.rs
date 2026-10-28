@@ -55,7 +55,13 @@ impl Studio {
             (left..=right).contains(&at.0) && (top..=bottom).contains(&at.1)
         };
         let kept = self.board.dots_of.filter(|&index| shows && self.is_box(index) && near(self, index));
-        let now = kept.or_else(|| self.hovered.filter(|&index| shows && self.is_box(index))).or_else(|| self.picked().filter(|&index| shows && self.is_box(index)));
+        // A box under the pointer by its frame, hollow or not: the smallest.
+        let page = self.to_doc(at);
+        let under = (0..self.doc.layers.len()).filter(|&index| self.is_box(index) && !self.doc.layers[index].hidden).filter(|&index| {
+            let (x, y, w, h) = self.box_frame(index);
+            page.0 >= x && page.0 <= x + w && page.1 >= y && page.1 <= y + h
+        }).min_by(|&a, &b| (self.box_frame(a).2 * self.box_frame(a).3).total_cmp(&(self.box_frame(b).2 * self.box_frame(b).3)));
+        let now = kept.or_else(|| under.filter(|_| shows)).or_else(|| self.picked().filter(|&index| shows && self.is_box(index)));
         if now != self.board.dots_of {
             self.board.dots_of = now;
             self.dirty = true;

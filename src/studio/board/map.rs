@@ -116,7 +116,7 @@ impl Studio {
         let down = self.goes_down(parent_id);
         // After the last of the parent's children that comes after it.
         let (x, y, w, h) = self.box_frame(index);
-        let after = self.child_boxes(parent_id).into_iter().filter_map(|child| self.index_of(child)).map(|child| self.box_frame(child)).filter(|frame| if down { frame.0 >= x } else { frame.1 >= y }).fold((x, y, w, h), |last, frame| if down { if frame.0 > last.0 { frame } else { last } } else if frame.1 > last.1 { frame } else { last });
+        let after = self.child_boxes(parent_id).into_iter().filter_map(|child| self.index_of(child)).map(|child| self.box_frame(child)).filter(|frame| if down { frame.0 >= x && (frame.1 - y).abs() < h } else { frame.1 >= y && (frame.0 - x).abs() < w }).fold((x, y, w, h), |last, frame| if down { if frame.0 > last.0 { frame } else { last } } else if frame.1 > last.1 { frame } else { last });
         let center = match down {
             true => (after.0 + after.2 + SIBLING + w / 2.0, after.1 + after.3 / 2.0),
             false => (after.0 + after.2 / 2.0, after.1 + after.3 + SIBLING + h / 2.0),

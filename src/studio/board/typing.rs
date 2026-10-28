@@ -539,7 +539,7 @@ mod tests {
         let joined = shape(&studio, 4);
         assert_eq!((joined.stuck[0].unwrap().0, joined.stuck[1].unwrap().0), (shape(&studio, 0).id, shape(&studio, 1).id));
         // Its ends at the sides of each nearest the other, curving.
-        assert!(joined.points[0].1 > 172.0 && joined.points[1].1 < 400.0 && joined.points.len() == 3, "from {:?} to {:?}", joined.points[0], joined.points[1]);
+        assert!(joined.points[0].0 > 260.0 && joined.points[1].0 < 600.0 && joined.points.len() == 3, "from {:?} to {:?}", joined.points[0], joined.points[1]);
         // Dragged out onto empty board: a new box there.
         studio.pointer_moved(over.0, over.1, Mods::default());
         let left = studio.dot_spots(0)[3];
