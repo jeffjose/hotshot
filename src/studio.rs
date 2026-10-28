@@ -25,6 +25,7 @@ mod menu;
 mod panel;
 mod picker;
 mod preview;
+mod snap;
 
 
 use menu::{MenuKind, MenuState};
@@ -1472,6 +1473,10 @@ pub struct Studio {
     guides: Vec<(bool, f32)>,
     /// What is shown as if it were done, while the pointer rests on it.
     preview: Option<preview::Preview>,
+    /// The gaps what is being moved is spaced by, shown.
+    gaps: Vec<snap::Gap>,
+    /// Whether Shift+1 last fitted the frame, to fit what is picked out next.
+    fitted_frame: bool,
     dirty: bool,
 }
 
@@ -1537,6 +1542,8 @@ impl Studio {
             last_press: (0, (-100, -100)),
             guides: Vec::new(),
             preview: None,
+            gaps: Vec::new(),
+            fitted_frame: false,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -2680,6 +2687,7 @@ impl Studio {
         }
         self.held.clear();
         self.guides.clear();
+        self.gaps.clear();
     }
 
     /// What the ends of arrows can be stuck to: the pictures, and the
@@ -2749,6 +2757,7 @@ impl Studio {
     /// as Figma's do: and the lines it is brought onto, to show.
     fn snap(&mut self, dx: f32, dy: f32) -> (f32, f32) {
         self.guides.clear();
+        self.gaps.clear();
         let held: Vec<(f32, f32, f32, f32)> = self.held.clone().iter().map(|layer| layer.bounds(&mut self.text)).collect();
         let Some(&(mut left, mut top, _, _)) = held.first() else { return (dx, dy) };
         let (mut right, mut bottom) = (f32::MIN, f32::MIN);
@@ -2779,14 +2788,33 @@ impl Studio {
             }
             best
         };
+        // Or, nearer still, where it is spaced evenly with what is beside it.
+        let others = self.other_edges();
+        let moved = [left + dx, top + dy, right + dx, bottom + dy];
         let (mut dx, mut dy) = (dx, dy);
-        if let Some((by, line)) = nearest([left + dx, (left + right) / 2.0 + dx, right + dx], &across) {
-            dx += by;
-            self.guides.push((true, line));
+        let line_x = nearest([left + dx, (left + right) / 2.0 + dx, right + dx], &across);
+        match (line_x, snap::equal_gap(moved, &others, reach)) {
+            (line, Some((by, gaps))) if line.is_none_or(|(line_by, _)| by.abs() < line_by.abs()) => {
+                dx += by;
+                self.gaps.extend(gaps);
+            }
+            (Some((by, line)), _) => {
+                dx += by;
+                self.guides.push((true, line));
+            }
+            _ => {}
         }
-        if let Some((by, line)) = nearest([top + dy, (top + bottom) / 2.0 + dy, bottom + dy], &down) {
-            dy += by;
-            self.guides.push((false, line));
+        let line_y = nearest([top + dy, (top + bottom) / 2.0 + dy, bottom + dy], &down);
+        match (line_y, snap::equal_gap_down(moved, &others, reach)) {
+            (line, Some((by, gaps))) if line.is_none_or(|(line_by, _)| by.abs() < line_by.abs()) => {
+                dy += by;
+                self.gaps.extend(gaps);
+            }
+            (Some((by, line)), _) => {
+                dy += by;
+                self.guides.push((false, line));
+            }
+            _ => {}
         }
         (dx, dy)
     }
@@ -2797,6 +2825,11 @@ impl Studio {
     fn scale_to(&mut self, pull: (i32, i32), from: (f32, f32), at: (f32, f32), mods: Mods) {
         let Some(index) = self.picked() else { return };
         let Some(before) = self.held.first().cloned() else { return };
+        // Widths and heights the rest have, for a side pulled to stop at.
+        let others = self.other_edges();
+        let (widths, heights): (Vec<f32>, Vec<f32>) = others.iter().map(|edges| (edges[2] - edges[0], edges[3] - edges[1])).unzip();
+        let reach = 6.0 / self.zoom;
+        let fit = |size: f32, sizes: &[f32], pulled: bool| if pulled { snap::nearest_size(size, sizes, reach).unwrap_or(size) } else { size };
         let mut layer = before.clone();
         match &mut layer.kind {
             Kind::Picture(picture) => {
@@ -2804,6 +2837,9 @@ impl Studio {
                 let (fx, fy) = was.local(from);
                 let (tx, ty) = was.local(at);
                 let (mut w, mut h) = (was.w + pull.0 as f32 * (tx - fx), was.h + pull.1 as f32 * (ty - fy));
+                if was.angle == 0.0 {
+                    (w, h) = (fit(w, &widths, pull.0 != 0), fit(h, &heights, pull.1 != 0 && pull.0 == 0));
+                }
                 // Keeping its shape, as Figma does with Shift; a corner of a
                 // picture is held to its shape unless Shift says not.
                 let keep = mods.shift != (pull.0 != 0 && pull.1 != 0);
@@ -2874,6 +2910,16 @@ impl Studio {
                     -1 => top = (top + fy).min(bottom - 1.0),
                     1 => bottom = (bottom + fy).max(top + 1.0),
                     _ => {}
+                }
+                // A side pulled stops at a width or a height another has;
+                // their boxes are a little larger than their frames, by
+                // half the line round them and a little.
+                if shape.angle == 0.0 {
+                    let margin = shape.stroke + 4.0;
+                    let width = fit(right - left + margin, &widths, pull.0 != 0) - margin;
+                    let height = fit(bottom - top + margin, &heights, pull.1 != 0) - margin;
+                    if pull.0 < 0 { left = right - width } else if pull.0 > 0 { right = left + width }
+                    if pull.1 < 0 { top = bottom - height } else if pull.1 > 0 { bottom = top + height }
                 }
                 if mods.shift && pull.0 != 0 && pull.1 != 0 && w > 0.0 && h > 0.0 {
                     let ratio = w / h;
@@ -3586,6 +3632,18 @@ impl Studio {
                     self.changed();
                 }
             }
+            // Shift+1 fits the frame, and again what is picked out, and
+            // back; Shift+2 what is picked out.
+            (Key::Char('1' | '!'), false) if mods.shift => {
+                if self.fitted_frame && !self.chosen().is_empty() {
+                    self.zoom_to_selection();
+                    self.fitted_frame = false;
+                } else {
+                    self.fit();
+                    self.fitted_frame = true;
+                }
+            }
+            (Key::Char('2' | '@'), false) if mods.shift => self.zoom_to_selection(),
             (Key::Char(letter), false) => {
                 if let Some(&(tool, ..)) = TOOLS.iter().find(|(_, _, key)| key.to_ascii_lowercase().starts_with(letter)) {
                     self.set_tool(tool);
@@ -3717,6 +3775,7 @@ impl Studio {
         if let Some(index) = self.cropping {
             self.draw_crop(&mut canvas, index);
         }
+        self.draw_gaps(&mut canvas);
         // The lines what is moved has snapped to, across the view.
         for &(upright, at) in &self.guides {
             match upright {
