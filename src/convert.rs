@@ -897,6 +897,24 @@ mod tests {
         assert!(fit_score(w, h, &pixels, false, &flat, Format::Png, &settings, 85.0, &mut |_| true).is_none(), "nothing to fit");
     }
 
+    /// A real screenshot, which is where an encoder's harder paths are
+    /// taken: jixel 0.4 wrote lossless files at its medium effort that
+    /// could not be read back.
+    #[test]
+    fn a_real_screenshot_comes_back_to_the_pixel_from_every_lossless_kind() {
+        let (w, h, full) = crate::pin::read(&std::fs::read("docs/editor.png").unwrap()).unwrap();
+        let (cw, ch) = (480, 320);
+        let mut pixels: Vec<u32> = (0..ch).flat_map(|y| full[(y * w) as usize..][..cw as usize].to_vec()).collect();
+        // A corner see-through, as a rounded picture has.
+        pixels[0] &= 0x00FF_FFFF;
+        let _ = h;
+        for format in [Format::Png, Format::JxlLossless, Format::WebpLossless] {
+            let bytes = encode(cw as u32, ch as u32, &pixels, true, None, format, &Settings::default()).unwrap().bytes;
+            let back = decode(&bytes).unwrap_or_else(|| panic!("{format:?} reads back"));
+            assert!(back.pixels == pixels, "{format:?} keeps every pixel");
+        }
+    }
+
     #[test]
     fn saved_settings_read_back_the_same() {
         let mut settings = Settings::default();
