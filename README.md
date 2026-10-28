@@ -237,7 +237,10 @@ picture.
 
 ![The canvas: a screenshot on a backdrop, rounded and shadowed, with an arrow over it and its properties on the right](docs/canvas.png)
 
-`Ctrl+E` exports the frame you are in as a PNG to the screenshots folder at 1x, 2x or 3x, `Ctrl+C`
+`Ctrl+E` exports the frame you are in to the screenshots folder at each
+size the panel's Export lists, a new frame at 1x; a size other than 1x
+with no suffix of its own is named for it, as Figma does, so twice the
+size is written as `Frame 1@2x.png`. `Ctrl+C`
 copies it. Ctrl+E in capture mode opens the picture there in a new file
 in Drafts, its shapes still editable.
 

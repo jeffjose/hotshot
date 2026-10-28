@@ -506,6 +506,15 @@ impl ExportSize {
     fn new(times: f32) -> ExportSize {
         ExportSize { times, suffix: String::new(), format: crate::output::Format::Png }
     }
+
+    /// What its file's name ends in: the suffix given it, or with none, at
+    /// any size but its own, "@2x" for twice it, as Figma names them.
+    fn file_suffix(&self) -> String {
+        match self.suffix.is_empty() && self.times != 1.0 {
+            true => format!("@{}x", self.times),
+            false => self.suffix.clone(),
+        }
+    }
 }
 
 /// A shape made larger or smaller by a factor, about the artboard's top
@@ -528,7 +537,7 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
 
 impl Doc {
     pub fn new(width: i32, height: i32) -> Doc {
-        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(2.0)] }
+        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)] }
     }
 
     /// The artboard as a picture, `times` its size: each pixel with how
@@ -4310,7 +4319,7 @@ impl Studio {
                     Some(_) => one_line(&frame.name).replace('/', "-"),
                     None => format!("{}-{}", crate::output::dated(&self.filename), one_line(&frame.name).replace('/', "-")),
                 };
-                let name = format!("{stem}{}.{}", size.suffix, size.format.ending());
+                let name = format!("{stem}{}.{}", size.file_suffix(), size.format.ending());
                 let path = dir.join(name);
                 std::fs::write(&path, bytes).map_err(|error| format!("cannot write {}: {error}", path.display()))?;
                 debug!("canvas exported {}", path.display());
@@ -5559,7 +5568,17 @@ impl Studio {
                             let shown = self.typed_shown(canvas, (x, cy - line_high / 2), px, typed);
                             self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &shown);
                         }
-                        None if now.is_empty() => self.text.draw(canvas, x, cy - line_high / 2, px, 0x777777, match naming { Naming::Filter => "Filter layers", _ if label.is_empty() => "suffix", _ => "none" }),
+                        None if now.is_empty() => {
+                            // A size with no suffix says, faintly, what its
+                            // file's name ends in all the same.
+                            let faint = match naming {
+                                Naming::Filter => "Filter layers".to_owned(),
+                                Naming::Suffix(index) => self.doc.exports.get(index).map(ExportSize::file_suffix).filter(|suffix| !suffix.is_empty()).unwrap_or_else(|| "suffix".to_owned()),
+                                _ if label.is_empty() => "suffix".to_owned(),
+                                _ => "none".to_owned(),
+                            };
+                            self.text.draw(canvas, x, cy - line_high / 2, px, 0x777777, &faint);
+                        }
                         None => self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &now),
                     }
                 }
@@ -6421,6 +6440,26 @@ mod tests {
         assert!(exported.files.iter().all(|(path, ..)| path.exists()));
         studio.press_control(Control::ExportDone(true), false);
         assert!(studio.exported.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_frame_exports_at_its_size_and_a_larger_one_is_named_at_for_how_large() {
+        let dir = std::env::temp_dir().join(format!("hotshot-export-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut studio = Studio::new(Doc::new(120, 80), Text::load(), 1400, 900, dir.clone(), "shot.png".into());
+        studio.path = Some(dir.join("File.hotshot"));
+        studio.new_frame((300.0, 0.0), (60.0, 40.0));
+        assert_eq!(studio.doc.exports, vec![ExportSize::new(1.0)]);
+        // Another size added says nothing of its own, and is named for it;
+        // one given a suffix keeps it.
+        studio.act(Action::AddExport);
+        studio.act(Action::AddExport);
+        studio.doc.exports[2].suffix = "-big".into();
+        let written = studio.export_frames(&[1]).unwrap();
+        let names: Vec<String> = written.iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["Frame 2.png", "Frame 2@2x.png", "Frame 2-big.png"]);
+        assert_eq!(ExportSize::new(1.5).file_suffix(), "@1.5x");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

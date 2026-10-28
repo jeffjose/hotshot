@@ -98,8 +98,9 @@ impl Studio {
             Action::AddExport => {
                 self.checkpoint();
                 let times = self.doc.exports.last().map_or(1.0, |size| (size.times + 1.0).min(4.0));
-                let suffix = if times == 1.0 { String::new() } else { format!("@{times}x") };
-                self.doc.exports.push(ExportSize { suffix, ..ExportSize::new(times) });
+                // With no suffix of its own, its file ends in "@2x" for twice
+                // the size, and still does if its size is changed.
+                self.doc.exports.push(ExportSize::new(times));
                 self.changed();
             }
             // A copy of a size, under it.
