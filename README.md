@@ -568,6 +568,17 @@ picture under them. Right-click it for Keep as picture, which takes it
 back to the one picture it was, or anything picked out for Merge into
 picture. On a page of frames an SVG is a picture.
 
+`Ctrl+E` on a board exports it as a PNG at twice its size, on its
+paper, beside the file in `exports`: all of it, with room round it;
+what is picked out, with what is in it; or, with a frame drawn round
+part of the board worked in, everything in that frame. A board's frames
+are only what of it is exported: what is moved over one stays the
+board's. `Ctrl+K` exports the same as AVIF, JPEG XL or SVG, since a
+board is all shapes: each shape as its hand drew it, stroke by stroke,
+its words as words in its lettering, and anything else, a picture or a
+counter, as a picture in its place. On a page of frames, `Ctrl+K`
+exports what is picked out as a PNG, AVIF or JPEG XL of its own.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

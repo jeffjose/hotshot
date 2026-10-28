@@ -1512,6 +1512,17 @@ impl Shape {
     /// every time it is drawn, by a seed taken from where it is.
     fn sketch_mask(&self, bounds: Rect) -> Mask {
         let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
+        for (points, thin) in self.sketch_strokes() {
+            for pair in points.windows(2) {
+                stamp(&mut mask, pair[0], pair[1], thin);
+            }
+        }
+        mask
+    }
+
+    /// The strokes a hand draws it with: runs of points, each with half
+    /// the width of its line; what its mask and an SVG of it are made of.
+    pub fn sketch_strokes(&self) -> Vec<(Vec<Point>, f32)> {
         let mut seed = self.seed();
         let mut wobble = move |amount: f32| {
             seed ^= seed << 13;
@@ -1592,12 +1603,7 @@ impl Shape {
                 }
             }
         }
-        for (points, thin) in strokes {
-            for pair in points.windows(2) {
-                stamp(&mut mask, pair[0], pair[1], thin);
-            }
-        }
-        mask
+        strokes
     }
 
     /// What is inside the border of a rectangle or an oval, as far as the

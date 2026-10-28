@@ -5494,6 +5494,8 @@ impl Studio {
             (Key::Char('v'), true) if !self.copied.is_empty() && !mods.shift => self.paste_layers(),
             (Key::Char('v'), true) => return Outcome::Paste,
             (Key::Char('s'), true) => self.save(true),
+            // A board, a frame of it or what is picked out, as a PNG.
+            (Key::Char('e'), true) if self.on_board() => self.export_board(0),
             (Key::Char('e'), true) => drop(self.run_menu(menu::MenuAct::Do(menu::Command::ExportFrame))),
             // The keys the menus say: Ctrl+Alt+G frames what is picked out,
             // Ctrl+Shift+H and L hide and lock it.

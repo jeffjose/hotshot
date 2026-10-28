@@ -100,7 +100,7 @@ impl Shape {
     /// Its outline as closed runs of points, which are what is inside it,
     /// and the lines besides that are drawn but close nothing: the front
     /// of a database's top.
-    pub(super) fn form_paths(&self) -> (Vec<Vec<Point>>, Vec<Vec<Point>>) {
+    pub fn form_paths(&self) -> (Vec<Vec<Point>>, Vec<Vec<Point>>) {
         let (x, y, w, h) = self.frame();
         let (cx, cy) = (x + w / 2.0, y + h / 2.0);
         let pi = std::f32::consts::PI;
@@ -155,6 +155,31 @@ impl Shape {
         let half = self.stroke / 2.0;
         if self.sketched() {
             let mut mask = Mask { bounds, alpha: vec![0; bounds.w.max(0) as usize * bounds.h.max(0) as usize] };
+            for (points, thin) in self.form_strokes() {
+                for pair in points.windows(2) {
+                    stamp(&mut mask, pair[0], pair[1], thin);
+                }
+            }
+            return mask;
+        }
+        if self.filled && !self.border {
+            return covered(bounds, move |px, py| {
+                let far = nearest((px, py), &closed);
+                if closed.iter().any(|path| inside((px, py), path)) { -far } else { far }
+            });
+        }
+        let mut lines = closed;
+        lines.extend(open);
+        covered(bounds, move |px, py| nearest((px, py), &lines) - half)
+    }
+
+    /// The strokes a hand draws its outline with, each run of points with
+    /// half its width.
+    pub fn form_strokes(&self) -> Vec<(Vec<Point>, f32)> {
+        let (closed, open) = self.form_paths();
+        let half = self.stroke / 2.0;
+        let mut strokes = Vec::new();
+        {
             let mut seed = self.seed();
             let mut wobble = move |amount: f32| {
                 seed ^= seed << 13;
@@ -176,21 +201,12 @@ impl Shape {
                         let jitter = if moved.len() < 8 { reach * 0.3 } else { 0.0 };
                         let a = (pair[0].0 + wobble(jitter), pair[0].1 + wobble(jitter));
                         let b = (pair[1].0 + wobble(jitter), pair[1].1 + wobble(jitter));
-                        stamp(&mut mask, a, b, thin);
+                        strokes.push((vec![a, b], thin));
                     }
                 }
             }
-            return mask;
         }
-        if self.filled && !self.border {
-            return covered(bounds, move |px, py| {
-                let far = nearest((px, py), &closed);
-                if closed.iter().any(|path| inside((px, py), path)) { -far } else { far }
-            });
-        }
-        let mut lines = closed;
-        lines.extend(open);
-        covered(bounds, move |px, py| nearest((px, py), &lines) - half)
+        strokes
     }
 
     /// What is inside its outline, which its fill is laid in.

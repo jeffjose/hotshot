@@ -142,6 +142,7 @@ mod change;
 mod explain;
 mod pick;
 pub(super) mod svg;
+mod export;
 mod act;
 pub(super) use act::Act;
 mod typing;

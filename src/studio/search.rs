@@ -160,6 +160,11 @@ impl Studio {
             for (says, keys, act) in self.board_acts() {
                 acts.push((says, keys.into(), MenuAct::Board(act)));
             }
+        } else if !self.chosen().is_empty() {
+            // What is picked out, written as a picture of its own.
+            for (kind, name) in ["PNG", "AVIF", "JPEG XL"].iter().enumerate() {
+                acts.push((format!("Export selection as {name}"), "".into(), MenuAct::Board(super::board::Act::Export(kind as u8))));
+            }
         }
         for (says, keys, act) in self.named_actions() {
             if !acts.iter().any(|(known, ..)| *known == says) {

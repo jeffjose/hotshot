@@ -29,6 +29,9 @@ pub(in crate::studio) enum Act {
     /// picked out made one picture.
     KeepPicture,
     MergePicture,
+    /// The board, a frame of it, or what is picked out written as one of
+    /// `export::KINDS`.
+    Export(u8),
 }
 
 impl Studio {
@@ -42,6 +45,10 @@ impl Studio {
             ("Insert Before / After".to_owned(), "", Act::Template(2)),
             (if self.board.guessing { "Stop guessing what comes next" } else { "Guess what comes next" }.to_owned(), "", Act::Guessing),
         ];
+        let what = if !self.on_page() { "frame" } else if self.chosen().is_empty() { "board" } else { "selection" };
+        for (kind, name) in export::KINDS.iter().enumerate() {
+            acts.push((format!("Export {what} as {name}"), if kind == 0 { "Ctrl+E" } else { "" }, Act::Export(kind as u8)));
+        }
         if self.chosen().iter().any(|&index| self.is_box(index)) {
             acts.push(("Next shape".to_owned(), "Shift+S", Act::NextShape));
             for (at, name) in change::SHAPES.iter().enumerate() {
@@ -82,6 +89,7 @@ impl Studio {
             Act::Region(region) => self.set_region(region),
             Act::KeepPicture => self.keep_svg_picture(),
             Act::MergePicture => self.merge_picture(),
+            Act::Export(kind) => self.export_board(kind),
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
