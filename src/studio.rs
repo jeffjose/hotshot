@@ -36,6 +36,7 @@ mod rulers;
 mod snap;
 mod search;
 mod style;
+mod wheel;
 
 
 use menu::{MenuKind, MenuState};
@@ -5279,6 +5280,10 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let gc = conn.generate_id()?;
     conn.create_gc(gc, window, &CreateGCAux::new().graphics_exposures(0))?;
     conn.map_window(window)?;
+    // The pointer from XInput 2.1, for a trackpad's scrolling in parts of
+    // a notch; otherwise the old events, as ever.
+    let mut smooth = wheel::start(conn, window);
+    debug!("canvas scrolls {}", if smooth.is_some() { "smoothly, by XInput 2.1" } else { "a notch at a time" });
     conn.flush()?;
 
     let mut frame = vec![0u32; (width * height) as usize];
@@ -5311,6 +5316,28 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             Shown::Studio(studio) => studio.pointer_moved(x, y, mods),
         };
         for event in events {
+            // From XInput where the server has it: the old kind of event,
+            // or a scrolling axis moved, taken as the wheel at once.
+            let heard = match smooth.as_mut() {
+                Some(smooth) => smooth.hear(conn, event),
+                None => wheel::Heard::Core(event),
+            };
+            let event = match heard {
+                wheel::Heard::Core(event) => event,
+                wheel::Heard::Scroll(x, y, state, right, down) => {
+                    let at = (x, y, crate::x11::mods(state));
+                    match &mut screen {
+                        Shown::Home(home) => home.scrolled(down),
+                        Shown::Studio(studio) => {
+                            studio.wheel_at(x, y, at.2);
+                            studio.scrolled(right, down);
+                        }
+                    }
+                    motion = Some(at);
+                    continue;
+                }
+                wheel::Heard::Nothing => continue,
+            };
             match event {
                 Event::MotionNotify(motion_event) => motion = Some((i32::from(motion_event.event_x), i32::from(motion_event.event_y), crate::x11::mods(motion_event.state.into()))),
                 // A notch of the wheel on the canvas: the pointer only put

@@ -335,6 +335,13 @@ impl Home {
         self.dirty = true;
     }
 
+    /// A wheel or a trackpad turned by so many notches down, parts of one
+    /// as well, up counted as fewer: the files scrolled as far.
+    pub fn scrolled(&mut self, down: f32) {
+        self.scroll = (self.scroll + (down * 60.0).round() as i32).max(0);
+        self.dirty = true;
+    }
+
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
         self.dirty = true;
         match button {
