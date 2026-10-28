@@ -394,10 +394,10 @@ impl Studio {
     pub(super) fn right_click(&mut self, at: (i32, i32)) -> Outcome {
         // Whatever else is open closes, and what is being typed is kept.
         let control = self.control_at(at);
-        (self.menu, self.flyout, self.palette, self.styling, self.eyedropping) = (None, None, None, false, false);
-        self.dirty = true;
         self.commit_typing();
         self.commit_name();
+        (self.menu, self.flyout, self.palette, self.styling, self.eyedropping) = (None, None, None, false, false);
+        self.dirty = true;
         if let Some(Control::Page(page)) = control {
             self.menu = Some(MenuState { kind: MenuKind::Page(page), at, sub: None });
             return Outcome::Continue;

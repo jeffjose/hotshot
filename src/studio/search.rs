@@ -79,10 +79,10 @@ fn project_files() -> Vec<PathBuf> {
 impl Studio {
     pub(super) fn open_palette(&mut self) {
         // Over everything else that was open, and what was typed kept.
-        (self.menu, self.flyout, self.palette, self.styling, self.eyedropping) = (None, None, None, false, false);
         self.commit_typing();
         self.commit_name();
         self.commit_text();
+        (self.menu, self.flyout, self.palette, self.styling, self.eyedropping) = (None, None, None, false, false);
         self.search = Some(Search::default());
         self.dirty = true;
     }

@@ -2379,8 +2379,8 @@ impl Studio {
             return Outcome::Continue;
         }
         // On the page.
-        (self.palette, self.flyout) = (None, None);
         self.commit_name();
+        (self.palette, self.flyout) = (None, None);
         if self.space || self.tool == Tool::Select && self.mods.alt {
             self.drag = Drag::Pan { from: at_window, origin: self.pan };
             return Outcome::Continue;
@@ -2585,6 +2585,11 @@ impl Studio {
     }
 
     fn press_control(&mut self, control: Control, double: bool) -> Outcome {
+        // A name being typed is kept first: a hex color needs the colors
+        // still open to know what it colors.
+        if !matches!(control, Control::Page(_) | Control::Frame(_)) || matches!(self.renaming, Some((Naming::Hex, _))) {
+            self.commit_name();
+        }
         // The colors stay open while colors are picked, and a group's list
         // while it is picked from; anything else closes them.
         if !matches!(control, Control::Swatch(..) | Control::ColorField(_) | Control::Picker(_) | Control::Entry(Naming::Hex)) {
@@ -2592,9 +2597,6 @@ impl Studio {
         }
         if !matches!(control, Control::Group(_) | Control::Pick(_)) {
             self.flyout = None;
-        }
-        if !matches!(control, Control::Page(_) | Control::Frame(_)) {
-            self.commit_name();
         }
         if !matches!(control, Control::MenuRow(..)) {
             self.menu = None;
@@ -6193,6 +6195,36 @@ mod tests {
         studio.key(Key::Char('!'), Mods::default(), true);
         let Kind::Shape(shape) = &studio.doc.layers[0].kind else { panic!() };
         assert_eq!(shape.text, "Hello!");
+    }
+
+    #[test]
+    fn a_hex_color_typed_is_kept_when_the_colors_are_clicked_off() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (100.0, 100.0));
+        boxed.points[1] = (200.0, 150.0);
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.selected = vec![0];
+        studio.fit();
+        let color = |studio: &Studio| match &studio.doc.layers[0].kind {
+            Kind::Shape(shape) => shape.color,
+            Kind::Picture(_) => 0,
+        };
+        for (typed, wanted, off) in [("00FF00", 0x00FF00, false), ("0000FF", 0x0000FF, true)] {
+            studio.selected = vec![0];
+            studio.open_picker(Paint::Line);
+            studio.renaming = Some((Naming::Hex, typed.into()));
+            if off {
+                // Off it onto another control: the zoom.
+                studio.press_control(Control::Zoom, false);
+            } else {
+                // Off it onto the page, a little way from the box.
+                let empty = studio.to_window((10.0, 590.0));
+                studio.pointer_moved(empty.0, empty.1, Mods::default());
+                studio.pressed(1, 100_000);
+                studio.released();
+            }
+            assert_eq!((color(&studio), studio.palette), (wanted, None));
+        }
     }
 
     #[test]
