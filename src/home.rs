@@ -341,13 +341,18 @@ impl Home {
         let control = self.layout().into_iter().find(|(rect, _)| rect.contains(at.0, at.1)).map(|(_, control)| control);
         // A right click on a file opens its menu; any other click closes it.
         if button == 3 {
-            if let Some(Control::Open(path)) = control {
-                self.file_menu = Some((path, at));
-            }
+            self.file_menu = match control {
+                Some(Control::Open(path)) => Some((path, at)),
+                _ => None,
+            };
             return Outcome::Continue;
         }
-        if !matches!(control, Some(Control::FileAct(_))) {
-            self.file_menu = None;
+        // A click off the menu closes it and does nothing else.
+        if self.file_menu.is_some() && !matches!(control, Some(Control::FileAct(_))) {
+            if !self.file_menu_place().is_some_and(|place| place.contains(at.0, at.1)) {
+                self.file_menu = None;
+            }
+            return Outcome::Continue;
         }
         if let Some((path, typed)) = self.renaming_file.take() {
             rename_file(&path, &typed);
@@ -782,5 +787,27 @@ mod tests {
         home.file_menu = Some((renamed.clone(), (10, 10)));
         assert_eq!(home.file_act(0), Outcome::Open(renamed));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_click_off_a_files_menu_closes_it_and_does_nothing_else() {
+        let mut home = Home::new(Text::load(), 1200, 800, std::env::temp_dir());
+        let file = std::env::temp_dir().join("Nowhere.hotshot");
+        // Every place along the side, clicked with the menu open: each only
+        // closes it, and the place shown stays.
+        for y in (0..800).step_by(20) {
+            home.file_menu = Some((file.clone(), (600, 300)));
+            home.pointer_moved(40, y);
+            assert_eq!(home.pressed(1, 0), Outcome::Continue);
+            assert!(home.file_menu.is_none() && home.place == Place::Recent && home.naming.is_none());
+        }
+        // Inside it, it stays; a right click off any file closes it.
+        home.file_menu = Some((file.clone(), (600, 300)));
+        home.pointer_moved(602, 302);
+        home.pressed(1, 0);
+        assert!(home.file_menu.is_some());
+        home.pointer_moved(40, 790);
+        home.pressed(3, 0);
+        assert!(home.file_menu.is_none());
     }
 }
