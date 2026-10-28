@@ -58,6 +58,13 @@ the whole screen. Then:
 | `Esc` | cancel |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | undo / redo |
 
+The arrow beside Save lists where it saves to and, under Save as, what
+kind of file it writes, PNG, JPEG XL or WebP lossless, JPEG XL, AVIF,
+WebP or JPEG, each with what this picture comes to in it, tried for real
+as the list opens; the kind chosen is kept for next time, as the folder
+is. Fine-tune…, at its end, opens the picture in a window of its own to
+try each kind's settings side by side, and converts it into the folder.
+
 `hotshot --help` lists every option and key.
 
 ## Drawing

@@ -59,7 +59,11 @@ fn shown(files: &[PathBuf], into: Option<&Path>, options: &crate::options::Optio
         None if own == Some("jxl") => Format::Avif,
         None => Format::JxlLossless,
     };
-    let name = first.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+    // A picture handed over from capture mode has a name of no meaning.
+    let name = match into {
+        Some(_) => "Capture".to_owned(),
+        None => first.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned()),
+    };
     let subtitle = match files.len() {
         1 => format!("{name} \u{b7} {} \u{d7} {}", picture.width, picture.height),
         count => format!("{count} pictures \u{b7} tried on {name}"),

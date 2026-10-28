@@ -132,6 +132,8 @@ fn main() -> ExitCode {
 
 fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     DEBUGGING.store(options.debug, std::sync::atomic::Ordering::Relaxed);
+    // What Save writes, and how, to begin with in capture mode.
+    (options.settings.format, options.settings.convert) = (options.format, options.convert);
     let trace = |what: &str| debug!("{what}");
     // The font is read while the screen is: neither waits on the other,
     // and the first frame, which has no words in it, on neither.
@@ -441,7 +443,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             // What the canvas is to know of a window, kept in a plain
             // picture of it: with a window round it, it knows nothing.
             let notes = if frame.is_plain() { chrome::Notes { insets, title, scale } } else { chrome::Notes::default() };
-            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, keep: None, recipe, photo, canvas_notes: notes.clone(), notes }
+            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, format: options.format, keep: None, recipe, photo, canvas_notes: notes.clone(), notes }
         }
         (named, _) => match pick(&mut display, named, reopened, again_photo, arrow, &options, font, &trace)? {
             Some(taken) => taken,
@@ -475,11 +477,25 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         pin::again(&["--canvas".as_ref(), file.as_os_str()])?;
         return Ok(ExitCode::SUCCESS);
     }
+    // Fine-tune…: the picture handed, as a PNG kept among hotshot's state,
+    // to a window of its own to try each kind on, which converts it into
+    // the folder Save saves to and does away with the PNG.
+    if how.tune {
+        let dir = options.places.get(taken.place).unwrap_or(&options.dir);
+        let file = output::state_file("pins").ok_or("there is nowhere to keep the picture")?.join(format!("{}-tune.png", std::process::id()));
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file, output::encode(taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha)?)?;
+        pin::again(&["--fine-tune".as_ref(), file.as_os_str(), "--into".as_ref(), dir.as_os_str(), "--forget".as_ref()])?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
-    // A file is of the kind its name says, or the kind asked for; what
-    // goes to the clipboard is a PNG whatever the file is.
+    // A file is of the kind its name says, or the kind chosen in the
+    // list, which began as the kind asked for; what goes to the clipboard
+    // is a PNG whatever the file is.
     let named = options.output.as_ref().and_then(|file| file.extension()).and_then(|ending| output::Format::named(&ending.to_string_lossy())).map(|format| format.as_set(&options.convert));
-    let format = named.unwrap_or(options.format);
+    let format = named.unwrap_or(taken.format);
     let pack = |format| output::pack(format, &options.convert, taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha);
     // A PNG of a window keeps what the canvas is to know of it.
     let png = if how.copy || how.pin || format == output::Format::Png { output::noted(pack(output::Format::Png)?, &taken.notes.write()) } else { Vec::new() };
@@ -562,6 +578,8 @@ struct Taken {
     alpha: bool,
     how: Finish,
     place: usize,
+    /// What kind of file Save writes, as it was left in the list.
+    format: output::Format,
     /// What it takes to come back to it: the area, what was there
     /// before anything was drawn, and the shapes. For one that was
     /// drawn on at all.
@@ -712,7 +730,8 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
             editor.photo_arrived(photo);
             fetching = None;
         }
-        let inputs = display.inputs(if !strips.done() { Some(0) } else if fetching.is_some() { Some(50) } else if grabbed { None } else { Some(20) })?;
+        let sizing = editor.take_sizes();
+        let inputs = display.inputs(if !strips.done() { Some(0) } else if fetching.is_some() || sizing { Some(50) } else if grabbed { None } else { Some(20) })?;
         if !grabbed {
             grabbed = display.grab();
         }
@@ -776,11 +795,11 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
     if options.remember {
         options::remember_tools(&editor.in_hand(), options.places.get(editor.place()).map(|place| place.as_path()));
     }
-    let (place, keep) = (editor.place(), editor.keepsake());
+    let (place, format, keep) = (editor.place(), editor.format(), editor.keepsake());
     let (recipe, photo) = (editor.recipe(), editor.photo().cloned());
     // What the canvas is to know of the window taken, if it is one; and
     // what a file of it is, of a plain picture of it.
     let canvas_notes = editor.notes();
     let notes = if editor.is_plain() { canvas_notes.clone() } else { chrome::Notes::default() };
-    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, keep, recipe: history::Recipe { area, ..recipe }, photo, notes, canvas_notes })))
+    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, format, keep, recipe: history::Recipe { area, ..recipe }, photo, notes, canvas_notes })))
 }

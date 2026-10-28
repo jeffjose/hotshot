@@ -786,6 +786,7 @@ pub fn remember_tools(settings: &Settings, save_to: Option<&std::path::Path>) {
     if let Some(folder) = save_to {
         text += &format!("save-to = \"{}\"\n", folder.display());
     }
+    text += &format!("format = \"{}\"\n", settings.format.word());
     // But for the window round it, which once chosen is wanted again: a
     // window's own bar is not what most want to show.
     text += &format!("window-frame = \"{}\"\nwindow-theme = \"{}\"\n", settings.frame.window.word(), settings.frame.theme.word());
@@ -879,6 +880,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
             let mut kept = defaults();
             if read_config(&mut kept, &text).is_ok() {
                 options.save_to = kept.save_to.take().or(options.save_to.take());
+                // And the kind of file Save writes, as it was left in the list.
+                if kept.format_said {
+                    options.format = kept.format;
+                }
                 let (now, kept) = (&mut options.settings, kept.settings);
                 (now.color, now.size, now.radius, now.filled, now.face) = (kept.color, kept.size, kept.radius, kept.filled, kept.face);
                 (now.fill, now.border) = (kept.fill.or(now.fill), kept.border.or(now.border));

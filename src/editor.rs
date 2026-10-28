@@ -121,11 +121,14 @@ pub struct Finish {
     pub record: bool,
     /// Opened on the canvas, to be made more of, its shapes still shapes.
     pub canvas: bool,
+    /// Its settings in each kind of file tried in a window of its own,
+    /// and converted into the folder Save saves to.
+    pub tune: bool,
 }
 
 impl Finish {
     /// Nothing done with it: to be said otherwise a thing at a time.
-    pub const NONE: Finish = Finish { copy: false, save: false, pin: false, record: false, canvas: false };
+    pub const NONE: Finish = Finish { copy: false, save: false, pin: false, record: false, canvas: false, tune: false };
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -229,11 +232,14 @@ pub struct Settings {
     /// Whether a window clicked keeps its own title bar under the one
     /// chosen for it, rather than having it taken off.
     pub keep_bar: bool,
+    /// What kind of file Save writes, and how each kind is written.
+    pub format: crate::output::Format,
+    pub convert: crate::convert::Settings,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, fill: None, border: None, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false, keep_bar: false }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, fill: None, border: None, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false, keep_bar: false, format: crate::output::Format::Png, convert: crate::convert::Settings::default() }
     }
 }
 
@@ -419,6 +425,10 @@ enum Cell {
     Shade(usize),
     /// One of the folders Save can save to.
     Place(usize),
+    /// A kind of file Save can write, by where it is in `Format::ALL`;
+    /// and Fine-tune…, which tries them in a window of its own.
+    Format(usize),
+    Tune,
     /// One of the windows the picture can be in, by where it is in
     /// `chrome::CHOICES`.
     Window(usize),
@@ -799,6 +809,13 @@ pub struct Editor {
     lately: Vec<u32>,
     /// Which of the folders Save saves to.
     place: usize,
+    /// The kind of file Save writes; and what the picture comes to in
+    /// each kind, tried on a thread once the list of them is opened, and
+    /// what it was tried on.
+    format: crate::output::Format,
+    sizes: std::collections::HashMap<crate::output::Format, (usize, Option<f64>)>,
+    sizing: Option<(u64, std::sync::mpsc::Receiver<(crate::output::Format, usize, Option<f64>)>)>,
+    sized: u64,
     /// The frame as it shows round the selection: what it was made
     /// from, how wide it is, and its pixels, each with how opaque.
     surround: Option<(String, i32, Vec<u32>)>,
@@ -1071,6 +1088,10 @@ impl Editor {
             face: settings.face.min(FACES.len() - 1),
             frame: settings.frame,
             place: settings.place.min(settings.places.len().saturating_sub(1)),
+            format: settings.format,
+            sizes: std::collections::HashMap::new(),
+            sizing: None,
+            sized: 0,
             photos: u32::from(photo.is_some()),
             photo,
             wish,
@@ -1524,13 +1545,30 @@ impl Editor {
                 }
                 // Where Save saves to: the folders the config file
                 // names, one to a row.
+                // Under them, what kind of file it writes, each with what
+                // this picture comes to in it; and Fine-tune….
                 Button::Places => {
                     let widest = self.settings.places.iter().map(|place| self.text.width(place, px)).max().unwrap_or(0);
-                    let across = widest + side + 2 * pad;
-                    for index in 0..self.settings.places.len() {
-                        cells.push((Rect::new(0, index as i32 * side, across, side), Cell::Place(index)));
+                    let kinds = crate::output::Format::ALL.iter().map(|format| self.text.width(format.title(), px) + self.text.width(&self.size_words(*format), px * 7 / 8) + 3 * pad).max().unwrap_or(0);
+                    let across = (widest + side + 2 * pad).max(kinds + side);
+                    let line = Text::line_height(px) + pad / 2;
+                    let mut down = 0;
+                    if self.settings.places.len() > 1 {
+                        layout.captions.push(((pad / 2, down + pad / 4), "SAVE TO"));
+                        down += line;
                     }
-                    (across, self.settings.places.len() as i32 * side)
+                    for index in 0..self.settings.places.len() {
+                        cells.push((Rect::new(0, down, across, side), Cell::Place(index)));
+                        down += side;
+                    }
+                    layout.captions.push(((pad / 2, down + pad / 4), "SAVE AS"));
+                    down += line;
+                    for index in 0..crate::output::Format::ALL.len() {
+                        cells.push((Rect::new(0, down, across, side), Cell::Format(index)));
+                        down += side;
+                    }
+                    cells.push((Rect::new(0, down, across, side), Cell::Tune));
+                    (across, down + side)
                 }
                 // Nothing else has a box of its own.
                 _ => (0, 0),
@@ -2434,6 +2472,7 @@ impl Editor {
                 self.pick(target == Target::Hues, at);
             }
             Target::Panel => {}
+            Target::Cell(Cell::Tune) => return self.finish(Finish { tune: true, ..Finish::NONE }),
             Target::Cell(cell) => self.choose(cell),
             Target::Button(button) => self.drag = Drag::Button(button),
             // A click anywhere else puts the box of colors away, and
@@ -3646,6 +3685,8 @@ impl Editor {
                 self.photo_arrived(read);
             }
             Cell::Place(place) => (self.place, self.flyout) = (place, None),
+            Cell::Format(index) => (self.format, self.flyout) = (crate::output::Format::ALL[index.min(6)], None),
+            Cell::Tune => {}
             Cell::Width(size) => {
                 self.set_size(size);
                 self.flyout = None;
@@ -3783,6 +3824,83 @@ impl Editor {
     /// Which of the folders Save saves to.
     pub fn place(&self) -> usize {
         self.place
+    }
+
+    /// What kind of file Save writes.
+    pub fn format(&self) -> crate::output::Format {
+        self.format
+    }
+
+    /// What the picture comes to as a kind of file, as the list says it:
+    /// how much smaller than a PNG, kept to the pixel, or its score.
+    fn size_words(&self, format: crate::output::Format) -> String {
+        let Some(&(size, score)) = self.sizes.get(&format) else { return "\u{2014}".to_owned() };
+        let png = self.sizes.get(&crate::output::Format::Png).map(|(png, _)| *png);
+        match (format, score, png) {
+            (crate::output::Format::Png, ..) => crate::convert::size_words(size),
+            (_, _, Some(png)) if format.lossless() => crate::convert::change_words(png, size),
+            (_, Some(score), _) => format!("score {}", score.round() as i64),
+            _ => crate::convert::size_words(size),
+        }
+    }
+
+    /// The list of kinds open: the picture tried in each, on a thread of
+    /// its own, unless it has been as it is now; and what has come back,
+    /// kept. Gives whether to look again soon.
+    pub fn take_sizes(&mut self) -> bool {
+        if let Some((key, told)) = &self.sizing {
+            let key = *key;
+            loop {
+                match told.try_recv() {
+                    Ok((format, size, score)) => {
+                        self.sizes.insert(format, (size, score));
+                        self.dirty = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        (self.sizing, self.sized) = (None, key);
+                        return false;
+                    }
+                }
+            }
+        }
+        if self.flyout != Some(Button::Places) {
+            return false;
+        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?} {:?} {} {}", self.selection, self.frame, self.shapes.len(), self.undo.len()).hash(&mut hasher);
+        let key = hasher.finish();
+        if key == self.sized {
+            return false;
+        }
+        let Some((_, wide, high, mut pixels, alpha)) = self.framed() else { return false };
+        // A picture with nothing see-through says nothing in its top byte.
+        if !alpha {
+            pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
+        }
+        self.sizes.clear();
+        let (tell, told) = std::sync::mpsc::channel();
+        let mut settings = self.settings.convert;
+        settings.avif.speed = settings.avif.speed.max(8);
+        std::thread::spawn(move || {
+            let flat = crate::convert::flat(&pixels);
+            for format in crate::output::Format::ALL {
+                let Ok(trial) = crate::convert::trial(wide as u32, high as u32, &pixels, alpha, &flat, None, format, &settings, false) else { continue };
+                let lossless = format.lossless();
+                if tell.send((format, trial.size, lossless.then_some(100.0))).is_err() {
+                    return;
+                }
+                if !lossless {
+                    let score = crate::convert::trial_score(wide as u32, high as u32, &flat, &trial, format);
+                    if tell.send((format, trial.size, score)).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        self.sizing = Some((key, told));
+        true
     }
 
     /// The picture that is taken, set in its frame: how wide and tall
@@ -4302,6 +4420,26 @@ impl Editor {
                         }
                         let name = self.settings.places[place].clone();
                         self.text.draw(&mut canvas, rect.x + rect.h, line, px, TEXT_COLOR, &name);
+                    }
+                    // A kind of file: a tick by the one Save writes, and
+                    // what the picture comes to in it, tried for real.
+                    Cell::Format(index) => {
+                        let format = crate::output::Format::ALL[index.min(6)];
+                        let line = cy - Text::line_height(px) / 2;
+                        if format == self.format {
+                            self.text.draw_centered(&mut canvas, rect.x + rect.h / 2, cy, px, TEXT_COLOR, icons::CHECK);
+                        }
+                        self.text.draw(&mut canvas, rect.x + rect.h, line, px, TEXT_COLOR, format.title());
+                        let says = self.size_words(format);
+                        let small = px * 7 / 8;
+                        let wide = self.text.width(&says, small);
+                        let ink = if says.starts_with('\u{2212}') { 0x7EE2A0 } else { DIM_TEXT_COLOR };
+                        self.text.draw(&mut canvas, rect.right() - px as i32 / 2 - wide, cy - Text::line_height(small) / 2, small, ink, &says);
+                    }
+                    Cell::Tune => {
+                        let line = cy - Text::line_height(px) / 2;
+                        canvas.fill(rect.x + px as i32 / 4, rect.y, rect.w - px as i32 / 2, 1, 0x3A3A3A);
+                        self.text.draw(&mut canvas, rect.x + rect.h, line, px, TEXT_COLOR, "Fine-tune\u{2026}");
                     }
                     // A width, or a size of text: a tick by the one there
                     // is, a line that wide or letters that large, what it
@@ -5021,7 +5159,7 @@ impl Editor {
         // A photograph is not kept: it was one nobody chose, or is the
         // user's own to choose again.
         let frame = Frame { backdrop: if self.frame.backdrop == Backdrop::Photo { Backdrop::None } else { self.frame.backdrop }, ..self.frame };
-        Settings { color: self.color, size: self.size, corners: self.corners, filled: self.filled, fill: Some(self.fill), border: Some(self.bordered), face: self.face, frame, place: self.place, ..self.settings.clone() }
+        Settings { color: self.color, size: self.size, corners: self.corners, filled: self.filled, fill: Some(self.fill), border: Some(self.bordered), face: self.face, frame, place: self.place, format: self.format, ..self.settings.clone() }
     }
 
     /// The last of the three says whether its corners are rounded: then
