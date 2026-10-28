@@ -61,6 +61,7 @@ impl Studio {
             (Paint::FillTo, _, _) => self.fill_stops().map(|(_, to)| to),
             (Paint::Shadow, Some(_), _) => self.picked().and_then(|index| self.doc.layers[index].drop()).map(|drop| drop.color & 0xFF_FFFF),
             (Paint::Recolor(color), _, _) => Some(color),
+            (Paint::Stack, _, _) => self.picked_stack().and_then(|index| self.doc.stacks[index].fill),
             _ => None,
         }
     }

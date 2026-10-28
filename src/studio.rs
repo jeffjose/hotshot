@@ -47,6 +47,7 @@ pub const MIN_SIZE: (i32, i32) = place::MIN;
 mod preview;
 mod rulers;
 mod snap;
+mod stacks;
 mod view;
 mod search;
 mod sizes;
@@ -573,6 +574,8 @@ pub struct Doc {
     /// page with nothing behind them and kept to no size; not kept in its
     /// file as a frame is.
     pub page: bool,
+    /// The stacks of its layers, each laid out as its auto layout says.
+    pub stacks: Vec<stacks::Stack>,
 }
 
 /// A size a frame is exported at.
@@ -640,7 +643,7 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
 
 impl Doc {
     pub fn new(width: i32, height: i32) -> Doc {
-        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)], page: false }
+        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)], page: false, stacks: Vec::new() }
     }
 
     /// The layers of a page outside its frames, as Figma has them: on
@@ -725,7 +728,12 @@ impl Doc {
                 }
             }),
         }
+        // A stack's fill under the first of what is in it.
+        let firsts = stacks::fill_firsts(self);
         for (index, layer) in self.layers[..count.min(self.layers.len())].iter().enumerate().filter(|(_, layer)| !layer.hidden) {
+            if !firsts.is_empty() {
+                stacks::draw_fills(&self.stacks, stacks::layer_id(layer), &firsts, &mut out, part, times);
+            }
             match &layer.kind {
                 Kind::Picture(picture) => draw_picture(&mut out, part, picture, times, text),
                 Kind::Shape(shape) if effects::changes_beneath(shape.tool) => self.change_beneath_at_most(index, &mut out, part, times, text),
@@ -820,6 +828,11 @@ impl Doc {
                 *out += &format!("named {}\n", one_line(name));
             }
         }
+        // The stacks after the layers they hold, which a file from before
+        // them has none of.
+        for stack in &self.stacks {
+            *out += &format!("{}\n", stack.write());
+        }
     }
 
     /// One line of what `write_lines` wrote, read into it; or nothing, if
@@ -908,6 +921,7 @@ impl Doc {
                 let Some(Layer { kind: Kind::Shape(_), named, .. }) = self.layers.last_mut() else { return None };
                 *named = Some(line["named ".len().min(line.len())..].to_owned());
             }
+            "stack" => self.stacks.push(stacks::Stack::read(&line["stack ".len().min(line.len())..])?),
             "shape" => {
                 let rest = line.splitn(4, ' ').collect::<Vec<_>>();
                 let shape = Shape::read(rest.get(3)?)?;
@@ -1519,6 +1533,10 @@ enum Field {
     Corner(u8),
     /// Which way the gradient a box or an oval is filled with goes.
     FillAngle,
+    /// The gap between what is in the stack picked out, and the padding
+    /// round it.
+    StackGap,
+    StackPad,
 }
 
 impl Field {
@@ -1549,6 +1567,8 @@ impl Field {
             Field::ExportTimes(_) => "\u{d7}",
             Field::Corner(_) => "",
             Field::FillAngle => "Angle",
+            Field::StackGap => "Gap",
+            Field::StackPad => "Pad",
         }
     }
 
@@ -1584,6 +1604,8 @@ enum Paint {
     Shadow,
     /// One color among what is picked out, to be another in all of them.
     Recolor(u32),
+    /// What the stack picked out is filled with.
+    Stack,
 }
 
 /// What a click on the panels, or the bar along the top, does.
@@ -1629,6 +1651,11 @@ enum Control {
     WindowTheme(u8),
     WindowBar(bool),
     WindowShadow(u8),
+    /// Which way the stack picked out goes, how large its box is, and how
+    /// what is in it is lined up, one of nine.
+    StackWay(u8),
+    StackSizing(u8),
+    StackAlign(u8),
     Entry(Naming),
     Stuck(u8),
     /// A part of the color picker: its square, its strips, its dropper.
@@ -1744,6 +1771,10 @@ enum Action {
     /// A box or an oval filled in one color, a linear gradient or a radial
     /// one: 0, 1 or 2.
     FillKind(u8),
+    /// What is picked out made a stack, laid out as one; and the stack
+    /// picked out undone.
+    AddStack,
+    RemoveStack,
 }
 
 impl Action {
@@ -1769,8 +1800,8 @@ impl Action {
             Action::Crop => icons::CROP,
             Action::Swap => icons::SWAP,
             Action::Unstick(_) => icons::LINK,
-            Action::RemoveExport(_) | Action::ShadowOff | Action::FillOff | Action::BorderOff => icons::MINUS,
-            Action::AddExport | Action::ShadowOn | Action::FillOn | Action::BorderOn => icons::PLUS,
+            Action::RemoveExport(_) | Action::ShadowOff | Action::FillOff | Action::BorderOff | Action::RemoveStack => icons::MINUS,
+            Action::AddExport | Action::ShadowOn | Action::FillOn | Action::BorderOn | Action::AddStack => icons::PLUS,
             Action::ResetAdjust => icons::UNDO,
             Action::Sideways => icons::ROTATE,
             Action::TextAlign(0) => icons::ALIGN_LEFT,
@@ -1859,6 +1890,8 @@ impl Action {
             Action::FillKind(0) => "Solid",
             Action::FillKind(1) => "Linear",
             Action::FillKind(_) => "Radial",
+            Action::AddStack => "Add auto layout",
+            Action::RemoveStack => "Remove auto layout",
         }
     }
 }
@@ -2132,6 +2165,10 @@ pub struct Studio {
     /// The window of the picture being cropped, by what the picture is
     /// called: off it while it is cropped, and put back after.
     crop_chrome: Option<(u32, Chrome)>,
+    /// The stack the pointer is over, by what it is called; and whether
+    /// laying the stacks out moved anything the last time anything changed.
+    stack_hovered: Option<u32>,
+    stacks_moved: bool,
     dirty: bool,
 }
 
@@ -2239,6 +2276,8 @@ impl Studio {
             pressed_at: 0,
             pill: None,
             crop_chrome: None,
+            stack_hovered: None,
+            stacks_moved: false,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -2567,6 +2606,9 @@ impl Studio {
     /// Something has changed: drawn again, and the file is behind.
     fn changed(&mut self) {
         self.touched = None;
+        // The stacks laid out again, before what is stuck to what is in
+        // them follows it.
+        self.stacks_moved = self.reflow();
         self.follow();
         self.version += 1;
         self.doc.stamp = self.version;
@@ -3118,8 +3160,10 @@ impl Studio {
                 // Drawn again only for what shows where the pointer is: the
                 // layer or the control it is over, or the text tool's caret
                 // that follows it; a move over nothing new draws nothing.
-                self.dirty |= hovered != self.hovered || hovered_page != self.hovered_page || over != self.hover_shown || self.tool == Tool::Text;
-                (self.hovered, self.hovered_page, self.hover_shown) = (hovered, hovered_page, over);
+                // And the stack it is over, whose gaps and padding show.
+                let stack = if self.over_page((x, y)) && over.is_none() && hovered.is_none() && hovered_page.is_none() && self.cropping.is_none() { self.stack_hover(at) } else { None };
+                self.dirty |= hovered != self.hovered || hovered_page != self.hovered_page || over != self.hover_shown || self.tool == Tool::Text || stack != self.stack_hovered;
+                (self.hovered, self.hovered_page, self.hover_shown, self.stack_hovered) = (hovered, hovered_page, over, stack);
             }
             Drag::NewFrame { .. } => self.dirty = true,
             Drag::MoveFrame { from, origin, moved, copy } => {
@@ -3528,6 +3572,15 @@ impl Studio {
             // Alt on nothing pans, as it does off the frames; on a layer it
             // copies it.
             None if self.mods.alt => self.drag = Drag::Pan { from: at_window, origin: self.pan },
+            // In a stack's padding or between what is in it, as in Figma's
+            // auto layout frame: all of it picked out, to be moved.
+            None if !self.mods.shift && self.stack_at(at).is_some() => {
+                let id = self.stack_at(at).map(|index| self.doc.stacks[index].id).unwrap_or_default();
+                let leaves = self.leaves(id);
+                self.selected = (0..self.doc.layers.len()).filter(|&index| leaves.contains(&stacks::layer_id(&self.doc.layers[index])) && !self.doc.layers[index].locked).collect();
+                self.held = self.chosen().iter().map(|&index| self.doc.layers[index].clone()).collect();
+                self.drag = Drag::Move { from: at, moved: false, copy: false };
+            }
             None => {
                 if !self.mods.shift {
                     self.selected.clear();
@@ -3590,6 +3643,7 @@ impl Studio {
             self.menu = None;
         }
         match control {
+            Control::StackWay(_) | Control::StackSizing(_) | Control::StackAlign(_) => self.press_stack(control),
             Control::SidePanel(_) if self.zen => self.toggle_zen(),
             Control::SidePanel(side) => self.toggle_panel(side),
             Control::Home => {
@@ -3839,6 +3893,7 @@ impl Studio {
     /// what is drawn next; or for the background.
     fn paint(&mut self, paint: Paint, color: Option<u32>) {
         match paint {
+            Paint::Stack => self.change_stack(|stack, _| stack.fill = color),
             Paint::Background => {
                 self.checkpoint();
                 self.doc.background = Fill::Color(color.unwrap_or(0xFFFFFF));
@@ -3941,9 +3996,13 @@ impl Studio {
             // The size its crop is in its own pixels: one to one.
             Action::Actual => self.restyle(|layer| {
                 if let Kind::Picture(picture) = &mut layer.kind {
-                    (picture.w, picture.h) = (picture.crop.2, picture.crop.3);
+                    // Its window's bar as large as on its own screen.
+                    let (_, _, w, h) = picture.shown_crop();
+                    (picture.w, picture.h) = (w, h + picture.drawn_style().bar() * picture.screen_scale);
                 }
             }),
+            Action::AddStack => self.add_stack(),
+            Action::RemoveStack => self.remove_stack(),
             Action::Forward => self.restack(true),
             Action::Backward => self.restack(false),
             Action::Duplicate => self.duplicate(),
@@ -4029,12 +4088,21 @@ impl Studio {
                     }
                 }
             }
-            Drag::Move { moved: true, .. } => self.drop_into_place(),
+            // Let go in a stack, or well out of the one it was in, laid out
+            // again either way; and in the frame it is let go over.
+            Drag::Move { moved: true, .. } => {
+                if !self.doc.stacks.is_empty() {
+                    self.drop_into_stacks();
+                    self.changed();
+                }
+                self.drop_into_place();
+            }
             Drag::Move { moved: false, .. } => {
                 if let Some(index) = self.under_press.take() {
                     self.selected = vec![index];
                 }
             }
+            Drag::Scale { .. } if !self.doc.stacks.is_empty() => self.changed(),
             _ => {}
         }
         self.held.clear();
@@ -4327,6 +4395,15 @@ impl Studio {
 
     /// A number of what is picked out, or of the artboard.
     fn field(&mut self, field: Field) -> Option<f32> {
+        if let Field::StackGap | Field::StackPad = field {
+            let stack = &self.doc.stacks[self.picked_stack()?];
+            return Some(if field == Field::StackGap { stack.gap } else { stack.pad });
+        }
+        // A stack picked out is as large as its box.
+        if let (Field::W | Field::H, Some(index)) = (field, self.picked_stack()) {
+            let stack = &self.doc.stacks[index];
+            return Some(if field == Field::W { stack.w } else { stack.h });
+        }
         if let Field::ArtW | Field::ArtH = field {
             return Some(if field == Field::ArtW { self.doc.width } else { self.doc.height } as f32);
         }
@@ -4416,6 +4493,27 @@ impl Studio {
 
     fn set_field(&mut self, field: Field, value: f32) {
         match field {
+            Field::StackGap | Field::StackPad => {
+                if let Some(index) = self.picked_stack() {
+                    let stack = &mut self.doc.stacks[index];
+                    match field {
+                        Field::StackGap => stack.gap = value.round().clamp(-1000.0, 1000.0),
+                        _ => stack.pad = value.round().clamp(0.0, 1000.0),
+                    }
+                }
+            }
+            // A stack's box made a size of its own: no longer hugging what
+            // is in it, as Figma's goes Fixed.
+            Field::W | Field::H if self.picked_stack().is_some() => {
+                if let Some(index) = self.picked_stack() {
+                    let stack = &mut self.doc.stacks[index];
+                    stack.sizing = stacks::FIXED;
+                    match field {
+                        Field::W => stack.w = value.round().max(1.0),
+                        _ => stack.h = value.round().max(1.0),
+                    }
+                }
+            }
             // All the corners, or one; and the next rectangle as round.
             Field::Radius => self.set_radius_field(None, value),
             Field::Corner(corner) => self.set_radius_field(Some(usize::from(corner)), value),
@@ -5139,6 +5237,8 @@ impl Studio {
             // Shift+H and Shift+V flip what is picked out, as the menus say,
             // rather than taking up the hand and the move tool.
             (Key::Char('h'), false) if mods.shift => drop(self.act(Action::FlipAcross)),
+            // Shift+A makes what is picked out a stack, as Figma's does.
+            (Key::Char('a'), false) if mods.shift => drop(self.act(Action::AddStack)),
             (Key::Char('v'), false) if mods.shift => drop(self.act(Action::FlipDown)),
             (Key::Char(letter), false) => {
                 // J opens the library, and E its emoji, as in capture mode.
@@ -5467,6 +5567,8 @@ impl Studio {
             self.draw_crop(&mut canvas, index);
         }
         self.draw_gaps(&mut canvas);
+        let hover = self.hover_shown;
+        self.draw_stacks(&mut canvas, hover);
         self.draw_user_guides(&mut canvas);
         // The lines what is moved has snapped to, across the view.
         for &(upright, at) in &self.guides {
@@ -6072,6 +6174,7 @@ impl Studio {
                         (Paint::FillTo, _, _) => self.fill_stops().map(|(_, to)| to),
                         (Paint::Shadow, Some(layer), _) => layer.drop().map(|drop| drop.color & 0xFF_FFFF),
                         (Paint::Recolor(color), _, _) => Some(color),
+                        (Paint::Stack, _, _) => self.paint_color(Paint::Stack),
                         _ => None,
                     };
                     let swatch = Rect::new(rect.x + 7, cy - 8, 16, 16);
@@ -6215,6 +6318,16 @@ impl Studio {
                     }
                 }
                 Control::Picker(part) => self.draw_picker(canvas, rect, part, hovered),
+                // A way of lining up, as a short bar in its place in the
+                // grid of them, the grid's box drawn under the first.
+                Control::StackAlign(at) => {
+                    let (cell, pad) = (panel::ALIGN_CELL, panel::ALIGN_PAD);
+                    if at == 0 {
+                        canvas.round_fill(rect.x - pad, rect.y - pad, 3 * cell.0 + 2 * pad, 3 * cell.1 + 2 * pad, 6, FIELD_COLOR, 256);
+                    }
+                    let ink = if self.stack_chip_on(control) { ACCENT_TEXT } else if hovered { 0x9A9A9A } else { 0x666666 };
+                    canvas.fill(cx - 7, cy - 2, 14, 4, ink);
+                }
                 Control::Stuck(end) => {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
                     self.text.draw(canvas, rect.x + 9, cy - Text::line_height(11) / 2, 11, DIM_TEXT_COLOR, if end == 0 { "Start" } else { "End" });
@@ -6267,6 +6380,7 @@ impl Studio {
                         Control::Action(Action::Halo) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.halo),
                         Control::Action(Action::Crop) => self.cropping.is_some(),
                         Control::Window(_) | Control::WindowTheme(_) | Control::WindowBar(_) | Control::WindowShadow(_) => self.window_chip_on(control, &shown),
+                        Control::StackWay(_) | Control::StackSizing(_) => self.stack_chip_on(control),
                         Control::Action(action) => self.action_on(action, &shown),
                         _ => false,
                     };

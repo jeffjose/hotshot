@@ -87,6 +87,10 @@ impl Studio {
         list.sort_unstable();
         list.dedup();
         self.changed();
+        // A stack laid out again moved more than these: all of it is drawn.
+        if self.stacks_moved {
+            return;
+        }
         self.touched = Some((from, self.doc.stamp, list));
     }
 

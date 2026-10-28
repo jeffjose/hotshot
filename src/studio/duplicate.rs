@@ -92,6 +92,10 @@ impl Studio {
             self.doc.layers.push(copy);
             self.selected.push(self.doc.layers.len() - 1);
         }
+        // A copy of something in a stack goes next after it there, with
+        // the stack's gap, rather than beside it.
+        let pairs: Vec<(u32, u32)> = sources.iter().copied().zip(copies.iter().copied()).collect();
+        self.stack_copies(&pairs);
         self.repeat = Some(Repeat::Layers { frame: (self.page, self.active), sources, copies });
         self.changed();
     }

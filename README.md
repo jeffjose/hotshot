@@ -214,6 +214,23 @@ cropped shows all of itself, its own bar too, and is in its window again
 once it is done. `Ctrl+K` "mac", "windows", "gnome" and the rest put
 that window round what is picked out, and the window chosen last is put
 round the next window captured.
+
+`Shift+A` puts what is picked out in an auto layout, as Figma's, cut to
+what screenshots need: a stack that goes across, down, or across in
+rows that wrap, with an even gap between what is in it and padding
+round it, guessed from how they lie. Each keeps its own size, and where
+each goes is worked out: resize one, delete one or drop another in its
+box and the rest move up; drag one along it and the others make room,
+or well out of it to take it out. Counters in it are numbered by its
+order, and `Ctrl+D` on something in it puts the copy next after it, the
+gap away. Its Auto layout section sets which way, the gap and padding
+(shown in pink, with how large, while it is hovered, as Figma shows
+them), how what is in it lines up, one of nine, and whether its box
+hugs what is in it, is as large as set, or fills the frame, laid out
+again when the frame is resized; and what it is filled with. A click in
+its padding picks all of it out, a stack can hold another, and the minus
+in the section undoes it, everything staying where it is. Stacks are
+kept in the file; the layers do not know of them.
 The markup tools draw over everything, with the
 same arrow heads, fills and sketched lines as the editor. Space or the
 middle button pans, Ctrl+scroll zooms, `Ctrl+0` fits the artboard and

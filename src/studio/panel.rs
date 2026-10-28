@@ -10,6 +10,10 @@ pub(super) const FIELD_H: i32 = 26;
 const ROW_STEP: i32 = 32;
 /// How much of a row the word at its left takes, saying what it is for.
 const LABEL_W: i32 = 54;
+/// How large each of the nine buttons of an alignment grid is, and how
+/// far in from the edge of the box round them they begin.
+pub(super) const ALIGN_CELL: (i32, i32) = (18, 11);
+pub(super) const ALIGN_PAD: i32 = 5;
 
 /// The rows of the panel as they are laid out, down from `y`.
 pub(super) struct Rows<'a> {
@@ -129,7 +133,7 @@ impl Rows<'_> {
     pub fn labeled(&mut self, text: &mut Text, label: &str, items: Vec<(String, Control)>) {
         let line = Text::line_height(12);
         self.layout.words.push(((self.left, self.y + (FIELD_H - Text::line_height(11)) / 2), label.to_owned(), DIM_TEXT_COLOR, 11));
-        let mut x = self.left + LABEL_W;
+        let mut x = if label.is_empty() { self.left } else { self.left + LABEL_W };
         for (says, control) in items {
             let wide = text.width(&says, 12) + 16;
             self.layout.controls.push((Rect::new(x, self.y, wide, FIELD_H), control));
@@ -137,6 +141,21 @@ impl Rows<'_> {
             x += wide + 4;
         }
         self.y += ROW_STEP;
+    }
+
+    /// What a row is for, at its left; nine small buttons three by three,
+    /// one for each way to line things up, as Figma's grid of them; and
+    /// what the one chosen is, in words after them.
+    pub fn align_grid(&mut self, label: &str, says: String) {
+        let high = 3 * ALIGN_CELL.1 + 2 * ALIGN_PAD;
+        self.layout.words.push(((self.left, self.y + (high - Text::line_height(11)) / 2), label.to_owned(), DIM_TEXT_COLOR, 11));
+        let (x, y) = (self.left + LABEL_W + ALIGN_PAD, self.y + ALIGN_PAD);
+        for at in 0..9u8 {
+            let (column, row) = (i32::from(at % 3), i32::from(at / 3));
+            self.layout.controls.push((Rect::new(x + column * ALIGN_CELL.0, y + row * ALIGN_CELL.1, ALIGN_CELL.0, ALIGN_CELL.1), Control::StackAlign(at)));
+        }
+        self.layout.words.push(((x + 3 * ALIGN_CELL.0 + ALIGN_PAD + 10, self.y + (high - Text::line_height(11)) / 2), says, DIM_TEXT_COLOR, 11));
+        self.y += high + 6;
     }
 
     /// What a row is for, at its left, and one control taking the rest.
@@ -248,6 +267,7 @@ impl Studio {
                     }
                     self.window_section(&mut rows, index, &picture);
                     self.effects_section(&mut rows, picture.shadow != 0);
+                    self.stack_section(&mut rows);
                     self.layer_section(&mut rows);
                 }
                 Kind::Shape(shape) => self.shape_sections(&mut rows, index, &shape),
@@ -269,6 +289,7 @@ impl Studio {
                 rows.section(&format!("{} layers", chosen.len()), &kinds.join(", "), None);
                 rows.fields(&[Field::X, Field::Y], &[]);
                 rows.fields(&[Field::W, Field::H], &[act(Action::LockRatio)]);
+                self.stack_section(&mut rows);
                 // Every color among them, with how many have it: changed at
                 // Lining up and spacing: for a row and for a column, the
                 // one they lie in first.
@@ -453,6 +474,7 @@ impl Studio {
         }
         let _ = index;
         self.effects_section(rows, shape.shadow.is_some());
+        self.stack_section(rows);
         self.layer_section(rows);
     }
 
