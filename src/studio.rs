@@ -5825,6 +5825,24 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_keeps_what_is_typed_and_the_bar_of_tools_has_no_menu() {
+        let mut studio = studio();
+        let mut words = Shape::new(Tool::Text, 0x000000, 2.0, (100.0, 100.0));
+        words.text = "Hi".into();
+        studio.doc.layers.push(Layer::shape(words));
+        studio.selected = vec![0];
+        studio.edit_text(0);
+        studio.fit();
+        let empty = studio.to_window((600.0, 500.0));
+        studio.right_click(empty);
+        assert!(studio.editing.is_none() && studio.menu.is_some() && studio.selected.is_empty());
+        let tool = studio.control_rect(Control::Tool(Tool::Rect)).or_else(|| studio.control_rect(Control::Group(0))).unwrap().center();
+        studio.flyout = Some(0);
+        studio.right_click(tool);
+        assert_eq!((studio.menu, studio.flyout), (None, None));
+    }
+
+    #[test]
     fn a_gradient_goes_the_way_it_is_turned_and_is_kept() {
         let mut text = Text::load();
         let mut doc = Doc::new(200, 100);

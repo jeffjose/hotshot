@@ -392,14 +392,22 @@ impl Studio {
     /// frames, on what is under it, picked out first, what can be done
     /// with that; on nothing, what can be done anyway.
     pub(super) fn right_click(&mut self, at: (i32, i32)) -> Outcome {
-        self.menu = None;
-        if let Some(Control::Page(page)) = self.control_at(at) {
+        // Whatever else is open closes, and what is being typed is kept.
+        let control = self.control_at(at);
+        (self.menu, self.flyout, self.palette, self.styling, self.eyedropping) = (None, None, None, false, false);
+        self.dirty = true;
+        self.commit_typing();
+        self.commit_name();
+        if let Some(Control::Page(page)) = control {
             self.menu = Some(MenuState { kind: MenuKind::Page(page), at, sub: None });
             return Outcome::Continue;
         }
-        if !self.over_page(at) {
+        // Over the bar of tools, or anything else that floats on the page,
+        // there is nothing to right click.
+        if !self.over_page(at) || control.is_some() {
             return Outcome::Continue;
         }
+        self.commit_text();
         if let Some(frame) = self.frame_at(self.to_page(at)).filter(|&frame| frame != self.active) {
             self.activate(frame);
         }
