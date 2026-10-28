@@ -29,6 +29,7 @@ mod panel;
 mod picker;
 mod place;
 mod preview;
+mod rulers;
 mod snap;
 mod search;
 mod style;
@@ -1038,6 +1039,8 @@ enum Drag {
     Crop { pull: (i32, i32), from: (f32, f32) },
     /// A slider dragged along, from where its track begins, so wide.
     Slide { field: Field, left: i32, wide: i32 },
+    /// A guide dragged out of a ruler, or taken hold of.
+    Guide { index: usize },
     /// A part of the color picker dragged along.
     Picker { part: u8, rect: Rect },
 }
@@ -1536,6 +1539,9 @@ pub struct Studio {
     /// and for the rest of a drag once pressed in it.
     seen_mods: (Option<std::time::Instant>, Option<std::time::Instant>),
     drag_mods: Mods,
+    /// The guides dragged out of the rulers: up and down at an x, or
+    /// across at a y, in pixels of the frame.
+    user_guides: Vec<(bool, f32)>,
     /// The color of the selection opened to its layers, if one is.
     color_open: Option<u32>,
     /// Whether the grid of styles is open.
@@ -1615,6 +1621,7 @@ impl Studio {
             fitted_frame: false,
             seen_mods: (None, None),
             drag_mods: Mods::default(),
+            user_guides: Vec::new(),
             color_open: None,
             styling: false,
             search: None,
@@ -2090,6 +2097,7 @@ impl Studio {
         match self.drag {
             Drag::Picker { part, rect } => self.pick_at(part, rect, (x, y), false),
             Drag::Slide { field, left, wide } => self.slide_to(field, left, wide, x),
+            Drag::Guide { index } => self.drag_guide(index, (x, y)),
             Drag::None => {
                 // What a control the pointer rests on would do, shown.
                 let over = self.control_at((x, y));
@@ -2250,6 +2258,10 @@ impl Studio {
                 self.drag = Drag::MoveFrame { from: at_window, origin: (self.doc.x, self.doc.y), moved: false };
             }
             return outcome;
+        }
+        // A ruler drags out a guide; a guide is taken hold of.
+        if self.press_rulers(at_window) {
+            return Outcome::Continue;
         }
         // A color taken off the page, for the paint the picker is open for.
         if self.eyedropping {
@@ -2745,6 +2757,10 @@ impl Studio {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.dirty = true;
         match drag {
+            Drag::Guide { index } => {
+                let at = self.pointer;
+                self.drop_guide(index, at);
+            }
             // A frame dragged out; a click with the frame tool, one the size
             // of the one worked in, there.
             Drag::NewFrame { from } => {
@@ -2866,6 +2882,8 @@ impl Studio {
         }
         let chosen = self.chosen();
         let (mut across, mut down) = (vec![0.0, self.doc.width as f32 / 2.0, self.doc.width as f32], vec![0.0, self.doc.height as f32 / 2.0, self.doc.height as f32]);
+        across.extend(self.guide_lines(true));
+        down.extend(self.guide_lines(false));
         for index in 0..self.doc.layers.len() {
             if chosen.contains(&index) || self.doc.layers[index].hidden {
                 continue;
@@ -3756,6 +3774,7 @@ impl Studio {
                 }
             }
             (Key::Char('2' | '@'), false) if mods.shift => self.zoom_to_selection(),
+            (Key::Char('r'), false) if mods.shift => self.rulers = !self.rulers,
             (Key::Char(letter), false) => {
                 if let Some(&(tool, ..)) = TOOLS.iter().find(|(_, _, key)| key.to_ascii_lowercase().starts_with(letter)) {
                     self.set_tool(tool);
@@ -3911,6 +3930,7 @@ impl Studio {
             self.draw_crop(&mut canvas, index);
         }
         self.draw_gaps(&mut canvas);
+        self.draw_user_guides(&mut canvas);
         // The lines what is moved has snapped to, across the view.
         for &(upright, at) in &self.guides {
             match upright {
@@ -3953,6 +3973,7 @@ impl Studio {
             canvas.round_fill(self.pointer.0, self.pointer.1 - high / 2, 2, high, 0, 0xFFFFFF, 190);
         }
         canvas.reset_clip();
+        self.draw_rulers(&mut canvas);
         self.draw_panels(&mut canvas, &layout);
     }
 
