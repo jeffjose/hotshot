@@ -4653,6 +4653,28 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                 studio.save(false);
                 Shown::Studio(Box::new(studio))
             }
+            // A picture pasted on the projects: a new file in the folder
+            // shown, its frame the picture's size, holding it.
+            (Shown::Home(home), crate::home::Outcome::Paste(dir)) => {
+                let (clipboard, png, slot, incr, uris) = (atom("CLIPBOARD")?, atom("image/png")?, atom("HOTSHOT_CANVAS")?, atom("INCR")?, atom("text/uri-list")?);
+                let picture = selection(conn, window, clipboard, png, slot, incr, time).and_then(|bytes| Image::open(&bytes));
+                let picture = picture.or_else(|| {
+                    let words = selection(conn, window, clipboard, uris, slot, incr, time)
+                        .or_else(|| selection(conn, window, clipboard, utf8, slot, incr, time))?;
+                    let path = pasted_path(&String::from_utf8_lossy(&words))?;
+                    Image::open(&std::fs::read(path).ok()?)
+                });
+                match picture {
+                    Some(image) => {
+                        let path = crate::home::fresh_file(&dir, "Pasted");
+                        let mut studio = opened(Some(vec![Page { name: "Page 1".into(), frames: vec![framed(image, "Pasted")] }]), Vec::new(), path, home.into_text(), size, options);
+                        studio.save(false);
+                        studio.fit();
+                        Shown::Studio(Box::new(studio))
+                    }
+                    None => Shown::Home(home),
+                }
+            }
             (Shown::Home(_), crate::home::Outcome::Quit) => break,
             (Shown::Studio(mut studio), _) if outcome == Outcome::Open && studio.open_next.is_some() => {
                 studio.save(false);
@@ -4736,6 +4758,46 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     }
     Ok(())
 }
+/// A frame just the size of a picture, holding it.
+fn framed(image: Image, name: &str) -> Doc {
+    let (w, h) = (image.width(), image.height());
+    let mut frame = Doc::new(w, h);
+    frame.background = Fill::None;
+    frame.layers.push(Layer::picture(Picture::new(Arc::new(image), name.to_owned(), (w as f32 / 2.0, h as f32 / 2.0))));
+    frame
+}
+
+/// The file a copied path or URI names, from the first line of it that
+/// names one that is there.
+fn pasted_path(words: &str) -> Option<PathBuf> {
+    words.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).find_map(|line| {
+        let path = match line.strip_prefix("file://") {
+            Some(rest) => {
+                // Past the host, if one is said; and %20 and the rest put back.
+                let rest = if rest.starts_with('/') { rest } else { rest.find('/').map_or(rest, |at| &rest[at..]) };
+                let bytes = rest.as_bytes();
+                let mut out = Vec::new();
+                let mut at = 0;
+                while at < bytes.len() {
+                    match (bytes[at], bytes.get(at + 1..at + 3).and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok())) {
+                        (b'%', Some(byte)) => {
+                            out.push(byte);
+                            at += 3;
+                        }
+                        (byte, _) => {
+                            out.push(byte);
+                            at += 1;
+                        }
+                    }
+                }
+                PathBuf::from(String::from_utf8_lossy(&out).into_owned())
+            }
+            None => PathBuf::from(line),
+        };
+        path.is_file().then_some(path)
+    })
+}
+
 
 fn event_is_press(event: &x11rb::protocol::Event) -> bool {
     matches!(event, x11rb::protocol::Event::KeyPress(_))
@@ -4875,6 +4937,23 @@ mod tests {
         assert_eq!(studio.color_uses(0x1A1A1A), vec![(2, "text")]);
         studio.paint(Paint::Recolor(0xE5484D), Some(0xFFC53D));
         assert_eq!(studio.selection_colors(), vec![(0xFFC53D, 2), (0x1A1A1A, 1)]);
+    }
+
+    #[test]
+    fn a_pasted_path_or_uri_names_its_file_and_a_picture_gets_a_frame_its_size() {
+        let dir = std::env::temp_dir().join(format!("hotshot-paste-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a shot.png");
+        std::fs::write(&file, b"x").unwrap();
+        let uri = format!("# copied\nfile://{}\n", file.display().to_string().replace(' ', "%20"));
+        assert_eq!(pasted_path(&uri), Some(file.clone()));
+        assert_eq!(pasted_path(&format!("{}\n", file.display())), Some(file.clone()));
+        assert_eq!(pasted_path("not a path"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let frame = framed(checker(120, 80), "Pasted");
+        assert_eq!((frame.width, frame.height, frame.layers.len(), frame.background), (120, 80, 1, Fill::None));
+        let Kind::Picture(picture) = &frame.layers[0].kind else { panic!() };
+        assert_eq!((picture.cx, picture.cy, picture.w), (60.0, 40.0, 120.0));
     }
 
     #[test]

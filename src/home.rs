@@ -94,6 +94,9 @@ pub enum Outcome {
     /// A new file in a folder, to be opened in the canvas: empty, or with
     /// a picture from a file on it.
     New(PathBuf, Option<PathBuf>),
+    /// What is on the clipboard wanted: a picture, or the path of one, to
+    /// begin a new file in a folder with.
+    Paste(PathBuf),
 }
 
 /// A small picture of a file or a capture, and when it was made from
@@ -364,6 +367,7 @@ impl Home {
         match (key, mods.ctrl) {
             (Key::Char('q' | 'w' | 'Q' | 'W'), true) => Outcome::Quit,
             (Key::Char('n' | 'N'), true) => Outcome::New(self.folder(), None),
+            (Key::Char('v' | 'V'), true) => Outcome::Paste(self.folder()),
             _ => Outcome::Continue,
         }
     }
@@ -437,6 +441,7 @@ impl Home {
         }
         let heading = self.heading();
         self.text.draw(&mut canvas, left, 42, 26, TEXT_COLOR, &heading);
+        self.text.draw(&mut canvas, left, 80, 12, DIM_TEXT_COLOR, "Paste a picture to start a file  \u{b7}  Ctrl V");
         let mut lowest = 0;
         for (rect, control) in &controls {
             let hovered = hover.as_ref() == Some(control);
