@@ -2395,6 +2395,15 @@ impl Studio {
             Tool::Select => self.press_select(at, at_window, double),
             Tool::Text => {
                 self.checkpoint();
+                // On text already there, that typed into, as Figma's text
+                // tool does, rather than new text over it.
+                let on_text = self.layer_at(at).filter(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if matches!(shape.tool, Tool::Text | Tool::Badge)));
+                if let Some(index) = on_text {
+                    self.edit_text(index);
+                    self.selected = vec![index];
+                    self.changed();
+                    return Outcome::Continue;
+                }
                 let mut shape = Shape::new(Tool::Text, self.color, STROKES[self.size], (at.0, at.1 - FONT_SIZES[self.size] as f32 / 2.0));
                 (shape.font_px, shape.face) = (FONT_SIZES[self.size], self.face);
                 self.doc.layers.push(Layer::shape(shape));
@@ -6141,6 +6150,25 @@ mod tests {
         studio.pressed(1, 2000);
         studio.released();
         assert!(studio.search.is_none());
+    }
+
+    #[test]
+    fn the_text_tool_on_text_already_there_types_into_it() {
+        let mut studio = studio();
+        let mut words = Shape::new(Tool::Text, 0x000000, 2.0, (100.0, 100.0));
+        (words.text, words.font_px) = ("Hello".into(), 32);
+        studio.doc.layers.push(Layer::shape(words));
+        studio.fit();
+        studio.key(Key::Char('t'), Mods::default(), true);
+        let (x, y, w, h) = studio.doc.layers[0].bounds(&mut studio.text);
+        let on = studio.to_window((x + w / 2.0, y + h / 2.0));
+        studio.pointer_moved(on.0, on.1, Mods::default());
+        studio.pressed(1, 100_000);
+        studio.released();
+        assert_eq!((studio.doc.layers.len(), studio.editing), (1, Some(0)));
+        studio.key(Key::Char('!'), Mods::default(), true);
+        let Kind::Shape(shape) = &studio.doc.layers[0].kind else { panic!() };
+        assert_eq!(shape.text, "Hello!");
     }
 
     #[test]
