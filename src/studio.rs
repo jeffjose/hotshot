@@ -733,7 +733,8 @@ fn shortened(path: &Path) -> String {
 /// where it is in the frame.
 pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str) -> Doc {
     let mut doc = Doc::new(area.w, area.h);
-    doc.background = Fill::None;
+    // Exported at its own size, pixel for pixel, as a screenshot is wanted.
+    (doc.background, doc.exports) = (Fill::None, vec![ExportSize::new(1.0)]);
     // The shapes read first, so that the picture is called something
     // none of them is.
     let drawn: Vec<Shape> = shapes.lines().filter_map(Shape::read).collect();
@@ -1570,8 +1571,6 @@ pub struct Studio {
     /// How round the corners of the next rectangle are.
     radius: f32,
     face: usize,
-    /// How much larger a picture is exported than the artboard.
-    export_scale: u32,
     /// A number being typed into its field, and what has been typed.
     typing: Option<(Field, String)>,
     /// How many changes there have been, which says when what is shown
@@ -1664,7 +1663,6 @@ impl Studio {
             size: 1,
             radius: 8.0,
             face: 0,
-            export_scale: 2,
             typing: None,
             version: 0,
             shown: Vec::new(),
@@ -3859,9 +3857,10 @@ impl Studio {
         let _ = std::fs::remove_file(file);
     }
 
-    /// The artboard as a PNG, at the size export is set to.
+    /// The artboard as a PNG, at the first size it is exported at.
     fn png(&mut self) -> Option<Vec<u8>> {
-        let (wide, high, pixels) = self.doc.render(self.export_scale as f32, &mut self.text);
+        let times = self.doc.exports.first().map_or(1.0, |size| size.times);
+        let (wide, high, pixels) = self.doc.render(times, &mut self.text);
         let clear = pixels.iter().any(|pixel| pixel >> 24 != 255);
         crate::output::encode(wide as u32, high as u32, &pixels, clear).ok()
     }
@@ -5434,7 +5433,8 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
 fn framed(image: Image, name: &str) -> Doc {
     let (w, h) = (image.width(), image.height());
     let mut frame = Doc::new(w, h);
-    frame.background = Fill::None;
+    // Exported at its own size, pixel for pixel, as a screenshot is wanted.
+    (frame.background, frame.exports) = (Fill::None, vec![ExportSize::new(1.0)]);
     frame.layers.push(Layer::picture(Picture::new(Arc::new(image), name.to_owned(), (w as f32 / 2.0, h as f32 / 2.0))));
     frame
 }
@@ -6052,6 +6052,18 @@ mod tests {
         studio.pressed(1, 100_000);
         studio.released();
         assert_eq!(studio.selected, vec![0]);
+    }
+
+    #[test]
+    fn a_frame_made_for_a_picture_exports_it_pixel_for_pixel() {
+        let frame = framed(checker(120, 80), "pic");
+        assert_eq!(frame.exports.iter().map(|size| size.times).collect::<Vec<_>>(), vec![1.0]);
+        let captured = from_markup(Rect::new(10, 10, 120, 80), &vec![0xFF0000FF; 120 * 80], "");
+        assert_eq!(captured.exports.iter().map(|size| size.times).collect::<Vec<_>>(), vec![1.0]);
+        // What is copied is at the size it is exported at.
+        let mut studio = Studio::with_pages(vec![Page { name: "Page 1".into(), frames: vec![frame] }], Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
+        let png = studio.png().unwrap();
+        assert_eq!(Image::open(&png).map(|image| (image.width(), image.height())), Some((120, 80)));
     }
 
     #[test]
