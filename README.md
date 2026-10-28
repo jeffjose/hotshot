@@ -181,7 +181,8 @@ Tight, on the bar over the crop, in the panel or from `Ctrl+K`, crops
 to what is in the picture: a margin of one color trimmed off, then each
 time it is pressed the largest box of lines inside, the window, its
 pane, the cards in it, saying "Tight · 2 of 5" as it goes; Shift+Tight
-goes back out.
+goes back out. Double-click inside the crop to fit it round the box of
+lines clicked in, and again for the box round that.
 The markup tools draw over everything, with the
 same arrow heads, fills and sketched lines as the editor. Space or the
 middle button pans, Ctrl+scroll zooms, `Ctrl+0` fits the artboard and

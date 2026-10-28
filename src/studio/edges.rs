@@ -260,16 +260,28 @@ impl Lines {
         (next != (l, t, r, b) && right - left >= 16.0 && bottom - top >= 16.0).then_some(next)
     }
 
-    /// The smallest box of lines round a point of the picture; or with
-    /// none round it, on each side the nearest line that runs past it, or
-    /// the part inside the margin.
-    pub fn around(&self, (x, y): (f32, f32)) -> Sides {
-        let boxes = self.boxes((0.0, 0.0, self.width, self.height));
-        if let Some(&smallest) = boxes.iter().filter(|(l, t, r, b)| *l < x && x < *r && *t < y && y < *b).min_by(|a, b| ((a.2 - a.0) * (a.3 - a.1)).total_cmp(&((b.2 - b.0) * (b.3 - b.1)))) {
-            return smallest;
+    /// The boxes of lines round a point of the picture, the smallest
+    /// first; or with none round it, the box of the nearest line on each
+    /// side that runs past it, or the part inside the margin.
+    pub fn around(&self, (x, y): (f32, f32)) -> Vec<Sides> {
+        let mut boxes: Vec<Sides> = self.boxes((0.0, 0.0, self.width, self.height)).into_iter().filter(|(l, t, r, b)| *l < x && x < *r && *t < y && y < *b).collect();
+        boxes.sort_by(|a, b| ((b.2 - b.0) * (b.3 - b.1)).total_cmp(&((a.2 - a.0) * (a.3 - a.1))));
+        // A box and the one just inside its border are the same box, kept
+        // with its border.
+        boxes.dedup_by(|inner, outer| (inner.0 - outer.0).abs().max((inner.1 - outer.1).abs()).max((inner.2 - outer.2).abs()).max((inner.3 - outer.3).abs()) <= APART);
+        boxes.reverse();
+        if boxes.is_empty() {
+            boxes.push(self.nearest_round((x, y)));
         }
+        boxes
+    }
+
+    /// On each side of a point, the nearest line that runs past it, or
+    /// the part inside the margin; in the margin, the edge of the picture.
+    fn nearest_round(&self, (x, y): (f32, f32)) -> Sides {
         let slack = 12.0;
         let (l, t, r, b) = self.content;
+        let (l, t, r, b) = if l <= x && x <= r && t <= y && y <= b { (l, t, r, b) } else { (0.0, 0.0, self.width, self.height) };
         let left = self.upright.iter().rev().find(|line| line.at < x && line.at > l && line.covers(y, slack)).map_or(l, |line| line.at);
         let right = self.upright.iter().find(|line| line.at > x && line.at < r && line.covers(y, slack)).map_or(r, |line| line.at);
         let top = self.across.iter().rev().find(|line| line.at < y && line.at > t && line.covers(x, slack)).map_or(t, |line| line.at);
@@ -411,8 +423,9 @@ pub(super) mod tests {
     fn the_box_round_a_point_is_the_smallest_of_lines() {
         let pixels = card_picture(400, 300, (50, 40, 350, 260), (100, 80, 300, 200));
         let lines = Lines::find(400, 300, &pixels);
-        assert_eq!(lines.around((150.0, 150.0)), (100.0, 80.0, 300.0, 200.0));
-        assert_eq!(lines.around((70.0, 60.0)), (51.0, 41.0, 349.0, 259.0), "inside the card's border, round the panel");
+        assert_eq!(lines.around((150.0, 150.0)), [(100.0, 80.0, 300.0, 200.0), (50.0, 40.0, 350.0, 260.0)], "the panel, then the card with its border");
+        assert_eq!(lines.around((70.0, 60.0)), [(50.0, 40.0, 350.0, 260.0)], "in the card, round the panel");
+        assert_eq!(lines.around((20.0, 20.0)), [(0.0, 0.0, 400.0, 300.0)], "in the margin, round nothing");
         assert_eq!(Lines::nearest(&lines.upright, 104.0, 6.0), Some(100.0));
         assert_eq!(Lines::nearest(&lines.upright, 110.0, 6.0), None);
     }

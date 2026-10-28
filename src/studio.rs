@@ -2887,7 +2887,7 @@ impl Studio {
         self.frame_picked = false;
         let at = self.to_doc(at_window);
         if let Some(index) = self.cropping {
-            return self.press_crop(index, at);
+            return self.press_crop(index, at, double);
         }
         if let Some(index) = self.editing {
             if self.doc.layers[index].hit(at, &mut self.text) {
@@ -3076,8 +3076,9 @@ impl Studio {
     }
 
     /// A press while a picture is cropped: on a corner or a side of its
-    /// crop, that; inside it, all of it; outside, the end of cropping.
-    fn press_crop(&mut self, index: usize, at: (f32, f32)) -> Outcome {
+    /// crop, that; inside it, all of it, or with a double click the box of
+    /// lines round where it is; outside, the end of cropping.
+    fn press_crop(&mut self, index: usize, at: (f32, f32), double: bool) -> Outcome {
         let Kind::Picture(picture) = &self.doc.layers[index].kind else {
             self.cropping = None;
             return Outcome::Continue;
@@ -3090,6 +3091,10 @@ impl Studio {
         let inside = lx.abs() <= hw + reach && ly.abs() <= hh + reach;
         if !inside {
             self.cropping = None;
+            return Outcome::Continue;
+        }
+        if double && (px, py) == (0, 0) {
+            self.crop_around(index, at);
             return Outcome::Continue;
         }
         self.checkpoint();
@@ -7061,6 +7066,19 @@ mod tests {
         }
         studio.act(Action::Tight);
         assert_eq!(crop_of(&studio), (100.0, 80.0, 200.0, 120.0));
+    }
+
+    #[test]
+    fn a_double_click_in_a_crop_fits_it_round_the_box_clicked_in_then_the_one_round_that() {
+        let mut studio = cropping_a_card();
+        studio.press_crop(0, (150.0, 150.0), true);
+        assert_eq!(crop_of(&studio), (100.0, 80.0, 200.0, 120.0), "the panel");
+        assert!(matches!(studio.drag, Drag::None));
+        studio.press_crop(0, (150.0, 150.0), true);
+        assert_eq!(crop_of(&studio), (50.0, 40.0, 300.0, 220.0), "the card round it, with its border");
+        // A single press inside it takes hold of it as ever.
+        studio.press_crop(0, (150.0, 150.0), false);
+        assert!(matches!(studio.drag, Drag::Crop { pull: (0, 0), .. }));
     }
 
     #[test]

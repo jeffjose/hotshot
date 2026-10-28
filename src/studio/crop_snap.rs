@@ -102,7 +102,10 @@ impl Studio {
             self.say("Pick out a picture to crop tight");
             return;
         };
-        let crops = self.crop_lines(&picture.image).tight();
+        let lines = self.crop_lines(&picture.image);
+        let began = std::time::Instant::now();
+        let crops = lines.tight();
+        debug!("canvas found {} tight crops in {:.1?}", crops.len(), began.elapsed());
         if crops.is_empty() {
             self.say("Nothing in the picture to crop tight to");
             return;
@@ -131,6 +134,23 @@ impl Studio {
         match next {
             Some(at) => self.say(format!("Tight \u{b7} {} of {}", at + 1, crops.len())),
             None => self.say("Tight \u{b7} all of the picture"),
+        }
+    }
+
+    /// The crop of the picture being cropped fitted to the smallest box of
+    /// lines round a point of the artboard double clicked in it; and from
+    /// a box, to the next larger round it. A step to undo.
+    pub(super) fn crop_around(&mut self, index: usize, at: (f32, f32)) {
+        let Some(Layer { kind: Kind::Picture(picture), .. }) = self.doc.layers.get(index).cloned() else { return };
+        let boxes = self.crop_lines(&picture.image).around(Self::pixel_at(&picture, at));
+        let now = sides(picture.crop);
+        let next = match boxes.iter().position(|&found| same(found, now)) {
+            Some(on) => boxes.get(on + 1).or(boxes.first()),
+            None => boxes.first(),
+        };
+        if let Some(&to) = next {
+            self.crop_to_sides(index, &picture, to);
+            self.tight = None;
         }
     }
 
@@ -210,9 +230,9 @@ impl Studio {
         self.to_window(picture.placed((lx, ly)))
     }
 
-    /// A point of the window, where it is in a picture's own pixels.
-    fn shown_pixel(&self, picture: &Picture, at: (i32, i32)) -> (f32, f32) {
-        let (mut lx, mut ly) = picture.local(self.to_doc(at));
+    /// A point of the artboard, where it is in a picture's own pixels.
+    fn pixel_at(picture: &Picture, at: (f32, f32)) -> (f32, f32) {
+        let (mut lx, mut ly) = picture.local(at);
         if picture.flip.0 {
             lx = -lx;
         }
@@ -235,7 +255,7 @@ impl Studio {
         let lines = self.crop_lines(&picture.image);
         let (iw, ih) = (picture.image.width() as f32, picture.image.height() as f32);
         let (l, t, w, h) = picture.crop;
-        let pointer = self.shown_pixel(picture, self.pointer);
+        let pointer = Self::pixel_at(picture, self.to_doc(self.pointer));
         // How many of its pixels the ticks are long, and how far from the
         // sides pulled lines are shown: so many of the window's.
         let per = picture.crop.2 / picture.w.max(1e-3) / self.zoom;
