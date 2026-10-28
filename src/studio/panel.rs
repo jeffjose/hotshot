@@ -225,7 +225,7 @@ impl Studio {
                 for &index in &chosen {
                     let kind = match &self.doc.layers[index].kind {
                         Kind::Picture(_) => "picture".to_owned(),
-                        Kind::Shape(shape) => TOOLS.iter().find(|(tool, ..)| *tool == shape.tool).map_or("shape", |(_, name, _)| name).to_lowercase(),
+                        Kind::Shape(shape) => tool_name(shape.tool).to_lowercase(),
                     };
                     match kinds.iter_mut().find(|(known, _)| *known == kind) {
                         Some((_, count)) => *count += 1,
@@ -317,7 +317,7 @@ impl Studio {
     fn shape_sections(&mut self, rows: &mut Rows, index: usize, shape: &Shape) {
         let act = Control::Action;
         let actions = |list: &[Action]| list.iter().map(|&action| (action.says().to_owned(), Control::Action(action))).collect::<Vec<_>>();
-        let name = TOOLS.iter().find(|(tool, ..)| *tool == shape.tool).map_or("Shape", |(_, name, _)| name);
+        let name = tool_name(shape.tool);
         rows.section(name, "", None);
         let line = matches!(shape.tool, Tool::Line | Tool::Arrow);
         if line {

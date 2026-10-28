@@ -86,6 +86,19 @@ const TOOLS: [(Tool, &str, &str); 9] = [
     (Tool::Counter, "Counter", "N"),
 ];
 
+/// What a shape drawn with a tool is called: the tool's name, and for
+/// those brought from capture mode that the canvas has no tool for,
+/// theirs.
+fn tool_name(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Blur => "Blur",
+        Tool::Spotlight => "Spotlight",
+        Tool::Zoom => "Zoom",
+        Tool::Badge => "Label",
+        tool => TOOLS.iter().find(|(known, ..)| *known == tool).map_or("Shape", |(_, name, _)| name),
+    }
+}
+
 /// What a file of the canvas begins with.
 const MAGIC: &str = "HOTSHOT CANVAS 2";
 /// What a file from before pages and frames begins with.
@@ -258,7 +271,7 @@ impl Layer {
             Kind::Picture(picture) => picture.name.clone(),
             Kind::Shape(shape) => match shape.tool {
                 Tool::Text | Tool::Badge => shape.text.lines().next().unwrap_or("Text").chars().take(24).collect(),
-                tool => TOOLS.iter().find(|(known, ..)| *known == tool).map_or("Shape", |(_, name, _)| name).to_owned(),
+                tool => tool_name(tool).to_owned(),
             },
         }
     }
@@ -4392,7 +4405,11 @@ impl Studio {
             Tool::Pen => icons::PEN,
             Tool::Marker => icons::MARKER,
             Tool::Text => icons::TEXT,
-            _ => icons::COUNTER,
+            Tool::Blur => icons::BLUR,
+            Tool::Spotlight => icons::SPOTLIGHT,
+            Tool::Zoom => icons::ZOOM,
+            Tool::Badge => icons::BADGE,
+            Tool::Counter => icons::COUNTER,
         };
         let field_text = |text: &mut Text, canvas: &mut Canvas, rect: Rect, label: &str, icon: bool, value: &str, label_color: u32| {
             let middle = rect.y + rect.h / 2;
@@ -5300,6 +5317,13 @@ mod tests {
 
     fn checker(width: i32, height: i32) -> Image {
         Image::new(width, height, (0..width * height).map(|at| if (at % width / 10 + at / width / 10) % 2 == 0 { 0xFFFF0000 } else { 0xFF0000FF }).collect())
+    }
+
+    #[test]
+    fn shapes_from_capture_mode_are_listed_by_what_they_are() {
+        for (tool, name) in [(Tool::Blur, "Blur"), (Tool::Spotlight, "Spotlight"), (Tool::Zoom, "Zoom"), (Tool::Rect, "Rectangle")] {
+            assert_eq!(Layer::shape(Shape::new(tool, 0xFF0000, 2.0, (10.0, 10.0))).name(), name);
+        }
     }
 
     #[test]
