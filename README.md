@@ -126,6 +126,16 @@ capture mode, any of which starts a new file. `hotshot --edit FILE`
 (or `--canvas`) opens a `.hotshot` file, or starts a file in Drafts with
 the pictures given. Files are saved as you work, as Figma saves them.
 
+In Captures, Ctrl or Shift click picks several (`Ctrl+A` all, Esc none),
+and a right click converts them: Convert to ▸ lists the kinds, each
+written beside its original with the new ending, a line along the
+bottom counting them through, "Converting to AVIF · 9 of 14 · 38 MB →
+11 MB", then what they came to with Undo, which takes away what was
+written. The originals are kept, unless Replace originals is ticked:
+then each goes to the library's trash once converted, and Undo brings
+it back. Fine-tune… opens the Convert window on them, tried on the
+first, to convert them all with the settings found.
+
 A file has pages, listed down the left, and each page has frames: the
 pictures you export, laid out side by side. `F`, or the frame tool,
 drags out a new one; drag a frame by its name to move it, double-click

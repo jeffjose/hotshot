@@ -13,6 +13,8 @@ use crate::editor::{Cursor, Key, Mods};
 use crate::studio::{self, ACCENT, DIM_TEXT_COLOR, EDGE_COLOR, FIELD_COLOR, HOVER_COLOR, PANEL_COLOR, ROW_ON, TEXT_COLOR, VIEW_COLOR};
 use crate::text::{icons, Text};
 
+mod batch;
+
 /// The folder the projects are in.
 pub fn library() -> PathBuf {
     std::env::var_os("HOTSHOT_LIBRARY").map(PathBuf::from).unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("Pictures").join("hotshot"))
@@ -86,6 +88,8 @@ enum Control {
     View(bool),
     More(PathBuf),
     FileAct(u8),
+    /// The conversion of captures said along the bottom, undone.
+    Undo,
     Panel,
 }
 
@@ -135,6 +139,16 @@ pub struct Home {
     name_picked: bool,
     facts: HashMap<PathBuf, (SystemTime, usize, String)>,
     dirty: bool,
+    /// The captures picked out, with Ctrl and Shift; the keys held at the
+    /// last press; a conversion of them under way or to undo; whether it
+    /// puts the originals in the trash; how each kind is written; and
+    /// something said along the bottom.
+    picked: Vec<PathBuf>,
+    mods: Mods,
+    batch: Option<batch::Batch>,
+    replace: bool,
+    pub convert: crate::convert::Settings,
+    said: Option<String>,
 }
 
 /// How wide the list down the left is.
@@ -142,7 +156,7 @@ const SIDE: i32 = 248;
 
 impl Home {
     pub fn new(text: Text, width: i32, height: i32, captures: PathBuf) -> Home {
-        Home { text, width, height, place: Place::Recent, pointer: (0, 0), scroll: 0, thumbs: HashMap::new(), naming: None, captures, last_press: (0, (-100, -100)), list: false, file_menu: None, menu_row: None, renaming_file: None, name_picked: false, facts: HashMap::new(), dirty: true }
+        Home { text, width, height, place: Place::Recent, pointer: (0, 0), scroll: 0, thumbs: HashMap::new(), naming: None, captures, last_press: (0, (-100, -100)), list: false, file_menu: None, menu_row: None, renaming_file: None, name_picked: false, facts: HashMap::new(), dirty: true, picked: Vec::new(), mods: Mods::default(), batch: None, replace: false, convert: crate::convert::Settings::default(), said: None }
     }
 
     /// The text it draws with, handed back for the canvas to draw with.
@@ -156,6 +170,17 @@ impl Home {
 
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
+    }
+
+    /// The keys held as a button is pressed: Ctrl and Shift pick captures.
+    pub fn set_mods(&mut self, mods: Mods) {
+        self.mods = mods;
+    }
+
+    /// Where the line along the bottom is, while there is one: what a
+    /// conversion of captures has done, with Undo at its end.
+    fn note_place(&self) -> Option<Rect> {
+        (self.batch.is_some() || self.said.is_some()).then(|| Rect::new(SIDE + 36, self.height - 52, self.width - SIDE - 72, 36))
     }
 
     /// A name being typed as it is shown: with a caret after it; or, all
@@ -275,6 +300,10 @@ impl Home {
             controls.push((Rect::new(self.width - 36 - 116 - 74, 33, 28, 28), Control::View(false)));
             controls.push((Rect::new(self.width - 36 - 116 - 44, 33, 28, 28), Control::View(true)));
         }
+        // Undo at the end of the line along the bottom, over the cards.
+        if let (Some(note), Some(true)) = (self.note_place(), self.batch.as_ref().map(|batch| batch.undoable())) {
+            controls.push((Rect::new(note.right() - 78, note.y + 5, 70, 26), Control::Undo));
+        }
         for (place, control) in self.cards() {
             controls.push((place, control));
         }
@@ -360,6 +389,8 @@ impl Home {
             _ => return Outcome::Continue,
         }
         let at = self.pointer;
+        // What was said along the bottom goes with the next click.
+        self.said = None;
         let double = time.wrapping_sub(self.last_press.0) < 400 && (at.0 - self.last_press.1 .0).abs().max((at.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at);
         let control = self.layout().into_iter().find(|(rect, _)| rect.contains(at.0, at.1)).map(|(_, control)| control);
@@ -372,6 +403,12 @@ impl Home {
             self.commit_name();
             self.file_menu = match control {
                 Some(Control::Open(path) | Control::More(path)) => Some((Menu::File(path), at)),
+                // A capture: it, or all those picked out if it is one.
+                Some(Control::Capture(path)) => {
+                    let paths = self.picked_or(&path);
+                    self.picked = paths.clone();
+                    Some((Menu::Captures(paths), at))
+                }
                 Some(Control::Go(Place::Project(dir))) => Some((Menu::Project(dir), at)),
                 Some(Control::FileAct(_)) => None,
                 _ if self.place == Place::Captures => None,
@@ -403,7 +440,11 @@ impl Home {
             Some(Control::NewProject) => self.new_project(),
             Some(Control::NewFile) => return Outcome::New(self.folder(), None),
             Some(Control::Open(path)) => return Outcome::Open(path),
+            // With Ctrl or Shift, a capture is picked out, to convert many
+            // at once; without, a file is begun with it.
+            Some(Control::Capture(path)) if self.mods.ctrl || self.mods.shift => self.pick(path, self.mods.shift),
             Some(Control::Capture(path)) => return Outcome::New(self.folder(), Some(path)),
+            Some(Control::Undo) => self.undo_batch(),
             Some(Control::View(list)) => self.list = list,
             Some(Control::More(path)) => self.file_menu = Some((Menu::File(path), at)),
             Some(Control::FileAct(act)) => return self.file_act(act),
@@ -507,6 +548,15 @@ impl Home {
             return Outcome::Continue;
         }
         match (key, mods.ctrl) {
+            // Every capture picked out, or none.
+            (Key::Char('a' | 'A'), true) if self.place == Place::Captures => {
+                self.picked = self.captured().into_iter().map(|(path, _)| path).collect();
+                Outcome::Continue
+            }
+            (Key::Escape, _) => {
+                self.picked.clear();
+                Outcome::Continue
+            }
             (Key::Char('q' | 'w' | 'Q' | 'W'), true) => Outcome::Quit,
             (Key::Char('n' | 'N'), true) => Outcome::New(self.folder(), None),
             (Key::Char('v' | 'V'), true) => Outcome::Paste(self.folder()),
@@ -590,7 +640,12 @@ impl Home {
         }
         let heading = self.heading();
         self.text.draw(&mut canvas, left, 42, 26, TEXT_COLOR, &heading);
-        self.text.draw(&mut canvas, left, 80, 12, DIM_TEXT_COLOR, "Paste a picture to start a file  \u{b7}  Ctrl V");
+        let hint = match (&self.place, self.picked.len()) {
+            (Place::Captures, 0) => "Click one to begin a file  \u{b7}  Ctrl or Shift click to pick several, right click to convert them".to_owned(),
+            (Place::Captures, count) => format!("{count} picked out  \u{b7}  right click to convert them  \u{b7}  Esc lets go"),
+            _ => "Paste a picture to start a file  \u{b7}  Ctrl V".to_owned(),
+        };
+        self.text.draw(&mut canvas, left, 80, 12, DIM_TEXT_COLOR, &hint);
         let mut lowest = 0;
         for (rect, control) in &controls {
             let hovered = hover.as_ref() == Some(control);
@@ -642,7 +697,9 @@ impl Home {
                     if let Some((_, w, h, pixels)) = self.thumb(path, rect.w, rect.h).cloned() {
                         blit(&mut canvas, &pixels, w, h, *rect);
                     }
-                    if hovered {
+                    if self.picked.contains(path) {
+                        canvas.round_outline(rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4, 10, 3, ACCENT);
+                    } else if hovered {
                         canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 8, 2, ACCENT);
                     }
                     if self.place == Place::Captures {
@@ -673,6 +730,20 @@ impl Home {
             }
         }
         canvas.reset_clip();
+        // Along the bottom: a conversion counted through, or what it came
+        // to, with Undo; or something else said.
+        if let Some(note) = self.note_place() {
+            let words = self.batch.as_ref().map(|batch| batch.words()).or_else(|| self.said.clone()).unwrap_or_default();
+            canvas.round_fill(note.x + 2, note.y + 6, note.w, note.h, 10, 0x000000, 60);
+            canvas.round_fill(note.x, note.y, note.w, note.h, 10, PANEL_COLOR, 256);
+            canvas.round_outline(note.x, note.y, note.w, note.h, 10, 1, EDGE_COLOR);
+            let words = middle_out(&mut self.text, &words, 12, note.w - 110);
+            self.text.draw(&mut canvas, note.x + 14, note.y + (note.h - Text::line_height(12)) / 2, 12, TEXT_COLOR, &words);
+            if let Some((rect, _)) = controls.iter().find(|(_, control)| *control == Control::Undo) {
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hover == Some(Control::Undo) { HOVER_COLOR } else { FIELD_COLOR }, 256);
+                self.text.draw_centered(&mut canvas, rect.x + rect.w / 2, rect.y + rect.h / 2, 12, TEXT_COLOR, "Undo");
+            }
+        }
         self.draw_file_menu(&mut canvas, hover.as_ref());
         let _ = (FIELD_COLOR, lowest);
     }
@@ -707,6 +778,9 @@ enum Menu {
     File(PathBuf),
     Project(PathBuf),
     Empty,
+    /// Captures, one or those picked out; and the kinds to convert them to.
+    Captures(Vec<PathBuf>),
+    Convert(Vec<PathBuf>),
 }
 
 /// What a row of a menu of the projects does.
@@ -724,6 +798,13 @@ enum Act {
     NewProject,
     Paste,
     CopyPath,
+    /// For captures: the kinds they can be converted to, listed; one of
+    /// them; the originals put in the trash after, or kept; and the
+    /// window that tries each kind on them.
+    ConvertMenu,
+    ConvertTo(crate::output::Format),
+    Replace,
+    FineTune,
 }
 
 /// A row of a menu: what it says, its keys and what it does; or a line
@@ -757,11 +838,12 @@ pub fn trash() -> PathBuf {
     library().join(".trash")
 }
 
-/// A file or a project put in the trash, under a name nothing there has.
-fn to_trash(path: &Path) {
+/// A file or a project put in the trash, under a name nothing there has;
+/// where it went.
+fn to_trash(path: &Path) -> Option<PathBuf> {
     let bin = trash();
     if std::fs::create_dir_all(&bin).is_err() {
-        return;
+        return None;
     }
     let (stem, ending) = (path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned()), path.extension().map(|ending| format!(".{}", ending.to_string_lossy())).unwrap_or_default());
     let mut to = bin.join(format!("{stem}{ending}"));
@@ -770,7 +852,7 @@ fn to_trash(path: &Path) {
         to = bin.join(format!("{stem} {count}{ending}"));
         count += 1;
     }
-    let _ = std::fs::rename(path, to);
+    std::fs::rename(path, &to).ok().map(|()| to)
 }
 
 /// Words kept to a width by leaving out their middle, an ellipsis in its
@@ -818,6 +900,25 @@ impl Home {
             }
             Some(Menu::Project(_)) => vec![entry("Open", "", Act::Open), entry("Rename", "Double-click", Act::Rename), entry("New file in it", "", Act::NewFileIn), Row::Rule, entry("Show in folder", "", Act::ShowFolder), entry("Copy path", "", Act::CopyPath), Row::Rule, entry("Move to trash", "", Act::Trash)],
             Some(Menu::Empty) => vec![entry("New file", "Ctrl N", Act::NewFile), entry("New project", "", Act::NewProject), Row::Rule, entry("Paste a picture", "Ctrl V", Act::Paste)],
+            Some(Menu::Captures(paths)) => {
+                let mut rows = Vec::new();
+                if paths.len() == 1 {
+                    rows.extend([entry("Begin a file with it", "", Act::Open), Row::Rule]);
+                }
+                rows.extend([entry("Convert to", "\u{25b8}", Act::ConvertMenu), entry("Fine-tune\u{2026}", "", Act::FineTune), Row::Rule]);
+                if paths.len() == 1 {
+                    rows.extend([entry("Show in folder", "", Act::ShowFolder), entry("Copy path", "", Act::CopyPath), Row::Rule]);
+                }
+                rows.push(entry("Move to trash", "", Act::Trash));
+                rows
+            }
+            // Each kind, the originals kept or put in the trash after, and
+            // the window to try them in first.
+            Some(Menu::Convert(_)) => {
+                let mut rows: Vec<Row> = crate::output::Format::ALL.iter().map(|&format| entry(format.title(), "", Act::ConvertTo(format))).collect();
+                rows.extend([Row::Rule, entry("Replace originals", if self.replace { "\u{2713} on" } else { "off" }, Act::Replace), entry("Fine-tune\u{2026}", "", Act::FineTune)]);
+                rows
+            }
         }
     }
 
@@ -827,10 +928,28 @@ impl Home {
             Some(Row::Entry(_, _, act)) => act,
             _ => return Outcome::Continue,
         };
-        let Some((menu, _)) = self.file_menu.take() else { return Outcome::Continue };
+        let Some((menu, at)) = self.file_menu.take() else { return Outcome::Continue };
         self.dirty = true;
         let stem = |path: &Path| path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned());
         match (menu, act) {
+            (Menu::Captures(paths), Act::Open) if paths.len() == 1 => return Outcome::New(self.folder(), paths.into_iter().next()),
+            // The kinds, opened in place of the menu, a little over.
+            (Menu::Captures(paths), Act::ConvertMenu) => self.file_menu = Some((Menu::Convert(paths), (at.0 + 24, at.1 + 12))),
+            (Menu::Captures(paths) | Menu::Convert(paths), Act::FineTune) => self.fine_tune(&paths),
+            (Menu::Convert(paths), Act::ConvertTo(format)) => self.convert_picked(paths, format),
+            // Ticked or not, the menu stays open to choose a kind.
+            (Menu::Convert(paths), Act::Replace) => {
+                self.replace = !self.replace;
+                self.file_menu = Some((Menu::Convert(paths), at));
+            }
+            (Menu::Captures(paths), Act::ShowFolder) => show_folder(paths[0].parent().unwrap_or(&paths[0])),
+            (Menu::Captures(paths), Act::CopyPath) if !cfg!(test) => drop(crate::clipboard::copy_text(&paths[0].to_string_lossy())),
+            (Menu::Captures(paths), Act::Trash) => {
+                for path in &paths {
+                    to_trash(path);
+                }
+                self.picked.clear();
+            }
             (Menu::File(path), Act::Open) => return Outcome::Open(path),
             (Menu::Project(dir), Act::Open) => (self.place, self.scroll) = (Place::Project(dir), 0),
             (Menu::File(path), Act::OpenWindow) => {
@@ -858,7 +977,7 @@ impl Home {
             // Where it is, as text on the clipboard; tests leave the
             // clipboard be.
             (Menu::File(path) | Menu::Project(path), Act::CopyPath) if !cfg!(test) => drop(crate::clipboard::copy_text(&path.to_string_lossy())),
-            (Menu::File(path), Act::Trash) => to_trash(&path),
+            (Menu::File(path), Act::Trash) => drop(to_trash(&path)),
             (Menu::Project(dir), Act::Trash) => {
                 to_trash(&dir);
                 if self.place == Place::Project(dir) {

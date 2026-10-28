@@ -6578,7 +6578,11 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         pictures.push((image, name));
     }
     let mut screen = match (pages.is_some(), pictures.is_empty()) {
-        (false, true) => Shown::Home(crate::home::Home::new(text, width, height, options.dir.clone())),
+        (false, true) => {
+            let mut home = crate::home::Home::new(text, width, height, options.dir.clone());
+            home.convert = options.convert;
+            Shown::Home(home)
+        }
         _ => {
             let path = path.unwrap_or_else(|| crate::home::fresh_file(&crate::home::drafts(), "Untitled"));
             Shown::Studio(Box::new(opened(pages, pictures, path, text, (width, height), options)))
@@ -6630,7 +6634,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         // draw it sharp. Otherwise nothing until something happens.
         let wait = match &mut screen {
             Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in(), studio.sizes_wait(), studio.fine_wait()].into_iter().flatten().min(),
-            Shown::Home(_) => None,
+            Shown::Home(home) => home.wait(),
         };
         let mut events: Vec<Event> = match (held.is_empty(), wait) {
             (false, _) => std::mem::take(&mut held),
@@ -6642,6 +6646,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             studio.settle();
             studio.take_sizes();
             studio.take_fine();
+        }
+        if let Shown::Home(home) = &mut screen {
+            home.take_batch();
         }
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);
@@ -6696,6 +6703,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     moved(&mut screen, (i32::from(press.event_x), i32::from(press.event_y), crate::x11::mods(press.state.into())));
                     match &mut screen {
                         Shown::Home(home) => {
+                            home.set_mods(crate::x11::mods(press.state.into()));
                             homeward = home.pressed(press.detail, press.time);
                             debug!("home button {} at {},{} -> {homeward:?}", press.detail, press.event_x, press.event_y);
                         }
@@ -6870,6 +6878,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                 studio.save(false);
                 let place = studio.path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf);
                 let mut home = crate::home::Home::new(studio.into_text(), size.0, size.1, options.dir.clone());
+                home.convert = options.convert;
                 if let Some(dir) = place.clone().filter(|dir| *dir != crate::home::drafts() && dir.parent() == Some(crate::home::library().as_path())) {
                     home.place = crate::home::Place::Project(dir);
                 } else if place.is_some() {
