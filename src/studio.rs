@@ -3747,6 +3747,24 @@ impl Studio {
             }
             return Outcome::Continue;
         }
+        // With Ctrl, while typing: Backspace takes the last word, a paste
+        // is of text, and what would be done to the layers is not.
+        if let (Some(index), true) = (self.editing, mods.ctrl) {
+            match key {
+                Key::Backspace => {
+                    if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
+                        let kept = shape.text.trim_end().trim_end_matches(|letter: char| !letter.is_whitespace()).len();
+                        shape.text.truncate(kept);
+                        shape.touch();
+                    }
+                    self.changed();
+                    return Outcome::Continue;
+                }
+                Key::Char('v' | 'V') => return Outcome::Paste,
+                Key::Delete | Key::Char('a' | 'A' | 'c' | 'C' | 'd' | 'D' | 'x' | 'X' | '[' | ']' | '{' | '}' | 'g' | 'G') => return Outcome::Continue,
+                _ => {}
+            }
+        }
         let lower = match key {
             Key::Char(letter) => Key::Char(letter.to_ascii_lowercase()),
             other => other,
@@ -3775,6 +3793,11 @@ impl Studio {
             (Key::Char('v'), true) => return Outcome::Paste,
             (Key::Char('s'), true) => self.save(true),
             (Key::Char('e'), true) => self.export(),
+            // The keys the menus say: Ctrl+Alt+G frames what is picked out,
+            // Ctrl+Shift+H and L hide and lock it.
+            (Key::Char('g'), true) if mods.alt => drop(self.act(Action::FrameThem)),
+            (Key::Char('h'), true) if mods.shift => drop(self.run_command(menu::Command::ToggleHide)),
+            (Key::Char('l'), true) if mods.shift => drop(self.run_command(menu::Command::ToggleLock)),
             (Key::Char('g'), true) => return Outcome::Capture,
             (Key::Char(']' | '}'), true) => self.restack(true),
             (Key::Char('[' | '{'), true) => self.restack(false),
@@ -3845,6 +3868,10 @@ impl Studio {
             }
             (Key::Char('2' | '@'), false) if mods.shift => self.zoom_to_selection(),
             (Key::Char('r'), false) if mods.shift => self.rulers = !self.rulers,
+            // Shift+H and Shift+V flip what is picked out, as the menus say,
+            // rather than taking up the hand and the move tool.
+            (Key::Char('h'), false) if mods.shift => drop(self.act(Action::FlipAcross)),
+            (Key::Char('v'), false) if mods.shift => drop(self.act(Action::FlipDown)),
             (Key::Char(letter), false) => {
                 if let Some(&(tool, ..)) = TOOLS.iter().find(|(_, _, key)| key.to_ascii_lowercase().starts_with(letter)) {
                     self.set_tool(tool);
@@ -5648,6 +5675,40 @@ mod tests {
         assert_eq!((studio.palette, studio.selected.clone()), (None, vec![0]));
         studio.key(Key::Escape, Mods::default(), true);
         assert!(studio.selected.is_empty());
+    }
+
+    #[test]
+    fn the_keys_the_menus_say_do_what_they_say_and_ctrl_keys_while_typing_keep_to_the_text() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (100.0, 100.0));
+        boxed.points[1] = (200.0, 150.0);
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.selected = vec![0];
+        let shift = Mods { shift: true, ..Mods::default() };
+        let ctrl_shift = Mods { shift: true, ctrl: true, ..Mods::default() };
+        studio.key(Key::Char('H'), shift, true);
+        assert_eq!((studio.space, studio.undo.len()), (false, 1));
+        studio.key(Key::Char('V'), shift, true);
+        assert_eq!(studio.undo.len(), 2);
+        studio.key(Key::Char('H'), ctrl_shift, true);
+        assert!(studio.doc.layers[0].hidden);
+        studio.key(Key::Char('L'), ctrl_shift, true);
+        assert!(studio.doc.layers[0].locked && studio.selected.is_empty());
+        // Typing: Ctrl+Backspace takes a word, never the text itself; and
+        // Ctrl+V pastes text into it, not the layers copied.
+        let mut words = Shape::new(Tool::Text, 0x000000, 2.0, (300.0, 300.0));
+        words.text = "two words".into();
+        studio.doc.layers.push(Layer::shape(words));
+        studio.selected = vec![1];
+        studio.copy_layers();
+        studio.edit_text(1);
+        let ctrl = Mods { ctrl: true, ..Mods::default() };
+        studio.key(Key::Backspace, ctrl, true);
+        studio.key(Key::Char('d'), ctrl, true);
+        assert_eq!(studio.doc.layers.len(), 2);
+        let Kind::Shape(shape) = &studio.doc.layers[1].kind else { panic!() };
+        assert_eq!(shape.text, "two ");
+        assert_eq!(studio.key(Key::Char('v'), ctrl, true), Outcome::Paste);
     }
 
     #[test]
