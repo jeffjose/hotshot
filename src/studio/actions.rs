@@ -65,6 +65,7 @@ impl Studio {
         };
         match action {
             Action::FrameThem => self.frame_them(),
+            Action::Pack(_) | Action::Match(_) | Action::ToFrame(_) | Action::Turn(_) => self.arrange(action),
             Action::LockRatio => self.keep_ratio = !self.keep_ratio,
             Action::Distribute(way) => self.distribute(way == 0),
             Action::Swap => self.restyle(|layer| {

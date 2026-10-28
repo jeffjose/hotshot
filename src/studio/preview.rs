@@ -28,7 +28,7 @@ impl Studio {
             return false;
         }
         match control {
-            Control::Action(action) => matches!(action, Action::Align(_) | Action::Distribute(_) | Action::FlipAcross | Action::FlipDown | Action::Halo | Action::Pill(_) | Action::TextAlign(_) | Action::Path(_)),
+            Control::Action(action) => matches!(action, Action::Align(_) | Action::Distribute(_) | Action::Pack(_) | Action::Match(_) | Action::ToFrame(_) | Action::Turn(_) | Action::FlipAcross | Action::FlipDown | Action::Halo | Action::Pill(_) | Action::TextAlign(_) | Action::Path(_)),
             Control::Swatch(paint, _) => !matches!(paint, Paint::Background | Paint::From | Paint::To),
             Control::Shadow(_) | Control::Window(_) => true,
             Control::MenuRow(level, row) => {

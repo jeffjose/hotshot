@@ -83,6 +83,51 @@ impl Rows<'_> {
         self.y += ROW_STEP;
     }
 
+    /// Square buttons in groups, then chips after them, on one row.
+    pub fn tools(&mut self, text: &mut Text, groups: &[&[Control]], items: Vec<(String, Control)>) {
+        let mut x = self.left;
+        for group in groups {
+            for &button in group.iter() {
+                self.layout.controls.push((Rect::new(x, self.y, FIELD_H, FIELD_H), button));
+                x += FIELD_H + 2;
+            }
+            x += 3;
+        }
+        let line = Text::line_height(12);
+        for (says, control) in items {
+            let wide = text.width(&says, 12) + 14;
+            self.layout.controls.push((Rect::new(x, self.y, wide, FIELD_H), control));
+            self.layout.words.push(((x + 7, self.y + (FIELD_H - line) / 2), says, TEXT_COLOR, 12));
+            x += wide + 4;
+        }
+        self.y += ROW_STEP;
+    }
+
+    /// Chips of the same width, so many to a row, what each says in its
+    /// middle.
+    pub fn grid(&mut self, text: &mut Text, items: Vec<(String, Control)>, across: usize) {
+        let across = across.max(1) as i32;
+        let wide = (self.inner - 6 * (across - 1)) / across;
+        let line = Text::line_height(12);
+        for (at, (says, control)) in items.into_iter().enumerate() {
+            let (column, row) = (at as i32 % across, at as i32 / across);
+            if column == 0 && row > 0 {
+                self.y += ROW_STEP;
+            }
+            let x = self.left + column * (wide + 6);
+            self.layout.controls.push((Rect::new(x, self.y, wide, FIELD_H), control));
+            let says_wide = text.width(&says, 12);
+            self.layout.words.push(((x + (wide - says_wide) / 2, self.y + (FIELD_H - line) / 2), says, TEXT_COLOR, 12));
+        }
+        self.y += ROW_STEP;
+    }
+
+    /// A small heading in capitals, over a row.
+    pub fn label(&mut self, says: &str) {
+        self.layout.words.push(((self.left, self.y), says.to_owned(), DIM_TEXT_COLOR, 10));
+        self.y += Text::line_height(10) + 6;
+    }
+
     /// A whole-width control: a color, a list, a name to type.
     pub fn wide(&mut self, control: Control) -> Rect {
         let place = Rect::new(self.left, self.y, self.inner, FIELD_H);
@@ -138,8 +183,8 @@ impl Studio {
             return rows.y;
         }
         let chosen = self.chosen();
-        // Lining up, for anything picked out: alone, on the frame.
-        if !chosen.is_empty() {
+        // Lining up one picked out, on the frame; several have more below.
+        if chosen.len() == 1 {
             rows.y += 8;
             let aligns: Vec<Control> = (0..6).map(|way| act(Action::Align(way))).collect();
             rows.buttons(&[&aligns[..3], &aligns[3..], &[act(Action::Distribute(0)), act(Action::Distribute(1))]]);
@@ -171,7 +216,6 @@ impl Studio {
                 Kind::Shape(shape) => self.shape_sections(&mut rows, index, &shape),
             },
             _ => {
-                rows.chips(&mut self.text, actions(&[Action::Distribute(0), Action::Distribute(1)]));
                 // What they are, a word for each kind, the commonest first.
                 let mut kinds: Vec<(String, usize)> = Vec::new();
                 for &index in &chosen {
@@ -189,6 +233,29 @@ impl Studio {
                 rows.fields(&[Field::X, Field::Y], &[]);
                 rows.fields(&[Field::W, Field::H], &[act(Action::LockRatio)]);
                 // Every color among them, with how many have it: changed at
+                // Lining up and spacing: for a row and for a column, the
+                // one they lie in first.
+                let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
+                let row = arrange::in_a_row(&boxes);
+                let mut ways = [
+                    ("FOR A ROW", [act(Action::Align(3)), act(Action::Align(4)), act(Action::Align(5))], actions(&[Action::Distribute(0), Action::Pack(0)])),
+                    ("FOR A COLUMN", [act(Action::Align(0)), act(Action::Align(1)), act(Action::Align(2))], actions(&[Action::Distribute(1), Action::Pack(1)])),
+                ];
+                if !row {
+                    ways.swap(0, 1);
+                }
+                rows.section("Arrange", if row { "in a row" } else { "in a column" }, None);
+                for (says, buttons, chips) in ways {
+                    rows.label(says);
+                    rows.tools(&mut self.text, &[&buttons], chips);
+                }
+                rows.section("Match to 1", "the first picked", None);
+                rows.grid(&mut self.text, actions(&(0..6).map(Action::Match).collect::<Vec<_>>()), 3);
+                rows.section("To the frame", "", None);
+                let to_frame: Vec<Control> = (0..6).map(|way| act(Action::ToFrame(way))).collect();
+                rows.tools(&mut self.text, &[&to_frame[..3], &to_frame[3..]], actions(&[Action::ToFrame(6)]));
+                rows.section("Turn", "", None);
+                rows.grid(&mut self.text, actions(&[Action::Turn(-90), Action::Turn(90), Action::Turn(180), Action::FlipAcross]), 4);
                 // once for all of them.
                 let colors = self.selection_colors();
                 if !colors.is_empty() {

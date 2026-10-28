@@ -21,6 +21,7 @@ use crate::shapes::{self, Shape, Tool};
 use crate::text::{icons, Text, FACES};
 
 mod actions;
+mod arrange;
 mod menu;
 mod panel;
 mod picker;
@@ -1234,6 +1235,14 @@ enum Action {
     /// The shape a crop is kept to, and the crop undone.
     Aspect(u8),
     ResetCrop,
+    /// What is picked out set side by side with no gaps, across or down;
+    /// made the width, the height, the size, the corners, the shadow or
+    /// the whole look of the first picked; each lined up with the frame,
+    /// six ways or in its middle; and turned by so many degrees.
+    Pack(u8),
+    Match(u8),
+    ToFrame(u8),
+    Turn(i16),
 }
 
 impl Action {
@@ -1246,6 +1255,12 @@ impl Action {
             Action::Align(3) => icons::ALIGN_TOP,
             Action::Align(4) => icons::ALIGN_VCENTER,
             Action::Align(_) => icons::ALIGN_BOTTOM,
+            Action::ToFrame(0) => icons::ALIGN_LEFT,
+            Action::ToFrame(1) => icons::ALIGN_HCENTER,
+            Action::ToFrame(2) => icons::ALIGN_RIGHT,
+            Action::ToFrame(3) => icons::ALIGN_TOP,
+            Action::ToFrame(4) => icons::ALIGN_VCENTER,
+            Action::ToFrame(5) => icons::ALIGN_BOTTOM,
             Action::Distribute(0) => icons::DIST_H,
             Action::Distribute(_) => icons::DIST_V,
             Action::LockRatio => icons::RATIO,
@@ -1275,8 +1290,8 @@ impl Action {
             Action::Actual => "1:1",
             Action::FrameThem => "Frame them",
             Action::LockRatio => "Keep proportions",
-            Action::Distribute(0) => "Space across",
-            Action::Distribute(_) => "Space down",
+            Action::Distribute(0) => "Equal gaps \u{2194}",
+            Action::Distribute(_) => "Equal gaps \u{2195}",
             Action::Swap => "Swap ends",
             Action::Path(0) => "Straight",
             Action::Path(1) => "Curved",
@@ -1306,6 +1321,19 @@ impl Action {
             Action::BorderOff => "No border",
             Action::Aspect(_) => "Aspect",
             Action::ResetCrop => "Reset",
+            Action::Pack(0) => "Pack \u{2194}",
+            Action::Pack(_) => "Pack \u{2195}",
+            Action::Match(0) => "Width",
+            Action::Match(1) => "Height",
+            Action::Match(2) => "Size",
+            Action::Match(3) => "Corners",
+            Action::Match(4) => "Shadow",
+            Action::Match(_) => "Whole look",
+            Action::ToFrame(6) => "Center",
+            Action::ToFrame(_) => "To the frame",
+            Action::Turn(-90) => "\u{21ba} 90\u{b0}",
+            Action::Turn(90) => "\u{21bb} 90\u{b0}",
+            Action::Turn(_) => "180\u{b0}",
             Action::Forward => "Forward",
             Action::Backward => "Backward",
             Action::Duplicate => "Duplicate",
@@ -3766,6 +3794,19 @@ impl Studio {
         for index in self.chosen().into_iter().filter(|_| !previewing) {
             self.outline(&mut canvas, index, ACCENT);
         }
+        // Several picked out, each says when it was: matching takes after
+        // the first.
+        let chosen = self.chosen();
+        if chosen.len() > 1 && !previewing {
+            for (order, &index) in chosen.iter().enumerate() {
+                let (x, y, _, _) = self.doc.layers[index].bounds(&mut self.text);
+                let (wx, wy) = self.to_window((x, y));
+                let says = format!("{}", order + 1);
+                let wide = self.text.width(&says, 10) + 8;
+                canvas.round_fill(wx + 3, wy + 3, wide, 14, 3, ACCENT, 256);
+                self.text.draw(&mut canvas, wx + 7, wy + 3 + (14 - Text::line_height(10)) / 2, 10, 0xFFFFFF, &says);
+            }
+        }
         if self.cropping.is_none() && !previewing {
             for (spot, _) in self.handles() {
                 canvas.fill(spot.0 - 5, spot.1 - 5, 10, 10, ACCENT);
@@ -4684,6 +4725,28 @@ mod tests {
         studio.set_field(Field::LineAngle, 90.0);
         let Kind::Shape(line) = &studio.doc.layers[0].kind else { panic!() };
         assert_eq!(line.points[1], (10.0, 110.0));
+    }
+
+    #[test]
+    fn several_are_matched_to_the_first_picked_put_to_the_frame_and_turned() {
+        let mut studio = studio();
+        let small = Picture::new(Arc::new(checker(100, 50)), "small".into(), (100.0, 100.0));
+        let mut large = Picture::new(Arc::new(checker(300, 200)), "large".into(), (500.0, 300.0));
+        large.radius = 12.0;
+        studio.doc.layers = vec![Layer::picture(small), Layer::picture(large)];
+        // Picked large first: the small one takes after it.
+        studio.selected = vec![1, 0];
+        studio.act(Action::Match(2));
+        studio.act(Action::Match(3));
+        let Kind::Picture(small) = studio.doc.layers[0].kind.clone() else { panic!() };
+        assert_eq!((small.w, small.h, small.radius), (300.0, 200.0, 12.0));
+        studio.act(Action::ToFrame(6));
+        let Kind::Picture(small) = studio.doc.layers[0].kind.clone() else { panic!() };
+        assert_eq!((small.cx, small.cy), (400.0, 300.0));
+        studio.selected = vec![0];
+        studio.act(Action::Turn(90));
+        let Kind::Picture(small) = studio.doc.layers[0].kind.clone() else { panic!() };
+        assert!((small.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4 && (small.cx, small.cy) == (400.0, 300.0));
     }
 
     #[test]
