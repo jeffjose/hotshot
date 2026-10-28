@@ -572,9 +572,16 @@ impl Home {
         }
         let projects_at = 64 + 3 * 32 + 22;
         self.text.draw(&mut canvas, 20, projects_at, 11, DIM_TEXT_COLOR, "PROJECTS");
-        let note = library().display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~");
+        // Where the library is, home said as ~, and a long way kept to the
+        // panel by leaving out its middle.
+        let whole = library().display().to_string();
+        let note = match std::env::var("HOME").ok().filter(|home| !home.is_empty()).and_then(|home| whole.strip_prefix(&home).map(str::to_owned)) {
+            Some(rest) => format!("~{rest}/"),
+            None => format!("{whole}/"),
+        };
+        let note = middle_out(&mut self.text, &note, 11, SIDE - 40);
         self.text.draw(&mut canvas, 20, height - 44, 11, DIM_TEXT_COLOR, "Projects are folders in");
-        self.text.draw(&mut canvas, 20, height - 28, 11, TEXT_COLOR, &format!("{note}/"));
+        self.text.draw(&mut canvas, 20, height - 28, 11, TEXT_COLOR, &note);
         // The main part: a heading, and the cards under it.
         let left = SIDE + 36;
         canvas.set_clip(Rect::new(SIDE, 0, width - SIDE, height));
@@ -764,6 +771,23 @@ fn to_trash(path: &Path) {
         count += 1;
     }
     let _ = std::fs::rename(path, to);
+}
+
+/// Words kept to a width by leaving out their middle, an ellipsis in its
+/// place: the start and the end of a long path say the most about it.
+fn middle_out(text: &mut Text, words: &str, px: u32, wide: i32) -> String {
+    if text.width(words, px) <= wide {
+        return words.to_owned();
+    }
+    let letters: Vec<char> = words.chars().collect();
+    for keep in (1..letters.len()).rev() {
+        let (head, tail) = (keep.div_ceil(2), keep / 2);
+        let shorter: String = letters[..head].iter().chain(['\u{2026}'].iter()).chain(letters[letters.len() - tail..].iter()).collect();
+        if text.width(&shorter, px) <= wide {
+            return shorter;
+        }
+    }
+    "\u{2026}".to_owned()
 }
 
 /// A folder opened in the file manager.
@@ -1050,6 +1074,17 @@ mod tests {
         home.file_menu = Some((Menu::File(std::env::temp_dir().join("Elsewhere.hotshot")), (600, 300)));
         row(&home, "Move to Drafts");
         assert_eq!(home.key(Key::Enter, Mods::default()), Outcome::Open(std::env::temp_dir().join("Elsewhere.hotshot")));
+    }
+
+    #[test]
+    fn a_long_path_is_kept_to_its_room_by_leaving_out_its_middle() {
+        let mut text = Text::load();
+        assert_eq!(middle_out(&mut text, "~/Pictures/hotshot/", 11, 400), "~/Pictures/hotshot/");
+        let long = "/tmp/claude-1000/-home-someone/b500279e-ad30-5e62-b927-32199aa2916e/scratchpad/zen/library/";
+        let short = middle_out(&mut text, long, 11, SIDE - 40);
+        assert!(text.width(&short, 11) <= SIDE - 40 && short.contains('\u{2026}'));
+        assert!(short.starts_with("/tmp/claude") && short.ends_with("library/"), "{short}");
+        assert_eq!(middle_out(&mut text, long, 11, 1), "\u{2026}");
     }
 
     #[test]
