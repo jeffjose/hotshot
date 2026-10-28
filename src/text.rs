@@ -53,6 +53,9 @@ pub mod icons {
     pub const DIST_V: &str = "\u{e050}";
     pub const SWAP: &str = "\u{e051}";
     pub const MINUS: &str = "\u{e053}";
+    pub const HAND: &str = "\u{e055}";
+    pub const STICKY: &str = "\u{e056}";
+    pub const DIAMOND: &str = "\u{e057}";
     pub const RATIO: &str = "\u{e041}";
     pub const FLIP: &str = "\u{e045}";
     pub const LINK: &str = "\u{e042}";

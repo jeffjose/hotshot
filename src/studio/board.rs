@@ -416,38 +416,22 @@ impl Studio {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, HOVER_COLOR, 256);
                 }
                 let color = if on { 0xFFFFFF } else { TEXT_COLOR };
-                match which {
-                    HAND => draw_hand(canvas, cx, cy, color),
-                    // A note, its corner turned down.
-                    STICKY_TOOL => {
-                        canvas.round_outline(cx - 8, cy - 8, 16, 16, 2, 2, color);
-                        canvas.round_fill(cx + 2, cy + 2, 7, 7, 1, if on { ACCENT } else { PANEL_COLOR }, 256);
-                        line(canvas, (cx + 2, cy + 8), (cx + 8, cy + 2), color);
-                        line(canvas, (cx + 2, cy + 2), (cx + 2, cy + 8), color);
-                        line(canvas, (cx + 2, cy + 2), (cx + 8, cy + 2), color);
-                    }
-                    DIAMOND => {
-                        let r = 8;
-                        for (a, b) in [((cx, cy - r), (cx + r, cy)), ((cx + r, cy), (cx, cy + r)), ((cx, cy + r), (cx - r, cy)), ((cx - r, cy), (cx, cy - r))] {
-                            line(canvas, a, b, color);
-                            line(canvas, (a.0, a.1 + 1), (b.0, b.1 + 1), color);
-                        }
-                    }
-                    _ => {
-                        let icon = match which {
-                            BOX_TOOL => icons::RECT,
-                            OVAL => icons::ELLIPSE,
-                            ARROW => icons::ARROW,
-                            LINE_TOOL => icons::LINE,
-                            PEN => icons::PEN,
-                            TEXT => icons::TEXT,
-                            STICKY_TOOL => icons::STICKER,
-                            PICTURE => icons::PICTURE,
-                            _ => icons::SELECT,
-                        };
-                        self.text.draw_centered(canvas, cx, cy, 17, color, icon);
-                    }
-                }
+                // Each from the icon font, drawn in the same line as the
+                // rest of hotshot's icons.
+                let icon = match which {
+                    HAND => icons::HAND,
+                    BOX_TOOL => icons::RECT,
+                    OVAL => icons::ELLIPSE,
+                    DIAMOND => icons::DIAMOND,
+                    ARROW => icons::ARROW,
+                    LINE_TOOL => icons::LINE,
+                    PEN => icons::PEN,
+                    TEXT => icons::TEXT,
+                    STICKY_TOOL => icons::STICKY,
+                    PICTURE => icons::PICTURE,
+                    _ => icons::SELECT,
+                };
+                self.text.draw_centered(canvas, cx, cy, 17, color, icon);
                 // Its key, small, in its corner, while it is hovered.
                 if hovered {
                     let key = TOOLS[usize::from(which)].1.to_ascii_uppercase().to_string();
@@ -472,14 +456,6 @@ impl Studio {
 
 }
 
-/// A hand, for the tool that moves the board: a palm and four fingers.
-fn draw_hand(canvas: &mut Canvas, cx: i32, cy: i32, color: u32) {
-    canvas.round_fill(cx - 6, cy - 1, 12, 9, 4, color, 256);
-    for (at, tall) in [(-6, 7), (-3, 9), (0, 9), (3, 8)] {
-        canvas.round_fill(cx + at, cy - tall, 3, tall + 2, 1, color, 256);
-    }
-    canvas.round_fill(cx - 9, cy - 2, 4, 6, 2, color, 256);
-}
 
 #[cfg(test)]
 pub(super) mod tests {

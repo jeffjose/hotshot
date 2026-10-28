@@ -69,6 +69,12 @@ OWN = {
     "FLIP": f'<path d="M12 3v18M9 7L4 17h5zM15 7l5 10h-5z" {LINE}/>',
     "RECT": f'<rect x="3" y="5" width="18" height="14" rx="4" {LINE}/>',
     "ELLIPSE": f'<ellipse cx="12" cy="12" rx="9.25" ry="7.25" {LINE}/>',
+    # The board's tools Solar has no icon of: an open hand, to move the
+    # page by (after Lucide's, ISC); a note, its corner turned up; and a
+    # diamond, for decisions.
+    "HAND": f'<path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" {LINE}/>',
+    "STICKY": f'<path d="M20 13.5V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h6.5zM13.5 20v-3.5a3 3 0 0 1 3-3H20" {LINE}/>',
+    "DIAMOND": f'<path d="M12 3.2L20.8 12L12 20.8L3.2 12Z" {LINE}/>',
     "COUNTER": f'<circle cx="12" cy="12" r="9.25" {LINE}/><path d="M10.25 9.75L12.75 8V16" {LINE}/>',
     # A mosaic: what a pixelated patch looks like.
     "BLUR": (
