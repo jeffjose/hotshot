@@ -281,6 +281,9 @@ enum Button {
     Record,
     /// Which folder Save saves to.
     Places,
+    /// The picture opened in the design editor, its shapes still shapes:
+    /// what Ctrl+E does.
+    Design,
     /// The library opened on its emoji, which E opens it on. It has no
     /// button of its own.
     Emoji,
@@ -389,7 +392,7 @@ enum Cell {
 /// The bar of tools, in the groups it is divided into. How what is drawn
 /// looks is not on it: that is on the bar over what is picked out, or
 /// over this one while a tool is in hand.
-const GROUPS: [&[Button]; 4] = [
+const GROUPS: [&[Button]; 5] = [
     &[
         Button::Tool(Tool::Select),
         Button::Tool(Tool::Arrow),
@@ -408,6 +411,7 @@ const GROUPS: [&[Button]; 4] = [
     &[Button::Undo, Button::Redo],
     &[Button::Frame, Button::Pointer],
     &[Button::Cancel, Button::Record, Button::Pin, Button::Save, Button::Places, Button::Copy],
+    &[Button::Design],
 ];
 
 /// The bar as it is when an area is being chosen to be recorded: there
@@ -462,6 +466,7 @@ impl Button {
             Button::Record => ("Record this area", "Ctrl+R"),
             Button::Places => ("Where Save saves to", ""),
             Button::Copy => ("Copy", "Ctrl+C"),
+            Button::Design => ("Open in the design editor", "Ctrl+E"),
         }
     }
 
@@ -496,6 +501,7 @@ impl Button {
             Button::Record => icons::RECORD,
             Button::Places => icons::DOWN,
             Button::Copy => icons::COPY,
+            Button::Design => icons::HASH,
             // Drawn as what they stand for: a color, a width, a font,
             // a letter set the way it says, a box or a ring.
             Button::Color | Button::Border | Button::Fill | Button::Width | Button::Face | Button::Style(_) | Button::Lens | Button::Path | Button::Start | Button::End | Button::Stroke => "",
@@ -2987,6 +2993,7 @@ impl Editor {
             Button::Cancel => return Outcome::Cancel,
             Button::Save => return self.finish(Finish { save: true, ..Finish::NONE }),
             Button::Copy => return self.finish(Finish { copy: true, ..Finish::NONE }),
+            Button::Design => return self.finish(Finish { canvas: true, ..Finish::NONE }),
         }
         Outcome::Continue
     }
@@ -6038,6 +6045,8 @@ mod tests {
         assert_eq!(editor.released(), Outcome::Continue);
         assert_eq!(click(&mut editor, save, 3000), Outcome::Finish(Finish { save: true, ..Finish::NONE }));
         assert_eq!(click(&mut editor, copy, 4000), Outcome::Finish(Finish { copy: true, ..Finish::NONE }));
+        let design = button(&mut editor, Button::Design);
+        assert_eq!(click(&mut editor, design, 4500), Outcome::Finish(Finish { canvas: true, ..Finish::NONE }));
         let cancel = button(&mut editor, Button::Cancel);
         assert_eq!(click(&mut editor, cancel, 5000), Outcome::Cancel);
         assert_eq!(editor.key(Key::Escape, PLAIN), Outcome::Cancel);

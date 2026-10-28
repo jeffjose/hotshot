@@ -50,7 +50,7 @@ the whole screen. Then:
 |---|---|
 | `Enter` | copy to the clipboard |
 | `Ctrl+S` | save to `~/Pictures/Screenshots` |
-| `Ctrl+E` | open it on the canvas, with its shapes still editable |
+| `Ctrl+E` | open it on the canvas, with its shapes still editable (or the # button at the end of the bar) |
 | `Esc` | cancel |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | undo / redo |
 
