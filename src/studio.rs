@@ -1484,6 +1484,9 @@ pub struct Studio {
     palette: Option<Paint>,
     scroll: i32,
     renaming: Option<(Naming, String)>,
+    /// The name being typed is all picked out, as it is when begun: the
+    /// first key types over it, as Figma's do.
+    name_picked: bool,
     /// Which tool of each group shows in the toolbar: the last one used.
     groups: [Tool; 2],
     /// The list open, if one is; how large the screen is, for the frame
@@ -1643,6 +1646,7 @@ impl Studio {
             palette: None,
             scroll: 0,
             renaming: None,
+            name_picked: false,
             groups: [Tool::Rect, Tool::Pen],
             menu: None,
             screen: (1920, 1080),
@@ -1701,6 +1705,24 @@ impl Studio {
     pub fn title(&self) -> String {
         let name = self.path.as_ref().and_then(|path| path.file_stem()).map_or("Untitled".to_owned(), |name| name.to_string_lossy().into_owned());
         format!("{name}{} \u{2014} hotshot", if self.edited { " \u{2022}" } else { "" })
+    }
+
+    /// A name begun to be typed, all of it picked out for the first key to
+    /// type over.
+    fn start_naming(&mut self, naming: Naming, now: String) {
+        self.name_picked = !now.is_empty();
+        self.renaming = Some((naming, now));
+    }
+
+    /// A name being typed as it is shown: with a caret after it; or, all
+    /// of it picked out, on the color of a selection.
+    fn typed_shown(&mut self, canvas: &mut Canvas, (x, y): (i32, i32), px: u32, typed: String) -> String {
+        if !self.name_picked {
+            return format!("{typed}|");
+        }
+        let wide = self.text.width(&typed, px);
+        canvas.round_fill(x - 2, y, wide + 4, Text::line_height(px), 3, ACCENT, 120);
+        typed
     }
 
     fn say(&mut self, what: impl Into<String>) {
@@ -2647,7 +2669,7 @@ impl Studio {
                     Naming::Filter => self.layer_filter.clone(),
                     Naming::Layer(index) => self.doc.layers.get(index).map_or(String::new(), Layer::name),
                 };
-                self.renaming = Some((naming, now));
+                self.start_naming(naming, now);
             }
             // What an end is stuck to, picked out.
             Control::Stuck(end) => {
@@ -2661,7 +2683,7 @@ impl Studio {
             }
 
             Control::Page(index) => match double {
-                true => self.renaming = Some((Naming::Page(index), self.pages[index].name.clone())),
+                true => self.start_naming(Naming::Page(index), self.pages[index].name.clone()),
                 false => self.go_to_page(index),
             },
             Control::NewPage => self.new_page(),
@@ -2670,7 +2692,7 @@ impl Studio {
                 (self.frame_picked, self.tool, self.framing) = (true, Tool::Select, false);
                 self.selected.clear();
                 if double {
-                    self.renaming = Some((Naming::Frame, self.doc.name.clone()));
+                    self.start_naming(Naming::Frame, self.doc.name.clone());
                 }
             }
             Control::FrameTool => {
@@ -2732,7 +2754,7 @@ impl Studio {
                 if double {
                     // A picture renamed where it is listed; text typed into.
                     match &self.doc.layers[index].kind {
-                        Kind::Picture(picture) => self.renaming = Some((Naming::Layer(index), picture.name.clone())),
+                        Kind::Picture(picture) => self.start_naming(Naming::Layer(index), picture.name.clone()),
                         Kind::Shape(shape) if matches!(shape.tool, Tool::Text | Tool::Badge) => {
                             self.checkpoint();
                             self.edit_text(index);
@@ -3865,8 +3887,15 @@ impl Studio {
         }
         // A name being typed.
         if let Some((_, typed)) = &mut self.renaming {
+            let whole = std::mem::take(&mut self.name_picked);
             match key {
-                Key::Char(letter) if !mods.ctrl => typed.push(letter),
+                Key::Char(letter) if !mods.ctrl => {
+                    if whole {
+                        typed.clear();
+                    }
+                    typed.push(letter);
+                }
+                Key::Backspace if whole => typed.clear(),
                 Key::Backspace => drop(typed.pop()),
                 Key::Enter => self.commit_name(),
                 Key::Escape => self.renaming = None,
@@ -4130,8 +4159,8 @@ impl Studio {
         for index in 0..self.frame_count() {
             let (place, name) = self.frame_label(index);
             let color = if index == self.active && self.frame_picked { ACCENT_TEXT } else if index == self.active { TEXT_COLOR } else { DIM_TEXT_COLOR };
-            let name = match &self.renaming {
-                Some((Naming::Frame, typed)) if index == self.active => format!("{typed}|"),
+            let name = match self.renaming.clone() {
+                Some((Naming::Frame, typed)) if index == self.active => self.typed_shown(&mut canvas, (place.x, place.y), 12, typed),
                 _ => name,
             };
             self.text.draw(&mut canvas, place.x, place.y, 12, color, &name);
@@ -4510,8 +4539,8 @@ impl Studio {
                         canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
                     }
                     self.text.draw_centered(canvas, rect.x + 14, cy, 14, if on { TEXT_COLOR } else { DIM_TEXT_COLOR }, icons::FILE);
-                    let name = match &self.renaming {
-                        Some((Naming::Page(page), typed)) if *page == index => format!("{typed}|"),
+                    let name = match self.renaming.clone() {
+                        Some((Naming::Page(page), typed)) if page == index => self.typed_shown(canvas, (rect.x + 28, cy - line_high / 2), px, typed),
                         _ => self.pages[index].name.clone(),
                     };
                     self.text.draw(canvas, rect.x + 28, cy - line_high / 2, px, TEXT_COLOR, &name);
@@ -4550,11 +4579,11 @@ impl Studio {
                             tool => tool_icon(tool),
                         },
                     };
-                    let name = match &self.renaming {
-                        Some((Naming::Layer(at), typed)) if *at == index => format!("{typed}|"),
-                        _ => layer.name(),
+                    let (named, faint) = (layer.name(), layer.hidden);
+                    let name = match self.renaming.clone() {
+                        Some((Naming::Layer(at), typed)) if at == index => self.typed_shown(canvas, (rect.x + 28, cy - line_high / 2), px, typed),
+                        _ => named,
                     };
-                    let faint = layer.hidden;
                     // Where a layer dragged in the list would go.
                     if matches!(self.drag, Drag::Reorder { moved: true, index: dragged, .. } if dragged != index) && rect.contains(self.pointer.0, self.pointer.1) {
                         canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 2, ACCENT);
@@ -4821,7 +4850,10 @@ impl Studio {
                         x += self.text.width(label, 11) + 8;
                     }
                     match typing {
-                        Some(typed) => self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &format!("{typed}|")),
+                        Some(typed) => {
+                            let shown = self.typed_shown(canvas, (x, cy - line_high / 2), px, typed);
+                            self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &shown);
+                        }
                         None if now.is_empty() => self.text.draw(canvas, x, cy - line_high / 2, px, 0x777777, match naming { Naming::Filter => "Filter layers", _ if label.is_empty() => "suffix", _ => "none" }),
                         None => self.text.draw(canvas, x, cy - line_high / 2, px, TEXT_COLOR, &now),
                     }
@@ -5855,6 +5887,26 @@ mod tests {
         studio.pressed(1, 100_000);
         studio.released();
         assert_eq!(studio.selected, vec![0]);
+    }
+
+    #[test]
+    fn a_name_renamed_is_typed_over_not_added_to() {
+        let mut studio = studio();
+        studio.press_control(Control::Page(0), true);
+        for letter in "Home".chars() {
+            studio.key(Key::Char(letter), Mods::default(), true);
+        }
+        studio.key(Key::Enter, Mods::default(), true);
+        assert_eq!(studio.pages[0].name, "Home");
+        // Backspace first clears it all; then letters are added as ever.
+        studio.press_control(Control::Frame(0), true);
+        studio.key(Key::Backspace, Mods::default(), true);
+        for letter in "Hero".chars() {
+            studio.key(Key::Char(letter), Mods::default(), true);
+        }
+        studio.key(Key::Backspace, Mods::default(), true);
+        studio.key(Key::Enter, Mods::default(), true);
+        assert_eq!(studio.doc.name, "Her");
     }
 
     #[test]

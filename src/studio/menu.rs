@@ -734,7 +734,7 @@ impl Studio {
             Command::Palette => self.open_palette(),
             Command::Capture => return Outcome::Capture,
             Command::Quit => return Outcome::Quit,
-            Command::RenamePage(page) => self.renaming = Some((Naming::Page(page), self.pages[page].name.clone())),
+            Command::RenamePage(page) => self.start_naming(Naming::Page(page), self.pages[page].name.clone()),
             Command::DuplicatePage(page) => self.duplicate_page(page),
             Command::DeletePage(page) => self.delete_page(page),
             Command::PastePicture => return Outcome::Paste,
