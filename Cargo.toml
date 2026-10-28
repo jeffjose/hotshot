@@ -29,7 +29,8 @@ vergen-gitcl = "10.0.3"
 [profile.release]
 opt-level = 3
 panic = "abort"
-strip = true
+# Symbols kept, for a crash to say where it was in crash.log.
+strip = "debuginfo"
 
 # Drawing in an unoptimized build is unusably slow.
 [profile.dev.package."*"]

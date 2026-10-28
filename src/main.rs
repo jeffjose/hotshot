@@ -65,8 +65,36 @@ pub fn debug_line(what: std::fmt::Arguments) {
     eprintln!("hotshot: {since:>9.1?} {what}");
 }
 
+/// A panic said as ever, and also written down with where it happened
+/// and how it got there, at the end of `crash.log` in the state folder,
+/// for it to be looked into later.
+fn keep_crashes() {
+    let said = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        said(info);
+        let Some(file) = output::state_file("crash.log") else { return };
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let payload = info.payload();
+        let what = payload.downcast_ref::<&str>().map(|what| what.to_string()).or_else(|| payload.downcast_ref::<String>().cloned()).unwrap_or_else(|| "a panic with no message".into());
+        let place = info.location().map_or("somewhere unknown".into(), |place| format!("{}:{}:{}", place.file(), place.line(), place.column()));
+        let when = output::dated("%Y-%m-%d %H:%M:%S %z");
+        let command: Vec<String> = std::env::args().collect();
+        let trace = std::backtrace::Backtrace::force_capture();
+        let entry = format!("---- hotshot {} panicked at {when}\ncommand: {}\nthread: {}\npanic: {what}\nat: {place}\nbacktrace:\n{trace}\n", version(), command.join(" "), std::thread::current().name().unwrap_or("unnamed"));
+        use std::io::Write as _;
+        let written = std::fs::OpenOptions::new().create(true).append(true).open(&file).and_then(|mut log| log.write_all(entry.as_bytes()));
+        match written {
+            Ok(()) => eprintln!("hotshot: what went wrong is written at the end of {}", file.display()),
+            Err(error) => eprintln!("hotshot: could not write {}: {error}", file.display()),
+        }
+    }));
+}
+
 fn main() -> ExitCode {
     let started = *STARTED.get_or_init(Instant::now);
+    keep_crashes();
     let options = match options::parse(std::env::args_os().skip(1)) {
         Ok(Parsed::Run(options)) => *options,
         Ok(Parsed::Help) => {
