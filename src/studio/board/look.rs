@@ -73,6 +73,36 @@ pub(in crate::studio) fn shade(color: u32, ground: u8) -> u32 {
     }
 }
 
+/// The look and ground last chosen, kept in `board-look` among hotshot's
+/// state, for a new board to begin as.
+pub(in crate::studio) fn last_look() -> (u8, u8) {
+    if cfg!(test) {
+        return (0, 0);
+    }
+    let kept = crate::output::state_file("board-look").and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
+    let mut words = kept.split_whitespace().filter_map(|word| word.parse::<u8>().ok());
+    (words.next().unwrap_or(0).min(2), words.next().unwrap_or(0).min(2))
+}
+
+fn keep_look(look: u8, ground: u8) {
+    if cfg!(test) {
+        return;
+    }
+    let Some(file) = crate::output::state_file("board-look") else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, format!("{look} {ground}\n"));
+}
+
+/// A page made a board for the first time: drawn as the last board was.
+pub(in crate::studio) fn first_look(page: &mut Page) {
+    if !page.styled {
+        (page.look, page.ground) = last_look();
+        page.styled = true;
+    }
+}
+
 /// A shape as a board of a look, on a ground, draws it: drawn `times` its
 /// size, as an export does.
 pub(in crate::studio) fn dress(shape: &mut Shape, look: u8, ground: u8, times: f32) {
@@ -115,7 +145,13 @@ impl Studio {
     /// drawn so; none off a board.
     pub(in crate::studio) fn sync_look(&mut self) {
         let page = &self.pages[self.page];
-        let style = page.board.then_some((page.look, page.ground));
+        // A board made a page of frames is drawn crisp, as Clean on light
+        // is, its shapes left as they were for when it is a board again.
+        let style = match (page.board, page.styled) {
+            (true, _) => Some((page.look, page.ground)),
+            (false, true) => Some((2, 0)),
+            (false, false) => None,
+        };
         if self.doc.board != style {
             self.doc.board = style;
         }
@@ -134,7 +170,9 @@ impl Studio {
         if let Some(ground) = ground {
             page.ground = ground.min(2);
         }
+        page.styled = true;
         let (look, ground) = (page.look, page.ground);
+        keep_look(look, ground);
         self.shown.clear();
         self.shown_page.clear();
         self.changed();
@@ -179,5 +217,37 @@ mod tests {
         assert_eq!(studio.board_ground(), 0x000000);
         studio.undo();
         assert_eq!(studio.pages[0].ground, 1);
+    }
+
+    #[test]
+    fn a_boards_look_stays_its_own_through_design_a_file_and_undo() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (300.0, 200.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected.clear();
+        let was = shape(&studio, 0);
+        studio.set_look(Some(2), Some(1));
+        let clean = shown(&mut studio, (101.0, 150.0));
+        // Design: drawn crisp, its shapes as they were.
+        studio.set_mode(false);
+        let kept = shape(&studio, 0);
+        assert_eq!((kept.sketch, kept.rounded, kept.face), (was.sketch, was.rounded, was.face));
+        assert_eq!((studio.pages[0].look, studio.pages[0].ground), (2, 1));
+        // Kept in the file while it is a page of frames.
+        let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        assert!(!back[0].board && (back[0].look, back[0].ground) == (2, 1));
+        // A board again: Clean on dark gray, as it was.
+        studio.set_mode(true);
+        assert_eq!((studio.pages[0].look, studio.pages[0].ground), (2, 1));
+        assert_eq!(shown(&mut studio, (101.0, 150.0)), clean);
+        studio.undo();
+        studio.undo();
+        assert!(studio.on_board() && studio.pages[0].look == 2);
+        // Read back from a file and made a board, still its own.
+        let mut back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        back[0].board = false;
+        let back = read_pages(&write_pages(&back)).unwrap();
+        assert_eq!((back[0].look, back[0].ground, back[0].styled), (2, 1, true));
     }
 }

@@ -175,6 +175,7 @@ fn keep_mode(board: bool) {
 pub(super) fn board_pages() -> Vec<Page> {
     let mut page = Page::new("Board 1", Vec::new());
     page.board = true;
+    look::first_look(&mut page);
     vec![page]
 }
 
@@ -199,6 +200,9 @@ impl Studio {
         self.commit_name();
         self.checkpoint();
         self.pages[self.page].board = board;
+        if board {
+            look::first_look(&mut self.pages[self.page]);
+        }
         keep_mode(board);
         if board {
             self.activate(LOOSE);

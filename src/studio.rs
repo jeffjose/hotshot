@@ -997,8 +997,12 @@ pub fn write_pages(pages: &[Page]) -> Vec<u8> {
         out += &format!("page {}\n", one_line(&page.name));
         if page.board {
             out += "board\n";
+        }
+        // Its look as a board, kept while it is a page of frames too.
+        if page.board || page.styled {
             out += &format!("board-look {} {}\n", page.look, page.ground);
-        } else if page.frames.is_empty() {
+        }
+        if !page.board && page.frames.is_empty() {
             // A board made a page of frames again before it had any.
             out += "no-frames\n";
         }
@@ -1067,9 +1071,10 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
             page.board = true;
             continue;
         }
-        if let Some(rest) = line.strip_prefix("board-look ").filter(|_| page.board && !own) {
+        if let Some(rest) = line.strip_prefix("board-look ").filter(|_| page.frames.is_empty() && !own) {
             let mut words = rest.split(' ').filter_map(|word| word.parse::<u8>().ok());
             (page.look, page.ground) = (words.next().unwrap_or(0).min(2), words.next().unwrap_or(0).min(2));
+            page.styled = true;
             continue;
         }
         if line == "no-frames" && page.frames.is_empty() && !own {
@@ -1129,11 +1134,15 @@ pub struct Page {
     /// clean; and on what: light paper, dark gray or black.
     pub look: u8,
     pub ground: u8,
+    /// Whether it has been a board, so that its look and ground are its
+    /// own, kept while it is a page of frames and back when it is a board
+    /// again, rather than the last chosen.
+    pub styled: bool,
 }
 
 impl Page {
     pub fn new(name: impl Into<String>, frames: Vec<Doc>) -> Page {
-        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0 }
+        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false }
     }
 }
 
@@ -2629,6 +2638,9 @@ impl Studio {
         let name = format!("{} {}", if board { "Board" } else { "Page" }, self.pages.len() + 1);
         let mut page = Page::new(name, if board { Vec::new() } else { vec![Doc::new(width, height)] });
         page.board = board;
+        if board {
+            board::look::first_look(&mut page);
+        }
         self.pages.push(page);
         self.go_to_page(self.pages.len() - 1);
         self.renaming = Some((Naming::Page(self.page), String::new()));

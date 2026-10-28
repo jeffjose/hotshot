@@ -421,7 +421,11 @@ Linear's and Vercel's pages are. And a ground: light paper, dark gray
 or black, every color of the board turning to its shade for the dark,
 as Radix's light and dark scales do, so that red becomes a whitish
 red and nothing is picked again; exports follow it. Switching either
-draws the board again and moves nothing. are alike. A box can be drawn as a box, a diamond or a sticky note,
+draws the board again and moves nothing. The look and ground are the
+page's own, kept in the file and by undo: a board switched to Design is
+drawn crisp there, its shapes left as they were, and switched back it
+is drawn as it was. A new board begins in the look and ground chosen
+last. A box can be drawn as a box, a diamond or a sticky note,
 which is yellow on a soft shadow, with its words in the middle of it,
 wrapped to it.
 
