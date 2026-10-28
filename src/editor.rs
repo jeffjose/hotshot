@@ -293,13 +293,13 @@ enum Button {
 /// there and then. A badge is a look, chosen from the library, in the
 /// color in hand or its own: which the box of colors changes, as it does
 /// any shape's.
-const BADGE_SAYS: &str = "Label";
+pub(crate) const BADGE_SAYS: &str = "Label";
 
 /// What the library has besides emoji, shelf by shelf: each a look of a
 /// badge, the shelf it is on, what it says when it is put down, to be
 /// typed over, and the color it comes in, or none for the color in hand.
 /// The plain ones first, and the twelve with a finish after them.
-const LIBRARY: [(usize, u8, &str, Option<u32>); 26] = [
+pub(crate) const LIBRARY: [(usize, u8, &str, Option<u32>); 26] = [
     (12, 0, "Live", Some(0x30A46C)),
     (13, 0, "Do", Some(0x30A46C)),
     (14, 0, "Don't", Some(0xE5484D)),
@@ -329,19 +329,44 @@ const LIBRARY: [(usize, u8, &str, Option<u32>); 26] = [
 ];
 
 /// The library's shelves, down its side.
-const SHELVES: [&str; 3] = ["Labels", "Notes", "Emoji"];
-const EMOJI_SHELF: u8 = 2;
+pub(crate) const SHELVES: [&str; 3] = ["Labels", "Notes", "Emoji"];
+pub(crate) const EMOJI_SHELF: u8 = 2;
+
+/// What of the library that is not emoji shows: whatever has in its
+/// name, or in what it says, every word typed; with nothing typed, what
+/// is on the shelf chosen. By their places in `LIBRARY`. The canvas's
+/// library finds by it too.
+pub(crate) fn library_found(query: &str, shelf: u8) -> Vec<usize> {
+    let typed = query.to_lowercase();
+    let words: Vec<&str> = typed.split_whitespace().collect();
+    let fits = |&(look, on, says, _): &(usize, u8, &str, Option<u32>)| match words.is_empty() {
+        true => on == shelf,
+        false => {
+            let named = format!("{} {says}", shapes::BADGE_NAMES[look]).to_lowercase();
+            words.iter().all(|word| named.contains(word))
+        }
+    };
+    LIBRARY.iter().enumerate().filter(|(_, item)| fits(item)).map(|(index, _)| index).collect()
+}
+
+/// The emoji whose names have in them every word typed, by their places
+/// in the list of them all; all of them, with nothing typed.
+pub(crate) fn emoji_found(query: &str) -> Vec<usize> {
+    let typed = query.to_lowercase();
+    let words: Vec<&str> = typed.split_whitespace().collect();
+    emoji().iter().enumerate().filter(|(_, (_, name))| words.iter().all(|word| name.contains(word))).map(|(index, _)| index).collect()
+}
 
 /// The emoji there are to put on it, as stickers.
-fn emoji() -> &'static [(&'static str, &'static str)] {
+pub(crate) fn emoji() -> &'static [(&'static str, &'static str)] {
     static LIST: std::sync::OnceLock<Vec<(&'static str, &'static str)>> = std::sync::OnceLock::new();
     LIST.get_or_init(|| include_str!("../assets/emoji.txt").lines().filter(|line| !line.starts_with('#')).filter_map(|line| line.split_once('\t')).collect())
 }
 
 /// How many emoji there are across the box they are chosen from, and
 /// how many rows of them show at once.
-const EMOJI_ACROSS: i32 = 12;
-const EMOJI_DOWN: i32 = 7;
+pub(crate) const EMOJI_ACROSS: i32 = 12;
+pub(crate) const EMOJI_DOWN: i32 = 7;
 
 /// What the lines are drawn in that say where the selection lines up
 /// with something: Figma's red for them.
@@ -3602,28 +3627,12 @@ impl Editor {
         self.dirty = true;
     }
 
-    /// What of the library that is not emoji shows: whatever has in its
-    /// name, or in what it says, every word typed; with nothing typed,
-    /// what is on the shelf chosen. By their places in `LIBRARY`.
     fn library_found(&self) -> Vec<usize> {
-        let typed = self.query.to_lowercase();
-        let words: Vec<&str> = typed.split_whitespace().collect();
-        let fits = |&(look, shelf, says, _): &(usize, u8, &str, Option<u32>)| match words.is_empty() {
-            true => shelf == self.shelf,
-            false => {
-                let named = format!("{} {says}", shapes::BADGE_NAMES[look]).to_lowercase();
-                words.iter().all(|word| named.contains(word))
-            }
-        };
-        LIBRARY.iter().enumerate().filter(|(_, item)| fits(item)).map(|(index, _)| index).collect()
+        library_found(&self.query, self.shelf)
     }
 
-    /// The emoji whose names have in them every word typed, by their
-    /// places in the list of them all; all of them, with nothing typed.
     fn emoji_found(&self) -> Vec<usize> {
-        let typed = self.query.to_lowercase();
-        let words: Vec<&str> = typed.split_whitespace().collect();
-        emoji().iter().enumerate().filter(|(_, (_, name))| words.iter().all(|word| name.contains(word))).map(|(index, _)| index).collect()
+        emoji_found(&self.query)
     }
 
     /// How far outside the selection a point is: by whichever of its

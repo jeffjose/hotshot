@@ -26,6 +26,7 @@ mod crop_bar;
 mod drawn;
 mod effects;
 mod export;
+mod library;
 mod menu;
 pub use menu::parse_frame_size;
 mod panel;
@@ -133,7 +134,7 @@ const FONT_SIZES: [u32; 4] = [18, 26, 40, 64];
 /// The tools, with their keys: those along the bottom, and after them
 /// those the More tools button holds, with capture mode's keys where the
 /// canvas has no other use for them.
-const TOOLS: [(Tool, &str, &str); 12] = [
+const TOOLS: [(Tool, &str, &str); 13] = [
     (Tool::Select, "Move", "V"),
     (Tool::Rect, "Rectangle", "R"),
     (Tool::Ellipse, "Oval", "O"),
@@ -146,11 +147,12 @@ const TOOLS: [(Tool, &str, &str); 12] = [
     (Tool::Blur, "Blur", "B"),
     (Tool::Spotlight, "Spotlight", "D"),
     (Tool::Zoom, "Zoom lens", "Z"),
+    (Tool::Badge, "Library", "J"),
 ];
 
 /// The tools kept behind the More tools button, at the end of the bar,
 /// in the order its list has them.
-const MORE_TOOLS: [Tool; 3] = [Tool::Blur, Tool::Spotlight, Tool::Zoom];
+const MORE_TOOLS: [Tool; 4] = [Tool::Blur, Tool::Spotlight, Tool::Zoom, Tool::Badge];
 /// The group the More tools button opens, after the shapes' and the pens'.
 const MORE: u8 = 2;
 
@@ -1318,6 +1320,11 @@ enum Control {
     GradientBar,
     /// The button that hides or shows a panel: the left one, or the right.
     SidePanel(u8),
+    /// A shelf of the library; one of the labels and notes in it, by
+    /// where it is in the editor's `LIBRARY`; and one of the emoji found.
+    Shelf(u8),
+    LibraryItem(u16),
+    EmojiItem(u16),
     /// A part of a panel that is no control.
     Panel,
 }
@@ -1522,6 +1529,8 @@ struct Layout {
     /// The lists open, and where each is.
     /// The grid of styles, while it is open.
     styles: Option<Rect>,
+    /// The library, while it is open.
+    library: Option<Rect>,
     /// The search over everything, while it is open.
     search: Option<Rect>,
     /// The bar over a picture being cropped.
@@ -1712,6 +1721,10 @@ pub struct Studio {
     color_open: Option<u32>,
     /// Whether the grid of styles is open.
     styling: bool,
+    /// The library, while it is open; and whether what a label put down
+    /// from it says is all picked out, for the first letter to type over.
+    library: Option<library::Library>,
+    words_picked: bool,
     /// The search over everything, while it is open; and a file it chose
     /// to be opened in place of this one.
     search: Option<search::Search>,
@@ -1803,6 +1816,8 @@ impl Studio {
             exported: None,
             color_open: None,
             styling: false,
+            library: None,
+            words_picked: false,
             search: None,
             open_next: None,
             frame_sizes: Vec::new(),
@@ -2035,6 +2050,7 @@ impl Studio {
         self.layout_crop_bar(&mut layout);
         self.layout_exported(&mut layout);
         self.layout_styles(&mut layout);
+        self.layout_library(&mut layout);
         self.layout_search(&mut layout);
         self.layout_menus(&mut layout);
         layout
@@ -2617,8 +2633,13 @@ impl Studio {
             self.dirty = true;
             return Outcome::Continue;
         }
+        // With the library open, the wheel goes through its emoji, and a
+        // click off it closes it and does nothing else.
+        if self.library.is_some() && button <= 7 && self.library_press(button) {
+            return Outcome::Continue;
+        }
         let at_window = self.pointer;
-        let double = time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
+        let double =time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at_window);
         self.dirty = true;
         self.pressed_at = self.version;
@@ -3000,8 +3021,12 @@ impl Studio {
                     self.groups[group] = tool;
                 }
                 self.flyout = None;
-                self.set_tool(tool);
+                match tool {
+                    Tool::Badge => self.open_library(None),
+                    tool => self.set_tool(tool),
+                }
             }
+            Control::Shelf(_) | Control::LibraryItem(_) | Control::EmojiItem(_) => self.press_library(control),
             Control::Style(style) => {
                 self.put_style(style);
                 self.styling = false;
@@ -3904,7 +3929,7 @@ impl Studio {
     /// Text taken to be typed into, by its layer: its headings show
     /// their hashes while it is.
     fn edit_text(&mut self, index: usize) {
-        self.editing = Some(index);
+        (self.editing, self.words_picked) = (Some(index), false);
         if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
             shape.editing = true;
             shape.touch();
@@ -3912,6 +3937,7 @@ impl Studio {
     }
 
     fn commit_text(&mut self) {
+        self.words_picked = false;
         if let Some(index) = self.editing.take() {
             if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
                 shape.editing = false;
@@ -4194,6 +4220,13 @@ impl Studio {
         }
         self.mods = mods;
         self.dirty = true;
+        // The library open takes what is typed, to search it by.
+        if self.library.is_some() && !mods.ctrl {
+            if down {
+                self.library_key(key);
+            }
+            return Outcome::Continue;
+        }
         // An open list takes the keys, as Ctrl+K does: Up and Down, Enter,
         // Right and Left into and out of the list a row opens, and Esc;
         // a letter switches no tool while it is open. Ctrl keys still do
@@ -4243,8 +4276,17 @@ impl Studio {
         // Text being typed.
         if let (Some(index), false) = (self.editing, mods.ctrl) {
             if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
+                // What a label from the library says to begin with is
+                // typed over by the first letter, as capture mode has it.
+                let was = self.words_picked;
+                let picked = was && key != Key::Other;
+                self.words_picked = was && key == Key::Other;
+                if picked && matches!(key, Key::Char(_) | Key::Backspace) {
+                    shape.text.clear();
+                }
                 match key {
                     Key::Char(letter) => shape.text.push(letter),
+                    Key::Backspace if picked => {}
                     Key::Enter => shape.text.push('\n'),
                     Key::Backspace => drop(shape.text.pop()),
                     Key::Escape => self.commit_text(),
@@ -4398,8 +4440,12 @@ impl Studio {
             (Key::Char('h'), false) if mods.shift => drop(self.act(Action::FlipAcross)),
             (Key::Char('v'), false) if mods.shift => drop(self.act(Action::FlipDown)),
             (Key::Char(letter), false) => {
-                if let Some(&(tool, ..)) = TOOLS.iter().find(|(_, _, key)| key.to_ascii_lowercase().starts_with(letter)) {
-                    self.set_tool(tool);
+                // J opens the library, and E its emoji, as in capture mode.
+                match TOOLS.iter().find(|(_, _, key)| key.to_ascii_lowercase().starts_with(letter)) {
+                    Some(&(Tool::Badge, ..)) => self.open_library(None),
+                    Some(&(tool, ..)) => self.set_tool(tool),
+                    None if letter == 'e' => self.open_library(Some(crate::editor::EMOJI_SHELF)),
+                    None => {}
                 }
                 if letter == 'f' {
                     self.press_control(Control::FrameTool, false);
@@ -4692,7 +4738,10 @@ impl Studio {
                     _ => {
                         let last = shape.text.rsplit('\n').next().unwrap_or("");
                         let line = Text::line_height(shape.font_px);
-                        (self.text.width_in(shape.words_face(), last, shape.font_px), (shape.text.split('\n').count() as i32 - 1) * line, line)
+                        // A label's words begin after its dot, as capture
+                        // mode puts its caret.
+                        let (from_x, from_y) = shape.text_origin();
+                        (from_x - place.x + self.text.width_in(shape.words_face(), last, shape.font_px), from_y - place.y + (shape.text.split('\n').count() as i32 - 1) * line, line)
                     }
                 };
                 let (x, y) = self.to_window(((place.x + along) as f32, (place.y + top) as f32));
@@ -4851,7 +4900,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.search, layout.crop_bar, layout.exported].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported].into_iter().flatten() {
             for grow in (1..=6).rev() {
                 canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 12 + grow, 0x000000, 14);
             }
@@ -4866,6 +4915,9 @@ impl Studio {
         }
         if let Some(place) = layout.styles {
             self.draw_styles_frame(canvas, place);
+        }
+        if let Some(place) = layout.library {
+            self.draw_library(canvas, layout, place, hover);
         }
         if let Some(place) = layout.search {
             self.draw_search(canvas, place, hover);
@@ -4925,14 +4977,17 @@ impl Studio {
                 // The More tools button: the one of them in hand, lit, or
                 // three dots, as Figma's has.
                 Control::Group(MORE) => {
-                    let (open, on) = (self.flyout == Some(MORE), MORE_TOOLS.contains(&self.tool) && !self.framing);
+                    // The library, while it is open, is the tool in hand.
+                    let open = self.flyout == Some(MORE);
+                    let tool = if self.library.is_some() { Tool::Badge } else { self.tool };
+                    let on = MORE_TOOLS.contains(&tool) && !self.framing;
                     if on {
                         canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, ACCENT, 256);
                     } else if hovered || open {
                         canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, HOVER_COLOR, 256);
                     }
                     match on {
-                        true => self.text.draw_centered(canvas, cx, cy, 17, 0xFFFFFF, tool_icon(self.tool)),
+                        true => self.text.draw_centered(canvas, cx, cy, 17, 0xFFFFFF, tool_icon(tool)),
                         false => (-1..=1).for_each(|at| canvas.disc(cx + at * 6, cy, 2, TEXT_COLOR, 256)),
                     }
                 }
@@ -5107,6 +5162,8 @@ impl Studio {
                     field_text(&mut self.text, canvas, rect, label, icon, &value, DIM_TEXT_COLOR);
                 }
                 Control::Style(style) => self.draw_style_tile(canvas, rect, style, hovered),
+                // The library draws its own.
+                Control::Shelf(_) | Control::LibraryItem(_) | Control::EmojiItem(_) => {}
                 Control::Found(row) => self.draw_hit(canvas, rect, usize::from(row), hovered),
                 Control::SearchTab(_) => {}
                 Control::Tab(tab) => {
