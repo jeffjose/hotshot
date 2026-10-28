@@ -155,7 +155,12 @@ bar, which shows the one in hand while it is; their keys work without
 opening it. `B` blurs what is under a box, everything below it in the
 frame, pictures and layers alike, as a mosaic or smoothly, as strongly
 as the panel says; it is worked out at the size the frame is exported
-at, so an export at 2x is blurred from pixels drawn at 2x.
+at, so an export at 2x is blurred from pixels drawn at 2x. `D` (S being
+Style Mode) puts a spotlight down: everything under it in the frame but
+its box or oval is darkened, as much as the panel says, its box with
+corners as round as you like. Several spotlights darken the rest once
+between them, and one brought from capture mode goes just over the
+picture, so what was drawn on it stays bright.
 
 Hover a button, a swatch, a shadow or a style and the canvas shows what
 it would do; only a click keeps it. While moving, a layer also snaps to

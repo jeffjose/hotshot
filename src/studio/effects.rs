@@ -1,5 +1,6 @@
-//! Blurs on the canvas: layers that draw nothing of their own, but change
-//! what is under them in the frame. Each works on what the frame shows
+//! Blurs and spotlights on the canvas: layers that draw nothing of their
+//! own, but change what is under them in the frame. Each works on what
+//! the frame shows
 //! beneath it at the size it is drawn at, pictures and layers alike, so
 //! that a frame exported at twice the size is blurred from pixels drawn
 //! at twice the size too, and a part of the frame drawn on its own comes
@@ -10,7 +11,7 @@ use super::*;
 /// Whether a tool's layers change what is beneath them, rather than
 /// draw over it.
 pub(super) fn changes_beneath(tool: Tool) -> bool {
-    matches!(tool, Tool::Blur)
+    matches!(tool, Tool::Blur | Tool::Spotlight)
 }
 
 /// The two ways a blur hides what is under it: a mosaic of squares, as
@@ -31,6 +32,61 @@ pub(super) fn stroke_for(strength: f32) -> f32 {
     (strength.clamp(4.0, 244.0) - 4.0) / 3.0
 }
 
+/// How much a spotlight darkens what it is not on, in percent: kept in
+/// its `number`, which a spotlight has no other use for, none there
+/// meaning capture mode's, which keeps 96 of 256 of the brightness.
+pub(super) fn dim(shape: &Shape) -> u32 {
+    match shape.number {
+        1..=100 => shape.number,
+        _ => 63,
+    }
+}
+
+/// What a spotlight is on: its box, how round its corners are, and
+/// whether it is the oval in its box instead (kept in `filled`).
+struct Lit {
+    frame: (f32, f32, f32, f32),
+    radius: f32,
+    round: bool,
+}
+
+impl Lit {
+    /// How much of a point it is on, with an edge a pixel soft.
+    fn cover(&self, x: f32, y: f32) -> f32 {
+        let (left, top, w, h) = self.frame;
+        let (hw, hh) = (w / 2.0, h / 2.0);
+        let (dx, dy) = ((x - left - hw).abs(), (y - top - hh).abs());
+        if dx > hw + 1.0 || dy > hh + 1.0 {
+            return 0.0;
+        }
+        let away = match self.round {
+            true => {
+                let (rx, ry) = (hw.max(0.5), hh.max(0.5));
+                ((dx / rx).hypot(dy / ry) - 1.0) * rx.min(ry)
+            }
+            false => {
+                let radius = self.radius.clamp(0.0, hw.min(hh));
+                let (qx, qy) = (dx - hw + radius, dy - hh + radius);
+                qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
+            }
+        };
+        (0.5 - away).clamp(0.0, 1.0)
+    }
+}
+
+/// A pixel with black laid over it, `amount` of it: what is see-through
+/// becomes as dark as what is not.
+fn darkened(pixel: u32, amount: f32) -> u32 {
+    let alpha = (pixel >> 24) as f32 / 255.0;
+    let shown = alpha + amount * (1.0 - alpha);
+    if shown <= 0.0 {
+        return pixel;
+    }
+    let keep = alpha * (1.0 - amount) / shown;
+    let channel = |shift: u32| (((pixel >> shift & 255) as f32 * keep).round() as u32).min(255) << shift;
+    ((shown * 255.0).round() as u32).min(255) << 24 | channel(16) | channel(8) | channel(0)
+}
+
 impl Doc {
     /// A layer that changes what is under it, laid over the part of the
     /// frame drawn so far, `times` its size.
@@ -38,9 +94,39 @@ impl Doc {
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.layers.get(index) else { return };
         let shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
         let whole = Rect::new(0, 0, ((self.width as f32 * times).round() as i32).max(1), ((self.height as f32 * times).round() as i32).max(1));
-        if shape.tool == Tool::Blur {
-            self.blur(index, &shape, out, (part, whole, times), text);
+        match shape.tool {
+            Tool::Blur => self.blur(index, &shape, out, (part, whole, times), text),
+            Tool::Spotlight => self.spotlight(index, out, part, times),
+            _ => {}
         }
+    }
+
+    /// The spotlights: all that is under the topmost of them darkened but
+    /// what any of them is on, once, as capture mode does, so that two
+    /// spotlights do not each darken what the other is on. The topmost
+    /// says how dark.
+    fn spotlight(&self, index: usize, out: &mut [u32], part: Rect, times: f32) {
+        let lit: Vec<(usize, Shape)> = self.layers.iter().enumerate().filter_map(|(at, layer)| match &layer.kind {
+            Kind::Shape(shape) if shape.tool == Tool::Spotlight && !layer.hidden => Some((at, if times == 1.0 { shape.clone() } else { scaled(shape, times) })),
+            _ => None,
+        }).collect();
+        let Some((top, shape)) = lit.last() else { return };
+        if *top != index {
+            return;
+        }
+        let dark = dim(shape) as f32 / 100.0;
+        let shapes: Vec<Lit> = lit.iter().map(|(_, shape)| Lit { frame: shape.frame(), radius: shape.radius, round: shape.filled }).collect();
+        out.par_chunks_mut(part.w.max(1) as usize).enumerate().for_each(|(row, pixels)| {
+            let y = (part.y + row as i32) as f32 + 0.5;
+            for (column, pixel) in pixels.iter_mut().enumerate() {
+                let x = (part.x + column as i32) as f32 + 0.5;
+                let inside = shapes.iter().map(|lit| lit.cover(x, y)).fold(0.0f32, f32::max);
+                let amount = dark * (1.0 - inside);
+                if amount > 0.0 {
+                    *pixel = darkened(*pixel, amount);
+                }
+            }
+        });
     }
 
     /// What is beneath a layer in a rectangle of the frame as drawn: from
@@ -130,18 +216,39 @@ impl Studio {
             rows.chips(&mut self.text, [MOSAIC, SMOOTH].map(|style| (Action::BlurStyle(style).says().to_owned(), act(Action::BlurStyle(style)))).to_vec());
             rows.fields(&[Field::Strength], &[]);
         }
+        if shape.tool == Tool::Spotlight {
+            rows.section("Shape", "", None);
+            rows.chips(&mut self.text, [false, true].map(|round| (Action::Round(round).says().to_owned(), act(Action::Round(round)))).to_vec());
+            match shape.filled {
+                true => rows.fields(&[Field::Dim], &[]),
+                false => rows.fields(&[Field::Dim, Field::Radius], &[]),
+            }
+            rows.note("The rest of the frame under it is darkened");
+        }
     }
 
     /// The buttons of the panel for a blur and the like.
     pub(super) fn act_effect(&mut self, action: Action) {
-        if let Action::BlurStyle(style) = action {
-            self.restyle(|layer| {
+        match action {
+            Action::BlurStyle(style) => self.restyle(|layer| {
                 if let Kind::Shape(shape) = &mut layer.kind {
                     if shape.tool == Tool::Blur {
                         shape.style = style;
                     }
                 }
-            });
+            }),
+            // A round spotlight is filled; a round zoom is not, as capture
+            // mode has them.
+            Action::Round(round) => self.restyle(|layer| {
+                if let Kind::Shape(shape) = &mut layer.kind {
+                    match shape.tool {
+                        Tool::Spotlight => shape.filled = round,
+                        Tool::Zoom => shape.filled = !round,
+                        _ => {}
+                    }
+                }
+            }),
+            _ => {}
         }
     }
 }
@@ -302,5 +409,61 @@ mod tests {
         let back = read_pages(&write_pages(&studio.gathered())).expect("it reads back");
         let Kind::Shape(kept) = &back[0].frames[0].layers[1].kind else { panic!() };
         assert_eq!((kept.tool, kept.style), (Tool::Blur, SMOOTH));
+    }
+
+    /// A spotlight from one corner of the frame to another.
+    fn spotlight(from: (f32, f32), to: (f32, f32)) -> Shape {
+        let mut lit = Shape::new(Tool::Spotlight, 0, 2.0, from);
+        (lit.points[1], lit.number) = (to, 50);
+        lit
+    }
+
+    #[test]
+    fn spotlights_darken_the_rest_of_the_frame_once_and_not_what_is_over_them() {
+        let mut text = Text::load();
+        let mut doc = Doc::new(200, 200);
+        doc.layers.push(Layer::shape(spotlight((20.0, 20.0), (80.0, 80.0))));
+        let mut round = spotlight((120.0, 120.0), (180.0, 180.0));
+        round.filled = true;
+        doc.layers.push(Layer::shape(round));
+        // A box over them, which they leave as it is.
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 2.0, (150.0, 10.0));
+        (boxed.points[1], boxed.filled, boxed.fill) = ((190.0, 50.0), true, 0xE5484D);
+        doc.layers.push(Layer::shape(boxed));
+        let (_, _, out) = doc.render(1.0, &mut text);
+        // The white frame half as bright outside both, and white in each.
+        assert_eq!(out[100 * 200 + 5], 0xFF808080);
+        assert_eq!((out[50 * 200 + 50], out[150 * 200 + 150]), (0xFFFFFFFF, 0xFFFFFFFF));
+        // The corner of the round one's box is outside its oval.
+        assert_eq!(out[122 * 200 + 122], 0xFF808080);
+        assert_eq!(out[30 * 200 + 170], 0xFFE5484D);
+        // And at twice the size, a part as the whole.
+        let (_, _, whole) = doc.render(2.0, &mut text);
+        let part = Rect::new(100, 100, 200, 150);
+        let drawn = doc.render_part(2.0, part, &mut text);
+        assert!((0..part.h).all(|y| (0..part.w).all(|x| drawn[(y * part.w + x) as usize] == whole[((part.y + y) * 400 + part.x + x) as usize])));
+    }
+
+    #[test]
+    fn d_draws_a_spotlight_the_panel_rounds_and_dims_and_one_from_capture_mode_goes_under_the_rest() {
+        let mut studio = studio();
+        studio.key(Key::Char('d'), Mods::default(), true);
+        assert_eq!(studio.tool, Tool::Spotlight);
+        drag(&mut studio, (100.0, 100.0), (300.0, 250.0));
+        assert_eq!((studio.selected.clone(), studio.doc.layers[0].name()), (vec![0], "Spotlight".to_owned()));
+        assert_eq!(studio.field(Field::Dim), Some(63.0));
+        press(&mut studio, Control::Action(Action::Round(true)));
+        studio.set_field(Field::Dim, 80.0);
+        let Kind::Shape(shape) = &studio.doc.layers[0].kind else { panic!() };
+        assert_eq!((shape.filled, dim(shape)), (true, 80));
+        let (_, _, out) = studio.doc.render(1.0, &mut studio.text);
+        assert_eq!((out[10 * 800 + 10], out[175 * 800 + 200]), (0xFF333333, 0xFFFFFFFF));
+        // From capture mode, a spotlight drawn after an arrow is put under it.
+        let mut arrow = Shape::new(Tool::Arrow, 0xE5484D, 3.5, (10.0, 10.0));
+        arrow.points[1] = (60.0, 60.0);
+        let lit = spotlight((20.0, 20.0), (50.0, 50.0));
+        let doc = from_markup(Rect::new(0, 0, 100, 100), &vec![0x123456; 100 * 100], &format!("{}\n{}", arrow.write(), lit.write()));
+        let names: Vec<String> = doc.layers.iter().map(Layer::name).collect();
+        assert_eq!(names, ["Screenshot", "Spotlight", "Arrow"]);
     }
 }

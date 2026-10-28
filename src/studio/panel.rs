@@ -458,7 +458,7 @@ impl Studio {
             Tool::Text => vec![(shape.color, "text")],
             Tool::Counter | Tool::Badge => vec![(shape.color, "fill")],
             // A blur has no color of its own.
-            Tool::Blur => Vec::new(),
+            Tool::Blur | Tool::Spotlight => Vec::new(),
             _ => vec![(shape.color, "stroke")],
         }
     }
@@ -500,7 +500,11 @@ impl Studio {
                 _ => !shape.elbow && shape.points.len() <= 2,
             }),
             Action::Aspect(which) => usize::from(which) == self.crop_aspect,
-            Action::BlurStyle(style) => shape.is_some_and(|shape| shape.tool == Tool::Blur && (shape.style == effects::SMOOTH) == (style == effects::SMOOTH)),
+            Action::Round(round) => shape.is_some_and(|shape| match shape.tool {
+                Tool::Spotlight => shape.filled == round,
+                _ => shape.filled != round,
+            }),
+            Action::BlurStyle(style) =>shape.is_some_and(|shape| shape.tool == Tool::Blur && (shape.style == effects::SMOOTH) == (style == effects::SMOOTH)),
             Action::FlipAcross => matches!(shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.flip.0),
             Action::FlipDown => matches!(shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.flip.1),
             _ => false,

@@ -122,7 +122,7 @@ const FONT_SIZES: [u32; 4] = [18, 26, 40, 64];
 /// The tools, with their keys: those along the bottom, and after them
 /// those the More tools button holds, with capture mode's keys where the
 /// canvas has no other use for them.
-const TOOLS: [(Tool, &str, &str); 10] = [
+const TOOLS: [(Tool, &str, &str); 11] = [
     (Tool::Select, "Move", "V"),
     (Tool::Rect, "Rectangle", "R"),
     (Tool::Ellipse, "Oval", "O"),
@@ -133,11 +133,12 @@ const TOOLS: [(Tool, &str, &str); 10] = [
     (Tool::Text, "Text", "T"),
     (Tool::Counter, "Counter", "N"),
     (Tool::Blur, "Blur", "B"),
+    (Tool::Spotlight, "Spotlight", "D"),
 ];
 
 /// The tools kept behind the More tools button, at the end of the bar,
 /// in the order its list has them.
-const MORE_TOOLS: [Tool; 1] = [Tool::Blur];
+const MORE_TOOLS: [Tool; 2] = [Tool::Blur, Tool::Spotlight];
 /// The group the More tools button opens, after the shapes' and the pens'.
 const MORE: u8 = 2;
 
@@ -776,7 +777,10 @@ pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str) -> Doc {
     let middle = (area.w as f32 / 2.0, area.h as f32 / 2.0);
     let picture = Picture::new(Arc::new(image), "Screenshot".into(), middle);
     doc.layers.push(Layer::picture(picture));
-    for mut shape in drawn {
+    // Spotlights first, just over the picture: in capture mode they darken
+    // the picture and not what is drawn on it.
+    let (lit, rest): (Vec<Shape>, Vec<Shape>) = drawn.into_iter().partition(|shape| shape.tool == Tool::Spotlight);
+    for mut shape in lit.into_iter().chain(rest) {
         shape.translate(-area.x as f32, -area.y as f32);
         doc.layers.push(Layer::shape(shape));
     }
@@ -1164,8 +1168,9 @@ enum Field {
     FrameY,
     Length,
     LineAngle,
-    /// How strong a blur is.
+    /// How strong a blur is; how much a spotlight darkens the rest.
     Strength,
+    Dim,
 }
 
 impl Field {
@@ -1191,6 +1196,7 @@ impl Field {
             Field::Length => "Length",
             Field::LineAngle => "\u{b0}",
             Field::Strength => "Strength",
+            Field::Dim => "Dim",
             Field::ExportTimes(_) => "\u{d7}",
         }
     }
@@ -1350,8 +1356,9 @@ enum Action {
     Match(u8),
     ToFrame(u8),
     Turn(i16),
-    /// A blur made a mosaic, or smooth.
+    /// A blur made a mosaic, or smooth; a spotlight round, or square.
     BlurStyle(u8),
+    Round(bool),
 }
 
 impl Action {
@@ -1457,6 +1464,8 @@ impl Action {
             Action::Halo => "White edge",
             Action::BlurStyle(effects::SMOOTH) => "Smooth",
             Action::BlurStyle(_) => "Mosaic",
+            Action::Round(true) => "Round",
+            Action::Round(false) => "Square",
         }
     }
 }
@@ -2357,7 +2366,7 @@ impl Studio {
             Kind::Picture(picture) => pulls.iter().map(|&(px, py)| (self.to_window(picture.placed((px as f32 * picture.w / 2.0, py as f32 * picture.h / 2.0))), (px, py))).collect(),
             // A box or an oval by its frame, and text by its corners,
             // turned with it.
-            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge | Tool::Blur) => {
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge | Tool::Blur | Tool::Spotlight) => {
                 let (x, y, w, h) = match shape.tool {
                     Tool::Text | Tool::Badge => {
                         let place = shape.local_bounds(&mut self.text);
@@ -2674,6 +2683,11 @@ impl Studio {
                     shape.radius = if tool == Tool::Rect { self.radius } else { 0.0 };
                 }
                 shape.number = self.doc.layers.iter().filter(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.tool == Tool::Counter)).count() as u32 + 1;
+                // A spotlight's number is how dark it makes the rest, and
+                // none is capture mode's.
+                if tool == Tool::Spotlight {
+                    shape.number = 0;
+                }
                 shape.font_px = FONT_SIZES[self.size];
                 self.doc.layers.push(Layer::shape(shape));
                 self.selected.clear();
@@ -3627,6 +3641,7 @@ impl Studio {
                 Field::FontSize => shape.font_px as f32,
                 Field::Stroke => shape.stroke,
                 Field::Strength => effects::strength(shape),
+                Field::Dim => effects::dim(shape) as f32,
                 Field::StartX => shape.points[0].0,
                 Field::StartY => shape.points[0].1,
                 Field::EndX => shape.points[1.min(shape.points.len() - 1)].0,
@@ -3717,6 +3732,7 @@ impl Studio {
                         (Kind::Shape(shape), Field::FontSize) => shape.font_px = (value.round() as u32).clamp(6, 400),
                         (Kind::Shape(shape), Field::Stroke) => shape.stroke = (value * 2.0).round().clamp(1.0, 80.0) / 2.0,
                         (Kind::Shape(shape), Field::Strength) => shape.stroke = effects::stroke_for(value),
+                        (Kind::Shape(shape), Field::Dim) => shape.number = value.round().clamp(1.0, 100.0) as u32,
                         (Kind::Shape(shape), Field::StartX | Field::StartY | Field::EndX | Field::EndY) => {
                             let at = if matches!(field, Field::StartX | Field::StartY) { 0 } else { 1.min(shape.points.len() - 1) };
                             if matches!(field, Field::StartX | Field::EndX) {
@@ -4628,7 +4644,7 @@ impl Studio {
     fn box_corners(&mut self, index: usize) -> [(i32, i32); 4] {
         let corners = match self.doc.layers[index].kind.clone() {
             Kind::Picture(picture) => picture.corners(),
-            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge | Tool::Blur) => {
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge | Tool::Blur | Tool::Spotlight) => {
                 let (x, y, w, h) = match shape.tool {
                     Tool::Text | Tool::Badge => {
                         let place = shape.local_bounds(&mut self.text);
@@ -4986,7 +5002,7 @@ impl Studio {
                     let value = match typing {
                         Some(typed) => format!("{typed}|"),
                         None => self.field(field).map_or("\u{2014}".to_owned(), |value| match field {
-                            Field::Opacity => format!("{}%", value.round() as i32),
+                            Field::Opacity | Field::Dim => format!("{}%", value.round() as i32),
                             Field::Turn | Field::Angle | Field::LineAngle => format!("{}\u{b0}", value.round() as i32),
                             _ => format!("{}", value.round() as i32),
                         }),
