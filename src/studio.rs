@@ -22,7 +22,7 @@ use crate::text::{icons, Text, FACES};
 
 mod actions;
 mod arrange;
-mod empty;
+mod crop_bar;
 mod menu;
 pub use menu::parse_frame_size;
 mod panel;
@@ -1192,8 +1192,6 @@ enum Control {
     /// A tab of the search, and a row of what it found.
     SearchTab(u8),
     Found(u16),
-    /// A button of an empty frame: capture, paste, the captures, a look.
-    Start(u8),
     ColorLayer(usize, &'static str),
     /// The strip a gradient is shown on, its stops at its ends.
     GradientBar,
@@ -1393,8 +1391,6 @@ struct Layout {
     styles: Option<Rect>,
     /// The search over everything, while it is open.
     search: Option<Rect>,
-    /// The place for a picture in an empty frame.
-    empty: Option<Rect>,
     /// The bar over a picture being cropped.
     crop_bar: Option<Rect>,
     menus: Vec<(Rect, MenuKind)>,
@@ -1742,11 +1738,11 @@ impl Studio {
         self.pages[self.page].frames.len()
     }
 
-    /// A new page, with a frame on it the size of the one worked in.
+    /// A new page, with a frame on it the size of the one worked in, white
+    /// whatever that one is on.
     fn new_page(&mut self) {
         self.checkpoint();
-        let mut frame = Doc::new(self.doc.width, self.doc.height);
-        frame.background = self.doc.background;
+        let frame = Doc::new(self.doc.width, self.doc.height);
         let name = format!("Page {}", self.pages.len() + 1);
         self.pages.push(Page { name, frames: vec![frame] });
         self.go_to_page(self.pages.len() - 1);
@@ -1817,7 +1813,6 @@ impl Studio {
                 layout.controls.push((place, Control::Frame(index)));
             }
         }
-        self.layout_empty(&mut layout);
         self.layout_crop_bar(&mut layout);
         self.layout_styles(&mut layout);
         self.layout_search(&mut layout);
@@ -2535,7 +2530,6 @@ impl Studio {
                 }
             }
             Control::Found(row) => return self.choose_hit(usize::from(row)),
-            Control::Start(which) => return self.press_start(which),
             Control::ColorOpen(color) => self.color_open = if self.color_open == Some(color) { None } else { Some(color) },
             Control::ColorLayer(index, _) => self.selected = vec![index],
             Control::GradientBar => {
@@ -4132,9 +4126,6 @@ impl Studio {
         for rule in &layout.rules {
             canvas.fill(rule.x + 1, rule.y, rule.w - 2, 1, EDGE_COLOR);
         }
-        if let Some(place) = layout.empty {
-            self.draw_empty(canvas, place);
-        }
         if let Some(place) = layout.styles {
             self.draw_styles_frame(canvas, place);
         }
@@ -4346,7 +4337,6 @@ impl Studio {
                 Control::Style(style) => self.draw_style_tile(canvas, rect, style, hovered),
                 Control::Found(row) => self.draw_hit(canvas, rect, usize::from(row), hovered),
                 Control::SearchTab(_) => {}
-                Control::Start(which) => self.draw_start(canvas, rect, which, hovered),
                 Control::ColorOpen(color) => {
                     let open = self.color_open == Some(color);
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if hovered { HOVER_COLOR } else { FIELD_COLOR }, 256);
@@ -5497,10 +5487,13 @@ mod tests {
         studio.pressed(1, 5000);
         studio.released();
         assert_eq!((studio.active, studio.doc.layers.len()), (0, 1));
-        // A page more, then undone, and done again.
+        // A page more, its frame white whatever the one worked in is on;
+        // then undone, and done again.
+        studio.doc.background = Fill::Color(0x18181B);
         studio.press_control(Control::NewPage, false);
         studio.commit_name();
         assert_eq!((studio.pages.len(), studio.page), (2, 1));
+        assert_eq!(studio.doc.background, Fill::Color(0xFFFFFF));
         studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
         assert_eq!((studio.pages.len(), studio.page, studio.doc.layers.len()), (1, 0, 1));
         studio.key(Key::Char('z'), Mods { ctrl: true, shift: true, ..Mods::default() }, true);
