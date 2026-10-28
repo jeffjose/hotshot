@@ -497,6 +497,27 @@ undo. Type an indented list as text and press `Ctrl+Enter`, and it
 becomes a map, a box a line, each joined to the line it is indented
 under.
 
+Mermaid works on a board, read by hotshot itself with no script
+engine: paste it, or type it into a label and press `Ctrl+Enter`, and
+it becomes the board's own shapes, to move and change as any. A
+flowchart (`flowchart` or `graph`, LR or TD) keeps its shapes, `[ ]`
+`( )` `(( ))` `{ }` `[( )]` and the rest, its edges, `-->` `---`
+`-.->` `==>` with `|words|` on them and `&` between nodes, and its
+subgraphs as boxes holding what is in them, laid out as Shift+L would.
+A sequence diagram is a box that keeps itself laid out: its people
+along the top, an actor drawn as a person, a dashed line down from
+each, its messages level arrows in order down them, dashed for replies,
+its notes as notes and alt, loop and opt as boxes round their part;
+drag a message up or down and the rest keep their order a step apart,
+draw a box in it and the people spread to make room for one more, and
+`Tab` on a message adds the next, back the other way, its words typed.
+Class, state and ER diagrams, gantt charts, pies (the pie as a picture,
+its key as words), mind maps, timelines, journeys, git graphs and
+quadrant charts come in too. `Ctrl+K` Copy as Mermaid puts what is
+picked out, or the board, on the clipboard as a flowchart, or as a
+sequence diagram for a sequence, and writes it beside the file as an
+`.mmd`; Copy as Mermaid mind map does a map from the box picked out.
+
 Once there is a pattern, a board offers the next step, faint and
 dashed in the accent, as Figma offers a third duplicate: two boxes the
 same size in a row or a column, a third at the same gap with the caret

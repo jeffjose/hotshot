@@ -177,6 +177,8 @@ impl Studio {
         }
         self.note_size((w, h));
         self.selected = vec![index];
+        // Drawn inside a box, it is in it.
+        self.nest_moved();
         self.edit_text(index);
         self.changed();
         self.guess(true);
@@ -225,6 +227,8 @@ impl Studio {
                 self.keep_ghost(mods.shift);
                 return Some(Outcome::Continue);
             }
+            // A message of a sequence: the next.
+            Key::Tab if !boxy && self.next_message() => return Some(Outcome::Continue),
             Key::Tab if boxy && mods.shift => return Some(Outcome::Continue).filter(|_| self.to_parent()),
             Key::Tab if boxy => {
                 if !self.add_child() {
@@ -303,6 +307,7 @@ impl Studio {
                 self.keep_ghost(mods.shift);
                 return Some(Outcome::Continue);
             }
+            Key::Tab if !mods.shift && self.next_message() => return Some(Outcome::Continue),
             Key::Tab if mods.shift && self.to_parent() => return Some(Outcome::Continue),
             Key::Tab if !mods.shift && self.add_child() => return Some(Outcome::Continue),
             Key::Char('L' | 'l') if mods.shift => {

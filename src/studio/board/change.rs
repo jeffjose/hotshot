@@ -65,7 +65,7 @@ impl Studio {
     /// stuck at its start to a box: to branch from.
     pub(in crate::studio) fn arrow_middle_at(&self, at: (i32, i32)) -> Option<usize> {
         (0..self.doc.layers.len()).rev().find(|&index| match &self.doc.layers[index].kind {
-            Kind::Shape(shape) if shape.sticks() && !self.doc.layers[index].hidden => {
+            Kind::Shape(shape) if shape.sticks() && shape.routed && !self.doc.layers[index].hidden => {
                 let middle = self.to_window(shape.middle());
                 (middle.0 - at.0).abs() <= 9 && (middle.1 - at.1).abs() <= 9 && shape.stuck[0].and_then(|(id, ..)| self.index_of(id)).is_some_and(|from| self.is_box(from))
             }

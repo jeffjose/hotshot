@@ -500,7 +500,7 @@ impl Shape {
         (shape.form, shape.titled, shape.status, shape.votes, shape.routed) = (small(FORM_STICKY), small(1) == 1, small(3), small(99), small(1) == 1);
         shape.base = more.next().and_then(|word| word.split_once(':')).and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))).filter(|(w, h)| w.is_finite() && h.is_finite()).unwrap_or((0.0, 0.0));
         shape.heading = more.next() == Some("1");
-        shape.region = more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(2);
+        shape.region = more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(4);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -1636,7 +1636,32 @@ impl Shape {
                             strokes.push((stroke(barb, tip, &mut wobble), thin));
                         }
                     }
-                    strokes.push((path, thin));
+                    // Dashed, its path cut into dashes, each a stroke.
+                    if self.dashed || self.dotted {
+                        let (dash, gap) = if self.dotted { (1.0, self.stroke * 2.5 + 3.0) } else { (self.stroke * 2.5 + 8.0, self.stroke * 2.0 + 6.0) };
+                        let mut run: Vec<Point> = Vec::new();
+                        let mut gone = 0.0f32;
+                        for pair in path.windows(2) {
+                            let long = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+                            let steps = (long / 2.0).ceil().max(1.0) as usize;
+                            for step in 0..steps {
+                                let t = step as f32 / steps as f32;
+                                let p = (pair[0].0 + (pair[1].0 - pair[0].0) * t, pair[0].1 + (pair[1].1 - pair[0].1) * t);
+                                if gone.rem_euclid(dash + gap) < dash {
+                                    run.push(p);
+                                } else if !run.is_empty() {
+                                    let done = std::mem::take(&mut run);
+                                    strokes.push((if done.len() == 1 { vec![done[0], done[0]] } else { done }, thin));
+                                }
+                                gone += long / steps as f32;
+                            }
+                        }
+                        if !run.is_empty() {
+                            strokes.push((if run.len() == 1 { vec![run[0], run[0]] } else { run }, thin));
+                        }
+                    } else {
+                        strokes.push((path, thin));
+                    }
                 }
             }
         }

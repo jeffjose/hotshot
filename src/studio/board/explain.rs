@@ -489,6 +489,12 @@ impl Studio {
         if region == 0 {
             return;
         }
+        if region == mermaid::SEQUENCE {
+            return self.arrange_sequence(holder, dragged);
+        }
+        if region > 2 {
+            return;
+        }
         let (x, y, _, _) = shape.frame();
         let top = y + Text::line_height(shape.font_px) as f32 + 10.0 + 20.0;
         let members: Vec<u32> = self.doc.stacks.iter().find(|stack| stack.holder == Some(holder)).map(|stack| stack.members.clone()).unwrap_or_default();

@@ -5165,6 +5165,12 @@ impl Studio {
     /// What the clipboard had: a picture, put on the artboard; or text,
     /// put on it as text.
     pub fn pasted(&mut self, picture: Option<Vec<u8>>, text: Option<String>) {
+        // Mermaid, on a board: its boxes and arrows.
+        if let Some(words) = text.as_deref().filter(|words| self.on_board() && self.editing.is_none() && board::is_mermaid(words)) {
+            if self.bring_mermaid(words) {
+                return;
+            }
+        }
         // An SVG's words: on a board its shapes, elsewhere its picture.
         if let Some(words) = text.as_deref().filter(|words| board::svg::is_svg(words)) {
             if self.on_board() && self.bring_svg(words, "SVG", None) {

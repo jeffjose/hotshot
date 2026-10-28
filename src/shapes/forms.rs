@@ -338,7 +338,7 @@ impl Shape {
                 canvas.disc(cx, cy, dot.round() as i32 + 1, 0xFFFFFF, self.opacity);
                 canvas.disc(cx, cy, dot.round() as i32, STATUS[usize::from(self.status - 1)], self.opacity);
             }
-            for vote in 0..i32::from(self.votes.min(12)) {
+            for vote in 0..i32::from(if self.form == FORM_STICKY { self.votes.min(12) } else { 0 }) {
                 let (cx, cy) = ((x + dot * 2.2) as i32 + vote * (dot * 2.4) as i32, (y + dot * 2.2) as i32);
                 canvas.disc(cx, cy, dot.round() as i32, VOTE, self.opacity);
             }

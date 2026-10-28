@@ -212,7 +212,7 @@ impl Studio {
             let mut along = if down { middle.0 } else { middle.1 } - total / 2.0;
             let reach = if down { rh / 2.0 } else { rw / 2.0 };
             for (&kid, span) in kids.iter().zip(spans) {
-                self.place(kid, down, side, if down { middle.1 } else { middle.0 } + side * (reach + LEVEL), along, span, &mut seen);
+                self.place(kid, down, side, if down { middle.1 } else { middle.0 } + side * (reach + self.board.level), along, span, &mut seen);
                 along += span + SIBLING;
             }
         }
@@ -225,7 +225,7 @@ impl Studio {
         self.span(id, true, &mut Vec::new())
     }
 
-    fn span(&self, id: u32, down: bool, seen: &mut Vec<u32>) -> f32 {
+    pub(in crate::studio) fn span(&self, id: u32, down: bool, seen: &mut Vec<u32>) -> f32 {
         let Some(index) = self.index_of(id) else { return 0.0 };
         seen.push(id);
         let (_, _, w, h) = self.box_frame(index);
@@ -267,7 +267,7 @@ impl Studio {
         let spans: Vec<f32> = kids.iter().map(|&kid| self.span(kid, down, &mut seen.clone())).collect();
         let total = spans.iter().sum::<f32>() + SIBLING * (kids.len() - 1) as f32;
         let mut at = mid - total / 2.0;
-        let next = if side > 0.0 { near + deep + LEVEL } else { near - LEVEL };
+        let next = if side > 0.0 { near + deep + self.board.level } else { near - self.board.level };
         for (&kid, kid_span) in kids.iter().zip(spans) {
             self.place(kid, down, side, next, at, kid_span, seen);
             at += kid_span + SIBLING;
@@ -283,6 +283,16 @@ impl Studio {
             return false;
         }
         let origin = text.points[0];
+        // Mermaid typed: the diagram it says, the words gone.
+        if mermaid::kind_of(&text.text).is_some() {
+            let words = text.text.clone();
+            self.commit_text();
+            if index < self.doc.layers.len() {
+                self.doc.layers.remove(index);
+            }
+            self.selected.clear();
+            return self.bring_mermaid(&words);
+        }
         let lines: Vec<(usize, String)> = text
             .text
             .lines()

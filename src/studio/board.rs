@@ -119,11 +119,13 @@ pub(super) struct Board {
     pub drop: Option<change::Drop>,
     /// The SVG last brought in as shapes, to keep as a picture instead.
     pub svg: Option<svg::Brought>,
+    /// How far apart a map's levels are laid out.
+    pub level: f32,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0 }
     }
 }
 
@@ -137,6 +139,11 @@ mod explain;
 mod pick;
 pub(super) mod svg;
 mod export;
+mod mermaid;
+/// Whether some text is Mermaid a board can read.
+pub(super) fn is_mermaid(text: &str) -> bool {
+    mermaid::kind_of(text).is_some()
+}
 pub(super) mod look;
 mod act;
 pub(super) use act::Act;
