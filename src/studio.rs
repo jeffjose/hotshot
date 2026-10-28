@@ -1477,6 +1477,9 @@ enum Action {
     /// The shape a crop is kept to, and the crop undone.
     Aspect(u8),
     ResetCrop,
+    /// The crop made tight to what is in the picture, and on in to the
+    /// next lines in it each time; with Shift, back out.
+    Tight,
     /// The frames of the page chosen in the Export tab written.
     ExportChosen,
     /// What is picked out set side by side with no gaps, across or down;
@@ -1575,6 +1578,7 @@ impl Action {
             Action::BorderOff => "No border",
             Action::Aspect(_) => "Aspect",
             Action::ResetCrop => "Reset",
+            Action::Tight => "Tight",
             Action::ExportChosen => "Export",
             Action::Pack(0) => "Pack \u{2194}",
             Action::Pack(_) => "Pack \u{2195}",
@@ -7029,6 +7033,50 @@ mod tests {
         assert_eq!(crop_of(&studio).2, 300.0);
         studio.released();
         assert!(studio.crop_snaps.is_empty(), "the line goes when it is let go of");
+    }
+
+    #[test]
+    fn tight_trims_the_margin_then_goes_in_and_back_out_a_step_to_undo_each() {
+        let mut studio = cropping_a_card();
+        let steps = studio.undo.len();
+        studio.act(Action::Tight);
+        assert_eq!(crop_of(&studio), (50.0, 40.0, 300.0, 220.0), "the gray margin trimmed off");
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Tight \u{b7} 1 of 2"));
+        // Its pixels stay where they were on the artboard.
+        let Kind::Picture(picture) = &studio.doc.layers[0].kind else { panic!() };
+        assert_eq!((picture.cx, picture.cy, picture.w, picture.h), (200.0, 150.0, 300.0, 220.0));
+        studio.act(Action::Tight);
+        assert_eq!(crop_of(&studio), (100.0, 80.0, 200.0, 120.0), "in to the panel");
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Tight \u{b7} 2 of 2"));
+        studio.act(Action::Tight);
+        assert_eq!(crop_of(&studio), (50.0, 40.0, 300.0, 220.0), "round to the first again");
+        studio.mods.shift = true;
+        studio.act(Action::Tight);
+        assert_eq!(crop_of(&studio), (0.0, 0.0, 400.0, 300.0), "back out to all of it");
+        assert_eq!(studio.undo.len(), steps + 4);
+        studio.mods.shift = false;
+        // From a crop of its own, in to the first inside it.
+        if let Kind::Picture(picture) = &mut studio.doc.layers[0].kind {
+            picture.recrop((80.0, 60.0, 240.0, 160.0));
+        }
+        studio.act(Action::Tight);
+        assert_eq!(crop_of(&studio), (100.0, 80.0, 200.0, 120.0));
+    }
+
+    #[test]
+    fn tight_keeps_to_the_shape_chosen_and_begins_a_crop_of_the_picture_picked_out() {
+        let mut studio = cropping_a_card();
+        studio.cropping = None;
+        studio.selected = vec![0];
+        studio.crop_aspect = panel::CROP_ASPECTS.iter().position(|(name, _)| *name == "1:1").unwrap();
+        studio.act(Action::Tight);
+        assert_eq!(studio.cropping, Some(0));
+        let (x, y, w, h) = crop_of(&studio);
+        assert_eq!((w, h), (300.0, 300.0), "grown about its middle to be square, inside the picture");
+        assert!(x <= 50.0 && x + w >= 350.0 && y == 0.0, "{x},{y}");
+        // Pressed again, it knows where it is, though kept square.
+        studio.act(Action::Tight);
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Tight \u{b7} 2 of 2"));
     }
 
     #[test]

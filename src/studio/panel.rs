@@ -183,7 +183,8 @@ impl Studio {
             rows.note("Drag the corners, or the picture inside");
             let aspects = (0..CROP_ASPECTS.len()).map(|index| (CROP_ASPECTS[index].0.to_owned(), act(Action::Aspect(index as u8)))).collect();
             rows.chips(&mut self.text, aspects);
-            rows.chips(&mut self.text, vec![("Reset".into(), act(Action::ResetCrop)), ("Done".into(), act(Action::Crop))]);
+            rows.chips(&mut self.text, vec![("Tight".into(), act(Action::Tight)), ("Reset".into(), act(Action::ResetCrop)), ("Done".into(), act(Action::Crop))]);
+            rows.note("Tight again goes further in, Shift out");
             return rows.y;
         }
         let chosen = self.chosen();

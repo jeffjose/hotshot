@@ -172,6 +172,7 @@ impl Studio {
                 self.crop_aspect = usize::from(which).min(panel::CROP_ASPECTS.len() - 1);
                 self.keep_crop_to_aspect();
             }
+            Action::Tight => self.tight_crop(self.mods.shift),
             Action::ResetCrop => {
                 let Some(index) = self.cropping else { return Outcome::Continue };
                 self.checkpoint();

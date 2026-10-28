@@ -10,6 +10,7 @@ impl Studio {
         let top = picture.corners().map(|corner| self.to_window(corner));
         let (left, right, high) = (top.iter().map(|c| c.0).min().unwrap_or(0), top.iter().map(|c| c.0).max().unwrap_or(0), top.iter().map(|c| c.1).min().unwrap_or(0));
         let mut items: Vec<(String, Control)> = panel::CROP_ASPECTS.iter().enumerate().map(|(at, (name, _))| (name.to_string(), Control::Action(Action::Aspect(at as u8)))).collect();
+        items.push(("Tight".into(), Control::Action(Action::Tight)));
         items.push(("Reset".into(), Control::Action(Action::ResetCrop)));
         // Wider than the square buttons of the panel, which a narrow one,
         // as 1:1 is, would otherwise be drawn as.

@@ -181,9 +181,9 @@ impl Lines {
     }
 
     /// The crops a tight crop goes through, from the outside in: first
-    /// the part inside a margin of one color, or without one each side in
-    /// to the nearest strong line; then each side on in to the next line
-    /// that runs along much of it, as panels and cards in each other are.
+    /// the part inside a margin of one color; then the largest box of
+    /// lines inside the last, as panels and cards are in each other; or
+    /// where there is none, each side in to the nearest strong line.
     pub fn tight(&self) -> Vec<Sides> {
         let whole = (0.0, 0.0, self.width, self.height);
         let (l, t, r, b) = self.content;
@@ -197,11 +197,47 @@ impl Lines {
             // From the whole picture, a line a pixel in is one to go to;
             // from a crop on a line, it is the other side of a border.
             let apart = if now == whole { 0.5 } else { APART };
-            let Some(next) = self.inward(now, apart) else { break };
+            let moved = |(a, b, c, d): Sides| (a - now.0).max(b - now.1).max(now.2 - c).max(now.3 - d) > apart;
+            let largest = self.boxes(now).into_iter().filter(|&found| moved(found)).max_by(|a, b| ((a.2 - a.0) * (a.3 - a.1)).total_cmp(&((b.2 - b.0) * (b.3 - b.1))));
+            let Some(next) = largest.or_else(|| self.inward(now, apart)) else { break };
             crops.push(next);
             now = next;
         }
         crops
+    }
+
+    /// The boxes inside `sides` whose four sides are lines, each running
+    /// along most of its side: the windows, panels and cards of a
+    /// screenshot. The strongest lines are tried, not every one.
+    pub fn boxes(&self, (l, t, r, b): Sides) -> Vec<Sides> {
+        fn strongest(lines: &[Line], from: f32, to: f32) -> Vec<&Line> {
+            let mut inside: Vec<&Line> = lines.iter().filter(|line| line.at >= from && line.at <= to).collect();
+            inside.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+            inside.truncate(150);
+            inside.sort_by(|a, b| a.at.total_cmp(&b.at));
+            inside
+        }
+        let (upright, across) = (strongest(&self.upright, l, r), strongest(&self.across, t, b));
+        // Most of a side and near both its ends, so that rounded corners
+        // leave enough, but a line stopping well short is another box's.
+        let along = |line: &Line, from: f32, to: f32| {
+            let inset = 16.0f32.min((to - from) * 0.15);
+            line.within(from, to) >= (to - from) * 0.7 && line.covers(from + inset, 1.0) && line.covers(to - inset, 1.0)
+        };
+        let mut found = Vec::new();
+        for (index, left) in upright.iter().enumerate() {
+            for right in upright[index + 1..].iter().filter(|right| right.at - left.at >= 16.0) {
+                let edges: Vec<&&Line> = across.iter().filter(|line| along(line, left.at, right.at)).collect();
+                for (index, top) in edges.iter().enumerate() {
+                    for bottom in edges[index + 1..].iter().filter(|bottom| bottom.at - top.at >= 16.0) {
+                        if along(left, top.at, bottom.at) && along(right, top.at, bottom.at) {
+                            found.push((left.at, top.at, right.at, bottom.at));
+                        }
+                    }
+                }
+            }
+        }
+        found
     }
 
     /// The box inside `sides`, each side moved in to the first line past
@@ -224,9 +260,14 @@ impl Lines {
         (next != (l, t, r, b) && right - left >= 16.0 && bottom - top >= 16.0).then_some(next)
     }
 
-    /// The smallest box of lines round a point of the picture: on each side
-    /// the nearest line that runs past it, or the part inside the margin.
+    /// The smallest box of lines round a point of the picture; or with
+    /// none round it, on each side the nearest line that runs past it, or
+    /// the part inside the margin.
     pub fn around(&self, (x, y): (f32, f32)) -> Sides {
+        let boxes = self.boxes((0.0, 0.0, self.width, self.height));
+        if let Some(&smallest) = boxes.iter().filter(|(l, t, r, b)| *l < x && x < *r && *t < y && y < *b).min_by(|a, b| ((a.2 - a.0) * (a.3 - a.1)).total_cmp(&((b.2 - b.0) * (b.3 - b.1)))) {
+            return smallest;
+        }
         let slack = 12.0;
         let (l, t, r, b) = self.content;
         let left = self.upright.iter().rev().find(|line| line.at < x && line.at > l && line.covers(y, slack)).map_or(l, |line| line.at);
