@@ -24,6 +24,7 @@ mod actions;
 mod arrange;
 mod crop_bar;
 mod drawn;
+mod duplicate;
 mod effects;
 mod export;
 mod library;
@@ -1128,12 +1129,14 @@ enum Drag {
     NewFrame { from: (f32, f32) },
     /// The frame worked in moved by its name, from a point of the window,
     /// from where it was.
-    MoveFrame { from: (i32, i32), origin: (f32, f32), moved: bool },
+    /// With `copy`, Alt held as it was pressed, a copy of it is what moves.
+    MoveFrame { from: (i32, i32), origin: (f32, f32), moved: bool, copy: bool },
     None,
     /// The view moved, by the hand, the middle button or Space.
     Pan { from: (i32, i32), origin: (f32, f32) },
-    /// What is picked out, moved: `moved` once it has gone anywhere.
-    Move { from: (f32, f32), moved: bool },
+    /// What is picked out, moved: `moved` once it has gone anywhere; with
+    /// `copy`, a copy of it, left where it was, as Alt does in Figma.
+    Move { from: (f32, f32), moved: bool, copy: bool },
     /// The one picked out made larger or smaller by a handle, which pulls
     /// each way -1, 0 or 1.
     Scale { pull: (i32, i32), from: (f32, f32) },
@@ -1156,6 +1159,15 @@ enum Drag {
     Reorder { index: usize, from: i32, moved: bool },
     /// A part of the color picker dragged along.
     Picker { part: u8, rect: Rect },
+}
+
+/// The last copy made, and what it was made from.
+#[derive(Clone, PartialEq, Debug)]
+enum Repeat {
+    /// A frame of a page, by where each is among its frames.
+    Frame { page: usize, source: usize, copy: usize },
+    /// Layers of a frame, by what each is called.
+    Layers { frame: (usize, usize), sources: Vec<u32>, copies: Vec<u32> },
 }
 
 /// A number in the panel of properties.
@@ -1708,6 +1720,10 @@ pub struct Studio {
     preview: Option<preview::Preview>,
     /// The gaps what is being moved is spaced by, shown.
     gaps: Vec<snap::Gap>,
+    /// The last copy made and what it was made from, for the next copy of
+    /// it to go as far from it again, as Figma's do: until anything but
+    /// moving that copy is done.
+    repeat: Option<Repeat>,
     /// Whether Shift+1 last fitted the frame, to fit what is picked out next.
     fitted_frame: bool,
     /// When Shift and Alt were last seen held: out of a drag they hold a
@@ -1814,6 +1830,7 @@ impl Studio {
             guides: Vec::new(),
             preview: None,
             gaps: Vec::new(),
+            repeat: None,
             fitted_frame: false,
             seen_mods: (None, None),
             user_guides: Vec::new(),
@@ -1904,6 +1921,7 @@ impl Studio {
 
     /// Something about to change: the whole file kept, to come back to
     /// with undo.
+    /// Anything done but moving the last copy made forgets it.
     fn checkpoint(&mut self) {
         let now = self.snapshot();
         self.undo.push(now);
@@ -1911,6 +1929,15 @@ impl Studio {
         if self.undo.len() > 100 {
             self.undo.remove(0);
         }
+        self.repeat = None;
+    }
+
+    /// The same, for what is picked out about to be moved: the last copy
+    /// made, if that is what it is, still remembered.
+    fn checkpoint_move(&mut self) {
+        let kept = self.repeat.take().filter(|repeat| self.is_last_copy(repeat));
+        self.checkpoint();
+        self.repeat = kept;
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -1931,7 +1958,7 @@ impl Studio {
         self.active = snapshot.active.min(self.pages[self.page].frames.len() - 1);
         self.doc = std::mem::replace(&mut self.pages[self.page].frames[self.active], Doc::new(1, 1));
         self.selected.retain(|&index| index < self.doc.layers.len());
-        (self.cropping, self.editing) = (None, None);
+        (self.cropping, self.editing, self.repeat) = (None, None, None);
         self.shown.clear();
     }
 
@@ -2525,14 +2552,18 @@ impl Studio {
                 (self.hovered, self.hover_shown) = (hovered, over);
             }
             Drag::NewFrame { .. } => self.dirty = true,
-            Drag::MoveFrame { from, origin, moved } => {
+            Drag::MoveFrame { from, origin, moved, copy } => {
                 let (dx, dy) = ((x - from.0) as f32 / self.zoom, (y - from.1) as f32 / self.zoom);
                 if !moved && (x - from.0).abs().max((y - from.1).abs()) < 3 {
                     return;
                 }
                 if !moved {
-                    self.checkpoint();
-                    self.drag = Drag::MoveFrame { from, origin, moved: true };
+                    // With Alt, a copy left where it was is what moves.
+                    match copy {
+                        true => self.copy_frame(origin),
+                        false => self.checkpoint_move(),
+                    }
+                    self.drag = Drag::MoveFrame { from, origin, moved: true, copy };
                 }
                 // Snapped to the other frames, as a layer is to the rest,
                 // but for along the way Shift holds it to, or with Ctrl.
@@ -2558,7 +2589,7 @@ impl Studio {
                 self.pan = (origin.0 + (x - from.0) as f32, origin.1 + (y - from.1) as f32);
                 self.moved_quickly();
             }
-            Drag::Move { from, moved } => {
+            Drag::Move { from, moved, copy } => {
                 let (mut dx, mut dy) = (at.0 - from.0, at.1 - from.1);
                 if mods.shift {
                     if dx.abs() >= dy.abs() { dy = 0.0 } else { dx = 0.0 }
@@ -2567,8 +2598,15 @@ impl Studio {
                     return;
                 }
                 if !moved {
-                    self.checkpoint();
-                    self.drag = Drag::Move { from, moved: true };
+                    // With Alt, a copy is made where it is, and that moved.
+                    match copy {
+                        true => {
+                            self.copy_layers_by((0.0, 0.0));
+                            self.held = self.chosen().iter().map(|&index| self.doc.layers[index].clone()).collect();
+                        }
+                        false => self.checkpoint_move(),
+                    }
+                    self.drag = Drag::Move { from, moved: true, copy };
                     self.let_go();
                 }
                 // Snapped to the artboard and to the rest, but for along
@@ -2705,7 +2743,7 @@ impl Studio {
                 self.drag = Drag::Reorder { index, from: at_window.1, moved: false };
             }
             if let (Control::Frame(_), false, true) = (control, double, self.over_page(at_window)) {
-                self.drag = Drag::MoveFrame { from: at_window, origin: (self.doc.x, self.doc.y), moved: false };
+                self.drag = Drag::MoveFrame { from: at_window, origin: (self.doc.x, self.doc.y), moved: false, copy: self.mods.alt };
             }
             return outcome;
         }
@@ -2725,7 +2763,7 @@ impl Studio {
         // On the page.
         self.commit_name();
         (self.palette, self.flyout) = (None, None);
-        if self.space || self.tool == Tool::Select && self.mods.alt {
+        if self.space || self.tool == Tool::Select && self.mods.alt && self.frame_at(self.to_page(at_window)).is_none() {
             self.drag = Drag::Pan { from: at_window, origin: self.pan };
             return Outcome::Continue;
         }
@@ -2889,7 +2927,7 @@ impl Studio {
             let (top, bottom) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
             if (left..=right).contains(&at_window.0) && (top..=bottom).contains(&at_window.1) {
                 self.held = self.chosen().iter().map(|&index| self.doc.layers[index].clone()).collect();
-                self.drag = Drag::Move { from: at, moved: false };
+                self.drag = Drag::Move { from: at, moved: false, copy: self.mods.alt };
                 self.under_press = beneath;
                 return;
             }
@@ -2918,8 +2956,11 @@ impl Studio {
                     return;
                 }
                 self.held = self.chosen().iter().map(|&index| self.doc.layers[index].clone()).collect();
-                self.drag = Drag::Move { from: at, moved: false };
+                self.drag = Drag::Move { from: at, moved: false, copy: self.mods.alt };
             }
+            // Alt on nothing pans, as it does off the frames; on a layer it
+            // copies it.
+            None if self.mods.alt => self.drag = Drag::Pan { from: at_window, origin: self.pan },
             None => {
                 if !self.mods.shift {
                     self.selected.clear();
@@ -3951,26 +3992,6 @@ impl Studio {
         self.changed();
     }
 
-    fn duplicate(&mut self) {
-        let chosen = self.chosen();
-        if chosen.is_empty() {
-            return;
-        }
-        self.checkpoint();
-        self.selected.clear();
-        for index in chosen {
-            let mut copy = self.doc.layers[index].clone();
-            match &mut copy.kind {
-                Kind::Picture(picture) => picture.id = shapes::fresh_id(),
-                Kind::Shape(shape) => *shape = shape.copied(),
-            }
-            copy.translate(16.0, 16.0);
-            self.doc.layers.push(copy);
-            self.selected.push(self.doc.layers.len() - 1);
-        }
-        self.changed();
-    }
-
     fn delete(&mut self) {
         let mut chosen = self.chosen();
         if chosen.is_empty() {
@@ -4384,7 +4405,7 @@ impl Studio {
                 };
                 let chosen = self.chosen();
                 if !chosen.is_empty() {
-                    self.checkpoint();
+                    self.checkpoint_move();
                     chosen.iter().for_each(|&index| self.doc.layers[index].translate(dx, dy));
                     self.changed();
                 }

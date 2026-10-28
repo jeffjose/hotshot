@@ -116,7 +116,16 @@ drags out a new one; drag a frame by its name to move it, double-click
 the name to rename it. A frame being moved snaps to the edges and
 middles of the other frames, with a red line across where it does, and
 to even gaps between them, marked in magenta with how wide; hold Ctrl
-not to snap, and Shift to keep it to across or down. The layers of the frame you are in are listed
+not to snap, and Shift to keep it to across or down.
+
+`Ctrl+D` duplicates as Figma does. A frame's first copy goes 100 to its
+right, past any frame already there; a layer's goes 20 to its right, or
+below it if that would leave the frame, past anything in the way. Move
+the copy and duplicate it again, and the next copy goes as far from it
+as it went from the first, so a row or a grid lays itself out; anything
+else done in between starts over. Alt-drag a layer, or a frame by its
+name, to drag off a copy and leave it where it was; Alt on empty space
+still pans. Each duplicate is one step to undo. The layers of the frame you are in are listed
 under it. The tools float along the bottom, grouped as Figma's are, and
 the right panel holds the properties of whatever is selected, a section
 at a time. With nothing selected it belongs to the frame:

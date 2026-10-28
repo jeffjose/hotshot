@@ -358,22 +358,6 @@ impl Studio {
         self.changed();
     }
 
-    /// The frame worked in copied, to the right of it, and the copy worked
-    /// in.
-    pub(super) fn duplicate_frame(&mut self) {
-        self.commit_name();
-        self.commit_text();
-        let mut copy = self.doc.clone();
-        copy.name = format!("{} copy", copy.name);
-        copy.x = self.doc.x + self.doc.width as f32 + 80.0;
-        self.checkpoint();
-        self.pages[self.page].frames.push(copy);
-        let index = self.frame_count() - 1;
-        self.activate(index);
-        self.frame_picked = true;
-        self.changed();
-    }
-
     /// A page done away with, where there are others.
     pub(super) fn delete_page(&mut self, page: usize) {
         if self.pages.len() < 2 || page >= self.pages.len() {
