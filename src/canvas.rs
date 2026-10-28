@@ -47,7 +47,14 @@ impl Rect {
     pub fn intersect(&self, other: Rect) -> Rect {
         let (x, y) = (self.x.max(other.x), self.y.max(other.y));
         let (right, bottom) = (self.right().min(other.right()), self.bottom().min(other.bottom()));
-        Rect::new(x, y, (right - x).max(0), (bottom - y).max(0))
+        // Where they do not meet, nothing either way, at a corner no
+        // further out than the other's far edges: a loop over its rows
+        // has none to go through, and nothing is taken from past the end
+        // of what it is in, however the two lie.
+        if right <= x || bottom <= y {
+            return Rect::new(x.min(other.right()), y.min(other.bottom()), 0, 0);
+        }
+        Rect::new(x, y, right - x, bottom - y)
     }
 
     pub fn intersects(&self, other: Rect) -> bool {
@@ -599,6 +606,20 @@ mod tests {
         let a = Rect::new(0, 0, 10, 10);
         assert_eq!(a.intersect(Rect::new(5, 5, 10, 10)), Rect::new(5, 5, 5, 5));
         assert!(a.intersect(Rect::new(20, 0, 5, 5)).is_empty());
+        // Where two do not meet, beside each other level or above each
+        // other in line, nothing either way and a corner within the far
+        // edges of the second: a loop over its rows slicing a buffer the
+        // second's size takes nothing and goes nowhere past its end.
+        let screen = Rect::new(0, 0, 10, 10);
+        let buffer = vec![0u32; 100];
+        for other in [Rect::new(20, 0, 5, 5), Rect::new(-30, 2, 5, 5), Rect::new(2, 40, 5, 5), Rect::new(10, 10, 4, 4), Rect::new(3, 3, 0, 5), Rect::new(3, 3, 5, 0)] {
+            for meet in [other.intersect(screen), screen.intersect(other).intersect(screen)] {
+                assert!(meet.w == 0 && meet.h == 0 && meet.x <= screen.right() && meet.y <= screen.bottom(), "{other:?} {meet:?}");
+                for y in meet.y..meet.bottom() {
+                    let _ = &buffer[(y * 10 + meet.x) as usize..][..meet.w as usize];
+                }
+            }
+        }
         assert_eq!(Rect::spanning((8, 2), (3, 9)), Rect::new(3, 2, 5, 7));
         assert_eq!(Rect::new(95, -4, 10, 10).kept_within(Rect::new(0, 0, 100, 100)), Rect::new(90, 0, 10, 10));
     }
