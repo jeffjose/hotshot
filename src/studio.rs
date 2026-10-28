@@ -23,6 +23,7 @@ use crate::text::{icons, Text, FACES};
 
 mod actions;
 mod arrange;
+mod board;
 mod chromes;
 mod corners;
 mod crop_bar;
@@ -83,6 +84,9 @@ const INSET: i32 = 12;
 const LEFT_W: i32 = 252;
 const RIGHT_W: i32 = 268;
 const DOCK_ROOM: i32 = 72;
+/// How far down the left panel begins under the switch between Design and
+/// Board, at its top.
+const SWITCH_ROOM: i32 = 40;
 
 /// How far a notch of the wheel moves the page, in pixels of the window;
 /// and how much larger a notch with Ctrl makes it, about the pointer:
@@ -978,6 +982,12 @@ pub fn write_pages(pages: &[Page]) -> Vec<u8> {
     let mut images: Vec<Arc<Image>> = Vec::new();
     for page in pages {
         out += &format!("page {}\n", one_line(&page.name));
+        if page.board {
+            out += "board\n";
+        } else if page.frames.is_empty() {
+            // A board made a page of frames again before it had any.
+            out += "no-frames\n";
+        }
         for frame in &page.frames {
             out += &format!("frame {} {} {}\n", frame.x, frame.y, one_line(&frame.name));
             frame.write_lines(&mut out, &mut images);
@@ -1028,6 +1038,7 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
     // Whether the lines are of the page's own layers, which come after
     // its frames, until another page or frame.
     let mut own = false;
+    let mut frameless: Vec<usize> = Vec::new();
     for line in lines {
         if let Some(name) = line.strip_prefix("page ") {
             pages.push(Page::new(name.to_owned(), Vec::new()));
@@ -1038,6 +1049,14 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
             pages.push(Page::new("Page 1", Vec::new()));
         }
         let page = pages.last_mut()?;
+        if line == "board" && page.frames.is_empty() && !own {
+            page.board = true;
+            continue;
+        }
+        if line == "no-frames" && page.frames.is_empty() && !own {
+            frameless.push(pages.len() - 1);
+            continue;
+        }
         if line == "page-layers" {
             own = true;
             continue;
@@ -1061,9 +1080,9 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
         }
         let _ = page.frames.last_mut()?.read_line(line, &images);
     }
-    for page in &mut pages {
+    for (index, page) in pages.iter_mut().enumerate() {
         page.frames.retain(|frame| frame.width > 0 && frame.height > 0);
-        if page.frames.is_empty() {
+        if page.frames.is_empty() && !page.board && !frameless.contains(&index) {
             page.frames.push(Doc::new(1200, 675));
         }
         page.seen = page.loose.layers.iter().map(stacks::layer_id).collect();
@@ -1083,11 +1102,15 @@ pub struct Page {
     /// them was last worked out, by what each is called: for the frames
     /// to keep their places as layers come and go.
     pub seen: Vec<u32>,
+    /// Whether it is a board, for explaining, rather than a page of frames
+    /// to design in: its own look, tools and ways, and frames only when
+    /// part of it is wanted as a picture.
+    pub board: bool,
 }
 
 impl Page {
     pub fn new(name: impl Into<String>, frames: Vec<Doc>) -> Page {
-        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new() }
+        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false }
     }
 }
 
@@ -1750,6 +1773,8 @@ enum Control {
     Shelf(u8),
     LibraryItem(u16),
     EmojiItem(u16),
+    /// Something of a board's, or the switch between Design and Board.
+    Board(board::Ctl),
     /// A part of a panel that is no control.
     Panel,
 }
@@ -2246,6 +2271,9 @@ pub struct Studio {
     commands: Vec<recent::Done>,
     commands_file: Option<PathBuf>,
     dirty: bool,
+    /// What a board has of its own: how the next box is drawn, what it
+    /// guesses comes next, what is lit, and the rest.
+    board: board::Board,
 }
 
 impl Studio {
@@ -2359,8 +2387,12 @@ impl Studio {
             commands: Vec::new(),
             commands_file: None,
             dirty: true,
+            board: board::Board::new(false),
         };
-        studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
+        // A board with no frames is worked in on its page.
+        studio.active = if studio.pages[0].frames.is_empty() { LOOSE } else { 0 };
+        studio.doc = std::mem::replace(slot(&mut studio.pages[0], studio.active), Doc::new(1, 1));
+        studio.board = board::Board::new(studio.pages[0].board);
         studio.fit();
         studio
     }
@@ -2470,6 +2502,7 @@ impl Studio {
         self.page = snapshot.page.min(self.pages.len() - 1);
         self.active = match snapshot.active {
             LOOSE => LOOSE,
+            _ if self.pages[self.page].frames.is_empty() => LOOSE,
             active => active.min(self.pages[self.page].frames.len() - 1),
         };
         self.doc = std::mem::replace(slot(&mut self.pages[self.page], self.active), Doc::new(1, 1));
@@ -2513,8 +2546,9 @@ impl Studio {
         self.commit_text();
         let back = std::mem::replace(&mut self.doc, Doc::new(1, 1));
         *slot(&mut self.pages[self.page], self.active) = back;
-        (self.page, self.active) = (page, 0);
-        self.doc = std::mem::replace(&mut self.pages[page].frames[0], Doc::new(1, 1));
+        (self.page, self.active) = (page, if self.pages[page].frames.is_empty() { LOOSE } else { 0 });
+        self.doc = std::mem::replace(slot(&mut self.pages[page], self.active), Doc::new(1, 1));
+        self.board_page_shown();
         self.selected.clear();
         (self.cropping, self.editing, self.frame_picked) = (None, None, false);
         self.shown.clear();
@@ -2555,9 +2589,17 @@ impl Studio {
     /// whatever that one is on.
     fn new_page(&mut self) {
         self.checkpoint();
-        let frame = Doc::new(self.frame_like().width, self.frame_like().height);
-        let name = format!("Page {}", self.pages.len() + 1);
-        self.pages.push(Page::new(name, vec![frame]));
+        // A page of the same kind as the one shown: a board, with nothing
+        // on it, or a page with a frame as large as the one worked in.
+        let board = self.on_board();
+        let (width, height) = match self.frame_count() {
+            0 => (1200, 675),
+            _ => (self.frame_like().width, self.frame_like().height),
+        };
+        let name = format!("{} {}", if board { "Board" } else { "Page" }, self.pages.len() + 1);
+        let mut page = Page::new(name, if board { Vec::new() } else { vec![Doc::new(width, height)] });
+        page.board = board;
+        self.pages.push(page);
         self.go_to_page(self.pages.len() - 1);
         self.renaming = Some((Naming::Page(self.page), String::new()));
         self.changed();
@@ -2582,15 +2624,20 @@ impl Studio {
         if self.on_page() {
             return self.say("Pick a frame to delete it");
         }
-        if self.frame_count() < 2 {
+        if self.frame_count() < 2 && !self.on_board() {
             return self.say("A page keeps one frame");
         }
         self.checkpoint();
         let gone = self.active;
-        let next = if gone == 0 { 1 } else { gone - 1 };
+        let next = match gone {
+            // A board's last frame gone, its page is worked in.
+            _ if self.frame_count() < 2 => LOOSE,
+            0 => 1,
+            _ => gone - 1,
+        };
         self.activate(next);
         self.pages[self.page].frames.remove(gone);
-        if self.active > gone {
+        if self.active > gone && self.active != LOOSE {
             self.active -= 1;
         }
         self.shown.clear();
@@ -2728,6 +2775,9 @@ impl Studio {
         if self.zen {
             return;
         }
+        if self.on_board() {
+            return self.board_toolbar(layout);
+        }
         let (side, caret, gap, pad) = (38, 14, 2, 5);
         let items: Vec<(Control, i32)> = vec![
             (Control::Tool(Tool::Select), side),
@@ -2784,6 +2834,7 @@ impl Studio {
         // Its button first, where it is whether the panel shows or not;
         // hidden, the panel is that button and nothing else.
         layout.controls.push((self.side_button(0), Control::SidePanel(0)));
+        self.layout_switch(layout);
         if !self.shows_left() {
             return;
         }
@@ -2792,14 +2843,16 @@ impl Studio {
         let (left, inner) = (panel.x + 12, panel.w - 24);
         let line = Text::line_height(12);
         // The file: the way home, its project, and its name.
-        let home = self.side_button(0).right() + 6;
-        layout.controls.push((Rect::new(home, panel.y + 12, 28, 28), Control::Home));
+        // Under the switch between Design and Board, which is beside the
+        // button that hides the panel.
+        let home = self.side_button(0).x;
+        layout.controls.push((Rect::new(home, panel.y + 12 + SWITCH_ROOM, 28, 28), Control::Home));
         let project = self.path.as_ref().and_then(|path| path.parent()).and_then(|dir| dir.file_name()).map_or("Drafts".to_owned(), |name| name.to_string_lossy().into_owned());
-        layout.words.push(((home + 38, panel.y + 10), project, DIM_TEXT_COLOR, 11));
+        layout.words.push(((home + 38, panel.y + 10 + SWITCH_ROOM), project, DIM_TEXT_COLOR, 11));
         let name = self.title().trim_end_matches(" \u{2014} hotshot").to_owned();
-        layout.words.push(((home + 38, panel.y + 25), name, TEXT_COLOR, 13));
+        layout.words.push(((home + 38, panel.y + 25 + SWITCH_ROOM), name, TEXT_COLOR, 13));
         // The pages.
-        let mut y = panel.y + 56;
+        let mut y = panel.y + 56 + SWITCH_ROOM;
         layout.rules.push(Rect::new(panel.x, y, panel.w, 1));
         y += 10;
         layout.words.push(((left, y + (22 - line) / 2), "Pages".to_owned(), TEXT_COLOR, 12));
@@ -2949,12 +3002,13 @@ impl Studio {
 
     /// Whether each panel is shown: as it was left, unless everything is
     /// hidden.
+    /// A board shows neither unless asked, with the same keys and buttons.
     fn shows_left(&self) -> bool {
-        self.left_open && !self.zen
+        !self.zen && !self.presenting() && if self.on_board() { self.board.left } else { self.left_open }
     }
 
     fn shows_right(&self) -> bool {
-        self.right_open && !self.zen
+        !self.zen && !self.presenting() && if self.on_board() { self.board.right } else { self.right_open }
     }
 
     /// Where the page begins and ends across the window: past the panels
@@ -2984,6 +3038,16 @@ impl Studio {
         self.commit_name();
         self.commit_typing();
         (self.palette, self.eyedropping) = (None, false);
+        // A board's panels are hidden and shown on their own, kept for
+        // boards alone.
+        if self.on_board() && !self.zen {
+            match side {
+                0 => self.board.left = !self.board.left,
+                _ => self.board.right = !self.board.right,
+            }
+            self.dirty = true;
+            return;
+        }
         // With everything hidden, everything comes back, that panel too.
         if self.zen {
             self.zen = false;
@@ -3535,6 +3599,10 @@ impl Studio {
                 }
                 let mut shape = Shape::new(Tool::Text, self.color, STROKES[self.size], (at.0, at.1 - FONT_SIZES[self.size] as f32 / 2.0));
                 (shape.font_px, shape.face) = (FONT_SIZES[self.size], self.face);
+                if self.on_board() {
+                    self.board_dress(&mut shape);
+                    shape.points[0].1 = at.1 - shape.font_px as f32 / 2.0;
+                }
                 self.doc.layers.push(Layer::shape(shape));
                 self.edit_text(self.doc.layers.len() - 1);
                 self.selected = vec![self.doc.layers.len() - 1];
@@ -3558,6 +3626,9 @@ impl Studio {
                     shape.number = 0;
                 }
                 shape.font_px = FONT_SIZES[self.size];
+                if self.on_board() {
+                    self.board_dress(&mut shape);
+                }
                 self.doc.layers.push(Layer::shape(shape));
                 self.selected.clear();
                 self.drag = Drag::Draw { from: at };
@@ -3995,6 +4066,7 @@ impl Studio {
                 Kind::Picture(picture) => picture.shadow = which,
                 Kind::Shape(shape) => shape.shadow = Some(actions::custom_drop(which)),
             }),
+            Control::Board(ctl) => return self.press_board(ctl),
             Control::Action(action) => return self.act(action),
             Control::Panel => {}
         }
@@ -5277,6 +5349,11 @@ impl Studio {
             Key::Char(letter) => Key::Char(letter.to_ascii_lowercase()),
             other => other,
         };
+        if self.on_board() {
+            if let Some(outcome) = self.board_key(lower, mods) {
+                return outcome;
+            }
+        }
         match (lower, mods.ctrl) {
             // Style Mode: S opens the grid of styles, a letter puts one on.
             (Key::Escape, _) if self.exported.is_some() => self.exported = None,
@@ -5288,6 +5365,7 @@ impl Studio {
             }
             (Key::Char('s'), false) if !self.styling && self.styles_apply() => self.styling = true,
             (Key::Char('q' | 'w'), true) => return Outcome::Quit,
+            (Key::Char('m'), true) => self.flip_mode(),
             (Key::Char('z'), true) if mods.shift => self.redo(),
             (Key::Char('z'), true) => self.undo(),
             (Key::Char('y'), true) => self.redo(),
@@ -5575,15 +5653,19 @@ impl Studio {
         let (width, height) = (self.width, self.height);
         let layout = self.layout();
         let view = layout.view;
-        out.par_chunks_mut(1 << 16).for_each(|part| part.fill(VIEW_COLOR));
         self.pill = None;
         // The page: dots on its ground, the frames on that, each over light
-        // squares where it is see-through.
-        let dots = 24;
-        let (ox, oy) = (self.pan.0.rem_euclid(dots as f32) as i32, self.pan.1.rem_euclid(dots as f32) as i32);
-        for y in (view.y + oy..view.bottom()).step_by(dots as usize) {
-            for x in (view.x + ox..view.right()).step_by(dots as usize) {
-                out[(y * width + x) as usize] = 0x2E2E2E;
+        // squares where it is see-through. A board is on its paper.
+        if self.on_board() {
+            self.draw_paper(out, view);
+        } else {
+            out.par_chunks_mut(1 << 16).for_each(|part| part.fill(VIEW_COLOR));
+            let dots = 24;
+            let (ox, oy) = (self.pan.0.rem_euclid(dots as f32) as i32, self.pan.1.rem_euclid(dots as f32) as i32);
+            for y in (view.y + oy..view.bottom()).step_by(dots as usize) {
+                for x in (view.x + ox..view.right()).step_by(dots as usize) {
+                    out[(y * width + x) as usize] = 0x2E2E2E;
+                }
             }
         }
         // Everything on the page in its order, bottom to top: the frames,
@@ -5652,7 +5734,9 @@ impl Studio {
         canvas.set_clip(view);
         self.draw_pixel_grid(&mut canvas, view);
         for (index, place, name) in self.frame_labels() {
-            let color = if index == self.active && self.frame_picked { ACCENT_TEXT } else if index == self.active { TEXT_COLOR } else { DIM_TEXT_COLOR };
+            // On a board's paper, in its ink.
+            let (lit, dim) = if self.on_board() { (board::INK, board::QUIET) } else { (TEXT_COLOR, DIM_TEXT_COLOR) };
+            let color = if index == self.active && self.frame_picked { if self.on_board() { ACCENT } else { ACCENT_TEXT } } else if index == self.active { lit } else { dim };
             let name = match self.renaming.clone() {
                 Some((Naming::Frame, typed)) if index == self.active => self.typed_shown(&mut canvas, (place.x, place.y), 12, typed),
                 _ => name,
@@ -6426,6 +6510,7 @@ impl Studio {
                         canvas.round_outline(rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4, 4, 2, 0xFFFFFF);
                     }
                 }
+                Control::Board(ctl) => self.draw_board_control(canvas, rect, ctl, hovered),
                 Control::Panel => {}
                 Control::Menu(kind) => {
                     let open = self.menu.is_some_and(|menu| menu.kind == kind);
@@ -6657,9 +6742,14 @@ fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: Pa
     // The first picture is the new frame, when there is no file of pages.
     let fresh = !pictures.is_empty();
     let first = (pages.is_none() && fresh).then(|| pictures.remove(0));
-    let pages = pages.unwrap_or_else(|| {
-        let frame = first.map_or_else(|| Doc::new(1200, 675), |(image, name)| framed(image, &name));
-        vec![Page::new("Page 1", vec![frame])]
+    // A new file with nothing in it begins as the last was switched to: a
+    // board, or a page with a frame.
+    let pages = pages.unwrap_or_else(|| match first {
+        None if board::last_was_board() => board::board_pages(),
+        first => {
+            let frame = first.map_or_else(|| Doc::new(1200, 675), |(image, name)| framed(image, &name));
+            vec![Page::new("Page 1", vec![frame])]
+        }
     });
     let dir = options.places.first().cloned().unwrap_or_else(|| options.dir.clone());
     let mut studio = Studio::with_pages(pages, text, size.0, size.1, dir, options.filename.clone());
@@ -9381,11 +9471,12 @@ mod tests {
         let button = studio.control_rect(Control::SidePanel(0)).unwrap();
         studio.key(Key::Char('\\'), ctrl, true);
         assert!(studio.zen);
-        // Nothing left but the page and the one button, where it was.
+        // Nothing left but the page and the one button, where it was, and
+        // the switch between Design and Board beside it.
         let layout = studio.layout();
         assert!(layout.panels.is_empty() && layout.dock.w == 0);
         let controls: Vec<Control> = layout.controls.iter().map(|(_, control)| *control).filter(|control| !matches!(control, Control::Frame(_))).collect();
-        assert_eq!(controls, vec![Control::SidePanel(0)]);
+        assert_eq!(controls, vec![Control::SidePanel(0), Control::Board(board::Ctl::Mode(false)), Control::Board(board::Ctl::Mode(true))]);
         assert_eq!(studio.control_rect(Control::SidePanel(0)), Some(button));
         assert!(!studio.press_rulers((700, 5)) && studio.over_page((5, 450)) && studio.over_page((1395, 450)));
         // Esc leaves it as it is; the tools' keys still work, each said

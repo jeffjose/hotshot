@@ -389,6 +389,35 @@ size is written as `Frame 1@2x.png`. `Ctrl+C`
 copies it. Ctrl+E in capture mode opens the picture there in a new file
 in Drafts, its shapes still editable.
 
+## Board
+
+A page is either a page of frames, for pixels, or a board, for
+explaining, as Excalidraw is. The switch between them, Design and
+Board, is at the top left in both, beside the button that hides the
+left panel, and stays there with the panels hidden and with `Ctrl+\`;
+`Ctrl+M` flips the page shown. One file can hold both: the polished
+screenshots on a page of frames, the sketch that explains them on a
+board beside it. A new file begins as the last page was switched to,
+and a new page as the one shown is. Nothing is lost by switching: a
+board's boxes are the page's own layers, which Design shows and moves
+as any, and switched back they are a board's again.
+
+A board is one endless sheet of warm paper with dots, which move with
+it and thin out as it is zoomed out. It has no frames to begin with,
+and neither panel: `Ctrl+Shift+\` and `Ctrl+Alt+\` or their buttons
+still bring the left one and the right one back, for a board alone.
+Its tools are along the bottom, each with its key: the pointer `V`, the
+hand `H`, a box `R`, an oval `O`, a diamond `D`, an arrow `A`, a line
+`L`, the pen `P`, text `T`, a sticky note `S`, and a picture `I`, which
+takes one off the clipboard (or drop one on the board). What a board
+draws is drawn by hand, a little rough, each line gone over twice, in
+a dark ink with a soft fill, and its words are in Architects Daughter;
+each shape keeps its own wobble wherever it is moved, as it is worked
+out from what the shape is called rather than where it is, and no two
+are alike. A box can be drawn as a box, a diamond or a sticky note,
+which is yellow on a soft shadow, with its words in the middle of it,
+wrapped to it.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

@@ -156,6 +156,23 @@ pub struct Shape {
     /// Whether its text is being typed into, which shows the hashes a
     /// heading begins with; not kept in its file.
     pub editing: bool,
+    /// What a box is drawn as on a board: a box, a diamond, a database, a
+    /// person, a cloud, or a sticky note, which is drawn as a box; one of
+    /// the `FORM_` numbers.
+    pub form: u8,
+    /// Whether the words of a box sit at its top left as a title, over
+    /// what is put in it, rather than in its middle.
+    pub titled: bool,
+    /// A dot at a box's corner saying how it is: none, red, amber or green.
+    pub status: u8,
+    /// How many votes a sticky note has, each a dot along its top.
+    pub votes: u8,
+    /// Whether an arrow goes from the nearest side of what it is stuck to
+    /// to the nearest side of the other, curving into it, as a board's do.
+    pub routed: bool,
+    /// The size a box was drawn at, which its words grow it from and it
+    /// goes back to as they shrink; nothing for none.
+    pub base: (f32, f32),
     mask: RefCell<Option<Rc<Mask>>>,
     /// The same of what is inside the border of a rectangle or an oval
     /// that has both, which is drawn in its fill.
@@ -289,6 +306,17 @@ pub fn corner_of(x: f32, y: f32, radii: [f32; 4]) -> f32 {
 /// black reads on that.
 pub const BOXED: u8 = 16;
 
+/// What a box can be drawn as on a board.
+pub const FORM_BOX: u8 = 0;
+pub const FORM_DIAMOND: u8 = 1;
+pub const FORM_CYLINDER: u8 = 2;
+pub const FORM_PERSON: u8 = 3;
+pub const FORM_CLOUD: u8 = 4;
+pub const FORM_STICKY: u8 = 5;
+
+mod forms;
+pub use forms::{label_wrap, ui_kind, PAPER};
+
 /// The heads a line can have at either end, by what each is called: the
 /// usual solid one, two strokes, an outline, a dot, a ring, a diamond
 /// and a bar across, which says where a measure stops.
@@ -340,7 +368,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, status: 0, votes: 0, routed: false, base: (0.0, 0.0), mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -360,7 +388,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -379,7 +407,14 @@ impl Shape {
                 self.edge,
                 shadow_word(self.shadow),
                 corners_word(self.corners),
-                gradient_word(self.gradient)
+                gradient_word(self.gradient),
+                self.form,
+                u8::from(self.titled),
+                self.status,
+                self.votes,
+                u8::from(self.routed),
+                self.base.0,
+                self.base.1
             ),
             self.fill,
             self.number,
@@ -444,6 +479,13 @@ impl Shape {
         // And what it is filled with besides one color, which a file from
         // before has not: it is filled in its one color.
         shape.gradient = more.next().and_then(gradient_read);
+        // And what a board's box is drawn as, whether its words are a
+        // title, its status, its votes, whether an arrow is routed, and
+        // the size it was drawn at, which a file from before boards has
+        // none of.
+        let mut small = |most: u8| more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(most);
+        (shape.form, shape.titled, shape.status, shape.votes, shape.routed) = (small(FORM_STICKY), small(1) == 1, small(3), small(99), small(1) == 1);
+        shape.base = more.next().and_then(|word| word.split_once(':')).and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))).filter(|(w, h)| w.is_finite() && h.is_finite()).unwrap_or((0.0, 0.0));
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -609,13 +651,13 @@ impl Shape {
     /// Whether its fill is drawn apart from its line: with a border too,
     /// or drawn by hand, whose line is strokes and not an outline.
     fn fill_apart(&self) -> bool {
-        matches!(self.tool, Tool::Rect | Tool::Ellipse) && self.filled && (self.border || self.sketch)
+        matches!(self.tool, Tool::Rect | Tool::Ellipse) && self.filled && (self.border || self.sketch) && !self.placeholder()
     }
 
     /// Whether it is drawn by hand: what can be, a box, an oval, a line
     /// or an arrow, when it is said to be.
     fn sketched(&self) -> bool {
-        self.sketch && matches!(self.tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow)
+        self.sketch && matches!(self.tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow) && !self.placeholder()
     }
 
     /// How wide the edge of white round a line is, when it has one.
@@ -784,6 +826,15 @@ impl Shape {
         for &(x, y) in self.points.iter().chain(curve.iter().flatten()) {
             (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x), bottom.max(y));
         }
+        // An arrow's words across its middle, near enough how wide they
+        // are wrapped, on their patch.
+        if matches!(self.tool, Tool::Arrow | Tool::Line) && !self.text.is_empty() && self.points.len() >= 2 {
+            let (mx, my) = self.middle();
+            let px = self.font_px as f32;
+            let longest = self.text.split('\n').map(|line| line.chars().count()).max().unwrap_or(0) as f32;
+            let (half_w, half_h) = ((longest * px * 0.36).min(px * 6.5) + px, (self.text.split('\n').count() as f32 + 1.0) * px);
+            (left, top, right, bottom) = (left.min(mx - half_w), top.min(my - half_h), right.max(mx + half_w), bottom.max(my + half_h));
+        }
         let (x, y) = ((left - margin).floor() as i32, (top - margin).floor() as i32);
         Rect::new(x, y, (right + margin).ceil() as i32 - x, (bottom + margin).ceil() as i32 - y)
     }
@@ -818,8 +869,8 @@ impl Shape {
         let angle = if matches!(self.tool, Tool::Rect | Tool::Ellipse) { self.angle } else { 0.0 };
         // With a border as well as a fill, the outline is the border's:
         // what is inside it has a mask of its own.
-        let filled = self.filled && !self.bordered_fill();
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radii: self.radii(), head, heads: self.heads, ends: self.ends, dashed: self.dashed && !self.dotted, dotted: self.dotted, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0), edge: self.edge }
+        let filled = self.filled && !self.bordered_fill() && !self.placeholder();
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radii: self.radii(), head, heads: self.heads, ends: self.ends, dashed: (self.dashed || self.placeholder()) && !self.dotted, dotted: self.dotted, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0), edge: self.edge }
     }
 
     /// Which of its points is the far one of the two it is between: the
@@ -1070,12 +1121,59 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                 }
             }
         }
+        // A board's arrow, both ends stuck to things as a whole, goes from
+        // the side of one nearest the other, curving into the other's.
+        if shape.routed {
+            if let (Some((first, WHOLE, _)), Some((last, WHOLE, _))) = (shape.stuck[0], shape.stuck[1]) {
+                if let (Some(from), Some(to)) = (find(first), find(last)) {
+                    let before = shape.points.clone();
+                    route(shape, from, to);
+                    this |= shape.points != before;
+                }
+            }
+        }
         if this {
             moved = true;
             shape.touch();
         }
     }
     moved
+}
+
+/// Where on a thing an arrow to or from another meets it: the middle of
+/// the side of it facing the other, a little out from it; and the way
+/// out of that side.
+pub fn side_towards(anchor: &Anchor, to: Point) -> (Point, (f32, f32)) {
+    let (lx, ly) = turn_point(to, anchor.middle, -anchor.angle);
+    let (dx, dy) = (lx - anchor.middle.0, ly - anchor.middle.1);
+    let (hw, hh) = (anchor.half.0.max(1.0), anchor.half.1.max(1.0));
+    let (u, v, way) = match dx.abs() / hw >= dy.abs() / hh {
+        true => (dx.signum() * (1.0 + STUCK_GAP / hw), 0.0, (dx.signum(), 0.0)),
+        false => (0.0, dy.signum() * (1.0 + STUCK_GAP / hh), (0.0, dy.signum())),
+    };
+    let (sin, cos) = anchor.angle.sin_cos();
+    (anchor.at(u, v), (way.0 * cos - way.1 * sin, way.0 * sin + way.1 * cos))
+}
+
+/// An arrow taken from the side of one thing nearest another to the side
+/// of that nearest the first, bent so as to come into it square, as a
+/// hand draws one between two boxes; straight where the two are in line.
+pub fn route(shape: &mut Shape, from: &Anchor, to: &Anchor) {
+    let (start, _) = side_towards(from, to.middle);
+    let (end, way) = side_towards(to, from.middle);
+    // What the curve is pulled towards: in line with its end, half way.
+    let pull = match way.0.abs() >= way.1.abs() {
+        true => ((start.0 + end.0) / 2.0, end.1),
+        false => (end.0, (start.1 + end.1) / 2.0),
+    };
+    let through = ((start.0 + end.0 + 2.0 * pull.0) / 4.0, (start.1 + end.1 + 2.0 * pull.1) / 4.0);
+    shape.points.truncate(2);
+    shape.points[0] = start;
+    shape.points[1] = end;
+    shape.elbow = false;
+    if segment(through, start, end) > 2.0 {
+        shape.points.push(through);
+    }
 }
 
 /// `p` turned by `by` radians, clockwise on the screen, about `about`.
@@ -1346,6 +1444,7 @@ impl Shape {
         };
         let (bounds, cut) = seen_part(bounds);
         let mask = match self.tool {
+            _ if self.has_form() => self.form_mask(bounds),
             _ if self.sketched() => self.sketch_mask(bounds),
             Tool::Pen | Tool::Marker => {
                 let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
@@ -1403,7 +1502,7 @@ impl Shape {
     /// every time it is drawn, by a seed taken from where it is.
     fn sketch_mask(&self, bounds: Rect) -> Mask {
         let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
-        let mut seed = self.points.iter().take(2).fold(0x9E37_79B9u32, |seed, point| seed ^ (point.0.to_bits().rotate_left(7) ^ point.1.to_bits().rotate_left(19)).wrapping_mul(0x85EB_CA6B));
+        let mut seed = self.seed();
         let mut wobble = move |amount: f32| {
             seed ^= seed << 13;
             seed ^= seed >> 17;
@@ -1503,8 +1602,13 @@ impl Shape {
             angle => turned_around(self.extent(), self.centre_of_frame(), angle),
         };
         let (bounds, cut) = seen_part(bounds);
-        let outline = Outline { filled: true, stroke: 0.0, ..self.outline() };
-        let mask = Rc::new(covered(bounds, move |x, y| outline.distance(x, y)));
+        let mask = match self.has_form() {
+            true => Rc::new(self.form_inside(bounds)),
+            false => {
+                let outline = Outline { filled: true, stroke: 0.0, ..self.outline() };
+                Rc::new(covered(bounds, move |x, y| outline.distance(x, y)))
+            }
+        };
         if !cut {
             *self.inside.borrow_mut() = Some(mask.clone());
         }
@@ -1636,17 +1740,20 @@ impl Shape {
                 if self.fill_apart() {
                     self.lay_fill(canvas, &self.inside_mask());
                 }
-                match self.border {
+                match self.border || self.placeholder() {
                     true => canvas.mask(&self.mask(), self.color, self.opacity),
                     false if !self.sketch => self.lay_fill(canvas, &self.mask()),
                     false => {}
                 }
+                // On a board, its words, what it stands for and its dots.
+                self.draw_label(canvas, text);
             }
             // An edge of white first, a little wider all round, and the
             // line over it.
             Tool::Line | Tool::Arrow if self.halo => {
                 canvas.mask(&self.halo_mask(), 0xFFFFFF, self.opacity);
                 canvas.mask(&self.mask(), self.color, self.opacity);
+                self.draw_label(canvas, text);
             }
             Tool::Counter => {
                 canvas.mask(&self.mask(), self.color, self.opacity);
@@ -1654,6 +1761,10 @@ impl Shape {
                 text.look = Look { opacity: self.opacity, ..Look::default() };
                 text.draw_centered(canvas, cx, cy, self.font_px, ink_on(self.color), &self.number.to_string());
                 text.look = Look::default();
+            }
+            Tool::Line | Tool::Arrow => {
+                canvas.mask(&self.mask(), self.color, self.opacity);
+                self.draw_label(canvas, text);
             }
             _ => canvas.mask(&self.mask(), self.color, self.opacity),
         }
@@ -2352,7 +2463,7 @@ mod tests {
         assert_eq!((back.edge, back.shadow, back.align), (OUTSIDE, boxed.shadow, boxed.align));
         // And one from before either has neither.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-,-\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
         assert_eq!((back.edge, back.shadow), (CENTER, None));
