@@ -1722,6 +1722,8 @@ impl Studio {
         if frame == self.active || frame >= self.pages[self.page].frames.len() {
             return;
         }
+        // A name being typed goes to what it names before that is put away.
+        self.commit_name();
         self.commit_text();
         let frames = &mut self.pages[self.page].frames;
         std::mem::swap(&mut self.doc, &mut frames[self.active]);
@@ -1737,6 +1739,7 @@ impl Studio {
         if page == self.page || page >= self.pages.len() {
             return;
         }
+        self.commit_name();
         self.commit_text();
         let back = std::mem::replace(&mut self.doc, Doc::new(1, 1));
         self.pages[self.page].frames[self.active] = back;
@@ -5807,6 +5810,18 @@ mod tests {
         let Kind::Shape(shape) = &studio.doc.layers[1].kind else { panic!() };
         assert_eq!(shape.text, "two ");
         assert_eq!(studio.key(Key::Char('v'), ctrl, true), Outcome::Paste);
+    }
+
+    #[test]
+    fn a_name_being_typed_goes_to_its_own_frame_when_another_is_clicked() {
+        let mut studio = studio();
+        studio.new_frame((1000.0, 0.0), (400.0, 300.0));
+        studio.press_control(Control::Frame(0), false);
+        studio.press_control(Control::Frame(0), true);
+        assert!(matches!(studio.renaming, Some((Naming::Frame, _))));
+        studio.renaming = Some((Naming::Frame, "Hero".into()));
+        studio.press_control(Control::Frame(1), false);
+        assert_eq!((studio.renaming.is_none(), studio.doc.name.as_str(), studio.frame(0).name.as_str()), (true, "Frame 2", "Hero"));
     }
 
     #[test]
