@@ -4856,10 +4856,21 @@ impl Studio {
                 Control::Frame(_) => {}
                 Control::Layer(index) => {
                     let on = chosen.contains(&index);
-                    if on || hovered {
+                    let row_hovered = matches!(hover, Some(Control::Layer(at) | Control::Eye(at) | Control::Lock(at)) if at == index);
+                    if on || row_hovered {
                         canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, if on { ROW_ON } else { HOVER_COLOR }, 256);
                     }
+                    // Its eye and lock, which come before it among the
+                    // controls, to be clicked first, are drawn over it here,
+                    // where its color does not hide them.
                     let layer = &self.doc.layers[index];
+                    let (eye, lock) = (rect.right() - 37, rect.right() - 13);
+                    if layer.hidden || row_hovered {
+                        self.text.draw_centered(canvas, eye, cy, 14, if layer.hidden { DIM_TEXT_COLOR } else { TEXT_COLOR }, if layer.hidden { icons::EYE_OFF } else { icons::EYE });
+                    }
+                    if layer.locked || row_hovered {
+                        self.text.draw_centered(canvas, lock, cy, 14, if layer.locked { TEXT_COLOR } else { DIM_TEXT_COLOR }, icons::LOCK);
+                    }
                     let icon = match &layer.kind {
                         Kind::Picture(_) => icons::PICTURE,
                         Kind::Shape(shape) => match shape.tool {
@@ -4881,20 +4892,8 @@ impl Studio {
                     let name: String = name.chars().take(18).collect();
                     self.text.draw(canvas, rect.x + 28, cy - line_high / 2, px, ink, &name);
                 }
-                Control::Eye(index) => {
-                    let layer = &self.doc.layers[index];
-                    let row_hovered = matches!(hover, Some(Control::Layer(at) | Control::Eye(at) | Control::Lock(at)) if at == index);
-                    if layer.hidden || row_hovered {
-                        self.text.draw_centered(canvas, cx, cy, 14, if layer.hidden { DIM_TEXT_COLOR } else { TEXT_COLOR }, if layer.hidden { icons::EYE_OFF } else { icons::EYE });
-                    }
-                }
-                Control::Lock(index) => {
-                    let layer = &self.doc.layers[index];
-                    let row_hovered = matches!(hover, Some(Control::Layer(at) | Control::Eye(at) | Control::Lock(at)) if at == index);
-                    if layer.locked || row_hovered {
-                        self.text.draw_centered(canvas, cx, cy, 14, if layer.locked { TEXT_COLOR } else { DIM_TEXT_COLOR }, icons::LOCK);
-                    }
-                }
+                // Drawn with the row of the layer they belong to.
+                Control::Eye(_) | Control::Lock(_) => {}
                 Control::Field(field) if field.slides() => {
                     // A slider: its name, and a track with a knob on it at
                     // its value, the middle being none.
