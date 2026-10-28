@@ -3559,6 +3559,7 @@ impl Studio {
         self.held.clear();
         self.guides.clear();
         self.gaps.clear();
+        self.crop_snaps.clear();
     }
 
     /// What the ends of arrows can be stuck to: the pictures, and the
@@ -3765,7 +3766,9 @@ impl Studio {
         let (mut left, mut top, mut right, mut bottom) = (was.crop.0, was.crop.1, was.crop.0 + was.crop.2, was.crop.1 + was.crop.3);
         match pull {
             (0, 0) => {
-                let (dx, dy) = (dx.clamp(-left, iw - right), dy.clamp(-top, ih - bottom));
+                // The picture dragged one way inside it, the crop goes the
+                // other over the picture, as far as its edge.
+                let (dx, dy) = (dx.clamp(right - iw, left), dy.clamp(bottom - ih, top));
                 (left, right, top, bottom) = (left - dx, right - dx, top - dy, bottom - dy);
             }
             _ => {
@@ -3780,6 +3783,13 @@ impl Studio {
                     _ => {}
                 }
             }
+        }
+        // Onto a line in the picture near enough, unless Ctrl is held; the
+        // side or corner pulled first, the other kept to its shape after.
+        self.crop_snaps.clear();
+        if !mods.ctrl {
+            let reach = (6.0 / self.zoom * per_x, 6.0 / self.zoom * per_y);
+            (left, top, right, bottom) = self.snap_crop(&was.image, (left, top, right, bottom), pull, reach);
         }
         // Kept to a shape: the one chosen over the picture, or with Shift
         // the one it had, as Figma keeps it. The side or corner across
@@ -3814,6 +3824,9 @@ impl Studio {
             };
             (left, right) = place(pull.0, left, right, mx, w);
             (top, bottom) = place(pull.1, top, bottom, my, h);
+        }
+        if !mods.ctrl {
+            self.show_crop_snaps(&was, (left, top, right, bottom));
         }
         let mut picture = was.clone();
         picture.crop = (left, top, right - left, bottom - top);
@@ -5046,6 +5059,7 @@ impl Studio {
                 }
             }
         }
+        self.draw_crop_snaps(canvas, &picture);
     }
 
     fn draw_panels(&mut self, canvas: &mut Canvas, layout: &Layout) {
@@ -6963,6 +6977,69 @@ mod tests {
         let (x, y, w, h) = crop(&studio);
         assert!((w - h).abs() < 0.01 && y >= 0.0 && y + h <= 200.01 && x == 0.0, "{x},{y} {w}x{h}");
     }
+    /// A studio cropping a picture of a gray margin round a card with a
+    /// panel in it, shown a pixel to a pixel of the artboard, its pixels
+    /// where the artboard's are.
+    fn cropping_a_card() -> Studio {
+        let mut studio = studio();
+        let pixels = edges::tests::card_picture(400, 300, (50, 40, 350, 260), (100, 80, 300, 200));
+        studio.doc.layers.push(Layer::picture(Picture::new(Arc::new(Image::new(400, 300, pixels)), "card".into(), (200.0, 150.0))));
+        studio.zoom = 1.0;
+        studio.cropping = Some(0);
+        studio.held = vec![studio.doc.layers[0].clone()];
+        studio
+    }
+
+    fn crop_of(studio: &Studio) -> (f32, f32, f32, f32) {
+        match &studio.doc.layers[0].kind {
+            Kind::Picture(picture) => picture.crop,
+            Kind::Shape(_) => panic!(),
+        }
+    }
+
+    #[test]
+    fn a_side_of_a_crop_snaps_to_a_line_in_the_picture_unless_ctrl_is_held() {
+        let mut studio = cropping_a_card();
+        studio.crop_to((1, 0), (400.0, 150.0), (304.0, 150.0), Mods::default());
+        assert_eq!(crop_of(&studio), (0.0, 0.0, 300.0, 300.0), "onto the panel's right edge");
+        assert_eq!(studio.crop_snaps, [(true, 300.0)]);
+        studio.crop_to((1, 0), (400.0, 150.0), (304.0, 150.0), Mods { ctrl: true, ..Mods::default() });
+        assert_eq!(crop_of(&studio), (0.0, 0.0, 304.0, 300.0));
+        assert!(studio.crop_snaps.is_empty());
+        // Too far from any line, it is where it is pulled to.
+        studio.crop_to((1, 0), (400.0, 150.0), (320.0, 150.0), Mods::default());
+        assert_eq!(crop_of(&studio).2, 320.0);
+        // A corner snaps both ways, each to the nearer side of the card's
+        // border.
+        studio.crop_to((-1, -1), (0.0, 0.0), (47.0, 43.0), Mods::default());
+        assert_eq!(crop_of(&studio), (50.0, 41.0, 350.0, 259.0));
+        assert_eq!(studio.crop_snaps, [(true, 50.0), (false, 41.0)]);
+        // Moved whole, it snaps by whichever side is nearest a line.
+        if let Kind::Picture(picture) = &mut studio.doc.layers[0].kind {
+            (picture.crop, picture.w, picture.h) = ((10.0, 10.0, 100.0, 100.0), 100.0, 100.0);
+        }
+        studio.held = vec![studio.doc.layers[0].clone()];
+        studio.crop_to((0, 0), (0.0, 0.0), (-38.0, 0.0), Mods::default());
+        assert_eq!(crop_of(&studio).0, 50.0, "its left side onto the card's edge");
+        // Held more than six pixels of the window away, at half size it
+        // still snaps, as the reach is of the window.
+        let mut studio = cropping_a_card();
+        studio.zoom = 0.5;
+        studio.crop_to((1, 0), (400.0, 150.0), (310.0, 150.0), Mods::default());
+        assert_eq!(crop_of(&studio).2, 300.0);
+        studio.released();
+        assert!(studio.crop_snaps.is_empty(), "the line goes when it is let go of");
+    }
+
+    #[test]
+    fn a_crop_kept_to_its_shape_snaps_the_side_pulled_and_follows_with_the_other() {
+        let mut studio = cropping_a_card();
+        studio.crop_to((1, 0), (400.0, 150.0), (304.0, 150.0), Mods { shift: true, ..Mods::default() });
+        let (x, y, w, h) = crop_of(&studio);
+        assert_eq!((x, w, h), (0.0, 300.0, 225.0), "{x},{y} {w}x{h}");
+        assert!((y + h / 2.0 - 150.0).abs() < 0.01, "about its middle");
+    }
+
     #[test]
     fn shift_pressed_partway_through_a_resize_keeps_the_shape_until_let_go() {
         let mut studio = studio();

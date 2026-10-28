@@ -173,7 +173,11 @@ enough on screen: drag one in to round all four corners, or Alt-drag it
 to round that corner alone. The panel has the radius for all of them,
 and a button beside it that shows one for each corner. Pictures can be
 rounded, shadowed, flipped, faded and cropped: double-click one, or
-press Enter, to crop it. The markup tools draw over everything, with the
+press Enter, to crop it. A side or corner of the crop being pulled snaps
+to the lines in the picture itself, the borders, dividers and card edges
+of a screenshot, with a guide drawn across it where it does and faint
+ticks by the pointer for the other lines near; hold Ctrl not to snap.
+The markup tools draw over everything, with the
 same arrow heads, fills and sketched lines as the editor. Space or the
 middle button pans, Ctrl+scroll zooms, `Ctrl+0` fits the artboard and
 `Ctrl+1` shows it at 100%. Shift-click or drag a box to select several,
