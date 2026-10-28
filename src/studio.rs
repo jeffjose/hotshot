@@ -687,22 +687,21 @@ fn shortened(path: &Path) -> String {
 
 /// A canvas of a picture from the editor, and the shapes drawn on it,
 /// written as the editor writes them, still to be moved and changed:
-/// the picture on a backdrop, with room round it, and the shapes moved
-/// from where they were on the screen to where it is on the artboard.
+/// the picture just as it was taken, in a frame just its size with nothing
+/// behind it, and the shapes moved from where they were on the screen to
+/// where it is in the frame.
 pub fn from_markup(area: Rect, pixels: &[u32], shapes: &str) -> Doc {
-    let room = 80;
-    let mut doc = Doc::new(area.w + 2 * room, area.h + 2 * room);
-    doc.background = Fill::Backdrop(frame::named("aurora").unwrap_or(0));
+    let mut doc = Doc::new(area.w, area.h);
+    doc.background = Fill::None;
     // The shapes read first, so that the picture is called something
     // none of them is.
     let drawn: Vec<Shape> = shapes.lines().filter_map(Shape::read).collect();
     let image = Image::new(area.w, area.h, pixels.iter().map(|pixel| pixel | 0xFF00_0000).collect());
-    let middle = (room as f32 + area.w as f32 / 2.0, room as f32 + area.h as f32 / 2.0);
-    let mut picture = Picture::new(Arc::new(image), "Screenshot".into(), middle);
-    (picture.radius, picture.shadow) = (10.0, frame::SHADOWS.len());
+    let middle = (area.w as f32 / 2.0, area.h as f32 / 2.0);
+    let picture = Picture::new(Arc::new(image), "Screenshot".into(), middle);
     doc.layers.push(Layer::picture(picture));
     for mut shape in drawn {
-        shape.translate((room - area.x) as f32, (room - area.y) as f32);
+        shape.translate(-area.x as f32, -area.y as f32);
         doc.layers.push(Layer::shape(shape));
     }
     doc
@@ -1493,6 +1492,9 @@ pub struct Studio {
     zoom: f32,
     /// Where the artboard's top left corner is, in the view.
     pan: (f32, f32),
+    /// The zoom a turn of the wheel is easing toward, and the point of
+    /// the window it keeps still.
+    zoom_goal: Option<(f32, (i32, i32))>,
     tool: Tool,
     selected: Vec<usize>,
     hovered: Option<usize>,
@@ -1593,6 +1595,7 @@ impl Studio {
             height,
             zoom: 1.0,
             pan: (0.0, 0.0),
+            zoom_goal: None,
             tool: Tool::Select,
             selected: Vec::new(),
             hovered: None,
@@ -2016,6 +2019,28 @@ impl Studio {
         self.dirty = true;
     }
 
+    /// The wheel turned with Ctrl: the zoom eased toward a new one over a
+    /// few frames, as Figma's is, and not jumped to.
+    fn ease_zoom(&mut self, times: f32, at: (i32, i32)) {
+        let goal = self.zoom_goal.map_or(self.zoom, |(goal, _)| goal);
+        self.zoom_goal = Some(((goal * times).clamp(0.02, 16.0), at));
+        self.dirty = true;
+    }
+
+    /// A step of the zoom toward where the wheel left it; whether there
+    /// are more to come.
+    pub fn tick(&mut self) -> bool {
+        let Some((goal, at)) = self.zoom_goal else { return false };
+        let left = goal / self.zoom;
+        if (left - 1.0).abs() < 0.004 {
+            self.zoom_about(left, at);
+            self.zoom_goal = None;
+            return false;
+        }
+        self.zoom_about(left.powf(0.35), at);
+        true
+    }
+
     /// A point of the window as a point of the page, and back.
     fn to_page(&self, (x, y): (i32, i32)) -> (f32, f32) {
         ((x as f32 + 0.5 - self.pan.0) / self.zoom, (y as f32 + 0.5 - self.pan.1) / self.zoom)
@@ -2281,7 +2306,7 @@ impl Studio {
             4 | 5 | 6 | 7 => {
                 let up = matches!(button, 4 | 6);
                 if self.mods.ctrl {
-                    self.zoom_about(if up { 1.15 } else { 1.0 / 1.15 }, at_window);
+                    self.ease_zoom(if up { 1.2 } else { 1.0 / 1.2 }, at_window);
                 } else if self.mods.shift || button > 5 {
                     self.pan.0 += if up { 60.0 } else { -60.0 };
                 } else {
@@ -2428,6 +2453,21 @@ impl Studio {
             self.drag = Drag::Scale { pull, from: at };
             return;
         }
+        // A side is pulled anywhere along it, as Figma has it: only the
+        // corners have handles drawn.
+        if handles.len() == 8 {
+            let off = |a: (i32, i32), b: (i32, i32), p: (i32, i32)| {
+                let (dx, dy) = ((b.0 - a.0) as f32, (b.1 - a.1) as f32);
+                let along = (((p.0 - a.0) as f32 * dx + (p.1 - a.1) as f32 * dy) / (dx * dx + dy * dy).max(1.0)).clamp(0.0, 1.0);
+                ((p.0 as f32 - a.0 as f32 - along * dx).powi(2) + (p.1 as f32 - a.1 as f32 - along * dy).powi(2)).sqrt()
+            };
+            if let Some(side) = (0..4).find(|&side| off(handles[side].0, handles[(side + 1) % 4].0, at_window) <= 4.0) {
+                self.checkpoint();
+                self.held = self.chosen().iter().map(|&index| self.doc.layers[index].clone()).collect();
+                self.drag = Drag::Scale { pull: handles[4 + side].1, from: at };
+                return;
+            }
+        }
         if let Some(index) = self.picked() {
             let corners: Vec<(i32, i32)> = handles.iter().filter(|(_, pull)| pull.0 != END).take(4).map(|&(spot, _)| spot).collect();
             let turnable = match &self.doc.layers[index].kind {
@@ -2445,7 +2485,21 @@ impl Studio {
                 return;
             }
         }
-        match self.layer_at(at) {
+        let under = self.layer_at(at);
+        // Inside the box of what is picked out a drag moves all of it, as
+        // Figma has it, though the press is on nothing of it: inside a box
+        // with no fill, or between several picked out.
+        if !self.mods.shift && !double && under.is_none_or(|index| self.selected.contains(&index)) && !self.chosen().is_empty() {
+            let corners: Vec<(i32, i32)> = self.chosen().into_iter().flat_map(|index| self.box_corners(index)).collect();
+            let (left, right) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.0).max().unwrap_or(0));
+            let (top, bottom) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
+            if (left..=right).contains(&at_window.0) && (top..=bottom).contains(&at_window.1) {
+                self.held = self.chosen().iter().map(|&index| self.doc.layers[index].clone()).collect();
+                self.drag = Drag::Move { from: at, moved: false };
+                return;
+            }
+        }
+        match under {
             Some(index) => {
                 if self.mods.shift {
                     match self.selected.iter().position(|&other| other == index) {
@@ -4040,7 +4094,8 @@ impl Studio {
         }
         if self.frame_picked {
             let (a, b) = (self.to_window((0.0, 0.0)), self.to_window((self.doc.width as f32, self.doc.height as f32)));
-            canvas.round_outline(a.0 - 1, a.1 - 1, b.0 - a.0 + 2, b.1 - a.1 + 2, 0, 2, ACCENT);
+            canvas.round_outline(a.0, a.1, b.0 - a.0, b.1 - a.1, 0, 1, ACCENT);
+            self.size_label(&mut canvas, (a.0 + b.0) / 2, b.1, self.doc.width as f32, self.doc.height as f32);
         }
         if let Drag::NewFrame { from } = self.drag {
             let reach = Rect::spanning(self.to_window_page(from), self.pointer);
@@ -4048,7 +4103,7 @@ impl Studio {
             canvas.round_outline(reach.x, reach.y, reach.w, reach.h, 0, 1, ACCENT);
         }
         if let Some(index) = self.hovered.filter(|index| !self.selected.contains(index) && *index < self.doc.layers.len()) {
-            self.outline(&mut canvas, index, 0x7A93EA);
+            self.outline(&mut canvas, index, 2);
         }
         // A color of the selection hovered in the panel: the layers in it
         // ringed, and the rest of the frame dimmed.
@@ -4063,25 +4118,39 @@ impl Studio {
         // While a change is previewed, what it changes is shown bare.
         let previewing = self.preview.is_some() || !lit.is_empty();
         for index in self.chosen().into_iter().filter(|_| !previewing) {
-            self.outline(&mut canvas, index, ACCENT);
+            self.outline(&mut canvas, index, 1);
         }
-        // Several picked out, each says when it was: matching takes after
-        // the first.
+        // As Figma has it: several picked out are boxed together as well,
+        // and what is picked out says how large it is under it.
         let chosen = self.chosen();
-        if chosen.len() > 1 && !previewing {
-            for (order, &index) in chosen.iter().enumerate() {
-                let (x, y, _, _) = self.doc.layers[index].bounds(&mut self.text);
-                let (wx, wy) = self.to_window((x, y));
-                let says = format!("{}", order + 1);
-                let wide = self.text.width(&says, 10) + 8;
-                canvas.round_fill(wx + 3, wy + 3, wide, 14, 3, ACCENT, 256);
-                self.text.draw(&mut canvas, wx + 7, wy + 3 + (14 - Text::line_height(10)) / 2, 10, 0xFFFFFF, &says);
+        if !chosen.is_empty() && self.cropping.is_none() && self.editing.is_none() && !previewing {
+            let corners: Vec<(i32, i32)> = chosen.iter().flat_map(|&index| self.box_corners(index)).collect();
+            let (left, right) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.0).max().unwrap_or(0));
+            let (top, bottom) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
+            let size = match chosen[..] {
+                [index] => self.box_size(index),
+                _ => {
+                    let spans: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
+                    let (x0, y0) = (spans.iter().map(|s| s.0).fold(f32::MAX, f32::min), spans.iter().map(|s| s.1).fold(f32::MAX, f32::min));
+                    let (x1, y1) = (spans.iter().map(|s| s.0 + s.2).fold(f32::MIN, f32::max), spans.iter().map(|s| s.1 + s.3).fold(f32::MIN, f32::max));
+                    Some((x1 - x0, y1 - y0))
+                }
+            };
+            if chosen.len() > 1 {
+                canvas.round_outline(left, top, right - left + 1, bottom - top + 1, 0, 1, ACCENT);
+            }
+            if let Some((w, h)) = size {
+                self.size_label(&mut canvas, (left + right) / 2, bottom, w, h);
             }
         }
         if self.cropping.is_none() && !previewing {
-            for (spot, _) in self.handles() {
-                canvas.fill(spot.0 - 5, spot.1 - 5, 10, 10, ACCENT);
-                canvas.fill(spot.0 - 4, spot.1 - 4, 8, 8, 0xFFFFFF);
+            // Corners only, small white squares edged in the accent; the
+            // ends of a line the same.
+            for (spot, pull) in self.handles() {
+                if pull.0 == END || (pull.0 != 0 && pull.1 != 0) {
+                    canvas.fill(spot.0 - 4, spot.1 - 4, 8, 8, ACCENT);
+                    canvas.fill(spot.0 - 3, spot.1 - 3, 6, 6, 0xFFFFFF);
+                }
             }
         }
         if let Some(index) = self.cropping {
@@ -4135,18 +4204,29 @@ impl Studio {
         self.draw_panels(&mut canvas, &layout);
     }
 
-    /// The box round a layer, in the window: turned with it, if it is a
-    /// picture that is.
-    fn outline(&mut self, canvas: &mut Canvas, index: usize, color: u32) {
-        match self.doc.layers[index].kind.clone() {
-            Kind::Picture(picture) => {
-                let corners = picture.corners().map(|corner| self.to_window(corner));
-                for side in 0..4 {
-                    line(canvas, corners[side], corners[(side + 1) % 4], color);
-                }
+    /// A layer's box, as Figma draws it: a box or an oval by its own
+    /// frame and not its border, text by its lines, turned with them; a
+    /// line or an arrow by the line itself.
+    fn outline(&mut self, canvas: &mut Canvas, index: usize, thick: i32) {
+        let corners = match &self.doc.layers[index].kind {
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => shape.points.iter().map(|&point| self.to_window(point)).collect::<Vec<_>>(),
+            _ => {
+                let corners = self.box_corners(index);
+                corners.iter().chain(corners.first()).copied().collect()
             }
-            // A shape turned by an angle of its own, by its own box turned.
-            Kind::Shape(shape) if shape.turnable() && shape.angle != 0.0 => {
+        };
+        for pair in corners.windows(2) {
+            for nudge in 0..thick {
+                line(canvas, (pair[0].0 + nudge, pair[0].1 + nudge), (pair[1].0 + nudge, pair[1].1 + nudge), ACCENT);
+            }
+        }
+    }
+
+    /// The corners of a layer's box in the window, turned with it.
+    fn box_corners(&mut self, index: usize) -> [(i32, i32); 4] {
+        let corners = match self.doc.layers[index].kind.clone() {
+            Kind::Picture(picture) => picture.corners(),
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge) => {
                 let (x, y, w, h) = match shape.tool {
                     Tool::Text | Tool::Badge => {
                         let place = shape.local_bounds(&mut self.text);
@@ -4154,18 +4234,43 @@ impl Studio {
                     }
                     _ => shape.frame(),
                 };
-                let corners = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|corner| shape.returned(corner, &mut self.text));
-                let corners = corners.map(|corner| self.to_window(corner));
-                for side in 0..4 {
-                    line(canvas, corners[side], corners[(side + 1) % 4], color);
-                }
+                [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|corner| shape.returned(corner, &mut self.text))
             }
             Kind::Shape(_) => {
                 let (x, y, w, h) = self.doc.layers[index].bounds(&mut self.text);
-                let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
-                canvas.round_outline(a.0 - 2, a.1 - 2, b.0 - a.0 + 4, b.1 - a.1 + 4, 0, 1, color);
+                [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
             }
+        };
+        corners.map(|corner| self.to_window(corner))
+    }
+
+    /// How large a layer is, as its box says, for the label under it; a
+    /// line or an arrow says nothing.
+    fn box_size(&mut self, index: usize) -> Option<(f32, f32)> {
+        match self.doc.layers[index].kind.clone() {
+            Kind::Picture(picture) => Some((picture.w, picture.h)),
+            Kind::Shape(shape) => match shape.tool {
+                Tool::Line | Tool::Arrow => None,
+                Tool::Text | Tool::Badge => {
+                    let place = shape.local_bounds(&mut self.text);
+                    Some((place.w as f32, place.h as f32))
+                }
+                Tool::Rect | Tool::Ellipse => Some((shape.frame().2, shape.frame().3)),
+                _ => {
+                    let (_, _, w, h) = self.doc.layers[index].bounds(&mut self.text);
+                    Some((w, h))
+                }
+            },
         }
+    }
+
+    /// "W × H" in a small pill of the accent, under what is picked out.
+    fn size_label(&mut self, canvas: &mut Canvas, cx: i32, bottom: i32, w: f32, h: f32) {
+        let says = format!("{} \u{d7} {}", w.abs().round() as i32, h.abs().round() as i32);
+        let wide = self.text.width(&says, 11) + 10;
+        let (x, y) = (cx - wide / 2, bottom + 8);
+        canvas.round_fill(x, y, wide, 18, 3, ACCENT, 256);
+        self.text.draw(canvas, x + 5, y + (18 - Text::line_height(11)) / 2, 11, 0xFFFFFF, &says);
     }
 
     /// The picture being cropped: all of it faint, the crop bright, and
@@ -4778,18 +4883,14 @@ enum Shown {
 }
 
 /// A file of the canvas from its pages, in a window so large, kept at a
-/// path; with pictures, a new frame round the first of them, on a
-/// backdrop, and them on it.
-fn opened(pages: Option<Vec<Page>>, pictures: Vec<(Image, String)>, path: PathBuf, text: Text, size: (i32, i32), options: &crate::options::Options) -> Studio {
+/// path; with pictures, a new frame just the size of the first of them,
+/// with nothing behind it, and them in it.
+fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: PathBuf, text: Text, size: (i32, i32), options: &crate::options::Options) -> Studio {
+    // The first picture is the new frame, when there is no file of pages.
+    let fresh = !pictures.is_empty();
+    let first = (pages.is_none() && fresh).then(|| pictures.remove(0));
     let pages = pages.unwrap_or_else(|| {
-        let frame = match pictures.first() {
-            Some((image, _)) => {
-                let mut frame = Doc::new(image.width() + 160, image.height() + 160);
-                frame.background = Fill::Backdrop(frame::named("aurora").unwrap_or(0));
-                frame
-            }
-            None => Doc::new(1200, 675),
-        };
+        let frame = first.map_or_else(|| Doc::new(1200, 675), |(image, name)| framed(image, &name));
         vec![Page { name: "Page 1".into(), frames: vec![frame] }]
     });
     let dir = options.places.first().cloned().unwrap_or_else(|| options.dir.clone());
@@ -4798,14 +4899,11 @@ fn opened(pages: Option<Vec<Page>>, pictures: Vec<(Image, String)>, path: PathBu
         studio.add_size(name.clone(), *w, *h);
     }
     studio.path = Some(path);
-    let fresh = !pictures.is_empty();
+    // Pictures after the first a little down and to the right of it.
     for (index, (image, name)) in pictures.into_iter().enumerate() {
         studio.add_picture(image, &name);
-        // Pictures after the first a little down and to the right.
-        if index > 0 {
-            let at = studio.doc.layers.len() - 1;
-            studio.doc.layers[at].translate(40.0 * index as f32, 40.0 * index as f32);
-        }
+        let (at, by) = (studio.doc.layers.len() - 1, 40.0 * (index + 1) as f32);
+        studio.doc.layers[at].translate(by, by);
     }
     (studio.undo, studio.edited) = (Vec::new(), false);
     if fresh {
@@ -4874,7 +4972,16 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     loop {
         // What has happened: a run of the pointer's movements told as
         // where it last was.
-        let mut events = vec![conn.wait_for_event()?];
+        // While the zoom eases, a step of it each 8 ms between whatever
+        // else happens.
+        let easing = matches!(&screen, Shown::Studio(studio) if studio.zoom_goal.is_some());
+        let mut events: Vec<Event> = if easing { conn.poll_for_event()?.into_iter().collect() } else { vec![conn.wait_for_event()?] };
+        if easing && events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(8));
+            if let Shown::Studio(studio) = &mut screen {
+                studio.tick();
+            }
+        }
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);
         }
@@ -5563,11 +5670,12 @@ mod tests {
         let mut arrow = Shape::new(Tool::Arrow, 0xE5484D, 3.5, (310.0, 220.0));
         arrow.points[1] = (500.0, 300.0);
         let doc = from_markup(area, &vec![0x123456; 400 * 250], &arrow.write());
-        assert_eq!((doc.width, doc.height, doc.layers.len()), (560, 410, 2));
+        // In a frame just its size, with nothing behind it.
+        assert_eq!((doc.width, doc.height, doc.layers.len(), doc.background), (400, 250, 2, Fill::None));
         let Kind::Shape(moved) = &doc.layers[1].kind else { panic!("the arrow over the picture") };
-        assert_eq!(moved.points[..2], [(90.0, 100.0), (280.0, 180.0)]);
+        assert_eq!(moved.points[..2], [(10.0, 20.0), (200.0, 100.0)]);
         let (_, _, out) = doc.render(1.0, &mut Text::load());
-        assert_eq!(out[300 * 560 + 400], 0xFF123456);
+        assert_eq!(out[220 * 400 + 320], 0xFF123456);
     }
 
     #[test]
@@ -5717,6 +5825,86 @@ mod tests {
         assert!(adjust(0xFF808080, [0.5, 0.0, 0.0]) & 0xFF > 0x80 && adjust(0xFFFF0000, [0.0, 0.0, -1.0]) & 0xFF == (adjust(0xFFFF0000, [0.0, 0.0, -1.0]) >> 8) & 0xFF);
     }
 
+
+
+
+    #[test]
+    fn the_wheel_zooms_far_in_and_out_over_everything_without_falling_over() {
+        let mut studio = studio();
+        studio.resize(1776, 1540);
+        studio.add_picture(checker(300, 200), "one");
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (500.0, 100.0));
+        boxed.points[1] = (780.0, 580.0);
+        let mut arrow = Shape::new(Tool::Arrow, 0x3E63DD, 3.5, (20.0, 580.0));
+        arrow.points[1] = (790.0, 10.0);
+        let mut words = Shape::new(Tool::Text, 0x1A1A1A, 2.0, (700.0, 500.0));
+        words.text = "At the edge".into();
+        for shape in [boxed, arrow, words] {
+            studio.doc.layers.push(Layer::shape(shape));
+        }
+        studio.selected = vec![0, 1, 2, 3];
+        let mut out = vec![0u32; 1776 * 1540];
+        let ctrl = Mods { ctrl: true, ..Mods::default() };
+        for (at, turns, up) in [((1770, 10), 30, true), ((5, 1535), 40, false), ((900, 770), 30, true), ((1775, 1539), 50, false)] {
+            studio.pointer_moved(at.0, at.1, ctrl);
+            for turn in 0..turns {
+                studio.mods.ctrl = true;
+                studio.pressed(if up { 4 } else { 5 }, turn);
+                while studio.tick() {
+                    studio.draw(&mut out);
+                }
+                studio.draw(&mut out);
+            }
+        }
+    }
+    #[test]
+    fn the_wheel_eases_the_zoom_and_keeps_the_point_under_the_pointer() {
+        let mut studio = studio();
+        let (before, at) = (studio.zoom, (700, 450));
+        let under = studio.to_page(at);
+        studio.mods.ctrl = true;
+        studio.pointer_moved(at.0, at.1, Mods { ctrl: true, ..Mods::default() });
+        studio.pressed(4, 1000);
+        studio.pressed(4, 1010);
+        // Not there at once, but a step at a time.
+        assert_eq!(studio.zoom, before);
+        let mut steps = 0;
+        while studio.tick() {
+            steps += 1;
+            assert!(steps < 60);
+        }
+        assert!(steps > 3 && (studio.zoom / before - 1.44).abs() < 0.01, "{steps} {}", studio.zoom / before);
+        let now = studio.to_page(at);
+        assert!((now.0 - under.0).abs() < 1.0 && (now.1 - under.1).abs() < 1.0);
+    }
+    #[test]
+    fn a_drag_inside_what_is_picked_out_moves_it_though_nothing_is_under_it() {
+        let mut studio = studio();
+        for at in [100.0, 400.0] {
+            let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 2.0, (at, 100.0));
+            boxed.points[1] = (at + 200.0, 300.0);
+            studio.doc.layers.push(Layer::shape(boxed));
+        }
+        studio.fit();
+        studio.selected = vec![0, 1];
+        // In the middle of the first box, which has no fill, and dragged.
+        let (inside, gap) = (studio.to_window((200.0, 200.0)), studio.to_window((350.0, 200.0)));
+        for (from, by) in [(inside, 40), (gap, 40)] {
+            studio.pointer_moved(from.0, from.1, Mods::default());
+            studio.pressed(1, 1000);
+            studio.pointer_moved(from.0 + by, from.1, Mods::default());
+            studio.released();
+            assert_eq!(studio.selected, vec![0, 1]);
+        }
+        let left = studio.doc.layers[0].bounds(&mut studio.text).0;
+        assert!(left > 120.0, "{left}");
+        // Outside them, a press lets go of them.
+        let away = studio.to_window((750.0, 550.0));
+        studio.pointer_moved(away.0, away.1, Mods::default());
+        studio.pressed(1, 5000);
+        studio.released();
+        assert!(studio.selected.is_empty());
+    }
     #[test]
     fn layers_are_spaced_framed_copied_and_pasted_and_right_clicked() {
         let mut studio = studio();
