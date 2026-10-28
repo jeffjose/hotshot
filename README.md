@@ -484,6 +484,26 @@ undo. Type an indented list as text and press `Ctrl+Enter`, and it
 becomes a map, a box a line, each joined to the line it is indented
 under.
 
+Once there is a pattern, a board offers the next step, faint and
+dashed in the accent, as Figma offers a third duplicate: two boxes the
+same size in a row or a column, a third at the same gap with the caret
+ready in it, and rows of them the next of the grid, then its next row;
+a line with two ticks across it, the rest of its ticks at the same
+spacing to its end, labeled as their labels go, months, Q1 Q2, Mon Tue,
+v1 v2, 2024 2025 or 10% 20%; A to B and B to C, and a box drawn on its
+own, the arrow from C to it, and the end of such a chain picked out,
+the arrow back to its first, to close the loop; a box after one called
+Step 1, A, i, 1. or Phase 1, its number, the rest of its words to type;
+a center with its branches all on one side, each mirrored on the other;
+a parent and two children in line, the next child, joined; two lanes
+side by side, Now and Next, a third, Later; and four boxes in two rows
+of two, its axes. One at a time, never over what is there and never
+moving it, in the look of what it follows. `Tab` or a click keeps it,
+and `Tab` again the next; `Shift+Tab` the rest of a timeline at once;
+Esc, or doing anything else, lets it go, and typing over a number
+offered replaces it. The spark at the end of the bar of styles turns
+guessing off and on.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

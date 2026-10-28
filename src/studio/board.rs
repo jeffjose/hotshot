@@ -100,11 +100,13 @@ pub(super) struct Board {
     pub carried: Vec<(usize, Layer)>,
     /// What was moved is being let go, and not yet in or out of a box.
     pub letting_go: bool,
+    /// What it guesses comes next, offered faintly until kept or let go.
+    pub ghost: Option<ghost::Ghost>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None }
     }
 }
 
@@ -112,6 +114,7 @@ mod bar;
 mod dots;
 mod nest;
 mod map;
+mod ghost;
 mod typing;
 
 /// Whether the last canvas switched to Board, kept in `canvas-mode` among

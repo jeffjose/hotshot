@@ -41,6 +41,14 @@ impl Studio {
     /// to pull an arrow out of; a double click on a box or an arrow, its
     /// words to type into; on nothing, a label begun there.
     pub(in crate::studio) fn board_pressed(&mut self, at: (f32, f32), at_window: (i32, i32), double: bool) -> bool {
+        // A click on what is guessed keeps it; anywhere else lets it go.
+        if self.board.ghost.is_some() {
+            if self.on_ghost(at) {
+                self.keep_ghost(false);
+                return true;
+            }
+            self.board.ghost = None;
+        }
         if self.tool != Tool::Select || self.space {
             return false;
         }
@@ -133,11 +141,13 @@ impl Studio {
                 self.selected = vec![index];
                 self.edit_text(index);
                 self.changed();
+                self.guess(true);
             }
             Tool::Arrow | Tool::Line => {
                 self.selected = vec![index];
                 self.tool = Tool::Select;
                 self.board_stick(index, &[0, 1]);
+                self.guess(true);
             }
             Tool::Pen | Tool::Marker => self.changed(),
             _ => {
@@ -186,6 +196,11 @@ impl Studio {
         // Tab, a child joined to it; Shift+Tab, back to its parent.
         let boxy = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
         match key {
+            // What is guessed comes first: Tab keeps it.
+            Key::Tab if self.board.ghost.is_some() => {
+                self.keep_ghost(mods.shift);
+                return Some(Outcome::Continue);
+            }
             Key::Tab if boxy && mods.shift => return Some(Outcome::Continue).filter(|_| self.to_parent()),
             Key::Tab if boxy => {
                 if !self.add_child() {
@@ -256,6 +271,10 @@ impl Studio {
             }
         }
         match key {
+            Key::Tab if self.board.ghost.is_some() => {
+                self.keep_ghost(mods.shift);
+                return Some(Outcome::Continue);
+            }
             Key::Tab if mods.shift && self.to_parent() => return Some(Outcome::Continue),
             Key::Tab if !mods.shift && self.add_child() => return Some(Outcome::Continue),
             Key::Char('L' | 'l') if mods.shift => {

@@ -116,6 +116,7 @@ impl Studio {
         self.selected = vec![made];
         self.edit_text(made);
         self.changed();
+        self.guess(true);
     }
 
     /// A new box like another, its words none, with its middle at a point;
@@ -182,6 +183,7 @@ impl Studio {
                 }
             }
         }
+        self.draw_ghost(canvas);
         if self.drag == Drag::None {
             if let Some(index) = self.board.dots_of.filter(|&index| self.is_box(index)) {
                 for spot in self.dot_spots(index) {
@@ -214,6 +216,11 @@ impl Studio {
                 }
             }
             Drag::Move { moved: true, .. } => self.nest_moved(),
+            // A box picked out: the end of a chain is offered its way back.
+            Drag::Move { moved: false, .. } => {
+                self.board.carried.clear();
+                self.guess(false);
+            }
             _ => self.board.carried.clear(),
         }
     }

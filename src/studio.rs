@@ -5279,6 +5279,9 @@ impl Studio {
         if down {
             self.end_preview();
         }
+        if down && self.on_board() {
+            self.ghost_keys(key, mods);
+        }
         if self.search.is_some() {
             self.mods = mods;
             return if down { self.search_key(key, mods) } else { Outcome::Continue };
