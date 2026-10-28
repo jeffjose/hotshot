@@ -499,19 +499,53 @@ under.
 
 Mermaid works on a board, read by hotshot itself with no script
 engine: paste it, or type it into a label and press `Ctrl+Enter`, and
-it becomes the board's own shapes, to move and change as any. A
-flowchart (`flowchart` or `graph`, LR or TD) keeps its shapes, `[ ]`
-`( )` `(( ))` `{ }` `[( )]` and the rest, its edges, `-->` `---`
-`-.->` `==>` with `|words|` on them and `&` between nodes, and its
-subgraphs as boxes holding what is in them, laid out as Shift+L would.
-A sequence diagram is a box that keeps itself laid out: its people
-along the top, an actor drawn as a person, a dashed line down from
-each, its messages level arrows in order down them, dashed for replies,
-its notes as notes and alt, loop and opt as boxes round their part;
-drag a message up or down and the rest keep their order a step apart,
-draw a box in it and the people spread to make room for one more, and
-`Tab` on a message adds the next, back the other way, its words typed.
-Class, state and ER diagrams, gantt charts, pies (the pie as a picture,
+it becomes the board's own shapes, to move and change as any, laid out
+as Mermaid lays it out, in the middle of what is seen. A flowchart
+(`flowchart` or `graph`, TD, TB, BT, LR or RL) is laid out in layers as
+Mermaid's are: each node ranked so its links go one way, the nodes of a
+rank put in the order that crosses fewest links and moved to the middle
+of those they join, a place kept in each rank a link passes for it and
+for its words, so that links go round nodes rather than through them,
+their words on a patch of paper where the link is. Every node shape is
+drawn as itself: `[box]`, `(round)`, `([stadium])`, `[[subroutine]]`,
+`[(database)]`, `((circle))`, `(((double circle)))`, `>flag]`,
+`{diamond}`, `{{hexagon}}`, `[/leaning/]` either way, and `[/trapezoid\]`
+either way up, and the newer `A@{ shape: cyl }`. Links are solid,
+`-.->` dotted, `==>` thick or `~~~` unseen, end in an arrow, `o` a circle
+or `x` a cross at either end, and run as many ranks as their dashes say,
+`--->`. Subgraphs are boxes sized to what they hold with their titles at
+the top, one inside another, each laid out its own `direction`, with
+links in and out going round their sides; `classDef`, `class`, `:::`,
+`style` and `linkStyle` colors become the board's nearest. A front
+matter `title:` goes over it. A sequence diagram is a box that keeps
+itself laid out and hugs it: its people along the top and again along
+its foot, a box each, an `actor` a stick figure, a dashed lifeline down
+from each; spaced by the widest words that go between them; its
+messages level at an even beat, their words over them, solid or dashed,
+ending in an arrow, an open arrow, a cross or nothing, one to its own
+sender a loop out to the right; `alt`, `opt`, `loop`, `par`,
+`critical` and `break` boxes round exactly their messages with the kind
+and condition at their corner and a dashed line between `else` and
+`and` branches, `rect` a colored band; notes left of, right of or over
+one or a few; `activate`, `deactivate` and `+`/`-` narrow bars on the
+lifelines; `autonumber` a numbered disc at each message's start; and its
+`title` at its top. Drag a message up or down and it takes its place in
+the order, the rest a beat apart; drag a person across and the rest
+make room; `Tab` on a message adds the next, back the other way, its
+words typed. A class diagram's classes are tables, their name with any
+`<<interface>>` over their attributes and their methods between rules,
+generics as `List<int>`, its relations ending in hollow triangles,
+filled or hollow diamonds or arrows, dashed for `..`, with how many at
+each end and their words between, `namespace`s boxes round them and
+notes beside them; a state diagram's start is a dot, its end a dot in
+a ring, its states rounded with their descriptions under a rule, its
+composite states boxes with their own start and end and direction,
+forks and joins bars, choices small diamonds, and its notes beside the
+state they are of; an ER diagram's entities are tables of their
+attributes' types, names, keys and comments, its relationships ending
+in crow's feet, one, none or one, one or more, none or more, dashed
+where not identifying, with their words between. All are laid out in
+layers as flowcharts are. Gantt charts, pies (the pie as a picture,
 its key as words), mind maps, timelines, journeys, git graphs and
 quadrant charts come in too. `Ctrl+K` Copy as Mermaid puts what is
 picked out, or the board, on the clipboard as a flowchart, or as a
