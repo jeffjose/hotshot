@@ -58,7 +58,7 @@ impl Studio {
             (Paint::Line, Some(Kind::Shape(shape)), _) => Some(shape.color),
             (Paint::Line, None, _) => Some(self.color),
             (Paint::Fill, Some(Kind::Shape(shape)), _) => shape.filled.then_some(shape.fill),
-            (Paint::Shadow, Some(Kind::Picture(picture)), _) => Some(if picture.shadow == CUSTOM_SHADOW { picture.drop.color } else { custom_drop(picture.shadow).color } & 0xFF_FFFF),
+            (Paint::Shadow, Some(_), _) => self.picked().and_then(|index| self.doc.layers[index].drop()).map(|drop| drop.color & 0xFF_FFFF),
             (Paint::Recolor(color), _, _) => Some(color),
             _ => None,
         }
@@ -69,15 +69,15 @@ impl Studio {
     fn paint_alpha(&self, paint: Paint) -> Option<f32> {
         match (paint, self.picked().map(|index| &self.doc.layers[index].kind)) {
             (Paint::Line | Paint::Fill, Some(Kind::Shape(shape))) => Some(shape.opacity as f32 * 100.0 / 256.0),
-            (Paint::Shadow, Some(Kind::Picture(_))) => self.field_value(Field::DropAlpha),
+            (Paint::Shadow, Some(_)) => self.field_value(Field::DropAlpha),
             _ => None,
         }
     }
 
     fn field_value(&self, field: Field) -> Option<f32> {
         let index = self.picked()?;
-        match (&self.doc.layers[index].kind, field) {
-            (Kind::Picture(picture), Field::DropAlpha) => Some(((if picture.shadow == CUSTOM_SHADOW { picture.drop } else { custom_drop(picture.shadow) }).color >> 24) as f32 * 100.0 / 255.0),
+        match field {
+            Field::DropAlpha => self.doc.layers[index].drop().map(|drop| (drop.color >> 24) as f32 * 100.0 / 255.0),
             _ => None,
         }
     }

@@ -26,6 +26,14 @@ pub(super) enum MenuKind {
     Page(usize),
     /// How large the page is shown.
     Zoom,
+    /// Where a border lies on its edge; whether a line is solid, dashed
+    /// or dotted; whether it is drawn clean or by hand; the window round
+    /// a picture; and the shadows there are.
+    Edge,
+    Dash,
+    Hand,
+    Window,
+    Shadows,
 }
 
 /// An open list: where it hangs from, and the one open beside it.
@@ -62,6 +70,11 @@ pub(super) enum MenuAct {
     ScreenSize,
     FitContent,
     Format(usize, crate::output::Format),
+    Edge(u8),
+    Dash(u8),
+    Hand(bool),
+    Window(u8),
+    Shadow(usize),
     Act(Action),
     Do(Command),
 }
@@ -201,6 +214,43 @@ impl Studio {
             MenuKind::Format(index) => {
                 let now = self.doc.exports.get(index).map(|size| size.format);
                 [crate::output::Format::Png, crate::output::Format::Jpeg, crate::output::Format::Webp].iter().map(|&format| Item::entry(format.ending().to_ascii_uppercase(), "", MenuAct::Format(index, format)).on(Some(format) == now)).collect()
+            }
+            MenuKind::Edge => {
+                let now = match &picked {
+                    Some(Kind::Shape(shape)) => shape.edge,
+                    _ => shapes::CENTER,
+                };
+                EDGES.iter().enumerate().map(|(edge, says)| Item::entry(*says, "", MenuAct::Edge(edge as u8)).on(edge as u8 == now)).collect()
+            }
+            MenuKind::Dash => {
+                let now = match &picked {
+                    Some(Kind::Shape(shape)) => dash_of(shape),
+                    _ => 0,
+                };
+                DASHES.iter().enumerate().map(|(dash, says)| Item::entry(*says, "", MenuAct::Dash(dash as u8)).on(dash as u8 == now)).collect()
+            }
+            MenuKind::Hand => {
+                let now = matches!(&picked, Some(Kind::Shape(shape)) if shape.sketch);
+                vec![Item::entry("Clean", "", MenuAct::Hand(false)).on(!now), Item::entry("By hand", "", MenuAct::Hand(true)).on(now)]
+            }
+            MenuKind::Window => {
+                let now = match &picked {
+                    Some(Kind::Picture(picture)) => picture.window,
+                    _ => frame::Window::None,
+                };
+                frame::WINDOWS.iter().enumerate().map(|(which, (window, says))| Item::entry(*says, "", MenuAct::Window(which as u8)).on(*window == now)).collect()
+            }
+            MenuKind::Shadows => {
+                let now = match &picked {
+                    Some(Kind::Picture(picture)) => picture.shadow,
+                    Some(Kind::Shape(shape)) => shape.shadow.and_then(|drop| (1..=frame::SHADOWS.len()).find(|&which| actions::custom_drop(which) == drop)).unwrap_or(0),
+                    None => 0,
+                };
+                let mut items = vec![Item::Heading("DROP SHADOW")];
+                for which in 1..=frame::SHADOWS.len() {
+                    items.push(Item::entry(frame::SHADOWS[which - 1].0, "", MenuAct::Shadow(which)).on(which == now));
+                }
+                items
             }
             MenuKind::Context => {
                 let mut items = Vec::new();
@@ -451,6 +501,23 @@ impl Studio {
                     self.changed();
                 }
             }
+            MenuAct::Edge(edge) => self.restyle(|layer| {
+                if let Kind::Shape(shape) = &mut layer.kind {
+                    shape.edge = edge;
+                }
+            }),
+            MenuAct::Dash(dash) => self.restyle(|layer| {
+                if let Kind::Shape(shape) = &mut layer.kind {
+                    (shape.dashed, shape.dotted) = (dash == 1, dash == 2);
+                }
+            }),
+            MenuAct::Hand(on) => self.restyle(|layer| {
+                if let Kind::Shape(shape) = &mut layer.kind {
+                    shape.sketch = on;
+                }
+            }),
+            MenuAct::Window(which) => return self.press_control(Control::Window(which), false),
+            MenuAct::Shadow(which) => return self.press_control(Control::Shadow(which), false),
             MenuAct::Act(action) => return self.act(action),
             MenuAct::Do(command) => return self.run_command(command),
         }
@@ -565,5 +632,22 @@ pub(super) fn draw_head_sample(canvas: &mut Canvas, x: i32, mid: i32, style: u8,
         }
         6 => canvas.fill(tip - 3, mid - 6, 2, 12, color),
         _ => {}
+    }
+}
+
+/// Where a border can lie on its edge, by `shapes::CENTER` and the rest.
+pub(super) const EDGES: [&str; 3] = ["Center", "Inside", "Outside"];
+
+/// How a line can be drawn: solid, in dashes, in dots.
+pub(super) const DASHES: [&str; 3] = ["Solid", "Dashed", "Dotted"];
+
+/// Which of `DASHES` a shape's line is.
+pub(super) fn dash_of(shape: &Shape) -> u8 {
+    if shape.dotted {
+        2
+    } else if shape.dashed {
+        1
+    } else {
+        0
     }
 }

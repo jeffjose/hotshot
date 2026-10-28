@@ -120,6 +120,14 @@ pub struct Shape {
     /// How the lines of text are set: from the left, in the middle, or to
     /// the right; 0, 1 or 2.
     pub align: u8,
+    /// Where the border of a box or an oval lies on its edge: across the
+    /// middle of it, inside it, or outside it; `CENTER`, `INSIDE` or
+    /// `OUTSIDE`.
+    pub edge: u8,
+    /// The shadow it casts, if it casts one, in pixels of what it is on:
+    /// how far across and down, how soft, how much larger, and its color
+    /// with how opaque it is.
+    pub shadow: Option<crate::frame::Layer>,
     mask: RefCell<Option<Rc<Mask>>>,
     /// The same of what is inside the border of a rectangle or an oval
     /// that has both, which is drawn in its fill.
@@ -133,6 +141,23 @@ pub const BOLD: u8 = 1;
 pub const ITALIC: u8 = 2;
 pub const HIGHLIGHT: u8 = 4;
 pub const BULLETS: u8 = 8;
+
+/// Where a border lies on the edge of a box or an oval.
+pub const CENTER: u8 = 0;
+pub const INSIDE: u8 = 1;
+pub const OUTSIDE: u8 = 2;
+
+/// A shadow as a word of a file: its numbers with colons between, or a
+/// dash for none.
+fn shadow_word(shadow: Option<crate::frame::Layer>) -> String {
+    shadow.map_or("-".to_owned(), |drop| format!("{}:{}:{}:{}:{:08X}", drop.x, drop.y, drop.blur, drop.spread, drop.color))
+}
+
+fn shadow_read(word: &str) -> Option<crate::frame::Layer> {
+    let parts: Vec<&str> = word.split(':').collect();
+    let [x, y, blur, spread, color] = parts[..] else { return None };
+    Some(crate::frame::Layer { x: x.parse().ok()?, y: y.parse().ok()?, blur: blur.parse::<i16>().ok()?.max(0), spread: spread.parse().ok()?, color: u32::from_str_radix(color, 16).ok()? })
+}
 /// On a patch of its own color, its letters in whichever of white and
 /// black reads on that.
 pub const BOXED: u8 = 16;
@@ -188,7 +213,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -208,7 +233,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -223,7 +248,9 @@ impl Shape {
                 self.id,
                 stuck_word(self.stuck[0]),
                 stuck_word(self.stuck[1]),
-                self.align
+                self.align,
+                self.edge,
+                shadow_word(self.shadow)
             ),
             self.fill,
             self.number,
@@ -278,6 +305,10 @@ impl Shape {
         }
         shape.stuck = [more.next().and_then(stuck_read), more.next().and_then(stuck_read)];
         shape.align = more.next().and_then(|align| align.parse::<u8>().ok()).unwrap_or(0).min(2);
+        // And where its border lies and the shadow it casts, which a file
+        // from before either has not.
+        shape.edge = more.next().and_then(|edge| edge.parse::<u8>().ok()).unwrap_or(CENTER).min(OUTSIDE);
+        shape.shadow = more.next().and_then(shadow_read);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -565,6 +596,7 @@ impl Shape {
             Tool::Arrow | Tool::Line if self.heads != [false, false] => self.head().0 + self.stroke + self.halo_width() + if self.sketch { 4.0 } else { 0.0 },
             Tool::Arrow | Tool::Line => self.stroke / 2.0 + self.halo_width() + if self.sketch { 4.0 } else { 0.0 },
             Tool::Rect | Tool::Ellipse if self.sketch => self.stroke + 8.0,
+            Tool::Rect | Tool::Ellipse if self.edge == OUTSIDE => self.stroke,
             Tool::Counter => self.disc(),
             Tool::Pen | Tool::Marker => self.line_width() / 2.0,
             _ => self.stroke / 2.0,
@@ -611,7 +643,7 @@ impl Shape {
         // With a border as well as a fill, the outline is the border's:
         // what is inside it has a mask of its own.
         let filled = self.filled && !self.bordered_fill();
-        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radius: self.radius, head, heads: self.heads, ends: self.ends, dashed: self.dashed && !self.dotted, dotted: self.dotted, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0) }
+        Outline { tool: self.tool, a, b, stroke: self.stroke, filled, radius: self.radius, head, heads: self.heads, ends: self.ends, dashed: self.dashed && !self.dotted, dotted: self.dotted, disc: self.disc(), curve, backs, angle, about: (x + w / 2.0, y + h / 2.0), edge: self.edge }
     }
 
     /// Which of its points is the far one of the two it is between: the
@@ -900,6 +932,8 @@ struct Outline {
     /// How far a box or an oval is turned, and about where.
     angle: f32,
     about: Point,
+    /// Where a box's or an oval's border lies on its edge.
+    edge: u8,
 }
 
 impl Outline {
@@ -1044,15 +1078,49 @@ impl Outline {
                     }
                 }
             }
-            Tool::Rect => {
+            Tool::Rect | Tool::Ellipse => {
                 let (left, top, w, h) = (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs());
-                let inside = round_box(x - left - w / 2.0, y - top - h / 2.0, w / 2.0, h / 2.0, self.radius.min(w / 2.0).min(h / 2.0));
-                if self.filled { inside - half } else { inside.abs() - half }
-            }
-            Tool::Ellipse => {
-                let (left, top, w, h) = (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs());
-                let inside = ellipse(x - left - w / 2.0, y - top - h / 2.0, w / 2.0, h / 2.0);
-                if self.filled { inside - half } else { inside.abs() - half }
+                let (px, py, hw, hh) = (x - left - w / 2.0, y - top - h / 2.0, w / 2.0, h / 2.0);
+                let radius = self.radius.min(hw).min(hh).max(0.0);
+                let inside = match self.tool {
+                    Tool::Rect => round_box(px, py, hw, hh, radius),
+                    _ => ellipse(px, py, hw, hh),
+                };
+                if self.filled {
+                    return inside - half;
+                }
+                // The border moved in or out by half its width, to lie
+                // inside the edge or outside it.
+                let band = match self.edge {
+                    INSIDE => inside + half,
+                    OUTSIDE => inside - half,
+                    _ => inside,
+                };
+                let solid = band.abs() - half;
+                if !(self.dashed || self.dotted) {
+                    return solid;
+                }
+                // Dashes and dots counted along the edge, spaced to go
+                // round it a whole number of times.
+                let (along, whole) = match self.tool {
+                    Tool::Rect => perimeter_along(px, py, hw, hh, radius),
+                    _ => {
+                        let turn = (py / hh.max(0.5)).atan2(px / hw.max(0.5)) + std::f32::consts::PI;
+                        (turn * (hw + hh) / 2.0, std::f32::consts::TAU * (hw + hh) / 2.0)
+                    }
+                };
+                if self.dotted {
+                    let gap = self.stroke * 2.2 + 2.0;
+                    let gap = whole / (whole / gap).round().max(1.0);
+                    let nearest = (along / gap).round() * gap;
+                    return band.abs().hypot(along - nearest) - half;
+                }
+                let period = self.stroke * 4.5 + 7.0;
+                let period = whole / (whole / period).round().max(1.0);
+                let dash = period * 0.55;
+                let into = along.rem_euclid(period);
+                let outside = if into > dash { (into - dash).min(period - into) } else { -into.min(dash - into) };
+                solid.max(outside)
             }
             Tool::Counter => {
                 let radius = self.disc;
@@ -1867,6 +1935,39 @@ fn round_box(x: f32, y: f32, half_w: f32, half_h: f32, radius: f32) -> f32 {
     across.max(0.0).hypot(down.max(0.0)) + across.max(down).min(0.0) - radius
 }
 
+/// How far round the edge of a box with round corners a point is, from
+/// where its top edge begins at the left and going clockwise; and how
+/// far it is all the way round. Counted from the middle of the box.
+fn perimeter_along(x: f32, y: f32, half_w: f32, half_h: f32, radius: f32) -> (f32, f32) {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let (inner_w, inner_h) = ((half_w - radius).max(0.0), (half_h - radius).max(0.0));
+    let (top, side, corner) = (2.0 * inner_w, 2.0 * inner_h, radius * FRAC_PI_2);
+    let whole = 2.0 * top + 2.0 * side + 4.0 * corner;
+    let (out_x, out_y) = (x.abs() - inner_w, y.abs() - inner_h);
+    let along = if out_x > 0.0 && out_y > 0.0 && radius > 0.0 {
+        // On a corner: how far round it, about its middle.
+        let (cx, cy) = (inner_w.copysign(x), inner_h.copysign(y));
+        let angle = (y - cy).atan2(x - cx);
+        match (x > 0.0, y > 0.0) {
+            (true, false) => top + (angle + FRAC_PI_2) * radius,
+            (true, true) => top + corner + side + angle * radius,
+            (false, true) => 2.0 * top + 2.0 * corner + side + (angle - FRAC_PI_2) * radius,
+            (false, false) => 2.0 * top + 3.0 * corner + 2.0 * side + (angle + PI) * radius,
+        }
+    } else if out_y >= out_x {
+        match y < 0.0 {
+            true => x + inner_w,
+            false => top + 2.0 * corner + side + (inner_w - x),
+        }
+    } else {
+        match x > 0.0 {
+            true => top + corner + (y + inner_h),
+            false => 2.0 * top + 3.0 * corner + side + (inner_h - y),
+        }
+    };
+    (along.clamp(0.0, whole), whole.max(1.0))
+}
+
 /// How far a point, counted from the middle of an ellipse, is from its
 /// edge: near enough for a line a few pixels wide.
 fn ellipse(x: f32, y: f32, rx: f32, ry: f32) -> f32 {
@@ -1925,6 +2026,58 @@ mod tests {
         let row: Vec<bool> = drawn(&dots, 120, 20)[10 * 120..11 * 120].iter().map(|&pixel| pixel != 0).collect();
         let runs = row.windows(2).filter(|pair| pair[0] && !pair[1]).count();
         assert!(runs >= 8, "{runs} dots");
+    }
+
+    #[test]
+    fn a_box_border_lies_inside_or_outside_and_is_dashed_or_dotted_round_it() {
+        let mut boxed = Shape::new(Tool::Rect, 0xFFFFFF, 8.0, (20.0, 20.0));
+        boxed.points[1] = (120.0, 100.0);
+        // Across the edge, half in and half out; then all inside; then out.
+        let row = |shape: &Shape| drawn(shape, 140, 120)[60 * 140..61 * 140].to_vec();
+        let lit = |row: &[u32], x: usize| row[x] != 0;
+        let middle = row(&boxed);
+        assert!(lit(&middle, 17) && lit(&middle, 22) && !lit(&middle, 27));
+        boxed.edge = INSIDE;
+        boxed.touch();
+        let inside = row(&boxed);
+        assert!(!lit(&inside, 17) && lit(&inside, 22) && lit(&inside, 26));
+        boxed.edge = OUTSIDE;
+        boxed.touch();
+        let outside = row(&boxed);
+        assert!(lit(&outside, 13) && lit(&outside, 18) && !lit(&outside, 22));
+        // Dashed, the top edge goes on and off; dotted, more often.
+        (boxed.edge, boxed.dashed) = (CENTER, true);
+        boxed.touch();
+        let runs = |shape: &Shape| {
+            let top: Vec<bool> = drawn(shape, 140, 120)[20 * 140..21 * 140].iter().map(|&pixel| pixel != 0).collect();
+            top.windows(2).filter(|pair| pair[0] && !pair[1]).count()
+        };
+        let dashes = runs(&boxed);
+        boxed.dotted = true;
+        boxed.touch();
+        let dots = runs(&boxed);
+        assert!(dashes >= 3 && dots > dashes, "{dashes} dashes, {dots} dots");
+        // Round the corners too, evenly, with a round box or an oval.
+        assert!((perimeter_along(0.0, -10.0, 20.0, 10.0, 0.0).0 - 20.0).abs() < 0.01);
+        assert!((perimeter_along(20.0, 0.0, 20.0, 10.0, 0.0).0 - 50.0).abs() < 0.01);
+        assert!((perimeter_along(0.0, 10.0, 20.0, 10.0, 0.0).0 - 80.0).abs() < 0.01);
+        assert!((perimeter_along(-20.0, 0.0, 20.0, 10.0, 0.0).0 - 110.0).abs() < 0.01);
+        assert!((perimeter_along(0.0, 0.0, 20.0, 10.0, 4.0).1 - (2.0 * 32.0 + 2.0 * 12.0 + std::f32::consts::TAU * 4.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn where_a_border_lies_and_a_shadow_are_kept_in_its_line() {
+        let mut boxed = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0));
+        boxed.points[1] = (50.0, 60.0);
+        (boxed.edge, boxed.shadow) = (OUTSIDE, Some(crate::frame::Layer { x: 2, y: 8, blur: 20, spread: -3, color: 0x4011_2233 }));
+        let back = Shape::read(&boxed.write()).unwrap();
+        assert_eq!((back.edge, back.shadow, back.align), (OUTSIDE, boxed.shadow, boxed.align));
+        // And one from before either has neither.
+        let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
+        let older = plain.replacen(",0,-\t", "\t", 1);
+        assert_ne!(older, plain);
+        let back = Shape::read(&older).unwrap();
+        assert_eq!((back.edge, back.shadow), (CENTER, None));
     }
 
     #[test]

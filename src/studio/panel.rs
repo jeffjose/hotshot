@@ -148,7 +148,9 @@ impl Studio {
             [] => self.frame_sections(&mut rows),
             [index] => match self.doc.layers[index].kind.clone() {
                 Kind::Picture(picture) => {
-                    rows.section("Picture", &format!("{} \u{d7} {}", picture.image.width(), picture.image.height()), None);
+                    // How large it is shown, against its own pixels.
+                    let times = picture.w / picture.crop.2.max(1.0);
+                    rows.section("Picture", &format!("{} \u{d7} {}  \u{b7}  {}\u{d7} of its pixels", picture.image.width(), picture.image.height(), (times * 100.0).round() / 100.0), None);
                     rows.fields(&[Field::X, Field::Y, Field::Turn], &[]);
                     rows.fields(&[Field::W, Field::H], &[act(Action::LockRatio)]);
                     rows.buttons(&[&[act(Action::FlipAcross), act(Action::FlipDown)], &[act(Action::Crop)], &[act(Action::Actual)]]);
@@ -159,27 +161,33 @@ impl Studio {
                         rows.wide(Control::Field(field));
                     }
                     rows.section("Window", "round the picture", None);
-                    let windows = [(frame::Window::None, "None"), (frame::Window::Mac, "Mac"), (frame::Window::Browser, "Browser"), (frame::Window::Terminal, "Terminal")];
-                    let chips = windows.iter().map(|(window, says)| (says.to_string(), Control::Window(frame::WINDOWS.iter().position(|(known, _)| known == window).unwrap_or(0) as u8))).collect();
-                    rows.chips(&mut self.text, chips);
+                    rows.wide(Control::Menu(MenuKind::Window));
                     if picture.window != frame::Window::None {
                         rows.wide(Control::Entry(Naming::Title(index)));
                     }
-                    let plus = (picture.shadow == 0).then_some((act(Action::ShadowOn), icons::PLUS));
-                    rows.section("Shadow", "", plus.or(Some((act(Action::ShadowOff), icons::MINUS))));
-                    if picture.shadow != 0 {
-                        let presets = (1..=frame::SHADOWS.len()).map(|which| (frame::SHADOWS[which - 1].0.to_owned(), Control::Shadow(which))).collect();
-                        rows.chips(&mut self.text, presets);
-                        rows.fields(&[Field::DropY, Field::DropBlur, Field::DropSpread], &[]);
-                        rows.split(&[(Control::ColorField(Paint::Shadow), 0), (Control::Field(Field::DropAlpha), 76)]);
-                    }
+                    self.effects_section(&mut rows, picture.shadow != 0);
                     self.layer_section(&mut rows);
                 }
                 Kind::Shape(shape) => self.shape_sections(&mut rows, index, &shape),
             },
             _ => {
-                rows.section(&format!("{} layers", chosen.len()), "", None);
+                rows.chips(&mut self.text, actions(&[Action::Distribute(0), Action::Distribute(1)]));
+                // What they are, a word for each kind, the commonest first.
+                let mut kinds: Vec<(String, usize)> = Vec::new();
+                for &index in &chosen {
+                    let kind = match &self.doc.layers[index].kind {
+                        Kind::Picture(_) => "picture".to_owned(),
+                        Kind::Shape(shape) => TOOLS.iter().find(|(tool, ..)| *tool == shape.tool).map_or("shape", |(_, name, _)| name).to_lowercase(),
+                    };
+                    match kinds.iter_mut().find(|(known, _)| *known == kind) {
+                        Some((_, count)) => *count += 1,
+                        None => kinds.push((kind, 1)),
+                    }
+                }
+                let kinds: Vec<String> = kinds.into_iter().map(|(kind, _)| kind).take(3).collect();
+                rows.section(&format!("{} layers", chosen.len()), &kinds.join(", "), None);
                 rows.fields(&[Field::X, Field::Y], &[]);
+                rows.fields(&[Field::W, Field::H], &[act(Action::LockRatio)]);
                 // Every color among them, with how many have it: changed at
                 // once for all of them.
                 let colors = self.selection_colors();
@@ -202,6 +210,7 @@ impl Studio {
         let name = self.doc.name.clone();
         rows.section("Frame", &name, None);
         rows.wide(Control::Menu(MenuKind::Sizes));
+        rows.fields(&[Field::FrameX, Field::FrameY], &[]);
         rows.fields(&[Field::ArtW, Field::ArtH], &[Control::Action(Action::Sideways)]);
         rows.section("Background", "", None);
         rows.chips(&mut self.text, vec![("Color".into(), Control::Ground(Ground::Color)), ("Gradient".into(), Control::Ground(Ground::Gradient)), ("Backdrop".into(), Control::Ground(Ground::Backdrop)), ("None".into(), Control::Ground(Ground::None))]);
@@ -239,6 +248,7 @@ impl Studio {
         if line {
             rows.fields(&[Field::StartX, Field::StartY], &[]);
             rows.fields(&[Field::EndX, Field::EndY], &[]);
+            rows.fields(&[Field::Length, Field::LineAngle], &[]);
         } else {
             if shape.turnable() {
                 rows.fields(&[Field::X, Field::Y, Field::Turn], &[]);
@@ -260,11 +270,20 @@ impl Studio {
         }
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
-                rows.section("Fill", "", None);
-                rows.wide(Control::ColorField(Paint::Fill));
-                rows.section("Stroke", "", None);
-                rows.split(&[(Control::ColorField(Paint::Line), 0), (Control::Field(Field::Stroke), 76)]);
-                rows.chips(&mut self.text, actions(&[Action::Border, Action::Sketch]));
+                let filled = shape.filled;
+                rows.section("Fill", "", Some(if filled { (act(Action::FillOff), icons::MINUS) } else { (act(Action::FillOn), icons::PLUS) }));
+                if filled {
+                    rows.wide(Control::ColorField(Paint::Fill));
+                } else {
+                    rows.note("No fill: what is under it shows");
+                }
+                let border = shape.border || !filled;
+                rows.section("Stroke", "", Some(if border { (act(Action::BorderOff), icons::MINUS) } else { (act(Action::BorderOn), icons::PLUS) }));
+                if border {
+                    rows.wide(Control::ColorField(Paint::Line));
+                    rows.split(&[(Control::Menu(MenuKind::Edge), 0), (Control::Field(Field::Stroke), 76)]);
+                    rows.split(&[(Control::Menu(MenuKind::Dash), 0), (Control::Menu(MenuKind::Hand), 0)]);
+                }
             }
             Tool::Text | Tool::Badge => {
                 rows.section("Typography", "", None);
@@ -279,8 +298,8 @@ impl Studio {
                 rows.section("Stroke", "", None);
                 rows.split(&[(Control::ColorField(Paint::Line), 0), (Control::Field(Field::Stroke), 76)]);
                 if line {
-                    rows.chips(&mut self.text, ["Solid", "Dashed", "Dotted"].iter().enumerate().map(|(kind, name)| (name.to_string(), Control::Line(kind as u8))).collect());
-                    rows.chips(&mut self.text, actions(&[Action::Halo, Action::Sketch]));
+                    rows.split(&[(Control::Menu(MenuKind::Dash), 0), (Control::Menu(MenuKind::Hand), 0)]);
+                    rows.chips(&mut self.text, actions(&[Action::Halo]));
                 }
             }
         }
@@ -295,7 +314,20 @@ impl Studio {
             }
         }
         let _ = index;
+        self.effects_section(rows, shape.shadow.is_some());
         self.layer_section(rows);
+    }
+
+    /// The shadow a layer casts: a plus for one, or which it is and its
+    /// numbers, its color, and a minus.
+    fn effects_section(&mut self, rows: &mut Rows, on: bool) {
+        let act = Control::Action;
+        rows.section("Effects", "", Some(if on { (act(Action::ShadowOff), icons::MINUS) } else { (act(Action::ShadowOn), icons::PLUS) }));
+        if on {
+            rows.wide(Control::Menu(MenuKind::Shadows));
+            rows.fields(&[Field::DropY, Field::DropBlur, Field::DropSpread], &[]);
+            rows.split(&[(Control::ColorField(Paint::Shadow), 0), (Control::Field(Field::DropAlpha), 76)]);
+        }
     }
 
     /// What can be done with any layer: over and under the rest, a copy,
@@ -344,8 +376,6 @@ impl Studio {
         match action {
             Action::LockRatio => self.keep_ratio,
             Action::Halo => shape.is_some_and(|shape| shape.halo),
-            Action::Sketch => shape.is_some_and(|shape| shape.sketch),
-            Action::Border => shape.is_some_and(|shape| shape.border),
             Action::Crop => self.cropping.is_some(),
             Action::Bold => shape.is_some_and(|shape| shape.style & shapes::BOLD != 0),
             Action::Italic => shape.is_some_and(|shape| shape.style & shapes::ITALIC != 0),
@@ -384,6 +414,30 @@ impl Studio {
             MenuKind::Sizes => {
                 let name = menu::SIZES.iter().find(|(_, _, w, h)| (*w, *h) == (self.doc.width, self.doc.height)).map_or("Custom".to_owned(), |(_, name, ..)| name.to_string());
                 (menu::Look::Plain, name, format!("{} \u{d7} {}", self.doc.width, self.doc.height))
+            }
+            MenuKind::Edge => (menu::Look::Plain, menu::EDGES[usize::from(shape.map_or(0, |shape| shape.edge)).min(2)].to_owned(), String::new()),
+            MenuKind::Dash => (menu::Look::Plain, menu::DASHES[usize::from(shape.as_ref().map_or(0, menu::dash_of))].to_owned(), String::new()),
+            MenuKind::Hand => (menu::Look::Plain, if shape.is_some_and(|shape| shape.sketch) { "By hand" } else { "Clean" }.to_owned(), String::new()),
+            MenuKind::Window => {
+                let window = self.picked().and_then(|index| match &self.doc.layers[index].kind {
+                    Kind::Picture(picture) => Some(picture.window),
+                    Kind::Shape(_) => None,
+                });
+                let name = frame::WINDOWS.iter().find(|(known, _)| Some(*known) == window).map_or("No window", |(_, name)| name);
+                (menu::Look::Plain, name.to_owned(), String::new())
+            }
+            MenuKind::Shadows => {
+                let (preset, drop) = match self.picked().map(|index| &self.doc.layers[index]) {
+                    Some(layer @ Layer { kind: Kind::Picture(picture), .. }) => (picture.shadow, layer.drop()),
+                    Some(layer) => (layer.drop().and_then(|drop| (1..=frame::SHADOWS.len()).find(|&which| actions::custom_drop(which) == drop)).unwrap_or(CUSTOM_SHADOW), layer.drop()),
+                    None => (0, None),
+                };
+                let hint = match preset {
+                    _ if drop.is_none() => String::new(),
+                    which if which >= 1 && which <= frame::SHADOWS.len() => frame::SHADOWS[which - 1].0.to_owned(),
+                    _ => "custom".to_owned(),
+                };
+                (menu::Look::Plain, "Drop shadow".to_owned(), hint)
             }
             MenuKind::Format(index) => (menu::Look::Plain, self.doc.exports.get(index).map_or("PNG".to_owned(), |size| size.format.ending().to_ascii_uppercase()), String::new()),
             _ => (menu::Look::Plain, String::new(), String::new()),

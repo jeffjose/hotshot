@@ -25,7 +25,7 @@ mod menu;
 mod panel;
 mod picker;
 
-use actions::custom_drop;
+
 use menu::{MenuKind, MenuState};
 
 // Figma's dark colors, which the editor's are near.
@@ -281,6 +281,41 @@ impl Layer {
         }
     }
 
+    /// The shadow it casts, number by number, if it casts one: a
+    /// picture's from its preset unless its numbers were set.
+    fn drop(&self) -> Option<frame::Layer> {
+        match &self.kind {
+            Kind::Picture(picture) => match picture.shadow {
+                0 => None,
+                CUSTOM_SHADOW => Some(picture.drop),
+                which => Some(actions::custom_drop(which)),
+            },
+            Kind::Shape(shape) => shape.shadow,
+        }
+    }
+
+    /// Its shadow changed number by number: a picture's preset made its
+    /// numbers first. Nothing, if it casts none.
+    fn change_drop(&mut self, change: impl Fn(&mut frame::Layer)) {
+        match &mut self.kind {
+            Kind::Picture(picture) => {
+                if picture.shadow == 0 {
+                    return;
+                }
+                if picture.shadow != CUSTOM_SHADOW {
+                    picture.drop = actions::custom_drop(picture.shadow);
+                    picture.shadow = CUSTOM_SHADOW;
+                }
+                change(&mut picture.drop);
+            }
+            Kind::Shape(shape) => {
+                if let Some(drop) = &mut shape.shadow {
+                    change(drop);
+                }
+            }
+        }
+    }
+
     fn translate(&mut self, dx: f32, dy: f32) {
         match &mut self.kind {
             Kind::Picture(picture) => (picture.cx, picture.cy) = (picture.cx + dx, picture.cy + dy),
@@ -345,6 +380,10 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
     }
     (shape.stroke, shape.radius) = (shape.stroke * times, shape.radius * times);
     shape.font_px = ((shape.font_px as f32 * times).round() as u32).max(1);
+    if let Some(drop) = &mut shape.shadow {
+        let by = |value: i16| (f32::from(value) * times).round() as i16;
+        (drop.x, drop.y, drop.blur, drop.spread) = (by(drop.x), by(drop.y), by(drop.blur), by(drop.spread));
+    }
     shape.touch();
     shape
 }
@@ -840,6 +879,9 @@ fn sample(pixels: &[u32], width: i32, height: i32, x: f32, y: f32) -> u32 {
 /// covers made opaque, which the editor's drawing, on a screen, has no
 /// need to say.
 fn draw_shape(out: &mut [u32], wide: i32, high: i32, shape: &Shape, text: &mut Text) {
+    if let Some(drop) = shape.shadow {
+        draw_shape_shadow(out, wide, high, shape, drop, text);
+    }
     let place = shape.bounds(text).inflate((shape.stroke * 3.0) as i32 + 8).intersect(Rect::new(0, 0, wide, high));
     if place.is_empty() {
         return;
@@ -853,6 +895,108 @@ fn draw_shape(out: &mut [u32], wide: i32, high: i32, shape: &Shape, text: &mut T
         // color drawn, and not that color mixed with black.
         *pixel = if *pixel & 0xFF_FFFF != was & 0xFF_FFFF { 0xFF00_0000 | (*pixel & 0xFF_FFFF) } else { was };
     }
+}
+
+/// The shadow a shape casts, under it: what it covers, drawn apart over
+/// black and over white to say how much of each pixel that is, grown or
+/// shrunk by the shadow's spread, blurred, moved, and laid down in the
+/// shadow's color.
+fn draw_shape_shadow(out: &mut [u32], wide: i32, high: i32, shape: &Shape, drop: frame::Layer, text: &mut Text) {
+    let (blur, spread) = (f32::from(drop.blur.max(0)), f32::from(drop.spread));
+    let reach = (blur * 1.5 + spread.max(0.0)).ceil() as i32 + 2;
+    let body = shape.bounds(text).inflate((shape.stroke * 3.0) as i32 + 8);
+    let sheet = body.inflate(reach);
+    // Only as much of it as could fall on the picture.
+    let moved = Rect::new(sheet.x + i32::from(drop.x), sheet.y + i32::from(drop.y), sheet.w, sheet.h);
+    if moved.intersect(Rect::new(0, 0, wide, high)).is_empty() || i64::from(sheet.w) * i64::from(sheet.h) > 16_000_000 {
+        return;
+    }
+    let (w, h) = (sheet.w, sheet.h);
+    let mut flat = shape.clone();
+    (flat.shadow, flat.opacity) = (None, 256);
+    flat.translate(-sheet.x as f32, -sheet.y as f32);
+    let (mut dark, mut light) = (vec![0u32; (w * h) as usize], vec![0xFFFFFFu32; (w * h) as usize]);
+    flat.draw(&mut Canvas::new(&mut dark, w, h), text);
+    flat.draw(&mut Canvas::new(&mut light, w, h), text);
+    let mut cover: Vec<f32> = dark.iter().zip(&light).map(|(&over, &under)| {
+        let gone: u32 = [16, 8, 0].iter().map(|shift| (under >> shift & 255) - (over >> shift & 255).min(under >> shift & 255)).sum();
+        1.0 - gone as f32 / (3.0 * 255.0)
+    }).collect();
+    let grow = spread.round() as i32;
+    if grow != 0 {
+        cover = spread_cover(&cover, w, h, grow);
+    }
+    let deviation = blur / 2.0;
+    if deviation >= 0.5 {
+        let radius = (deviation * 1.2).round().max(1.0) as usize;
+        for _ in 0..3 {
+            cover = box_blur(&cover, w as usize, h as usize, radius);
+        }
+    }
+    let strength = (drop.color >> 24) as f32 / 255.0 * shape.opacity as f32 / 256.0;
+    let color = drop.color & 0xFF_FFFF;
+    let area = moved.intersect(Rect::new(0, 0, wide, high));
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let (sx, sy) = (x - moved.x, y - moved.y);
+            let amount = cover[(sy * w + sx) as usize] * strength;
+            if amount > 0.002 {
+                let pixel = &mut out[(y * wide + x) as usize];
+                *pixel = over(*pixel, color, amount);
+            }
+        }
+    }
+}
+
+/// How much of each pixel is covered, grown by so many pixels all round,
+/// or shrunk by as many if they are fewer than none: the most, or the
+/// least, of what is near each.
+fn spread_cover(cover: &[f32], w: i32, h: i32, by: i32) -> Vec<f32> {
+    let reach = by.abs();
+    let pick = |a: f32, b: f32| if by > 0 { a.max(b) } else { a.min(b) };
+    let mut across = cover.to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            let mut best = cover[(y * w + x) as usize];
+            for dx in (x - reach).max(0)..=(x + reach).min(w - 1) {
+                best = pick(best, cover[(y * w + dx) as usize]);
+            }
+            across[(y * w + x) as usize] = best;
+        }
+    }
+    let mut out = across.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let mut best = across[(y * w + x) as usize];
+            for dy in (y - reach).max(0)..=(y + reach).min(h - 1) {
+                best = pick(best, across[(dy * w + x) as usize]);
+            }
+            out[(y * w + x) as usize] = best;
+        }
+    }
+    out
+}
+
+/// Each value the average of those within a radius of it, across and
+/// then down: three times over, near enough a gaussian blur.
+fn box_blur(values: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
+    let pass = |from: &[f32], count: usize, stride: usize, lines: usize, step: usize| -> Vec<f32> {
+        let mut out = vec![0.0; from.len()];
+        let span = (2 * radius + 1) as f32;
+        for line in 0..lines {
+            let at = |i: isize| -> f32 {
+                if i < 0 || i as usize >= count { 0.0 } else { from[line * step + i as usize * stride] }
+            };
+            let mut sum: f32 = (-(radius as isize)..=radius as isize).map(at).sum();
+            for i in 0..count {
+                out[line * step + i * stride] = sum / span;
+                sum += at(i as isize + radius as isize + 1) - at(i as isize - radius as isize);
+            }
+        }
+        out
+    };
+    let across = pass(values, w, 1, h, w);
+    pass(&across, h, w, w, 1)
 }
 
 // ---- The canvas ----
@@ -925,13 +1069,19 @@ enum Field {
     EndY,
     /// How many times larger the frame is exported, at one of its sizes.
     ExportTimes(u8),
+    /// Where the frame is on its page; how long a line is, and which way
+    /// it goes from its start.
+    FrameX,
+    FrameY,
+    Length,
+    LineAngle,
 }
 
 impl Field {
     fn label(self) -> &'static str {
         match self {
-            Field::X | Field::StartX | Field::EndX => "X",
-            Field::Y | Field::StartY | Field::EndY => "Y",
+            Field::X | Field::StartX | Field::EndX | Field::FrameX => "X",
+            Field::Y | Field::StartY | Field::EndY | Field::FrameY => "Y",
             Field::W | Field::ArtW => "W",
             Field::H | Field::ArtH => "H",
             Field::Turn => "\u{b0}",
@@ -947,6 +1097,8 @@ impl Field {
             Field::DropAlpha => "%",
             Field::FontSize => "Size",
             Field::Stroke => "W",
+            Field::Length => "Length",
+            Field::LineAngle => "\u{b0}",
             Field::ExportTimes(_) => "\u{d7}",
         }
     }
@@ -993,7 +1145,6 @@ enum Control {
     Backdrop(usize),
     Swatch(Paint, Option<u32>),
     Shadow(usize),
-    Line(u8),
     Action(Action),
     /// The way back to the projects; the pages, and a new one; the frames
     /// of the page, in the list of layers; the frame tool; the list of a
@@ -1041,9 +1192,7 @@ enum Action {
     /// Lining up what is picked out: left, middle, right, top, middle,
     /// bottom.
     Align(u8),
-    Border,
     Halo,
-    Sketch,
     /// A new frame round what is picked out, and them in it.
     FrameThem,
     /// Width and height kept to each other, in the fields.
@@ -1070,6 +1219,11 @@ enum Action {
     ShadowOn,
     ShadowOff,
     ResetAdjust,
+    /// A fill for a box or an oval, or none; a border, or none.
+    FillOn,
+    FillOff,
+    BorderOn,
+    BorderOff,
     /// The shape a crop is kept to, and the crop undone.
     Aspect(u8),
     ResetCrop,
@@ -1092,8 +1246,8 @@ impl Action {
             Action::Crop => icons::CROP,
             Action::Swap => icons::SWAP,
             Action::Unstick(_) => icons::LINK,
-            Action::RemoveExport(_) | Action::ShadowOff => icons::MINUS,
-            Action::AddExport | Action::ShadowOn => icons::PLUS,
+            Action::RemoveExport(_) | Action::ShadowOff | Action::FillOff | Action::BorderOff => icons::MINUS,
+            Action::AddExport | Action::ShadowOn | Action::FillOn | Action::BorderOn => icons::PLUS,
             Action::ResetAdjust => icons::UNDO,
             Action::Sideways => icons::ROTATE,
             Action::TextAlign(0) => icons::ALIGN_LEFT,
@@ -1136,6 +1290,10 @@ impl Action {
             Action::ShadowOn => "Add a shadow",
             Action::ShadowOff => "No shadow",
             Action::ResetAdjust => "Undo adjustments",
+            Action::FillOn => "Add a fill",
+            Action::FillOff => "No fill",
+            Action::BorderOn => "Add a border",
+            Action::BorderOff => "No border",
             Action::Aspect(_) => "Aspect",
             Action::ResetCrop => "Reset",
             Action::Forward => "Forward",
@@ -1148,9 +1306,7 @@ impl Action {
             Action::Align(3) => "\u{2912}",
             Action::Align(4) => "\u{2195}",
             Action::Align(_) => "\u{2913}",
-            Action::Border => "Border",
             Action::Halo => "White edge",
-            Action::Sketch => "Sketch",
         }
     }
 }
@@ -2306,15 +2462,9 @@ impl Studio {
                     self.hsv = picker::to_hsv(color);
                 }
             }
-            Control::Shadow(which) => self.restyle(|layer| {
-                if let Kind::Picture(picture) = &mut layer.kind {
-                    picture.shadow = which;
-                }
-            }),
-            Control::Line(kind) => self.restyle(|layer| {
-                if let Kind::Shape(shape) = &mut layer.kind {
-                    (shape.dashed, shape.dotted) = (kind == 1, kind == 2);
-                }
+            Control::Shadow(which) => self.restyle(|layer| match &mut layer.kind {
+                Kind::Picture(picture) => picture.shadow = which,
+                Kind::Shape(shape) => shape.shadow = Some(actions::custom_drop(which)),
             }),
             Control::Action(action) => return self.act(action),
             Control::Panel => {}
@@ -2377,15 +2527,7 @@ impl Studio {
             }
             Paint::Shadow => {
                 let color = color.unwrap_or(0) & 0xFF_FFFF;
-                self.restyle(|layer| {
-                    if let Kind::Picture(picture) = &mut layer.kind {
-                        if picture.shadow != CUSTOM_SHADOW {
-                            picture.drop = custom_drop(picture.shadow);
-                            picture.shadow = CUSTOM_SHADOW;
-                        }
-                        picture.drop.color = (picture.drop.color & 0xFF00_0000) | color;
-                    }
-                });
+                self.restyle(|layer| layer.change_drop(|drop| drop.color = (drop.color & 0xFF00_0000) | color));
             }
             // One color among what is picked out made another, in each of
             // them, line and fill; and the colors follow it.
@@ -2448,19 +2590,9 @@ impl Studio {
             Action::Duplicate => self.duplicate(),
             Action::Delete => self.delete(),
             Action::Align(way) => self.align(way),
-            Action::Border => self.restyle(|layer| {
-                if let Kind::Shape(shape) = &mut layer.kind {
-                    shape.border = !shape.border || !shape.filled;
-                }
-            }),
             Action::Halo => self.restyle(|layer| {
                 if let Kind::Shape(shape) = &mut layer.kind {
                     shape.halo = !shape.halo;
-                }
-            }),
-            Action::Sketch => self.restyle(|layer| {
-                if let Kind::Shape(shape) = &mut layer.kind {
-                    shape.sketch = !shape.sketch;
                 }
             }),
             other => return self.act_more(other),
@@ -2803,16 +2935,31 @@ impl Studio {
         if let Field::ExportTimes(index) = field {
             return self.doc.exports.get(usize::from(index)).map(|size| size.times);
         }
+        if let Field::FrameX | Field::FrameY = field {
+            return Some(if field == Field::FrameX { self.doc.x } else { self.doc.y });
+        }
         let chosen = self.chosen();
         if chosen.len() > 1 {
             let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
+            let all = actions::union(&boxes)?;
             return match field {
-                Field::X => boxes.iter().map(|b| b.0).reduce(f32::min),
-                Field::Y => boxes.iter().map(|b| b.1).reduce(f32::min),
+                Field::X => Some(all.0),
+                Field::Y => Some(all.1),
+                Field::W => Some(all.2),
+                Field::H => Some(all.3),
                 _ => None,
             };
         }
         let index = *chosen.first()?;
+        if let Field::DropY | Field::DropBlur | Field::DropSpread | Field::DropAlpha = field {
+            let drop = self.doc.layers[index].drop()?;
+            return Some(match field {
+                Field::DropY => f32::from(drop.y),
+                Field::DropBlur => f32::from(drop.blur),
+                Field::DropSpread => f32::from(drop.spread),
+                _ => (drop.color >> 24) as f32 * 100.0 / 255.0,
+            });
+        }
         let bounds = self.doc.layers[index].bounds(&mut self.text);
         Some(match &self.doc.layers[index].kind {
             Kind::Picture(picture) => match field {
@@ -2826,15 +2973,6 @@ impl Studio {
                 Field::Exposure => picture.adjust[0] * 100.0,
                 Field::Contrast => picture.adjust[1] * 100.0,
                 Field::Saturation => picture.adjust[2] * 100.0,
-                Field::DropY | Field::DropBlur | Field::DropSpread | Field::DropAlpha => {
-                    let drop = if picture.shadow == CUSTOM_SHADOW { picture.drop } else { custom_drop(picture.shadow) };
-                    match field {
-                        Field::DropY => f32::from(drop.y),
-                        Field::DropBlur => f32::from(drop.blur),
-                        Field::DropSpread => f32::from(drop.spread),
-                        _ => (drop.color >> 24) as f32 * 100.0 / 255.0,
-                    }
-                }
                 _ => return None,
             },
             Kind::Shape(shape) => match field {
@@ -2851,6 +2989,14 @@ impl Studio {
                 Field::StartY => shape.points[0].1,
                 Field::EndX => shape.points[1.min(shape.points.len() - 1)].0,
                 Field::EndY => shape.points[1.min(shape.points.len() - 1)].1,
+                Field::Length => {
+                    let (a, b) = (shape.points[0], shape.points[1.min(shape.points.len() - 1)]);
+                    (b.0 - a.0).hypot(b.1 - a.1)
+                }
+                Field::LineAngle => {
+                    let (a, b) = (shape.points[0], shape.points[1.min(shape.points.len() - 1)]);
+                    (b.1 - a.1).atan2(b.0 - a.0).to_degrees()
+                }
                 _ => return None,
             },
         })
@@ -2871,6 +3017,9 @@ impl Studio {
                     size.times = (value * 2.0).round().clamp(1.0, 16.0) / 2.0;
                 }
             }
+            Field::FrameX => self.doc.x = value.round(),
+            Field::FrameY => self.doc.y = value.round(),
+            Field::W | Field::H if self.chosen().len() > 1 => self.scale_selection(field == Field::W, value),
             Field::ArtW => self.doc.width = (value.round() as i32).clamp(16, 8000),
             Field::ArtH => self.doc.height = (value.round() as i32).clamp(16, 8000),
             Field::Angle => {
@@ -2905,18 +3054,23 @@ impl Studio {
                             let which = [Field::Exposure, Field::Contrast, Field::Saturation].iter().position(|known| *known == field).unwrap_or(0);
                             picture.adjust[which] = (value / 100.0).clamp(-1.0, 1.0);
                         }
-                        (Kind::Picture(picture), Field::DropY | Field::DropBlur | Field::DropSpread | Field::DropAlpha) => {
-                            if picture.shadow != CUSTOM_SHADOW {
-                                picture.drop = custom_drop(picture.shadow);
-                                picture.shadow = CUSTOM_SHADOW;
-                            }
+                        (_, Field::DropY | Field::DropBlur | Field::DropSpread | Field::DropAlpha) => {
                             let number = value.round().clamp(-400.0, 400.0) as i16;
-                            match field {
-                                Field::DropY => picture.drop.y = number,
-                                Field::DropBlur => picture.drop.blur = number.max(0),
-                                Field::DropSpread => picture.drop.spread = number,
-                                _ => picture.drop.color = (picture.drop.color & 0xFF_FFFF) | (((value.clamp(0.0, 100.0) * 2.55).round() as u32) << 24),
-                            }
+                            layer.change_drop(|drop| match field {
+                                Field::DropY => drop.y = number,
+                                Field::DropBlur => drop.blur = number.max(0),
+                                Field::DropSpread => drop.spread = number,
+                                _ => drop.color = (drop.color & 0xFF_FFFF) | (((value.clamp(0.0, 100.0) * 2.55).round() as u32) << 24),
+                            });
+                        }
+                        (Kind::Shape(shape), Field::Length | Field::LineAngle) => {
+                            let far = 1.min(shape.points.len() - 1);
+                            let (a, b) = (shape.points[0], shape.points[far]);
+                            let (length, angle) = ((b.0 - a.0).hypot(b.1 - a.1), (b.1 - a.1).atan2(b.0 - a.0));
+                            let (length, angle) = if field == Field::Length { (value.max(1.0), angle) } else { (length, value.to_radians()) };
+                            shape.points[far] = ((a.0 + length * angle.cos()).round(), (a.1 + length * angle.sin()).round());
+                            shape.points.truncate(2);
+                            shape.stuck[1] = None;
                         }
                         (Kind::Shape(shape), Field::FontSize) => shape.font_px = (value.round() as u32).clamp(6, 400),
                         (Kind::Shape(shape), Field::Stroke) => shape.stroke = (value * 2.0).round().clamp(1.0, 80.0) / 2.0,
@@ -3809,12 +3963,12 @@ impl Studio {
                         Some(typed) => format!("{typed}|"),
                         None => self.field(field).map_or("\u{2014}".to_owned(), |value| match field {
                             Field::Opacity => format!("{}%", value.round() as i32),
-                            Field::Turn | Field::Angle => format!("{}\u{b0}", value.round() as i32),
+                            Field::Turn | Field::Angle | Field::LineAngle => format!("{}\u{b0}", value.round() as i32),
                             _ => format!("{}", value.round() as i32),
                         }),
                     };
                     let (label, icon) = match field {
-                        Field::Turn | Field::Angle => (icons::ROTATE, true),
+                        Field::Turn | Field::Angle | Field::LineAngle => (icons::ROTATE, true),
                         Field::Radius => (icons::RADIUS, true),
                         Field::Opacity => (icons::EYE, true),
                         other => (other.label(), false),
@@ -3832,7 +3986,7 @@ impl Studio {
                         (Paint::To, _, Fill::Gradient(_, to, _)) => Some(to),
                         (Paint::Line, Some(Layer { kind: Kind::Shape(shape), .. }), _) => Some(shape.color),
                         (Paint::Fill, Some(Layer { kind: Kind::Shape(shape), .. }), _) => shape.filled.then_some(shape.fill),
-                        (Paint::Shadow, Some(Layer { kind: Kind::Picture(picture), .. }), _) => Some(if picture.shadow == CUSTOM_SHADOW { picture.drop.color } else { custom_drop(picture.shadow).color } & 0xFF_FFFF),
+                        (Paint::Shadow, Some(layer), _) => layer.drop().map(|drop| drop.color & 0xFF_FFFF),
                         (Paint::Recolor(color), _, _) => Some(color),
                         _ => None,
                     };
@@ -3997,10 +4151,7 @@ impl Studio {
                             Fill::Gradient(..) => ground == Ground::Gradient,
                         },
                         Control::Shadow(which) => matches!(&shown, Some(Layer { kind: Kind::Picture(picture), .. }) if picture.shadow == which),
-                        Control::Line(kind) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if match kind { 2 => shape.dotted, 1 => shape.dashed && !shape.dotted, _ => !shape.dashed && !shape.dotted }),
                         Control::Action(Action::Halo) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.halo),
-                        Control::Action(Action::Sketch) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.sketch),
-                        Control::Action(Action::Border) => matches!(&shown, Some(Layer { kind: Kind::Shape(shape), .. }) if shape.border),
                         Control::Action(Action::Crop) => self.cropping.is_some(),
                         Control::Window(which) => matches!(&shown, Some(Layer { kind: Kind::Picture(picture), .. }) if frame::WINDOWS[usize::from(which).min(frame::WINDOWS.len() - 1)].0 == picture.window),
                         Control::Action(action) => self.action_on(action, &shown),
@@ -4373,6 +4524,46 @@ mod tests {
     }
 
     #[test]
+    fn a_shape_casts_its_shadow_and_several_are_sized_together() {
+        let mut text = Text::load();
+        let mut doc = Doc::new(200, 200);
+        doc.background = Fill::Color(0xFFFFFF);
+        let mut boxed = Shape::new(Tool::Rect, 0x3E63DD, 2.0, (50.0, 50.0));
+        (boxed.points[1], boxed.filled, boxed.fill) = ((150.0, 120.0), true, 0x3E63DD);
+        boxed.shadow = Some(frame::Layer { x: 0, y: 20, blur: 10, spread: 0, color: 0x8000_0000 });
+        doc.layers.push(Layer::shape(boxed.clone()));
+        let (_, _, out) = doc.render(1.0, &mut text);
+        // Below it, its shadow; far off, nothing; drawn at twice, the same.
+        assert!(out[132 * 200 + 100] & 0xFF < 0xC0, "{:06x}", out[132 * 200 + 100]);
+        assert_eq!(out[180 * 200 + 20] & 0xFF_FFFF, 0xFFFFFF);
+        assert_eq!(out[100 * 200 + 100] & 0xFF_FFFF, 0x3E63DD);
+        let (_, _, twice) = doc.render(2.0, &mut text);
+        assert!(twice[264 * 400 + 200] & 0xFF < 0xC0);
+        // Two picked out, made twice as wide together from their left.
+        let mut studio = studio();
+        let mut other = boxed.clone();
+        other.translate(200.0, 0.0);
+        studio.doc.layers = vec![Layer::shape(boxed), Layer::shape(other)];
+        studio.selected = vec![0, 1];
+        let wide = studio.field(Field::W).unwrap();
+        let left = studio.field(Field::X).unwrap();
+        studio.set_field(Field::W, wide * 2.0);
+        let Kind::Shape(moved) = studio.doc.layers[1].kind.clone() else { panic!() };
+        assert_eq!(moved.points[0].0, left + (250.0 - left) * 2.0);
+        assert!((studio.field(Field::W).unwrap() - wide * 2.0).abs() < 8.0);
+        // A line made longer, and turned, from its start.
+        let mut line = Shape::new(Tool::Arrow, 0, 2.0, (10.0, 10.0));
+        line.points[1] = (40.0, 50.0);
+        studio.doc.layers = vec![Layer::shape(line)];
+        studio.selected = vec![0];
+        assert_eq!(studio.field(Field::Length), Some(50.0));
+        studio.set_field(Field::Length, 100.0);
+        studio.set_field(Field::LineAngle, 90.0);
+        let Kind::Shape(line) = &studio.doc.layers[0].kind else { panic!() };
+        assert_eq!(line.points[1], (10.0, 110.0));
+    }
+
+    #[test]
     fn a_picture_is_drawn_where_it_is_turned_rounded_and_shadowed() {
         let mut text = Text::load();
         let mut doc = Doc::new(200, 200);
@@ -4487,7 +4678,11 @@ mod tests {
         studio.pointer_moved(b.0, b.1, Mods::default());
         studio.released();
         assert_eq!((studio.doc.layers.len(), studio.selected.clone(), studio.tool), (1, vec![0], Tool::Select));
-        // Its fill, from the colors its fill opens.
+        // Its fill: a plus for one, then the colors its fill opens.
+        let plus = studio.control_rect(Control::Action(Action::FillOn)).expect("a fill can be added").center();
+        studio.pointer_moved(plus.0, plus.1, Mods::default());
+        studio.pressed(1, 1500);
+        studio.released();
         let field = studio.layout().controls.iter().find(|(_, control)| *control == Control::ColorField(Paint::Fill)).map(|(rect, _)| rect.center()).expect("its fill is in the panel");
         studio.pointer_moved(field.0, field.1, Mods::default());
         studio.pressed(1, 2000);

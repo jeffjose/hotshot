@@ -19,8 +19,11 @@ pub(super) fn custom_drop(preset: usize) -> frame::Layer {
     }
 }
 
+/// The shadow a shape is given when it is just given one.
+pub(super) const SHAPE_DROP: frame::Layer = frame::Layer { x: 0, y: 6, blur: 16, spread: 0, color: 0x4000_0000 };
+
 /// The box round some boxes.
-fn union(boxes: &[(f32, f32, f32, f32)]) -> Option<(f32, f32, f32, f32)> {
+pub(super) fn union(boxes: &[(f32, f32, f32, f32)]) -> Option<(f32, f32, f32, f32)> {
     let first = *boxes.first()?;
     let (mut left, mut top, mut right, mut bottom) = (first.0, first.1, first.0 + first.2, first.1 + first.3);
     for &(x, y, w, h) in boxes {
@@ -122,16 +125,29 @@ impl Studio {
                     shape.align = align.min(2);
                 }
             }),
-            Action::ShadowOn => self.restyle(|layer| {
-                if let Kind::Picture(picture) = &mut layer.kind {
-                    picture.shadow = frame::SHADOWS.len();
-                }
+            Action::ShadowOn => self.restyle(|layer| match &mut layer.kind {
+                Kind::Picture(picture) => picture.shadow = frame::SHADOWS.len(),
+                Kind::Shape(shape) => shape.shadow = Some(SHAPE_DROP),
             }),
-            Action::ShadowOff => self.restyle(|layer| {
-                if let Kind::Picture(picture) = &mut layer.kind {
-                    picture.shadow = 0;
-                }
+            Action::ShadowOff => self.restyle(|layer| match &mut layer.kind {
+                Kind::Picture(picture) => picture.shadow = 0,
+                Kind::Shape(shape) => shape.shadow = None,
             }),
+            Action::FillOn => {
+                let color = self.fill.unwrap_or(0xFFFFFF);
+                self.paint(Paint::Fill, Some(color));
+            }
+            Action::FillOff => self.paint(Paint::Fill, None),
+            Action::BorderOn | Action::BorderOff => {
+                let on = action == Action::BorderOn;
+                self.restyle(|layer| {
+                    if let Kind::Shape(shape) = &mut layer.kind {
+                        // One without a border is filled, or there would
+                        // be nothing of it.
+                        shape.border = on || !shape.filled;
+                    }
+                });
+            }
             Action::ResetAdjust => self.restyle(|layer| {
                 if let Kind::Picture(picture) = &mut layer.kind {
                     picture.adjust = [0.0; 3];
@@ -397,5 +413,49 @@ impl Studio {
         self.menu = Some(MenuState { kind: MenuKind::Context, at, sub: None });
         self.dirty = true;
         Outcome::Continue
+    }
+}
+
+impl Studio {
+    /// What is picked out made wider or taller as a whole, to a width or
+    /// a height, from its top left: each layer moved and sized with it,
+    /// both ways when proportions are kept.
+    pub(super) fn scale_selection(&mut self, across: bool, value: f32) {
+        let chosen = self.chosen();
+        let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
+        let Some((left, top, w, h)) = union(&boxes) else { return };
+        let by = value.max(1.0) / if across { w } else { h }.max(1.0);
+        let (sx, sy) = match (across, self.keep_ratio) {
+            (_, true) => (by, by),
+            (true, false) => (by, 1.0),
+            (false, false) => (1.0, by),
+        };
+        for index in chosen {
+            scale_layer(&mut self.doc.layers[index], (left, top), (sx, sy));
+        }
+    }
+}
+
+/// A layer made larger or smaller about a point, each way by its own
+/// factor: a picture's middle and size; a shape's points, but that words
+/// and counters are only moved.
+pub(super) fn scale_layer(layer: &mut Layer, (ox, oy): (f32, f32), (sx, sy): (f32, f32)) {
+    let to = |(x, y): (f32, f32)| (ox + (x - ox) * sx, oy + (y - oy) * sy);
+    match &mut layer.kind {
+        Kind::Picture(picture) => {
+            (picture.cx, picture.cy) = to((picture.cx, picture.cy));
+            (picture.w, picture.h) = ((picture.w * sx).max(4.0), (picture.h * sy).max(4.0));
+        }
+        Kind::Shape(shape) => {
+            match shape.tool {
+                Tool::Text | Tool::Badge | Tool::Counter => {
+                    let (x, y) = shape.points[0];
+                    let (nx, ny) = to((x, y));
+                    shape.translate(nx - x, ny - y);
+                }
+                _ => shape.points.iter_mut().for_each(|point| *point = to(*point)),
+            }
+            shape.touch();
+        }
     }
 }
