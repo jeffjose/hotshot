@@ -24,6 +24,8 @@ mod actions;
 mod arrange;
 mod corners;
 mod crop_bar;
+mod crop_snap;
+mod edges;
 mod fills;
 mod turning;
 mod drawn;
@@ -1766,6 +1768,14 @@ pub struct Studio {
     editing: Option<usize>,
     /// The picture being cropped, by its layer.
     cropping: Option<usize>,
+    /// The lines found in the picture last cropped, known by its picture:
+    /// found once for each, as cropping it begins.
+    crop_edges: Option<(std::sync::Weak<Image>, Arc<edges::Lines>)>,
+    /// The lines of its picture a crop being pulled has snapped to, in the
+    /// picture's own pixels: up and down at an x, or across at a y.
+    crop_snaps: Vec<(bool, f32)>,
+    /// Which of the tight crops was last gone to, and the crop it made.
+    tight: Option<(usize, (f32, f32, f32, f32))>,
     /// How the next shape is drawn.
     color: u32,
     fill: Option<u32>,
@@ -1885,6 +1895,9 @@ impl Studio {
             under_press: None,
             editing: None,
             cropping: None,
+            crop_edges: None,
+            crop_snaps: Vec::new(),
+            tight: None,
             color: 0xE5484D,
             // Filled with no border, as Figma draws a box; capture mode
             // outlines one instead.
@@ -4977,6 +4990,9 @@ impl Studio {
     /// its corners to pull.
     fn draw_crop(&mut self, canvas: &mut Canvas, index: usize) {
         let Some(Layer { kind: Kind::Picture(picture), .. }) = self.doc.layers.get(index).cloned() else { return };
+        // Its edges found as it is first shown cropped, for its sides to
+        // snap to when pulled.
+        self.crop_lines(&picture.image);
         // The whole of it, where it would be, in outline.
         let (per_x, per_y) = (picture.w / picture.crop.2.max(1e-3), picture.h / picture.crop.3.max(1e-3));
         let (iw, ih) = (picture.image.width() as f32 * per_x, picture.image.height() as f32 * per_y);
