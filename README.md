@@ -154,7 +154,11 @@ Pictures come from files given on the command line, from the clipboard
 (`Ctrl+V`), or from the screen (Capture, or `Ctrl+G`, which hides the
 window while you take one). Drag to move, drag a handle to resize
 (corners keep proportions unless Shift is held), and drag just outside a
-corner to rotate. Every number in the panel can be typed into with a
+corner to rotate, in 15° steps with Shift, with how far shown by the
+pointer. Several picked out rotate together about their middle. The
+pointer says what a drag would do before it starts: a curved arrow just
+outside a corner, bowed the way the corner points, and a resize arrow on
+a corner or a side, turned as the layer is. Every number in the panel can be typed into with a
 double click, or scrubbed by dragging it sideways. A box or a picture
 picked out has a dot inside each corner, as in Figma, once it is large
 enough on screen: drag one in to round all four corners, or Alt-drag it

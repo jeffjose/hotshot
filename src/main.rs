@@ -13,6 +13,7 @@ mod bench;
 mod canvas;
 mod check;
 mod clipboard;
+mod cursors;
 mod dbus;
 mod editor;
 mod frame;

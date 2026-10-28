@@ -252,6 +252,30 @@ impl Display {
         Ok(true)
     }
 
+    /// A pointer of hotshot's own drawing, `cursors::SIZE` square with its
+    /// point in the middle, each pixel opaque by its top byte and its
+    /// colors times that. None without the Render extension, or a kind of
+    /// pixel with a byte of how opaque.
+    fn drawn_cursor(&self, pixels: &[u32]) -> Result<Option<u32>> {
+        use crate::cursors::{HOT, SIZE};
+        if self.conn.extension_information(render::X11_EXTENSION_NAME)?.is_none() {
+            return Ok(None);
+        }
+        let formats = self.conn.render_query_pict_formats()?.reply()?;
+        let Some(format) = formats.formats.iter().find(|format| format.type_ == render::PictType::DIRECT && format.depth == 32 && format.direct.alpha_mask == 0xFF && format.direct.alpha_shift == 24 && format.direct.red_shift == 16) else { return Ok(None) };
+        let (pixmap, gc, picture, cursor) = (self.conn.generate_id()?, self.conn.generate_id()?, self.conn.generate_id()?, self.conn.generate_id()?);
+        self.conn.create_pixmap(32, pixmap, self.root, SIZE as u16, SIZE as u16)?;
+        self.conn.create_gc(gc, pixmap, &CreateGCAux::new())?;
+        let bytes: Vec<u8> = pixels.iter().flat_map(|pixel| pixel.to_le_bytes()).collect();
+        self.conn.put_image(ImageFormat::Z_PIXMAP, pixmap, gc, SIZE as u16, SIZE as u16, 0, 0, 0, 32, &bytes)?;
+        self.conn.render_create_picture(picture, pixmap, format.id, &render::CreatePictureAux::new())?;
+        self.conn.render_create_cursor(cursor, picture, HOT as u16, HOT as u16)?;
+        self.conn.render_free_picture(picture)?;
+        self.conn.free_gc(gc)?;
+        self.conn.free_pixmap(pixmap)?;
+        Ok(Some(cursor))
+    }
+
     /// How the Render extension knows the screen's kind of pixel, if
     /// there is a Render extension.
     fn picture_format(&self) -> Result<Option<render::Pictformat>> {
@@ -447,6 +471,17 @@ impl Display {
         for (cursor, name) in names {
             if let Ok(id) = handle.load_cursor(&self.conn, name) {
                 self.cursors.insert(cursor, id);
+            }
+        }
+        // Turning drawn by hotshot, a curved arrow bowed out each way a
+        // corner can point, as no theme has one; the theme's if it cannot.
+        for way in 0..crate::cursors::TURNS {
+            let drawn = self.drawn_cursor(&crate::cursors::turn_image(way)).ok().flatten();
+            if let Some(id) = drawn.or_else(|| self.cursors.get(&Cursor::Turn).copied()) {
+                self.cursors.insert(Cursor::TurnAt(way), id);
+                if way == 7 {
+                    self.cursors.insert(Cursor::Turn, id);
+                }
             }
         }
         let mapping = mapping.reply()?;

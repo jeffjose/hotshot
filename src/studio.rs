@@ -24,6 +24,7 @@ mod actions;
 mod arrange;
 mod corners;
 mod crop_bar;
+mod turning;
 mod drawn;
 mod duplicate;
 mod effects;
@@ -1782,6 +1783,10 @@ pub struct Studio {
     styling: bool,
     /// Whether the panel shows a radius for each corner, not one for all.
     corners_open: bool,
+    /// How far what is being turned has gone round; and the pointer for
+    /// where it is and what it is doing, worked out as it moves.
+    turned_by: f32,
+    pointer_cursor: Option<Cursor>,
     /// The library, while it is open; and whether what a label put down
     /// from it says is all picked out, for the first letter to type over.
     library: Option<library::Library>,
@@ -1880,6 +1885,8 @@ impl Studio {
             color_open: None,
             styling: false,
             corners_open: false,
+            turned_by: 0.0,
+            pointer_cursor: None,
             library: None,
             words_picked: false,
             search: None,
@@ -2528,6 +2535,10 @@ impl Studio {
     }
 
     pub fn cursor(&self) -> Cursor {
+        // Turning, or sizing, or about to.
+        if let (Some(cursor), Drag::None | Drag::Turn { .. } | Drag::Scale { .. }) = (self.pointer_cursor, self.drag) {
+            return cursor;
+        }
         match self.drag {
             Drag::Pan { .. } => return Cursor::Move,
             Drag::Turn { .. } => return Cursor::Turn,
@@ -2565,6 +2576,7 @@ impl Studio {
     pub fn pointer_moved(&mut self, x: i32, y: i32, mods: Mods) {
         let mods = self.steady_mods(mods);
         (self.pointer, self.mods) = ((x, y), mods);
+        self.pointer_cursor = self.pointer_shape();
         let at = self.to_doc((x, y));
         match self.drag {
             Drag::Picker { part, rect } => self.pick_at(part, rect, (x, y), false),
@@ -2668,25 +2680,7 @@ impl Studio {
                 self.changed_layers(&chosen);
             }
             Drag::Scale { pull, from } => self.scale_to(pull, from, at, mods),
-            Drag::Turn { about, began } => {
-                let Some(index) = self.picked() else { return };
-                let mut by = (at.1 - about.1).atan2(at.0 - about.0) - began;
-                let mut layer = self.held[0].clone();
-                if mods.shift {
-                    let step = 15f32.to_radians();
-                    let start = match &layer.kind {
-                        Kind::Picture(picture) => picture.angle,
-                        Kind::Shape(shape) => shape.angle,
-                    };
-                    by = ((start + by) / step).round() * step - start;
-                }
-                match &mut layer.kind {
-                    Kind::Picture(picture) => picture.angle += by,
-                    Kind::Shape(shape) => shape.turn(by, about, &mut self.text),
-                }
-                self.doc.layers[index] = layer;
-                self.changed_layers(&[index]);
-            }
+            Drag::Turn { about, began } => self.drag_turn(about, began, at, mods.shift),
             Drag::Draw { from } => {
                 let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.last_mut() else { return };
                 match shape.tool {
@@ -2941,22 +2935,10 @@ impl Studio {
                 return;
             }
         }
-        if let Some(index) = self.picked() {
-            let corners: Vec<(i32, i32)> = handles.iter().filter(|(_, pull)| pull.0 != END).take(4).map(|&(spot, _)| spot).collect();
-            let turnable = match &self.doc.layers[index].kind {
-                Kind::Picture(_) => true,
-                Kind::Shape(shape) => shape.turns(),
-            };
-            if turnable && corners.iter().any(|&corner| near(corner, at_window, 18) && !near(corner, at_window, 6)) {
-                self.checkpoint();
-                self.held = vec![self.doc.layers[index].clone()];
-                let about = match &self.doc.layers[index].kind {
-                    Kind::Picture(picture) => (picture.cx, picture.cy),
-                    Kind::Shape(shape) => shape.centre(&mut self.text),
-                };
-                self.drag = Drag::Turn { about, began: (at.1 - about.1).atan2(at.0 - about.0) };
-                return;
-            }
+        // Just outside a corner of what is picked out, one layer or more,
+        // it is turned.
+        if self.press_turn(at, at_window) {
+            return;
         }
         let under = self.layer_at(at);
         // Inside the box of what is picked out a drag moves all of it, as
@@ -4735,6 +4717,7 @@ impl Studio {
                 }
             }
             self.draw_radius_handles(&mut canvas);
+            self.draw_turn_label(&mut canvas);
         }
         if let Some(index) = self.cropping {
             self.draw_crop(&mut canvas, index);

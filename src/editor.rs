@@ -152,6 +152,9 @@ pub enum Cursor {
     Upright,
     /// Turning what is picked out.
     Turn,
+    /// The same, the arrow bowed out the way a corner points, in eighths
+    /// of a turn clockwise from straight right.
+    TurnAt(u8),
 }
 
 /// How the window under the pointer shows, while nothing is selected
