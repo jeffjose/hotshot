@@ -5044,9 +5044,7 @@ impl Studio {
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
         for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported].into_iter().flatten() {
-            for grow in (1..=6).rev() {
-                canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 12 + grow, 0x000000, 14);
-            }
+            soft_shadow(canvas, place, 12);
             canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);
         }
@@ -5175,9 +5173,7 @@ impl Studio {
                     // With its panel hidden, the button floats on its own,
                     // on a little panel of its own.
                     if !open {
-                        for grow in (1..=5).rev() {
-                            canvas.round_fill(rect.x - 4 - grow, rect.y - 4 - grow + 3, rect.w + 8 + 2 * grow, rect.h + 8 + 2 * grow, 10 + grow, 0x000000, 14);
-                        }
+                        soft_shadow(canvas, rect.inflate(4), 10);
                         canvas.round_fill(rect.x - 4, rect.y - 4, rect.w + 8, rect.h + 8, 10, PANEL_COLOR, 256);
                         canvas.round_outline(rect.x - 4, rect.y - 4, rect.w + 8, rect.h + 8, 10, 1, EDGE_COLOR);
                     }
@@ -5641,6 +5637,15 @@ fn draw_side_icon(canvas: &mut Canvas, rect: Rect, side: u8, open: bool, color: 
 }
 
 /// A line a pixel wide, from one point to another, in the window.
+
+/// The shadow a panel, the bar of tools or a list floats on: faint and
+/// wide, a little below it, fading out evenly, as Figma's are; not a dark
+/// rim round it.
+fn soft_shadow(canvas: &mut Canvas, place: Rect, radius: i32) {
+    for grow in (1..=10).rev() {
+        canvas.round_fill(place.x - grow, place.y - grow + 2, place.w + 2 * grow, place.h + 2 * grow, radius + grow, 0x000000, 5);
+    }
+}
 fn line(canvas: &mut Canvas, from: (i32, i32), to: (i32, i32), color: u32) {
     let steps = (to.0 - from.0).abs().max((to.1 - from.1).abs()).max(1);
     for step in 0..=steps {

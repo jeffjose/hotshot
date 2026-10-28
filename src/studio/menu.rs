@@ -516,9 +516,7 @@ impl Studio {
     /// The lists that are open, drawn over everything.
     pub(super) fn draw_menus(&mut self, canvas: &mut Canvas, layout: &Layout, hover: Option<Control>) {
         for (level, &(place, kind)) in layout.menus.iter().enumerate() {
-            for grow in (1..=5).rev() {
-                canvas.round_fill(place.x - grow, place.y - grow + 4, place.w + 2 * grow, place.h + 2 * grow, 9 + grow, 0x000000, 16);
-            }
+            soft_shadow(canvas, place, 9);
             canvas.round_fill(place.x, place.y, place.w, place.h, 9, 0x1F1F1F, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 9, 1, 0x3A3A3A);
             let items = self.menu_items(kind);
