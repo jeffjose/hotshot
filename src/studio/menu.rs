@@ -294,7 +294,7 @@ impl Studio {
             }
             MenuKind::Format(index) => {
                 let now = self.doc.exports.get(index).map(|size| size.format);
-                [crate::output::Format::Png, crate::output::Format::Jpeg, crate::output::Format::Webp].iter().map(|&format| Item::entry(format.ending().to_ascii_uppercase(), "", MenuAct::Format(index, format)).on(Some(format) == now)).collect()
+                crate::output::Format::ALL.iter().map(|&format| Item::entry(format.title(), "", MenuAct::Format(index, format)).on(Some(format) == now)).collect()
             }
             MenuKind::Styles => style::STYLE_NAMES.iter().enumerate().map(|(at, name)| Item::entry(*name, ["Q", "W", "E", "R", "T", "A", "S", "D", "G", "H"][at], MenuAct::Style(at as u8))).collect(),
             MenuKind::Edge => {
@@ -711,7 +711,7 @@ impl Studio {
             MenuAct::Format(index, format) => {
                 if index < self.doc.exports.len() {
                     self.checkpoint();
-                    self.doc.exports[index].format = format;
+                    (self.doc.exports[index].format, self.doc.exports[index].tuned) = (format, None);
                     self.changed();
                 }
             }

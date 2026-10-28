@@ -590,7 +590,7 @@ impl Studio {
                 };
                 (menu::Look::Plain, "Drop shadow".to_owned(), hint)
             }
-            MenuKind::Format(index) => (menu::Look::Plain, self.doc.exports.get(index).map_or("PNG".to_owned(), |size| size.format.ending().to_ascii_uppercase()), String::new()),
+            MenuKind::Format(index) => (menu::Look::Plain, self.doc.exports.get(index).map_or("PNG", |size| size.format.title()).to_owned(), String::new()),
             _ => (menu::Look::Plain, String::new(), String::new()),
         }
     }

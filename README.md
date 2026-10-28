@@ -37,7 +37,9 @@ hotshot --reopen       # reopen the last screenshot with its shapes still editab
 hotshot -t calculator  # capture the window with "calculator" in its title
 hotshot -D 3 --pointer # wait three seconds, and include the mouse pointer
 hotshot --aspect 16:9  # lock the area to an aspect ratio; --fixed 1280x720 locks the size
-hotshot -f -o shot.jpg # save as JPEG (or .webp); --format sets the format for Save
+hotshot -f -o shot.jxl # save as JPEG XL (or .avif, .webp, .jpg); --format sets the format for Save
+hotshot --convert jxl ~/Pictures/*.png   # convert pictures, as jog does, each beside its original
+hotshot --export design.hotshot --frame 2 --scale 2 --format avif   # a canvas frame, with no window
 hotshot --pin          # pin the screenshot on screen, above other windows
 hotshot --record       # record an area; run again to stop (needs ffmpeg)
 hotshot --tray         # show an icon in the panel's tray; --menu opens its menu
@@ -295,6 +297,30 @@ names. To generate a commented file with every setting:
 ```sh
 hotshot --default-config > ~/.config/hotshot/config.toml
 ```
+
+## Formats
+
+A picture is written as PNG, JPEG XL or WebP with every pixel kept, or
+smaller and nearly the same as JPEG XL, AVIF, WebP or JPEG, each by an
+encoder built into hotshot (jixel, ravif, libwebp and mozjpeg), and all
+of them, PNG and JPEG too, are read back: opened, pasted or dropped on
+the canvas. The settings are jog's, aimed for every lossy format at a
+SSIMULACRA2 score of about 85, very good to the eye: JPEG XL at quality
+90, AVIF at 88 in full color (4:4:4), WebP and JPEG at 90; and a JPEG
+turned into JPEG XL is repacked, nothing lost, rather than encoded
+again. The same `[convert]` table as jog's, at the end of the config
+file, changes them:
+
+```toml
+[convert]
+avif = { quality = 88, speed = 6 }
+jxl  = { quality = 90, lossless = true }
+```
+
+`format = "jxl"` in the config file, or `--format`, says what Save
+writes; `-o shot.avif` says it by the name. What goes to the clipboard
+is a PNG whichever, since other programs cannot paste AVIF or JPEG XL
+yet.
 
 ## Wayland
 

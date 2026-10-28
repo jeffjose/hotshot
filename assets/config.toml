@@ -124,12 +124,15 @@
 # Seconds to wait before the screen is frozen: time to open a menu.
 # delay = 0
 
-# What kind of file a picture is saved as: "png", "jpg" or "webp". A
-# name given with -o that ends in one of them says so itself. What goes
-# to the clipboard is a PNG whichever.
+# What kind of file a picture is saved as: "png", "jxl-lossless" or
+# "webp-lossless", every pixel kept; or "jxl", "avif", "webp" or "jpg",
+# smaller and nearly the same. A name given with -o that ends in one of
+# them says so itself. What goes to the clipboard is a PNG whichever.
+# The kind chosen in capture mode's list is kept over this one.
 # format = "png"
 
-# How good a JPEG is, 1 to 100.
+# How good every lossy kind is, 1 to 100, in place of what [convert]
+# at the end says for each.
 # quality = 90
 
 # The mouse pointer in the picture, where it was when the screen was
@@ -157,3 +160,18 @@
 # each "Name = WIDTHxHEIGHT"; they are listed under Yours in the frame's
 # sizes, and "Save W × H as a size" there adds a line here.
 # frame-size = "Pixel 11 = 1080x2424"
+
+# How each kind of file is written, the same table as jog's, so the two
+# agree on what usual means. These are the usual settings, each lossy
+# kind aiming at a SSIMULACRA2 score of about 85, very good to the eye:
+# JPEG XL at jixel's medium effort, a JPEG turned into JPEG XL repacked
+# rather than encoded again; AVIF in full color at a middling speed (1
+# slowest and smallest, 10 fastest), 8 or 10 bits; WebP's method 0
+# fastest to 6 smallest. Save as default, in the canvas's Fine-tune
+# panel, writes this table. It goes last: everything after a [heading]
+# belongs to it.
+# [convert]
+# jxl  = { quality = 90, effort = "medium", lossless = false, recompress-jpeg = true }
+# avif = { quality = 88, speed = 6, depth = 8 }
+# jpeg = { quality = 90, chroma = "444", progressive = true }
+# webp = { quality = 90, lossless = false, method = 4 }

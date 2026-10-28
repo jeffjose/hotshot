@@ -62,9 +62,14 @@ What to do with it:
       --filename NAME        what a saved picture is called, less the .png,
                              with the time as strftime sets it out
                              (screenshot-%Y-%m-%d-%H%M%S)
-      --format KIND          png (the default), jpg or webp; a name given
-                             with -o that ends in one of them says so itself
-      --quality N            how good a JPEG is, 1 to 100 (90)
+      --format KIND          png (the default), jxl-lossless, webp-lossless,
+                             jxl, avif, webp or jpg; a name given with -o
+                             that ends in one of them says so itself. Each
+                             is written as the config file's [convert]
+                             table says, as jog's is
+      --quality N            how good every lossy kind is, 1 to 100 (by
+                             [convert]: JPEG XL 90, AVIF 88, WebP and JPEG
+                             90, each aiming at a SSIMULACRA2 of about 85)
       --pointer              with the mouse pointer in the picture (in the
                              editor, the button for it or M puts it in and
                              takes it out)
@@ -101,6 +106,15 @@ Making a picture of pictures:
                              or a backdrop. Ctrl+E exports it as a PNG,
                              Ctrl+C copies it, and Ctrl+S keeps all of it
                              in a .hotshot file, which --canvas opens
+      --export FILE          a frame of a .hotshot file written out, with no
+                             window: --frame N says which (1), --scale S how
+                             large and --format which kind; without either,
+                             at each size its Export rows list. -o names
+                             the file
+      --convert KIND FILE... pictures converted to a kind, as jog does: each
+                             written beside the original with the new
+                             ending, nothing overwritten, as the [convert]
+                             table says
 
 Staying about:
       --tray                 an icon in the panel's tray: a click is
@@ -303,6 +317,19 @@ pub struct Options {
     /// with `-o` does not say; and how good a JPEG is, of 100.
     pub format: Format,
     pub quality: u8,
+    /// How each kind of file is written: the config file's `[convert]`
+    /// table, as jog's is.
+    pub convert: crate::convert::Settings,
+    /// Pictures in files converted to a kind, as jog converts them, with
+    /// nothing taken: `--convert jxl FILES`.
+    pub convert_to: Option<Format>,
+    /// A frame of a file of the canvas exported, with nothing shown: the
+    /// file, which frame of it counting from 1, and how many times its size.
+    pub export: Option<PathBuf>,
+    pub export_frame: usize,
+    pub export_scale: Option<f32>,
+    /// Whether a kind of file was said, by --format or the config file.
+    pub format_said: bool,
     /// Whether the mouse pointer is in the picture.
     pub pointer: bool,
     /// Whether the picture is left on the screen once taken.
@@ -382,6 +409,12 @@ fn defaults() -> Options {
         filename: "screenshot-%Y-%m-%d-%H%M%S".into(),
         format: Format::Png,
         quality: 90,
+        convert: crate::convert::Settings::default(),
+        convert_to: None,
+        export: None,
+        export_frame: 1,
+        export_scale: None,
+        format_said: false,
         pointer: false,
         pin: false,
         show: None,
@@ -442,7 +475,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size", "convert", "export", "frame", "scale"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -474,11 +507,31 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         "dir" => options.dir = path(&value()?),
         "format" => {
             let text = value()?;
-            options.format = Format::named(&text).ok_or(format!("invalid format '{text}', expected png, jpg or webp"))?;
+            options.format = Format::named(&text).ok_or(format!("invalid format '{text}', expected png, jpg, webp, webp-lossless, avif, jxl or jxl-lossless"))?;
+            options.format_said = true;
         }
+        "convert" => {
+            let text = value()?;
+            options.convert_to = Some(Format::named(&text).ok_or(format!("invalid format '{text}', expected png, jxl-lossless, webp-lossless, jxl, avif, webp or jpg"))?);
+        }
+        "export" => options.export = Some(path(&value()?)),
+        "frame" => {
+            let text = value()?;
+            options.export_frame = text.parse::<usize>().ok().filter(|frame| *frame >= 1).ok_or(format!("invalid frame '{text}', expected 1 or more"))?;
+        }
+        "scale" => {
+            let text = value()?;
+            let scale = text.trim_end_matches(['x', 'X']).parse::<f32>().ok().filter(|scale| *scale >= 0.1 && *scale <= 8.0);
+            options.export_scale = Some(scale.ok_or(format!("invalid scale '{text}', expected 0.1 to 8"))?);
+        }
+        // Every lossy kind at once, as good as said; the [convert] table
+        // says each on its own.
         "quality" => {
             let text = value()?;
             options.quality = text.parse::<u8>().ok().filter(|quality| (1..=100).contains(quality)).ok_or(format!("invalid quality '{text}', expected 1 to 100"))?;
+            for format in [Format::Jpeg, Format::Webp, Format::Avif, Format::Jxl] {
+                options.convert.set_quality(format, f32::from(options.quality));
+            }
         }
         "pointer" => options.pointer = true,
         "no-pointer" => options.pointer = false,
@@ -745,16 +798,39 @@ fn read_config(options: &mut Options, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Reads the tables at the end of a config file: `[convert]`, how each
+/// kind of file is written, which may be the only one.
+fn read_tables(options: &mut Options, text: &str) -> Result<(), String> {
+    let tables = text.parse::<toml::Table>().map_err(|error| error.to_string().lines().next().unwrap_or("").to_owned())?;
+    for (name, table) in &tables {
+        match (name.as_str(), table.as_table()) {
+            ("convert", Some(table)) => options.convert.apply(table)?,
+            _ => return Err(format!("[{name}] is not a table hotshot has")),
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String> {
     let mut options = defaults();
     let file = config_file();
     if let Ok(text) = std::fs::read_to_string(&file) {
         // A line that cannot be made sense of is said and passed over,
         // so that one wrong line does not stop hotshot altogether.
-        for (number, line) in text.lines().enumerate() {
+        // The lines down to the first table's heading are settings of
+        // their own; from there it is tables, `[convert]` read as jog
+        // reads it.
+        let tables = text.lines().position(|line| line.trim_start().starts_with('[')).unwrap_or(usize::MAX);
+        for (number, line) in text.lines().enumerate().take(tables) {
             if let Err(error) = read_config(&mut options, line) {
                 let error = error.strip_prefix("line 1: ").unwrap_or(&error);
                 eprintln!("hotshot: {}: line {}: {error} (passed over)", file.display(), number + 1);
+            }
+        }
+        if tables != usize::MAX {
+            let rest: String = text.lines().skip(tables).map(|line| format!("{line}\n")).collect();
+            if let Err(error) = read_tables(&mut options, &rest) {
+                eprintln!("hotshot: {}: {error} (passed over)", file.display());
             }
         }
     }
@@ -866,9 +942,15 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     if options.edit && !options.record && (options.take == Take::Pick || !options.files.is_empty()) {
         options.canvas = true;
     }
-    if !options.canvas && !options.files.is_empty() {
+    if options.convert_to.is_some() && options.files.is_empty() {
+        return Err("--convert needs the pictures to convert".into());
+    }
+    if !options.canvas && options.convert_to.is_none() && !options.files.is_empty() {
         return Err(format!("unexpected argument '{}'", options.files[0].display()));
     }
+    // JPEG XL or WebP named, the way the [convert] table says.
+    options.format = options.format.as_set(&options.convert);
+    options.convert_to = options.convert_to.map(|format| format.as_set(&options.convert));
     Ok(Parsed::Run(Box::new(options)))
 }
 
@@ -1057,6 +1139,21 @@ mod tests {
         // --edit alone, or with files, is the canvas; with an area, it is not.
         assert!(run(&["--edit"]).unwrap().canvas && run(&["-e", "a.png"]).unwrap().canvas);
         assert!(!run(&["-f", "-e"]).unwrap().canvas && run(&["a.png"]).is_err());
+    }
+
+    #[test]
+    fn the_new_kinds_of_file_are_said_and_the_convert_table_read() {
+        let options = run(&["--format", "avif", "--quality", "70"]).unwrap();
+        assert_eq!((options.format, options.convert.avif.quality, options.convert.jxl.quality), (Format::Avif, 70.0, 70.0));
+        let converting = run(&["--convert", "jxl", "a.png", "b.jpg"]).unwrap();
+        assert_eq!((converting.convert_to, converting.files.len()), (Some(Format::Jxl), 2));
+        assert!(run(&["--convert", "jxl"]).is_err() && run(&["--convert", "gif", "a.png"]).is_err());
+        let exporting = run(&["--export", "f.hotshot", "--frame", "2", "--scale", "2x", "--format", "jxl-lossless"]).unwrap();
+        assert_eq!((exporting.export_frame, exporting.export_scale, exporting.format, exporting.format_said), (2, Some(2.0), Format::JxlLossless, true));
+        let mut options = defaults();
+        read_tables(&mut options, "[convert]\navif = { quality = 60, speed = 4 }\njxl = { lossless = true }\n").unwrap();
+        assert_eq!((options.convert.avif.quality, options.convert.avif.speed, Format::Jxl.as_set(&options.convert)), (60.0, 4, Format::JxlLossless));
+        assert!(read_tables(&mut options, "[colors]\nx = 1\n").is_err());
     }
 
     #[test]

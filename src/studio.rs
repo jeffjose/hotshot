@@ -35,6 +35,7 @@ mod export;
 mod library;
 mod menu;
 pub use menu::parse_frame_size;
+pub use export::export_file;
 mod panel;
 mod picker;
 mod place;
@@ -231,13 +232,14 @@ impl Image {
         Image { levels, png }
     }
 
-    /// From a PNG or a JPEG.
+    /// From a PNG, a JPEG, a WebP, an AVIF or a JPEG XL, what is
+    /// see-through in it kept.
     pub fn open(bytes: &[u8]) -> Option<Image> {
         if let Some((width, height, pixels)) = crate::pin::read(bytes) {
             return Some(Image::with(width, height, pixels, bytes.to_vec()));
         }
-        let photo = frame::open(bytes)?;
-        Some(Image::new(photo.width, photo.height, photo.pixels.iter().map(|pixel| pixel | 0xFF00_0000).collect()))
+        let picture = crate::convert::decode(bytes)?;
+        Some(Image::new(picture.width, picture.height, picture.pixels))
     }
 
     pub fn width(&self) -> i32 {
@@ -531,11 +533,33 @@ pub struct ExportSize {
     pub times: f32,
     pub suffix: String,
     pub format: crate::output::Format,
+    /// How it is written, where it was fine-tuned and that was used for
+    /// it, in place of the config file's `[convert]`.
+    pub tuned: Option<crate::convert::Settings>,
 }
 
 impl ExportSize {
     fn new(times: f32) -> ExportSize {
-        ExportSize { times, suffix: String::new(), format: crate::output::Format::Png }
+        ExportSize { times, suffix: String::new(), format: crate::output::Format::Png, tuned: None }
+    }
+
+    /// Its kind of file as a word in a file of the canvas, with how it is
+    /// written when that is its own: `avif{quality=70;speed=6;depth=8}`.
+    fn format_word(&self) -> String {
+        match self.tuned.map(|tuned| tuned.table_of(self.format).1).filter(|table| !table.is_empty()) {
+            Some(table) => format!("{}{}", self.format.word(), table.replace(' ', "").replace(',', ";")),
+            None => self.format.word().to_owned(),
+        }
+    }
+
+    /// The kind of file and how it is written, back from its word.
+    fn read_format(word: &str) -> Option<(crate::output::Format, Option<crate::convert::Settings>)> {
+        let Some((name, table)) = word.split_once('{') else { return Some((crate::output::Format::named(word)?, None)) };
+        let format = crate::output::Format::named(name)?;
+        let key = crate::convert::Settings::default().table_of(format).0;
+        let mut tuned = crate::convert::Settings::default();
+        tuned.apply_text(&format!("{key} = {{{}", table.replace(';', ","))).ok()?;
+        Some((format, Some(tuned)))
     }
 
     /// What its file's name ends in: the suffix given it, or with none, at
@@ -669,7 +693,7 @@ impl Doc {
     /// each picture by where it is among `images`, which it is added to.
     fn write_lines(&self, out: &mut String, images: &mut Vec<Arc<Image>>) {
         *out += &format!("size {} {}\n", self.width, self.height);
-        let sizes: Vec<String> = self.exports.iter().map(|size| format!("{}:{}:{}", size.times, size.format.ending(), size.suffix.replace([' ', ':'], "_"))).collect();
+        let sizes: Vec<String> = self.exports.iter().map(|size| format!("{}:{}:{}", size.times, size.format_word(), size.suffix.replace([' ', ':'], "_"))).collect();
         *out += &format!("exports {}\n", sizes.join(" "));
         *out += &match self.background {
             Fill::None => "background none\n".to_owned(),
@@ -785,8 +809,8 @@ impl Doc {
                 for word in words.filter(|word| !word.is_empty()) {
                     let mut parts = word.splitn(3, ':');
                     let times = parts.next()?.parse::<f32>().ok()?.clamp(0.1, 8.0);
-                    let format = crate::output::Format::named(parts.next()?)?;
-                    sizes.push(ExportSize { times, format, suffix: parts.next().unwrap_or("").to_owned() });
+                    let (format, tuned) = ExportSize::read_format(parts.next()?)?;
+                    sizes.push(ExportSize { times, format, suffix: parts.next().unwrap_or("").to_owned(), tuned });
                 }
                 self.exports = sizes;
             }
@@ -1864,6 +1888,8 @@ pub struct Studio {
     /// Where pictures go, and what they are called.
     dir: PathBuf,
     filename: String,
+    /// How each kind of file is written, by the config file's [convert].
+    pub convert: crate::convert::Settings,
     /// What was last done, said along the bottom for a while.
     note: Option<(String, std::time::Instant)>,
     last_press: (u32, (i32, i32)),
@@ -1995,6 +2021,7 @@ impl Studio {
             edited: false,
             dir,
             filename,
+            convert: crate::convert::Settings::default(),
             note: None,
             last_press: (0, (-100, -100)),
             guides: Vec::new(),
@@ -4375,7 +4402,7 @@ impl Studio {
             for size in sizes {
                 let (wide, high, pixels) = frame.render(size.times, &mut self.text);
                 let clear = pixels.iter().any(|pixel| pixel >> 24 != 255);
-                let bytes = crate::output::pack(size.format, 90, wide as u32, high as u32, &pixels, clear)?;
+                let bytes = crate::convert::encode(wide as u32, high as u32, &pixels, clear, None, size.format, &size.tuned.unwrap_or(self.convert))?.bytes;
                 let stem = match self.path {
                     Some(_) => one_line(&frame.name).replace('/', "-"),
                     None => format!("{}-{}", crate::output::dated(&self.filename), one_line(&frame.name).replace('/', "-")),
@@ -5806,6 +5833,7 @@ fn opened(pages: Option<Vec<Page>>, mut pictures: Vec<(Image, String)>, path: Pa
         studio.add_size(name.clone(), *w, *h);
     }
     studio.path = Some(path);
+    studio.convert = options.convert;
     (studio.left_open, studio.right_open) = kept_panels();
     // Boxes drawn as the last were set to be, in any file.
     studio.recall_shape_style();
@@ -6128,6 +6156,16 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                 }
                 Outcome::Paste => {
                     let picture = selection(conn, window, atom("CLIPBOARD")?, atom("image/png")?, atom("HOTSHOT_CANVAS")?, atom("INCR")?, time);
+                    // A picture of a kind other than PNG, or a file copied
+                    // in a file manager, an AVIF or a JPEG XL as well.
+                    let picture = match picture {
+                        Some(picture) => Some(picture),
+                        None => [atom("image/avif")?, atom("image/jxl")?, atom("image/webp")?, atom("image/jpeg")?].into_iter().find_map(|kind| selection(conn, window, atom("CLIPBOARD").ok()?, kind, atom("HOTSHOT_CANVAS").ok()?, atom("INCR").ok()?, time)).or_else(|| {
+                            let words = selection(conn, window, atom("CLIPBOARD").ok()?, atom("text/uri-list").ok()?, atom("HOTSHOT_CANVAS").ok()?, atom("INCR").ok()?, time)?;
+                            let path = pasted_path(&String::from_utf8_lossy(&words)).filter(|path| crate::convert::reads(path))?;
+                            std::fs::read(path).ok()
+                        }),
+                    };
                     let words = match picture {
                         Some(_) => None,
                         None => selection(conn, window, atom("CLIPBOARD")?, utf8, atom("HOTSHOT_CANVAS")?, atom("INCR")?, time).and_then(|bytes| String::from_utf8(bytes).ok()),
@@ -7152,7 +7190,9 @@ mod tests {
         (picture.shadow, picture.drop) = (CUSTOM_SHADOW, frame::Layer { x: 4, y: 20, blur: 30, spread: -2, color: 0x80102030 });
         (picture.adjust, picture.window, picture.title) = ([0.5, -0.25, 1.0], frame::Window::Mac, "main.rs".into());
         doc.layers.push(Layer::picture(picture));
-        doc.exports = vec![ExportSize { times: 1.0, suffix: String::new(), format: crate::output::Format::Png }, ExportSize { times: 3.0, suffix: "@3x".into(), format: crate::output::Format::Webp }];
+        let mut tuned = crate::convert::Settings::default();
+        tuned.avif.quality = 70.0;
+        doc.exports = vec![ExportSize { times: 1.0, suffix: String::new(), format: crate::output::Format::Png, tuned: None }, ExportSize { times: 3.0, suffix: "@3x".into(), format: crate::output::Format::Webp, tuned: None }, ExportSize { times: 2.0, suffix: String::new(), format: crate::output::Format::Avif, tuned: Some(tuned) }];
         let back = Doc::read(&doc.write()).expect("read back");
         let Kind::Picture(read) = &back.layers[0].kind else { panic!() };
         assert_eq!((read.shadow, read.drop, read.adjust, read.window, read.title.as_str()), (CUSTOM_SHADOW, frame::Layer { x: 4, y: 20, blur: 30, spread: -2, color: 0x80102030 }, [0.5, -0.25, 1.0], frame::Window::Mac, "main.rs"));

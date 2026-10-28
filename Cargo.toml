@@ -15,8 +15,23 @@ ab_glyph_rasterizer = "0.1"
 zune-jpeg = "0.4"
 libc = "0.2"
 rayon = "1"
-jpeg-encoder = "0.7.1"
-image-webp = "0.2.4"
+# Encoders for every format a picture is written in, as jog has them, all
+# built from source with no tools beyond a C compiler: rav1e's and
+# mozjpeg's assembly would need NASM, so they go without it.
+jixel = "0.4.2"
+ravif = { version = "0.13", default-features = false, features = ["threading"] }
+rgb = "0.8"
+mozjpeg = { version = "0.10", default-features = false, features = ["parallel"] }
+webp = { version = "0.3.1", default-features = false }
+# And decoders for the two new ones: JPEG XL, and AVIF's box of AV1, by
+# the Rust port of dav1d, its assembly left out for the same reason.
+jxl-oxide = { version = "0.12.6", default-features = false }
+avif-parse = "2.1"
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+# How near a converted picture is to the original.
+ssimulacra2 = "0.5"
+# The config file's [convert] table, written as jog's is.
+toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
 
 [build-dependencies]
 vergen-gitcl = "10.0.3"

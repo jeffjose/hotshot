@@ -9,9 +9,11 @@ macro_rules! debug {
     };
 }
 
+mod avif;
 mod bench;
 mod canvas;
 mod check;
+mod convert;
 mod clipboard;
 mod cursors;
 mod dbus;
@@ -204,6 +206,19 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         match clipboard::is_png(&bytes) {
             true => clipboard::offer(Display::open()?, bytes)?,
             false => clipboard::offer_text(Display::open()?, &String::from_utf8_lossy(&bytes))?,
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Pictures converted, as jog converts them; and a frame of a file of
+    // the canvas exported: neither opens a window.
+    if let Some(format) = options.convert_to {
+        let ok = convert::convert_all(&options.files, format, &options.convert);
+        return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+    }
+    if let Some(file) = &options.export {
+        let format = options.format_said.then_some(options.format);
+        for path in studio::export_file(file, options.export_frame, options.export_scale, format, options.output.as_deref(), &options.convert)? {
+            println!("{}", path.display());
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -417,9 +432,9 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
 
     // A file is of the kind its name says, or the kind asked for; what
     // goes to the clipboard is a PNG whatever the file is.
-    let named = options.output.as_ref().and_then(|file| file.extension()).and_then(|ending| output::Format::named(&ending.to_string_lossy()));
+    let named = options.output.as_ref().and_then(|file| file.extension()).and_then(|ending| output::Format::named(&ending.to_string_lossy())).map(|format| format.as_set(&options.convert));
     let format = named.unwrap_or(options.format);
-    let pack = |format| output::pack(format, options.quality, taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha);
+    let pack = |format| output::pack(format, &options.convert, taken.width as u32, taken.height as u32, &taken.pixels, taken.alpha);
     let png = if how.copy || how.pin || format == output::Format::Png { pack(output::Format::Png)? } else { Vec::new() };
     trace("packed");
     // Left on the screen where it was taken, its frame round where the

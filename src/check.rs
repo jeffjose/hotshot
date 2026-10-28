@@ -198,9 +198,9 @@ pub fn run(options: &Options) -> ExitCode {
     let picture = shot.clone().unwrap_or_else(|| (64, 64, (0..64 * 64).map(|at| at * 0x010305).collect()));
     let mut packed = Vec::new();
     let mut wrong = None;
-    for format in [Format::Png, Format::Jpeg, Format::Webp] {
+    for format in [Format::Png, Format::Jpeg, Format::Webp, Format::Jxl, Format::Avif] {
         let began = Instant::now();
-        match output::pack(format, options.quality, picture.0 as u32, picture.1 as u32, &picture.2, false) {
+        match output::pack(format, &options.convert, picture.0 as u32, picture.1 as u32, &picture.2, false) {
             Ok(bytes) => {
                 let file = in_scratch(&format!("screen.{}", format.ending()));
                 match std::fs::write(&file, &bytes) {

@@ -35,23 +35,73 @@ pub fn encode(width: u32, height: u32, pixels: &[u32], alpha: bool) -> Result<Ve
     Ok(png)
 }
 
-/// What kind of file a picture is saved as.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// What kind of file a picture is saved as. JPEG XL and WebP each come
+/// two ways, every pixel kept or smaller and nearly the same, listed as
+/// two kinds since they are chosen between as two.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Format {
     #[default]
     Png,
     Jpeg,
     Webp,
+    WebpLossless,
+    Avif,
+    Jxl,
+    JxlLossless,
 }
 
 impl Format {
+    /// In the order the lists show them: those that keep every pixel,
+    /// then those that are smaller and nearly the same.
+    pub const ALL: [Format; 7] = [Format::Png, Format::JxlLossless, Format::WebpLossless, Format::Jxl, Format::Avif, Format::Webp, Format::Jpeg];
+
     /// By its name, or by what a file's name ends in.
     pub fn named(name: &str) -> Option<Format> {
         match name.to_ascii_lowercase().as_str() {
             "png" => Some(Format::Png),
-            "jpg" | "jpeg" => Some(Format::Jpeg),
+            "jpg" | "jpeg" | "jpe" | "jfif" => Some(Format::Jpeg),
             "webp" => Some(Format::Webp),
+            "webp-lossless" => Some(Format::WebpLossless),
+            "avif" => Some(Format::Avif),
+            "jxl" | "jpegxl" | "jpeg-xl" => Some(Format::Jxl),
+            "jxl-lossless" | "jpegxl-lossless" | "jpeg-xl-lossless" => Some(Format::JxlLossless),
             _ => None,
+        }
+    }
+
+    /// The word it goes by in the config file, a file of the canvas and
+    /// on the command line, which `named` reads back.
+    pub fn word(self) -> &'static str {
+        match self {
+            Format::Png => "png",
+            Format::Jpeg => "jpg",
+            Format::Webp => "webp",
+            Format::WebpLossless => "webp-lossless",
+            Format::Avif => "avif",
+            Format::Jxl => "jxl",
+            Format::JxlLossless => "jxl-lossless",
+        }
+    }
+
+    /// What it is called in a list.
+    pub fn title(self) -> &'static str {
+        match self {
+            Format::Png => "PNG",
+            Format::Jpeg => "JPEG",
+            Format::Webp => "WebP",
+            Format::WebpLossless => "WebP lossless",
+            Format::Avif => "AVIF",
+            Format::Jxl => "JPEG XL",
+            Format::JxlLossless => "JPEG XL lossless",
+        }
+    }
+
+    /// What the kind of file is called, whichever way it is written.
+    pub fn family(self) -> &'static str {
+        match self {
+            Format::WebpLossless => "WebP",
+            Format::JxlLossless => "JPEG XL",
+            other => other.title(),
         }
     }
 
@@ -60,8 +110,48 @@ impl Format {
         match self {
             Format::Png => "png",
             Format::Jpeg => "jpg",
-            Format::Webp => "webp",
+            Format::Webp | Format::WebpLossless => "webp",
+            Format::Avif => "avif",
+            Format::Jxl | Format::JxlLossless => "jxl",
         }
+    }
+
+    /// Whether every pixel is kept.
+    pub fn lossless(self) -> bool {
+        matches!(self, Format::Png | Format::WebpLossless | Format::JxlLossless)
+    }
+
+    /// The same kind of file, written the other way: kept to the pixel or
+    /// not. PNG is only ever lossless, and AVIF and JPEG never are.
+    pub fn with_lossless(self, lossless: bool) -> Format {
+        match (self, lossless) {
+            (Format::Webp | Format::WebpLossless, true) => Format::WebpLossless,
+            (Format::Webp | Format::WebpLossless, false) => Format::Webp,
+            (Format::Jxl | Format::JxlLossless, true) => Format::JxlLossless,
+            (Format::Jxl | Format::JxlLossless, false) => Format::Jxl,
+            (other, _) => other,
+        }
+    }
+
+    /// Named by what a file ends in, which says JPEG XL or WebP but not
+    /// which way: the way the `[convert]` table says.
+    pub fn as_set(self, settings: &crate::convert::Settings) -> Format {
+        match self {
+            Format::Jxl if settings.jxl.lossless => Format::JxlLossless,
+            Format::Webp if settings.webp.lossless => Format::WebpLossless,
+            other => other,
+        }
+    }
+}
+
+/// A picture as a file of one kind or another, each written as the
+/// `[convert]` table says. A PNG is packed quickly, as a screenshot is
+/// wanted now; the rest by the encoders `convert` has. A JPEG has
+/// nothing see-through in it: what would be is white.
+pub fn pack(format: Format, settings: &crate::convert::Settings, width: u32, height: u32, pixels: &[u32], alpha: bool) -> Result<Vec<u8>, String> {
+    match format {
+        Format::Png => encode(width, height, pixels, alpha),
+        _ => crate::convert::encode(width, height, pixels, alpha, None, format, settings).map(|encoded| encoded.bytes),
     }
 }
 
@@ -94,46 +184,6 @@ impl Video {
             Video::Gif => "gif",
             Video::Apng => "apng",
             Video::Webp => "webp",
-        }
-    }
-}
-
-/// A picture as a file of one kind or another. A JPEG is as good as
-/// `quality` says, of 100, and has nothing see-through in it: what
-/// would be is white. A WebP loses nothing, as a PNG loses nothing, and
-/// is smaller.
-pub fn pack(format: Format, quality: u8, width: u32, height: u32, pixels: &[u32], alpha: bool) -> Result<Vec<u8>, String> {
-    let bytes = |each: usize, of: &(dyn Fn(u32) -> [u8; 4] + Sync)| {
-        let mut bytes = vec![0u8; pixels.len() * each];
-        bytes.par_chunks_mut(each << 12).zip(pixels.par_chunks(1 << 12)).for_each(|(bytes, pixels)| {
-            for (out, pixel) in bytes.chunks_exact_mut(each).zip(pixels) {
-                out.copy_from_slice(&of(*pixel)[..each]);
-            }
-        });
-        bytes
-    };
-    let plain = |pixel: u32| [(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8, (pixel >> 24) as u8];
-    match format {
-        Format::Png => encode(width, height, pixels, alpha),
-        Format::Jpeg => {
-            let (wide, high) = (u16::try_from(width).map_err(|_| "too wide for a JPEG")?, u16::try_from(height).map_err(|_| "too tall for a JPEG")?);
-            let on_white = |pixel: u32| {
-                let opaque = pixel >> 24;
-                plain(pixel).map(|part| ((part as u32 * opaque + 255 * (255 - opaque)) / 255) as u8)
-            };
-            let bytes = if alpha { bytes(3, &on_white) } else { bytes(3, &plain) };
-            let mut out = Vec::with_capacity(bytes.len() / 8);
-            let encoder = jpeg_encoder::Encoder::new(&mut out, quality.clamp(1, 100));
-            encoder.encode(&bytes, wide, high, jpeg_encoder::ColorType::Rgb).map_err(|error| error.to_string())?;
-            Ok(out)
-        }
-        Format::Webp => {
-            let each = if alpha { 4 } else { 3 };
-            let bytes = bytes(each, &plain);
-            let mut out = Vec::with_capacity(bytes.len() / 4);
-            let kind = if alpha { image_webp::ColorType::Rgba8 } else { image_webp::ColorType::Rgb8 };
-            image_webp::WebPEncoder::new(&mut out).encode(&bytes, width, height, kind).map_err(|error| error.to_string())?;
-            Ok(out)
         }
     }
 }
@@ -262,20 +312,23 @@ mod tests {
     #[test]
     fn a_picture_is_packed_as_a_jpeg_or_a_webp_too() {
         assert_eq!((Format::named("JPG"), Format::named("webp"), Format::named("gif")), (Some(Format::Jpeg), Some(Format::Webp), None));
+        assert_eq!((Format::named("AVIF"), Format::named("jxl"), Format::named("jxl-lossless")), (Some(Format::Avif), Some(Format::Jxl), Some(Format::JxlLossless)));
+        for format in Format::ALL {
+            assert_eq!(Format::named(format.word()), Some(format));
+        }
+        let settings = crate::convert::Settings::default();
         // Half red and half see-through, which in a JPEG is white.
         let pixels: Vec<u32> = (0..64 * 64).map(|at| if at % 64 < 32 { 0xFFFF_0000 } else { 0 }).collect();
-        let jpeg = pack(Format::Jpeg, 90, 64, 64, &pixels, true).unwrap();
+        let jpeg = pack(Format::Jpeg, &settings, 64, 64, &pixels, true).unwrap();
         let mut decoder = zune_jpeg::JpegDecoder::new(&jpeg[..]);
         let bytes = decoder.decode().unwrap();
         assert_eq!(decoder.dimensions(), Some((64, 64)));
         let near = |at: usize, to: [u8; 3]| bytes[at * 3..at * 3 + 3].iter().zip(to).all(|(byte, to)| byte.abs_diff(to) < 24);
         assert!(near(32 * 64 + 8, [255, 0, 0]) && near(32 * 64 + 56, [255, 255, 255]));
-        // A WebP is to the pixel, and what is see-through still is.
-        let webp = pack(Format::Webp, 90, 64, 64, &pixels, true).unwrap();
-        let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(&webp[..])).unwrap();
-        let mut bytes = vec![0; decoder.output_buffer_size().unwrap()];
-        decoder.read_image(&mut bytes).unwrap();
-        assert_eq!((decoder.dimensions(), &bytes[..4], &bytes[63 * 4..64 * 4]), ((64, 64), &[255, 0, 0, 255][..], &[0, 0, 0, 0][..]));
+        // A lossless WebP is to the pixel, and what is see-through still is.
+        let webp = pack(Format::WebpLossless, &settings, 64, 64, &pixels, true).unwrap();
+        let back = crate::convert::decode(&webp).unwrap();
+        assert_eq!((back.width, back.height, back.pixels[0], back.pixels[63]), (64, 64, 0xFFFF_0000, 0));
     }
 
     #[test]

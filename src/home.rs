@@ -61,7 +61,7 @@ fn is_file(path: &Path) -> bool {
 }
 
 fn is_picture(path: &Path) -> bool {
-    path.extension().is_some_and(|ending| matches!(ending.to_string_lossy().to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
+    crate::convert::reads(path)
 }
 
 /// What the main part of the window shows.

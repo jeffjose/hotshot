@@ -662,7 +662,7 @@ pub(crate) fn window_bar(window: Window, dark: bool, x: f32, y: f32, wide: f32, 
     color
 }
 
-/// A photograph from a file: a PNG or a JPEG.
+/// A photograph from a file: a PNG, a JPEG, a WebP, an AVIF or a JPEG XL.
 pub fn open(bytes: &[u8]) -> Option<Photo> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
@@ -677,16 +677,10 @@ pub fn open(bytes: &[u8]) -> Option<Photo> {
         });
         return Some(Photo { width: info.width as i32, height: info.height as i32, pixels: pixels.collect() });
     }
-    let mut decoder = zune_jpeg::JpegDecoder::new(bytes);
-    let data = decoder.decode().ok()?;
-    let info = decoder.info()?;
-    let (width, height) = (i32::from(info.width), i32::from(info.height));
-    let each = data.len() / (width.max(1) * height.max(1)) as usize;
-    let pixels = data.chunks_exact(each.max(1)).map(|pixel| match each {
-        1 => u32::from(pixel[0]) * 0x010101,
-        _ => u32::from(pixel[0]) << 16 | u32::from(pixel[1]) << 8 | u32::from(pixel[2]),
-    });
-    Some(Photo { width, height, pixels: pixels.collect() })
+    // The rest, a JPEG, a WebP, an AVIF or a JPEG XL, read as `convert`
+    // reads them.
+    let picture = crate::convert::decode(bytes)?;
+    Some(Photo { width: picture.width, height: picture.height, pixels: picture.pixels.iter().map(|pixel| pixel & 0xFF_FFFF).collect() })
 }
 
 /// A photograph nobody chose: a different one each time, of about a

@@ -143,6 +143,46 @@ impl Studio {
     }
 }
 
+/// A frame of a file of the canvas written out with no window, for
+/// `hotshot --export`: the `frame`th of the file, counting from 1 across
+/// its pages; at `scale` and as `format` where said, and otherwise at
+/// each size its Export rows list. Into `output` where named, or where
+/// the canvas exports it, beside the file. Gives what was written.
+pub fn export_file(file: &Path, frame: usize, scale: Option<f32>, format: Option<crate::output::Format>, output: Option<&Path>, settings: &crate::convert::Settings) -> Result<Vec<PathBuf>, String> {
+    let bytes = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+    let pages = read_pages(&bytes).ok_or_else(|| format!("{} is not a file of the canvas", file.display()))?;
+    let count: usize = pages.iter().map(|page| page.frames.len()).sum();
+    let (page, doc) = pages.iter().flat_map(|page| page.frames.iter().map(move |doc| (page, doc))).nth(frame.wrapping_sub(1)).ok_or_else(|| format!("there is no frame {frame}; the file has {count}"))?;
+    let rows = match (scale, format) {
+        (None, None) if !doc.exports.is_empty() => doc.exports.clone(),
+        _ => {
+            let first = doc.exports.first().cloned().unwrap_or_else(|| ExportSize::new(1.0));
+            vec![ExportSize { times: scale.unwrap_or(first.times), format: format.unwrap_or(first.format), suffix: if scale.is_some() { String::new() } else { first.suffix.clone() }, tuned: if format.is_some() { None } else { first.tuned } }]
+        }
+    };
+    if output.is_some() && rows.len() > 1 {
+        return Err(format!("the frame is exported at {} sizes; -o names one file, so say --scale or --format", rows.len()));
+    }
+    let dir = file.parent().unwrap_or(Path::new(".")).join("exports").join(one_line(&page.name).replace('/', "-"));
+    let mut text = Text::load();
+    let mut written = Vec::new();
+    for row in rows {
+        let (wide, high, pixels) = doc.render(row.times, &mut text);
+        let clear = pixels.iter().any(|pixel| pixel >> 24 != 255);
+        let bytes = crate::convert::encode(wide as u32, high as u32, &pixels, clear, None, row.format, &row.tuned.unwrap_or(*settings))?.bytes;
+        let path = match output {
+            Some(path) => path.to_path_buf(),
+            None => {
+                std::fs::create_dir_all(&dir).map_err(|error| format!("cannot make {}: {error}", dir.display()))?;
+                dir.join(format!("{}{}.{}", one_line(&doc.name).replace('/', "-"), row.file_suffix(), row.format.ending()))
+            }
+        };
+        crate::output::save_as(&path, &bytes)?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,7 +212,7 @@ mod tests {
         assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Export(1)));
         let formats = row(&mut studio, MenuKind::Export(1), "Format");
         studio.press_menu(0, formats);
-        let jpeg = row(&mut studio, MenuKind::Format(1), "JPG");
+        let jpeg = row(&mut studio, MenuKind::Format(1), "JPEG");
         studio.press_menu(1, jpeg);
         assert_eq!(studio.doc.exports[1].format, crate::output::Format::Jpeg);
         let remove = studio.control_rect(Control::Action(Action::RemoveExport(0))).unwrap().center();
