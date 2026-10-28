@@ -1572,6 +1572,9 @@ pub struct Studio {
     pub open_next: Option<PathBuf>,
     /// The sizes of frames of the user's own, each with what it measures.
     frame_sizes: Vec<(String, i32, i32, &'static str)>,
+    /// Which change it was at when the button went down, to say whether a
+    /// drag changed anything.
+    pressed_at: u64,
     dirty: bool,
 }
 
@@ -1651,6 +1654,7 @@ impl Studio {
             search: None,
             open_next: None,
             frame_sizes: Vec::new(),
+            pressed_at: 0,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -2264,6 +2268,7 @@ impl Studio {
         let double = time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at_window);
         self.dirty = true;
+        self.pressed_at = self.version;
         match button {
             // The wheel: up and down, or with Shift across; with Ctrl,
             // larger and smaller about the pointer.
@@ -2643,9 +2648,11 @@ impl Studio {
                 self.changed();
             }
             Control::Lock(index) => {
+                // A step to undo, as hiding is, and as the menu's lock is.
+                self.checkpoint();
                 self.doc.layers[index].locked = !self.doc.layers[index].locked;
                 self.selected.retain(|&other| other != index);
-                self.dirty = true;
+                self.changed();
             }
             Control::Field(field) if field.slides() => {
                 // A slider: the value where it is pressed, and dragged.
@@ -2849,6 +2856,11 @@ impl Studio {
     pub fn released(&mut self) {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.dirty = true;
+        // A handle, a crop or a number taken hold of and let go of where it
+        // was leaves no step to undo that would undo nothing.
+        if matches!(drag, Drag::Scale { .. } | Drag::Turn { .. } | Drag::Crop { .. } | Drag::Scrub { .. }) && self.version == self.pressed_at {
+            self.undo.pop();
+        }
         match drag {
             Drag::Reorder { index, moved: true, .. } => self.drop_layer(index),
             Drag::Guide { index } => {
@@ -5840,6 +5852,31 @@ mod tests {
         studio.flyout = Some(0);
         studio.right_click(tool);
         assert_eq!((studio.menu, studio.flyout), (None, None));
+    }
+
+    #[test]
+    fn a_handle_clicked_and_let_go_leaves_nothing_to_undo_and_a_lock_can_be_undone() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (100.0, 100.0));
+        (boxed.points[1], boxed.filled) = ((300.0, 200.0), true);
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.selected = vec![0];
+        studio.fit();
+        let (corner, _) = studio.handles()[0];
+        studio.pointer_moved(corner.0, corner.1, Mods::default());
+        studio.pressed(1, 100_000);
+        assert!(matches!(studio.drag, Drag::Scale { .. }));
+        studio.released();
+        assert!(studio.undo.is_empty());
+        // Dragged, it is a step.
+        studio.pressed(1, 200_000);
+        studio.pointer_moved(corner.0 - 30, corner.1 - 30, Mods::default());
+        studio.released();
+        assert_eq!(studio.undo.len(), 1);
+        studio.press_control(Control::Lock(0), false);
+        assert!(studio.doc.layers[0].locked);
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert!(!studio.doc.layers[0].locked);
     }
 
     #[test]
