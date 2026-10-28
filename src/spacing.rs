@@ -185,7 +185,10 @@ pub fn lines_of(boxes: &[Edges]) -> (Vec<f32>, Vec<f32>) {
 /// beside it to the right, `gap` away, and on past anything already there;
 /// or, if that would leave `area`, below it the same way. What `me` sits
 /// on, a box round all of it, is not in the way. With nowhere free inside,
-/// the first place beside it that is inside, or else the right.
+/// the first place beside it that is inside; and when it is too large for
+/// any, as far to the right as `area` has room for, or else down, or else
+/// a step down and to the right: never on top of it, and never where a
+/// frame would hide it.
 pub fn beside(me: Edges, others: &[Edges], area: Option<Edges>, gap: f32) -> (f32, f32) {
     let (wide, high) = (me[2] - me[0], me[3] - me[1]);
     let inside = |b: Edges| area.is_none_or(|a| b[0] >= a[0] - 0.5 && b[1] >= a[1] - 0.5 && b[2] <= a[2] + 0.5 && b[3] <= a[3] + 0.5);
@@ -214,7 +217,18 @@ pub fn beside(me: Edges, others: &[Edges], area: Option<Edges>, gap: f32) -> (f3
     if let Some(by) = along(false).or_else(|| along(true)) {
         return by;
     }
-    [(wide + gap, 0.0), (0.0, high + gap), (-wide - gap, 0.0), (0.0, -high - gap)].into_iter().find(|&by| inside(moved(by))).unwrap_or((wide + gap, 0.0))
+    if let Some(by) = [(wide + gap, 0.0), (0.0, high + gap), (-wide - gap, 0.0), (0.0, -high - gap)].into_iter().find(|&by| inside(moved(by))) {
+        return by;
+    }
+    let Some(a) = area else { return (wide + gap, 0.0) };
+    let (right, below) = (a[2] - me[2], a[3] - me[3]);
+    if right >= gap {
+        (right.min(wide + gap), 0.0)
+    } else if below >= gap {
+        (0.0, below.min(high + gap))
+    } else {
+        (gap, gap)
+    }
 }
 
 /// The gaps shown while moving, in magenta, each with how wide it is, its
@@ -310,8 +324,13 @@ mod tests {
         assert_eq!(beside(me, &[[90.0, 0.0, 200.0, 30.0]], Some([0.0, 0.0, 500.0, 500.0]), 20.0), (210.0, 0.0));
         // No room to the right: below; what it sits on is not in the way.
         assert_eq!(beside(me, &[[0.0, 0.0, 100.0, 100.0]], Some([0.0, 0.0, 100.0, 100.0]), 20.0), (0.0, 50.0));
-        // No room at all: the right, past the edge.
-        assert_eq!(beside(me, &[], Some([0.0, 0.0, 70.0, 50.0]), 20.0), (70.0, 0.0));
+        // No room at all and no room to the right: down as far as there is.
+        assert_eq!(beside(me, &[], Some([0.0, 0.0, 70.0, 70.0]), 20.0), (0.0, 30.0));
+        // No room at all, the box nearly as wide as the frame: as far right
+        // as the frame has room for, still in it, not on top.
+        assert_eq!(beside(me, &[], Some([0.0, 0.0, 90.0, 50.0]), 20.0), (30.0, 0.0));
+        // A box as large as the frame worked in, a step down and right.
+        assert_eq!(beside([46.0, 46.0, 605.0, 404.0], &[], Some([0.0, 0.0, 620.0, 420.0]), 20.0), (20.0, 20.0));
         // Unbounded, frames go on past each other.
         assert_eq!(beside([0.0, 0.0, 100.0, 100.0], &[[150.0, 50.0, 300.0, 150.0], [450.0, 0.0, 500.0, 10.0]], None, 100.0), (600.0, 0.0));
     }
