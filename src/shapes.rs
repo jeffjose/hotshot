@@ -179,6 +179,11 @@ pub struct Shape {
     /// The size a box was drawn at, which its words grow it from and it
     /// goes back to as they shrink; nothing for none.
     pub base: (f32, f32),
+    /// How a board draws it, not kept with it but given it as it is drawn:
+    /// by hand with rounded corners and looser lines; and the paper under
+    /// its words, none for a light board's.
+    pub rounded: bool,
+    pub paper: u32,
     mask: RefCell<Option<Rc<Mask>>>,
     /// The same of what is inside the border of a rectangle or an oval
     /// that has both, which is drawn in its fill.
@@ -374,7 +379,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -1552,6 +1557,38 @@ impl Shape {
             let thin = if pass == 0 { half } else { (half * 0.7).max(0.6) };
             let off = if pass == 0 { 0.0 } else { reach * 0.35 };
             match self.tool {
+                // Rounded: one loose loop round its rounded corners, gone
+                // over twice a little apart, its ends overlapping.
+                Tool::Rect if self.rounded => {
+                    let r = (width.min(height) * 0.22).min(16.0).max(2.0);
+                    let mut loop_points: Vec<Point> = Vec::new();
+                    let corners = [(left + width - r, top + r, -std::f32::consts::FRAC_PI_2), (left + width - r, top + height - r, 0.0), (left + r, top + height - r, std::f32::consts::FRAC_PI_2), (left + r, top + r, std::f32::consts::PI)];
+                    for (cx, cy, from) in corners {
+                        for step in 0..=6 {
+                            let angle = from + std::f32::consts::FRAC_PI_2 * step as f32 / 6.0;
+                            loop_points.push((cx + r * angle.cos(), cy + r * angle.sin()));
+                        }
+                    }
+                    loop_points.push(loop_points[0]);
+                    // Low, slow swells along it, and its start a little on.
+                    let (phase, swell) = (wobble(6.0), reach * 0.45 + wobble(reach * 0.15).abs());
+                    let count = loop_points.len();
+                    let points: Vec<Point> = loop_points
+                        .iter()
+                        .enumerate()
+                        .map(|(at, &(x, y))| {
+                            let t = at as f32 / count as f32 * std::f32::consts::TAU;
+                            let push = swell * (t * 2.0 + phase).sin() * 0.5 + off * (t + phase).cos();
+                            let (dx, dy) = (x - (left + width / 2.0), y - (top + height / 2.0));
+                            let long = dx.hypot(dy).max(1.0);
+                            (x + dx / long * push, y + dy / long * push)
+                        })
+                        .collect();
+                    let mut points = points;
+                    let over = (count / 10).max(2);
+                    points.extend(points.clone().into_iter().skip(1).take(over));
+                    strokes.push((points, thin));
+                }
                 Tool::Rect => {
                     let corners = [(left, top), (left + width, top), (left + width, top + height), (left, top + height)];
                     for side in 0..4 {

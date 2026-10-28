@@ -456,10 +456,13 @@ mod tests {
         assert_eq!((shape(&studio, 0).color, studio.board.stroke), (STROKES[1], STROKES[1]));
         let look = studio.control_rect(Control::Board(Ctl::Look)).unwrap().center();
         click(&mut studio, look);
-        assert!(!shape(&studio, 0).sketch && !studio.board.sketch);
+        // The look is the board's: Rounded, then Sketchy, then Clean.
+        assert_eq!(studio.pages[0].look, 1);
+        click(&mut studio, look);
+        assert_eq!(studio.pages[0].look, 2);
         pull(&mut studio, (400.0, 100.0), (500.0, 200.0), Mods::default());
         let next = shape(&studio, 1);
-        assert_eq!((next.color, next.fill, next.sketch), (STROKES[1], FILLS[1], false));
+        assert_eq!((next.color, next.fill), (STROKES[1], FILLS[1]));
     }
 
     #[test]

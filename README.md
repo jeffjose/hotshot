@@ -414,7 +414,14 @@ draws is drawn by hand, a little rough, each line gone over twice, in
 a dark ink with a soft fill, and its words are in Architects Daughter;
 each shape keeps its own wobble wherever it is moved, as it is worked
 out from what the shape is called rather than where it is, and no two
-are alike. A box can be drawn as a box, a diamond or a sticky note,
+are alike. Each board has a look, from the bar of styles or `Ctrl+K`:
+Rounded, as it begins, by hand with soft corners and looser lines;
+Sketchy, by hand and angular; or Clean, hairline borders and Geist, as
+Linear's and Vercel's pages are. And a ground: light paper, dark gray
+or black, every color of the board turning to its shade for the dark,
+as Radix's light and dark scales do, so that red becomes a whitish
+red and nothing is picked again; exports follow it. Switching either
+draws the board again and moves nothing. are alike. A box can be drawn as a box, a diamond or a sticky note,
 which is yellow on a soft shadow, with its words in the middle of it,
 wrapped to it.
 

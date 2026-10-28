@@ -591,6 +591,9 @@ pub struct Doc {
     /// and has its frames under all the page's own layers.
     pub below: usize,
     pub tier: u32,
+    /// On a board, how it is drawn and on what, given it from its page as
+    /// it is drawn: its look and its ground. Not kept in its file.
+    pub board: Option<(u8, u8)>,
 }
 
 /// A size a frame is exported at.
@@ -658,7 +661,7 @@ fn scaled(shape: &Shape, times: f32) -> Shape {
 
 impl Doc {
     pub fn new(width: i32, height: i32) -> Doc {
-        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)], page: false, stacks: Vec::new(), below: 0, tier: 0 }
+        Doc { name: "Frame 1".into(), x: 0.0, y: 0.0, stamp: 0, width, height, background: Fill::Color(0xFFFFFF), layers: Vec::new(), exports: vec![ExportSize::new(1.0)], page: false, stacks: Vec::new(), below: 0, tier: 0, board: None }
     }
 
     /// The layers of a page outside its frames, as Figma has them: on
@@ -772,6 +775,9 @@ impl Doc {
                 Kind::Shape(shape) if effects::changes_beneath(shape.tool) => self.change_beneath_at_most(index, &mut out, part, times, text),
                 Kind::Shape(shape) => {
                     let mut shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
+                    if let Some((look, ground)) = self.board {
+                        board::look::dress(&mut shape, look, ground, times);
+                    }
                     if (part.x, part.y) != (0, 0) {
                         shape.translate(-part.x as f32, -part.y as f32);
                     }
@@ -990,6 +996,7 @@ pub fn write_pages(pages: &[Page]) -> Vec<u8> {
         out += &format!("page {}\n", one_line(&page.name));
         if page.board {
             out += "board\n";
+            out += &format!("board-look {} {}\n", page.look, page.ground);
         } else if page.frames.is_empty() {
             // A board made a page of frames again before it had any.
             out += "no-frames\n";
@@ -1059,6 +1066,11 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
             page.board = true;
             continue;
         }
+        if let Some(rest) = line.strip_prefix("board-look ").filter(|_| page.board && !own) {
+            let mut words = rest.split(' ').filter_map(|word| word.parse::<u8>().ok());
+            (page.look, page.ground) = (words.next().unwrap_or(0).min(2), words.next().unwrap_or(0).min(2));
+            continue;
+        }
         if line == "no-frames" && page.frames.is_empty() && !own {
             frameless.push(pages.len() - 1);
             continue;
@@ -1112,11 +1124,15 @@ pub struct Page {
     /// to design in: its own look, tools and ways, and frames only when
     /// part of it is wanted as a picture.
     pub board: bool,
+    /// How a board is drawn: by hand and rounded, by hand and angular, or
+    /// clean; and on what: light paper, dark gray or black.
+    pub look: u8,
+    pub ground: u8,
 }
 
 impl Page {
     pub fn new(name: impl Into<String>, frames: Vec<Doc>) -> Page {
-        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false }
+        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0 }
     }
 }
 
@@ -2755,6 +2771,8 @@ impl Studio {
     /// Something has changed: drawn again, and the file is behind.
     fn changed(&mut self) {
         self.touched = None;
+        // A board drawn as its page says.
+        self.sync_look();
         // The frames kept over what they were over of the page's own
         // layers, as those come and go.
         self.keep_order();

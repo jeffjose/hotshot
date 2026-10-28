@@ -32,6 +32,9 @@ pub(in crate::studio) enum Act {
     /// The board, a frame of it, or what is picked out written as one of
     /// `export::KINDS`.
     Export(u8),
+    /// The board drawn in one of `look::LOOKS`, or on one of `look::GROUNDS`.
+    Look(u8),
+    Ground(u8),
 }
 
 impl Studio {
@@ -45,6 +48,12 @@ impl Studio {
             ("Insert Before / After".to_owned(), "", Act::Template(2)),
             (if self.board.guessing { "Stop guessing what comes next" } else { "Guess what comes next" }.to_owned(), "", Act::Guessing),
         ];
+        for (at, name) in look::LOOKS.iter().enumerate() {
+            acts.push((format!("Look: {name}"), "", Act::Look(at as u8)));
+        }
+        for (at, name) in look::GROUNDS.iter().enumerate() {
+            acts.push((format!("Board on {}", name.to_lowercase()), "", Act::Ground(at as u8)));
+        }
         let what = if !self.on_page() { "frame" } else if self.chosen().is_empty() { "board" } else { "selection" };
         for (kind, name) in export::KINDS.iter().enumerate() {
             acts.push((format!("Export {what} as {name}"), if kind == 0 { "Ctrl+E" } else { "" }, Act::Export(kind as u8)));
@@ -90,6 +99,8 @@ impl Studio {
             Act::KeepPicture => self.keep_svg_picture(),
             Act::MergePicture => self.merge_picture(),
             Act::Export(kind) => self.export_board(kind),
+            Act::Look(look) => self.set_look(Some(look), None),
+            Act::Ground(ground) => self.set_look(None, Some(ground)),
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {

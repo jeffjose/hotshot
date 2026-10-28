@@ -83,12 +83,13 @@ impl Studio {
             layer.translate(-x, -y);
             layer
         }).collect();
+        sheet.board = self.doc.board;
         sheet
     }
 
     /// The board's paper, as exports have it.
     pub(in crate::studio) fn board_ground(&self) -> u32 {
-        shapes::PAPER
+        self.paper().0
     }
 
     /// The board, a frame of it, or what is picked out, written: as a

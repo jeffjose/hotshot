@@ -38,7 +38,8 @@ impl Studio {
         parts.extend((0..5).map(|at| (Ctl::Fill(at), SWATCH)));
         parts.push((Ctl::NoFill, SWATCH));
         parts.push((Ctl::Guess, -SPLIT));
-        parts.push((Ctl::Look, 54));
+        parts.push((Ctl::Look, 74));
+        parts.push((Ctl::Ground, SWATCH));
         parts.push((Ctl::Words(0), 40));
         if boxes {
             parts.push((Ctl::Status, SWATCH + 4));
@@ -114,6 +115,11 @@ impl Studio {
                     self.text.draw_centered(canvas, cx, cy, 10, INK, &["Q", "W", "E", "R", "T"][usize::from(at)]);
                 }
             }
+            Ctl::Ground => {
+                let (paper, dots) = self.paper();
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 11, paper, 256);
+                canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 11, 1, if hovered { TEXT_COLOR } else { dots });
+            }
             Ctl::NoFill => {
                 canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, 0xFFFFFF, 256);
                 line(canvas, (rect.x + 4, rect.bottom() - 5), (rect.right() - 5, rect.y + 4), 0xE03131);
@@ -124,8 +130,9 @@ impl Studio {
                 if hovered {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
                 }
-                // As it draws: by hand, rough; or clean.
-                let says = if sketch { "Rough" } else { "Clean" };
+                // How the board draws: rounded, sketchy or clean.
+                let says = look::LOOKS[usize::from(self.pages[self.page].look.min(2))];
+                let _ = sketch;
                 self.text.draw_in(LETTERING, canvas, rect.x + 7, cy - Text::line_height(13) / 2, 13, TEXT_COLOR, says);
                 self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);
             }
@@ -194,10 +201,12 @@ impl Studio {
                 });
             }
             Ctl::Look => {
-                let (_, _, sketch, _, _) = self.shown_style();
-                self.board.sketch = !sketch;
-                let on = self.board.sketch;
-                self.restyle_shapes(|shape| shape.sketch = on);
+                let next = (self.pages[self.page].look + 1) % 3;
+                self.set_look(Some(next), None);
+            }
+            Ctl::Ground => {
+                let next = (self.pages[self.page].ground + 1) % 3;
+                self.set_look(None, Some(next));
             }
             Ctl::Words(_) => {
                 let (_, _, _, px, _) = self.shown_style();

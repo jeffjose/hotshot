@@ -13,6 +13,7 @@ use super::*;
 pub(super) const INK: u32 = 0x1E1E1E;
 pub(super) const STROKES: [u32; 5] = [0x1E1E1E, 0xE03131, 0x2F9E44, 0x1971C2, 0xF08C00];
 pub(super) const FILLS: [u32; 5] = [0xFFF3BF, 0xD3F9D8, 0xD0EBFF, 0xFFE3E3, 0xE5DBFF];
+#[cfg(test)]
 const DOTS: u32 = 0xD8D6CF;
 pub(super) const QUIET: u32 = 0x868E96;
 /// The lettering a board's words are in: Architects Daughter, by where it
@@ -26,14 +27,6 @@ const DOT_STEP: f32 = 18.0;
 /// drawn the same; and a sticky note's.
 pub(super) const BOX: (f32, f32) = (160.0, 72.0);
 pub(super) const STICKY: (f32, f32) = (150.0, 150.0);
-
-/// How a board's shapes are drawn. Only by hand so far; others are to
-/// come, which is why it is a choice of one.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(super) enum Look {
-    #[default]
-    Sketchy,
-}
 
 /// The tools along the bottom of a board, each with its key: the pointer,
 /// the hand, a box, an oval, a diamond, an arrow, a line, the pen, text, a
@@ -64,6 +57,8 @@ pub(super) enum Ctl {
     Fill(u8),
     NoFill,
     Look,
+    /// What the board is on: light paper, dark gray or black.
+    Ground,
     Words(u8),
     Guess,
     Status,
@@ -93,7 +88,6 @@ pub(super) struct Board {
     /// until asked for.
     pub left: bool,
     pub right: bool,
-    pub look: Look,
     /// Whether it guesses what comes next.
     pub guessing: bool,
     /// The box whose sides show a dot each to pull an arrow out of, by its
@@ -129,7 +123,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None }
     }
 }
 
@@ -143,6 +137,7 @@ mod explain;
 mod pick;
 pub(super) mod svg;
 mod export;
+pub(super) mod look;
 mod act;
 pub(super) use act::Act;
 mod typing;
@@ -319,10 +314,6 @@ impl Studio {
     pub(super) fn board_dress(&self, shape: &mut Shape) {
         let board = &self.board;
         (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width, LETTERING, board.px);
-        // The one look there is yet: by hand, or clean where it is set so.
-        match board.look {
-            Look::Sketchy => shape.sketch = board.sketch,
-        }
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
                 (shape.sketch, shape.border, shape.radius) = (board.sketch, true, 6.0);
@@ -351,7 +342,8 @@ impl Studio {
     /// zoomed out, so they never crowd.
     pub(super) fn draw_paper(&self, out: &mut [u32], view: Rect) {
         let width = self.width;
-        out.par_chunks_mut(1 << 16).for_each(|part| part.fill(shapes::PAPER));
+        let (paper, dots) = self.paper();
+        out.par_chunks_mut(1 << 16).for_each(|part| part.fill(paper));
         let mut step = DOT_STEP * self.zoom;
         while step < 9.0 {
             step *= 2.0;
@@ -367,7 +359,7 @@ impl Studio {
                 for dy in 0..big {
                     for dx in 0..big {
                         if px + dx < view.right() && py + dy < view.bottom() {
-                            out[((py + dy) * width + px + dx) as usize] = DOTS;
+                            out[((py + dy) * width + px + dx) as usize] = dots;
                         }
                     }
                 }

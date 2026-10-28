@@ -349,7 +349,7 @@ impl Shape {
                 let left = lines.iter().map(|line| line.1).fold(f32::MAX, f32::min);
                 let wide = lines.iter().map(|line| line.3).max().unwrap_or(0);
                 let room = high / 5;
-                canvas.round_fill(left as i32 - room * 2, first.2 as i32 - room / 2, wide + room * 4, (last.2 - first.2) as i32 + high + room, room * 2, PAPER, self.opacity);
+                canvas.round_fill(left as i32 - room * 2, first.2 as i32 - room / 2, wide + room * 4, (last.2 - first.2) as i32 + high + room, room * 2, if self.paper == 0 { PAPER } else { self.paper }, self.opacity);
             }
             self.draw_words(canvas, text);
         }
