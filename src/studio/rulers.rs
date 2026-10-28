@@ -27,7 +27,7 @@ impl Studio {
     /// A press on a ruler, which drags out a guide; or on a guide, which
     /// takes hold of it. Whether it was either.
     pub(super) fn press_rulers(&mut self, at: (i32, i32)) -> bool {
-        if !self.rulers {
+        if !self.rulers || self.zen {
             return false;
         }
         let (top, side) = self.ruler_bands();
@@ -92,7 +92,7 @@ impl Studio {
     /// The rulers: numbers in pixels of the frame, from its corner, and
     /// what is picked out marked along each.
     pub(super) fn draw_rulers(&mut self, canvas: &mut Canvas) {
-        if !self.rulers {
+        if !self.rulers || self.zen {
             return;
         }
         let (top, side) = self.ruler_bands();

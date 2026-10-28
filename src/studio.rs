@@ -1531,6 +1531,10 @@ pub struct Studio {
     /// where it is either way.
     left_open: bool,
     right_open: bool,
+    /// Everything but the page hidden, as Figma's Ctrl+\ hides it: the
+    /// panels, the bar of tools and the rulers, all but the button that
+    /// brings them back.
+    zen: bool,
     keep_ratio: bool,
     copied: Vec<Layer>,
     crop_aspect: usize,
@@ -1680,6 +1684,7 @@ impl Studio {
             rulers: false,
             left_open: true,
             right_open: true,
+            zen: false,
             keep_ratio: false,
             copied: Vec::new(),
             crop_aspect: 0,
@@ -1726,7 +1731,27 @@ impl Studio {
     }
 
     pub fn take_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.dirty) || self.note.as_ref().is_some_and(|(_, when)| when.elapsed().as_secs_f32() < 3.2)
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// How long what was last said shows for: briefly with everything
+    /// hidden, where it is mostly the tool taken up.
+    fn note_lasts(&self) -> f32 {
+        if self.zen { 1.4 } else { 3.0 }
+    }
+
+    /// How long what was last said has left to show, if it shows; gone,
+    /// and drawn again without it, once its time is up.
+    pub fn note_left(&mut self) -> Option<std::time::Duration> {
+        let (_, when) = self.note.as_ref()?;
+        match std::time::Duration::from_secs_f32(self.note_lasts()).checked_sub(when.elapsed()) {
+            Some(left) => Some(left),
+            None => {
+                self.note = None;
+                self.dirty = true;
+                None
+            }
+        }
     }
 
     /// What the window is called: the file, and whether it has changed.
@@ -1922,6 +1947,9 @@ impl Studio {
     /// The tools, floating along the bottom of the page, grouped as
     /// Figma's are: a caret beside a group opens a list of the rest.
     fn toolbar(&mut self, layout: &mut Layout) {
+        if self.zen {
+            return;
+        }
         let (side, caret, gap, pad) = (38, 14, 2, 5);
         let items: Vec<(Control, i32)> = vec![
             (Control::Tool(Tool::Select), side),
@@ -2038,7 +2066,10 @@ impl Studio {
     /// under them what there is to set of what is picked out, or of the
     /// frame, a section at a time, scrolled if it is long.
     fn right_panel(&mut self, layout: &mut Layout) {
-        layout.controls.push((self.side_button(1), Control::SidePanel(1)));
+        // With everything hidden, the left one's button is all there is.
+        if !self.zen {
+            layout.controls.push((self.side_button(1), Control::SidePanel(1)));
+        }
         if !self.shows_right() {
             return;
         }
@@ -2076,16 +2107,18 @@ impl Studio {
     fn open_area(&self) -> Rect {
         let left = if self.shows_left() { self.page_left() } else { INSET };
         let right = if self.shows_right() { self.page_right() } else { self.width - INSET };
-        Rect::new(left, INSET, (right - left).max(100), (self.height - INSET - DOCK_ROOM).max(100))
+        let bottom = if self.zen { INSET } else { DOCK_ROOM };
+        Rect::new(left, INSET, (right - left).max(100), (self.height - INSET - bottom).max(100))
     }
 
-    /// Whether each panel is shown.
+    /// Whether each panel is shown: as it was left, unless everything is
+    /// hidden.
     fn shows_left(&self) -> bool {
-        self.left_open
+        self.left_open && !self.zen
     }
 
     fn shows_right(&self) -> bool {
-        self.right_open
+        self.right_open && !self.zen
     }
 
     /// Where the page begins and ends across the window: past the panels
@@ -2115,14 +2148,44 @@ impl Studio {
         self.commit_name();
         self.commit_typing();
         (self.palette, self.eyedropping) = (None, false);
-        match side {
-            0 => self.left_open = !self.left_open,
-            _ => self.right_open = !self.right_open,
+        // With everything hidden, everything comes back, that panel too.
+        if self.zen {
+            self.zen = false;
+            match side {
+                0 => self.left_open = true,
+                _ => self.right_open = true,
+            }
+        } else {
+            match side {
+                0 => self.left_open = !self.left_open,
+                _ => self.right_open = !self.right_open,
+            }
         }
         if !cfg!(test) {
             keep_panels(self.left_open, self.right_open);
         }
         self.dirty = true;
+    }
+
+    /// Everything but the page hidden, or brought back: Ctrl+\, as in
+    /// Figma. Esc leaves it as it is; only this, or the button left at the
+    /// top, brings everything back.
+    fn toggle_zen(&mut self) {
+        self.commit_name();
+        self.commit_typing();
+        (self.palette, self.eyedropping, self.flyout) = (None, false, None);
+        self.zen = !self.zen;
+        self.dirty = true;
+    }
+
+    /// The tool taken up said for a moment, while there is no bar of
+    /// tools to show it.
+    fn say_tool(&mut self) {
+        if !self.zen {
+            return;
+        }
+        let says = if self.framing { "Frame  F".to_owned() } else { TOOLS.iter().find(|(known, ..)| *known == self.tool).map_or_else(|| tool_name(self.tool).to_owned(), |(_, name, key)| format!("{name}  {key}")) };
+        self.say(says);
     }
 
     /// The frame worked in made to fit the open part of the window, with
@@ -2719,6 +2782,7 @@ impl Studio {
             self.menu = None;
         }
         match control {
+            Control::SidePanel(_) if self.zen => self.toggle_zen(),
             Control::SidePanel(side) => self.toggle_panel(side),
             Control::Home => {
                 let place = self.control_rect(control).unwrap_or_default();
@@ -2786,6 +2850,7 @@ impl Studio {
                 self.commit_text();
                 (self.framing, self.tool) = (!self.framing, Tool::Select);
                 self.selected.clear();
+                self.say_tool();
             }
             Control::Group(group) => self.flyout = if self.flyout == Some(group) { None } else { Some(group) },
             Control::Pick(tool) => {
@@ -3051,12 +3116,16 @@ impl Studio {
     fn set_tool(&mut self, tool: Tool) {
         self.commit_text();
         self.cropping = None;
+        let changed = (self.tool, self.framing) != (tool, false);
         (self.tool, self.framing) = (tool, false);
         if tool != Tool::Select {
             self.frame_picked = false;
         }
         if tool != Tool::Select {
             self.selected.clear();
+        }
+        if changed {
+            self.say_tool();
         }
         self.dirty = true;
     }
@@ -4081,9 +4150,11 @@ impl Studio {
             (Key::Char(']' | '}'), true) => self.restack(true),
             (Key::Char('[' | '{'), true) => self.restack(false),
             // Ctrl+Shift+\ hides or shows the left panel, Ctrl+Alt+\ the
-            // right; Shift gives | on most keyboards.
+            // right; Shift gives | on most keyboards. Ctrl+\ alone hides
+            // everything but the page, as Figma's does.
             (Key::Char('\\' | '|'), true) if mods.alt => self.toggle_panel(1),
             (Key::Char('\\' | '|'), true) if mods.shift => self.toggle_panel(0),
+            (Key::Char('\\'), true) => self.toggle_zen(),
             (Key::Char('0'), true) => self.fit(),
             (Key::Char('1'), true) => {
                 let middle = self.open_area().center();
@@ -4516,7 +4587,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock), layout.flyout, layout.popover, layout.styles, layout.search, layout.crop_bar, layout.exported].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.search, layout.crop_bar, layout.exported].into_iter().flatten() {
             for grow in (1..=6).rev() {
                 canvas.round_fill(place.x - grow, place.y - grow + 3, place.w + 2 * grow, place.h + 2 * grow, 12 + grow, 0x000000, 14);
             }
@@ -5034,12 +5105,16 @@ impl Studio {
             self.text.draw_centered(canvas, *x, *y, *size, *color, icon);
         }
         // Over the bar of tools: what was last done, and the name and key
-        // of the button under the pointer.
+        // of the button under the pointer; with everything hidden, near
+        // the bottom where the bar was.
         if let Some((note, when)) = &self.note {
-            if when.elapsed().as_secs_f32() < 3.0 {
+            if when.elapsed().as_secs_f32() < self.note_lasts() {
                 let note = note.clone();
                 let wide = self.text.width(&note, px) + 24;
-                let (x, y) = (layout.dock.x + (layout.dock.w - wide) / 2, layout.dock.y - 44);
+                let (x, y) = match layout.dock.w {
+                    0 => ((self.width - wide) / 2, self.height - 64),
+                    _ => (layout.dock.x + (layout.dock.w - wide) / 2, layout.dock.y - 44),
+                };
                 canvas.round_fill(x, y, wide, 32, 8, 0x000000, 210);
                 self.text.draw(canvas, x + 12, y + (32 - line_high) / 2, px, TEXT_COLOR, &note);
             }
@@ -5208,8 +5283,19 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     loop {
         // What has happened: a run of the pointer's movements told as
         // where it last was, and a run of the wheel's notches all taken
-        // before it is drawn once.
-        let mut events: Vec<Event> = vec![conn.wait_for_event()?];
+        // before it is drawn once. While something said shows, a look
+        // every 50 ms, to take it away when its time is up.
+        let noting = match &mut screen {
+            Shown::Studio(studio) => studio.note_left(),
+            Shown::Home(_) => None,
+        };
+        let mut events: Vec<Event> = if noting.is_some() { conn.poll_for_event()?.into_iter().collect() } else { vec![conn.wait_for_event()?] };
+        if let (Some(left), true) = (noting, events.is_empty()) {
+            std::thread::sleep(left.min(std::time::Duration::from_millis(50)));
+            if let Shown::Studio(studio) = &mut screen {
+                studio.note_left();
+            }
+        }
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);
         }
@@ -6689,6 +6775,46 @@ mod tests {
         assert!(studio.right_open && studio.control_rect(Control::Zoom).is_some());
         // Kept between runs as two words, both shown when nothing is kept.
         assert_eq!((read_panels("0 1\n"), read_panels("1 0"), read_panels("")), ((false, true), (true, false), (true, true)));
+    }
+
+    #[test]
+    fn ctrl_backslash_hides_everything_but_the_page_and_the_button_that_brings_it_back() {
+        let mut studio = studio();
+        let ctrl = Mods { ctrl: true, ..Mods::default() };
+        studio.rulers = true;
+        let button = studio.control_rect(Control::SidePanel(0)).unwrap();
+        studio.key(Key::Char('\\'), ctrl, true);
+        assert!(studio.zen);
+        // Nothing left but the page and the one button, where it was.
+        let layout = studio.layout();
+        assert!(layout.panels.is_empty() && layout.dock.w == 0);
+        let controls: Vec<Control> = layout.controls.iter().map(|(_, control)| *control).filter(|control| !matches!(control, Control::Frame(_))).collect();
+        assert_eq!(controls, vec![Control::SidePanel(0)]);
+        assert_eq!(studio.control_rect(Control::SidePanel(0)), Some(button));
+        assert!(!studio.press_rulers((700, 5)) && studio.over_page((5, 450)) && studio.over_page((1395, 450)));
+        // Esc leaves it as it is; the tools' keys still work, each said
+        // for a moment.
+        studio.key(Key::Escape, Mods::default(), true);
+        assert!(studio.zen);
+        studio.key(Key::Char('r'), Mods::default(), true);
+        assert_eq!(studio.tool, Tool::Rect);
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Rectangle  R"));
+        assert!(studio.note_left().is_some_and(|left| left.as_secs_f32() <= 1.4));
+        let mut out = vec![0u32; (1400 * 900) as usize];
+        studio.draw(&mut out);
+        // The button brings everything back, as Ctrl+\ again does.
+        click(&mut studio, button.center());
+        assert!(!studio.zen && studio.left_open && studio.layout().dock.w > 0);
+        studio.key(Key::Char('\\'), ctrl, true);
+        studio.key(Key::Char('\\'), ctrl, true);
+        assert!(!studio.zen);
+        // It is in the menus, and so in Ctrl+K.
+        studio.open_palette();
+        for letter in "zen".chars() {
+            studio.key(Key::Char(letter), Mods::default(), true);
+        }
+        studio.key(Key::Enter, Mods::default(), true);
+        assert!(studio.zen && studio.search.is_none());
     }
 
     #[test]

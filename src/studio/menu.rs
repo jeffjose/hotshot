@@ -122,6 +122,8 @@ pub(super) enum Command {
     /// The left panel hidden or shown, and the right.
     LeftPanel,
     RightPanel,
+    /// Everything but the page hidden, or brought back.
+    Zen,
     Palette,
     Capture,
     Quit,
@@ -383,11 +385,12 @@ impl Studio {
                 Item::sub("Capture", MenuKind::MainSub(4)),
                 Item::Rule,
                 do_("Search actions", "Ctrl K", Command::Palette).look(Look::Icon(icons::SEARCH)),
+                do_("Zen mode", "Ctrl \\", Command::Zen),
                 do_("Close", "Ctrl Q", Command::Quit),
             ],
             MenuKind::MainSub(0) => vec![do_("New page", "", Command::NewPage), do_("New frame", "F", Command::NewFrame), Item::Rule, do_("Save", "Ctrl S", Command::Save), do_("Export frame", "Ctrl E", Command::ExportFrame), do_("Export every frame of the page", "Ctrl Shift E", Command::ExportPage)],
             MenuKind::MainSub(1) => vec![do_("Undo", "Ctrl Z", Command::Undo), do_("Redo", "Ctrl Shift Z", Command::Redo), Item::Rule, do_("Copy", "Ctrl C", Command::Copy), do_("Copy frame as PNG", "Ctrl Shift C", Command::CopyPng), do_("Paste", "Ctrl V", Command::Paste), do_("Duplicate", "Ctrl D", Command::Duplicate), do_("Delete", "Del", Command::Delete), Item::Rule, do_("Select all", "Ctrl A", Command::SelectAll)],
-            MenuKind::MainSub(2) => vec![do_("Zoom in", "Ctrl +", Command::ZoomIn), do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut), do_("Zoom to fit", "Ctrl 0", Command::ZoomFit), do_("Zoom to selection", "Shift 2", Command::ZoomSelection), do_("Actual size", "Ctrl 1", Command::Zoom(100)), Item::Rule, do_("Rulers", "Shift R", Command::Rulers).on(self.rulers), do_("Left panel", "Ctrl Shift \\", Command::LeftPanel).on(self.left_open), do_("Right panel", "Ctrl Alt \\", Command::RightPanel).on(self.right_open)],
+            MenuKind::MainSub(2) => vec![do_("Zoom in", "Ctrl +", Command::ZoomIn), do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut), do_("Zoom to fit", "Ctrl 0", Command::ZoomFit), do_("Zoom to selection", "Shift 2", Command::ZoomSelection), do_("Actual size", "Ctrl 1", Command::Zoom(100)), Item::Rule, do_("Rulers", "Shift R", Command::Rulers).on(self.rulers), do_("Left panel", "Ctrl Shift \\", Command::LeftPanel).on(self.left_open), do_("Right panel", "Ctrl Alt \\", Command::RightPanel).on(self.right_open), do_("Zen mode", "Ctrl \\", Command::Zen).on(self.zen)],
             MenuKind::MainSub(3) => vec![Item::sub("Order", MenuKind::Order), Item::entry("Frame selection", "Ctrl Alt G", MenuAct::Act(Action::FrameThem)), Item::Rule, Item::entry("Flip across", "Shift H", MenuAct::Act(Action::FlipAcross)), Item::entry("Flip down", "Shift V", MenuAct::Act(Action::FlipDown)), Item::entry("Crop", "Enter", MenuAct::Act(Action::Crop)), Item::Rule, do_("Show / hide", "Ctrl Shift H", Command::ToggleHide), do_("Lock / unlock", "Ctrl Shift L", Command::ToggleLock)],
             MenuKind::MainSub(_) => vec![do_("Capture the screen", "Ctrl G", Command::Capture), do_("Paste a picture", "Ctrl V", Command::Paste)],
             MenuKind::Page(page) => vec![do_("Rename", "Double-click", Command::RenamePage(page)), do_("Duplicate page", "", Command::DuplicatePage(page)), do_("Export every frame", "Ctrl Shift E", Command::ExportPage), Item::Rule, do_("New page", "", Command::NewPage), Item::Rule, do_("Delete page", "", Command::DeletePage(page))],
@@ -442,6 +445,7 @@ impl Studio {
                 do_("Rulers", "Shift R", Command::Rulers).on(self.rulers),
                 do_("Left panel", "Ctrl Shift \\", Command::LeftPanel).on(self.left_open),
                 do_("Right panel", "Ctrl Alt \\", Command::RightPanel).on(self.right_open),
+                do_("Zen mode", "Ctrl \\", Command::Zen).on(self.zen),
             ],
         }
     }
@@ -738,6 +742,7 @@ impl Studio {
             Command::Rulers => self.rulers = !self.rulers,
             Command::LeftPanel => self.toggle_panel(0),
             Command::RightPanel => self.toggle_panel(1),
+            Command::Zen => self.toggle_zen(),
             Command::Palette => self.open_palette(),
             Command::Capture => return Outcome::Capture,
             Command::Quit => return Outcome::Quit,

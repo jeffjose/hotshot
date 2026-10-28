@@ -126,7 +126,12 @@ Each panel has a button at its top corner that hides it, as Claude's
 sidebar button does: the button stays where it is, alone, and the page
 takes the room; it brings the panel back. `Ctrl+Shift+\` hides or shows
 the left panel and `Ctrl+Alt+\` the right, and the next time the canvas
-opens they are as they were left.
+opens they are as they were left. `Ctrl+\`, as in Figma, or Zen mode in
+the menu, the View menu, the zoom's list or `Ctrl+K`, hides everything
+but the page: both panels, the bar of tools and the rulers. The tools'
+keys still work, and say the tool taken up for a moment; Esc leaves it
+be, and `Ctrl+\` again, or the one button left at the top left, brings
+everything back.
 
 Pictures come from files given on the command line, from the clipboard
 (`Ctrl+V`), or from the screen (Capture, or `Ctrl+G`, which hides the
