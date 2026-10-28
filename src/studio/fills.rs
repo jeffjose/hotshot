@@ -331,7 +331,8 @@ mod tests {
 }
 
 /// What a box or an oval drawn on the canvas is filled with to begin with,
-/// as Figma fills its shapes rather than outlining them: Radix's indigo 8.
-/// Its paler steps wash out on a white frame; this one reads as a color on
-/// white and on a picture, and dark words still read over it.
-pub(super) const DEFAULT_FILL: u32 = 0x8DA4EF;
+/// as Figma fills its shapes rather than outlining them: a light gray,
+/// Tailwind's neutral 200, near white but still seen on a white frame,
+/// where its 50 and 100 all but vanish; never the blue of what is picked
+/// out, which a filled shape must not be taken for.
+pub(super) const DEFAULT_FILL: u32 = 0xE5E5E5;

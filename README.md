@@ -142,7 +142,7 @@ Linear or Radial, from the panel or along the top of the colors, with
 a strip showing the gradient whose stops are clicked to color them; a
 gradient turns with its shape, and is drawn smooth at any zoom and in
 exports at any scale. On the canvas a new box or oval is filled, in a
-soft indigo, with no border, as Figma draws one (capture mode still
+light gray, with no border, as Figma draws one (capture mode still
 outlines it); give one a border, take its fill away or change its
 colors, and the next is drawn the same, even the next time the canvas
 opens.
