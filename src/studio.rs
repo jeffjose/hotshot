@@ -5100,6 +5100,17 @@ impl Studio {
     /// A picture put where it was dropped in the window, in the frame
     /// there or on the page outside every frame; or with nowhere said, in
     /// the middle of the view.
+    /// An SVG dropped from a file manager: on a board, as shapes; elsewhere
+    /// as a picture.
+    pub fn drop_svg(&mut self, words: &str, name: &str, at: Option<(i32, i32)>) {
+        if self.on_board() && self.bring_svg(words, name, at) {
+            return;
+        }
+        if let Some(image) = board::svg::render(words) {
+            self.drop_picture(image, name, at);
+        }
+    }
+
     pub fn drop_picture(&mut self, image: Image, name: &str, at: Option<(i32, i32)>) {
         self.checkpoint();
         let at = at.filter(|&at| self.over_page(at)).unwrap_or_else(|| self.open_area().center());
@@ -5136,6 +5147,15 @@ impl Studio {
     /// What the clipboard had: a picture, put on the artboard; or text,
     /// put on it as text.
     pub fn pasted(&mut self, picture: Option<Vec<u8>>, text: Option<String>) {
+        // An SVG's words: on a board its shapes, elsewhere its picture.
+        if let Some(words) = text.as_deref().filter(|words| board::svg::is_svg(words)) {
+            if self.on_board() && self.bring_svg(words, "SVG", None) {
+                return;
+            }
+            if let Some(image) = board::svg::render(words) {
+                return self.add_picture(image, "SVG");
+            }
+        }
         if let Some(image) = picture.as_deref().and_then(Image::open) {
             return self.add_picture(image, "Pasted");
         }
@@ -7163,6 +7183,12 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             let paths = words.map(|words| pasted_paths(&String::from_utf8_lossy(&words))).unwrap_or_default();
             debug!("dropped {paths:?}");
             let canvas_file = paths.iter().find(|path| path.extension().is_some_and(|ending| ending == "hotshot")).cloned();
+            let svgs: Vec<(String, String)> = paths.iter().filter(|path| path.extension().is_some_and(|ending| ending.eq_ignore_ascii_case("svg"))).filter_map(|path| Some((std::fs::read_to_string(path).ok()?, path.file_stem()?.to_string_lossy().into_owned()))).collect();
+            if let Shown::Studio(studio) = &mut screen {
+                for (words, name) in &svgs {
+                    studio.drop_svg(words, name, drop_at);
+                }
+            }
             dropped_pictures = paths.iter().filter(|path| crate::convert::reads(path)).filter_map(|path| Some((Image::open(&std::fs::read(path).ok()?)?, path.file_stem()?.to_string_lossy().into_owned()))).collect();
             match &mut screen {
                 Shown::Studio(studio) => {

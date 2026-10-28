@@ -374,6 +374,14 @@ impl Studio {
                     if self.picked_stack().is_some() {
                         items.push(Item::entry("Remove auto layout", "", MenuAct::Act(Action::RemoveStack)));
                     }
+                    // A board: an SVG brought in as shapes kept as the picture it
+                    // was, or anything picked out made one picture.
+                    if self.on_board() {
+                        if self.board.svg.as_ref().is_some_and(|svg| self.chosen().iter().all(|&index| svg.ids.contains(&self.id_of(index)))) {
+                            items.push(Item::entry("Keep as picture", "", MenuAct::Board(super::board::Act::KeepPicture)));
+                        }
+                        items.push(Item::entry("Merge into picture", "", MenuAct::Board(super::board::Act::MergePicture)));
+                    }
                     if let Some(Kind::Picture(_)) = picked {
                         items.push(Item::Rule);
                         items.push(Item::entry("Crop", "Enter", MenuAct::Act(Action::Crop)));

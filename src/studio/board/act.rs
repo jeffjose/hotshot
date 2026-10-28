@@ -25,6 +25,10 @@ pub(in crate::studio) enum Act {
     Group,
     Vote(bool),
     Region(u8),
+    /// An SVG brought in as shapes kept as the picture it was; and what is
+    /// picked out made one picture.
+    KeepPicture,
+    MergePicture,
 }
 
 impl Studio {
@@ -76,6 +80,8 @@ impl Studio {
             Act::Group => self.group(),
             Act::Vote(more) => self.vote(more),
             Act::Region(region) => self.set_region(region),
+            Act::KeepPicture => self.keep_svg_picture(),
+            Act::MergePicture => self.merge_picture(),
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {

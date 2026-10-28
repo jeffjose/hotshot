@@ -123,11 +123,13 @@ pub(super) struct Board {
     pub pick: Option<pick::Pick>,
     /// What letting go of the box being moved would do to an arrow.
     pub drop: Option<change::Drop>,
+    /// The SVG last brought in as shapes, to keep as a picture instead.
+    pub svg: Option<svg::Brought>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None }
     }
 }
 
@@ -139,6 +141,7 @@ mod ghost;
 mod change;
 mod explain;
 mod pick;
+pub(super) mod svg;
 mod act;
 pub(super) use act::Act;
 mod typing;

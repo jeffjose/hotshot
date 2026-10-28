@@ -34,6 +34,12 @@ rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "
 ssimulacra2 = "0.5"
 # The config file's [convert] table, written as jog's is.
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
+# SVGs dropped on a board: read into its shapes by roxmltree and
+# svgtypes, and what of them cannot be drawn as a picture by resvg, all
+# pure Rust, its text left out.
+resvg = { version = "0.48", default-features = false }
+roxmltree = "0.21"
+svgtypes = "0.16"
 
 [build-dependencies]
 vergen-gitcl = "10.0.3"

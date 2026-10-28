@@ -559,6 +559,15 @@ arrows between them copied too. A box can keep what is put in it laid
 out, from `Ctrl+K`: in a row left to right, or as a tree top down, as
 it is added; the rest of the board stays free.
 
+Screenshots and pictures dropped or pasted on a board stay pictures, to
+point at. An SVG comes in as shapes to change: its boxes as boxes, its
+circles and ellipses as ovals, its lines and outlined paths as pen
+strokes, its words as text, all picked out together; what cannot be a
+shape, a filled path, a gradient or a picture in it, is drawn as one
+picture under them. Right-click it for Keep as picture, which takes it
+back to the one picture it was, or anything picked out for Merge into
+picture. On a page of frames an SVG is a picture.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a
