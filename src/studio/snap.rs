@@ -184,9 +184,10 @@ mod tests {
 pub(super) const MODS_HOLD: std::time::Duration = std::time::Duration::from_millis(150);
 
 impl Studio {
-    /// The keys held as a drag should take them: Shift and Alt a moment
-    /// after they are let go, as a hand lets go of them a little before
-    /// the button; and for the rest of a drag once pressed in it.
+    /// The keys held as they should be taken: in a drag, just as they are,
+    /// so that Shift pressed or let go partway changes it then, as in
+    /// Figma; out of one, Shift and Alt a moment after they are let go,
+    /// as a hand lets go of them a little before the button.
     pub(super) fn steady_mods(&mut self, mut mods: Mods) -> Mods {
         let now = std::time::Instant::now();
         if mods.shift {
@@ -195,17 +196,28 @@ impl Studio {
         if mods.alt {
             self.seen_mods.1 = Some(now);
         }
-        let dragging = !matches!(self.drag, Drag::None | Drag::Pan { .. } | Drag::Picker { .. } | Drag::Slide { .. } | Drag::Scrub { .. });
-        if dragging {
-            self.drag_mods.shift |= mods.shift;
-            self.drag_mods.alt |= mods.alt;
-        } else {
-            self.drag_mods = Mods::default();
+        if self.dragging() {
+            return mods;
         }
         let recent = |seen: Option<std::time::Instant>| seen.is_some_and(|when| now.duration_since(when) < MODS_HOLD);
-        mods.shift |= recent(self.seen_mods.0) || self.drag_mods.shift;
-        mods.alt |= recent(self.seen_mods.1) || self.drag_mods.alt;
+        mods.shift |= recent(self.seen_mods.0);
+        mods.alt |= recent(self.seen_mods.1);
         mods
+    }
+
+    /// Whether something is being dragged on the canvas, which the keys
+    /// held change as they change.
+    pub fn dragging(&self) -> bool {
+        !matches!(self.drag, Drag::None | Drag::Pan { .. } | Drag::Picker { .. } | Drag::Slide { .. } | Drag::Scrub { .. })
+    }
+
+    /// A key held changed in a drag: the drag again, where the pointer is,
+    /// as the keys are now.
+    pub fn mods_changed(&mut self, mods: Mods) {
+        if self.dragging() {
+            let (x, y) = self.pointer;
+            self.pointer_moved(x, y, mods);
+        }
     }
 }
 
@@ -214,7 +226,7 @@ mod held {
     use super::*;
 
     #[test]
-    fn shift_holds_a_moment_after_it_is_let_go_and_for_the_rest_of_a_drag() {
+    fn shift_holds_a_moment_after_it_is_let_go_but_in_a_drag_is_as_it_is() {
         let mut studio = Studio::new(Doc::new(100, 100), Text::load(), 800, 600, std::env::temp_dir(), "t.png".into());
         let shift = Mods { shift: true, ..Mods::default() };
         assert!(!studio.steady_mods(Mods::default()).shift);
@@ -223,12 +235,12 @@ mod held {
         assert!(studio.steady_mods(Mods::default()).shift);
         studio.seen_mods.0 = Some(std::time::Instant::now() - MODS_HOLD * 2);
         assert!(!studio.steady_mods(Mods::default()).shift);
-        // Pressed in a drag, it stays for the rest of it.
+        // In a drag, as it is: let go, at once let go.
         studio.drag = Drag::Draw { from: (0.0, 0.0) };
-        studio.steady_mods(shift);
-        studio.seen_mods.0 = Some(std::time::Instant::now() - MODS_HOLD * 2);
-        assert!(studio.steady_mods(Mods::default()).shift);
+        assert!(studio.steady_mods(shift).shift);
+        assert!(!studio.steady_mods(Mods::default()).shift);
         studio.drag = Drag::None;
+        studio.seen_mods.0 = Some(std::time::Instant::now() - MODS_HOLD * 2);
         assert!(!studio.steady_mods(Mods::default()).shift);
     }
 }

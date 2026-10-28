@@ -1599,11 +1599,9 @@ pub struct Studio {
     gaps: Vec<snap::Gap>,
     /// Whether Shift+1 last fitted the frame, to fit what is picked out next.
     fitted_frame: bool,
-    /// When Shift and Alt were last seen held, and which were pressed
-    /// during the drag going on: they hold a moment after they are let go,
-    /// and for the rest of a drag once pressed in it.
+    /// When Shift and Alt were last seen held: out of a drag they hold a
+    /// moment after they are let go.
     seen_mods: (Option<std::time::Instant>, Option<std::time::Instant>),
-    drag_mods: Mods,
     /// The guides dragged out of the rulers: up and down at an x, or
     /// across at a y, in pixels of the frame.
     user_guides: Vec<(bool, f32)>,
@@ -1698,7 +1696,6 @@ impl Studio {
             gaps: Vec::new(),
             fitted_frame: false,
             seen_mods: (None, None),
-            drag_mods: Mods::default(),
             user_guides: Vec::new(),
             layer_filter: String::new(),
             panel_tab: 0,
@@ -5274,6 +5271,14 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                         Shown::Home(_) => {}
                         Shown::Studio(studio) => {
                             outcome = studio.key(key, crate::x11::mods(state), down);
+                            // Shift or Alt pressed or let go partway through a
+                            // drag changes it then: the keys as they are now,
+                            // which the event, told as they were, does not say.
+                            if studio.dragging() {
+                                if let Ok(Ok(now)) = conn.query_pointer(window).map(|cookie| cookie.reply()) {
+                                    studio.mods_changed(crate::x11::mods(now.mask.into()));
+                                }
+                            }
                             if down {
                                 debug!("canvas key {key:?} {:?} -> {outcome:?}", crate::x11::mods(state));
                             }
@@ -6204,6 +6209,38 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn shift_pressed_partway_through_a_resize_keeps_the_shape_until_let_go() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 2.0, (100.0, 100.0));
+        boxed.points[1] = (300.0, 200.0);
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.fit();
+        studio.selected = vec![0];
+        let corner = studio.handles()[2].0;
+        let size = |studio: &Studio| {
+            let Kind::Shape(shape) = &studio.doc.layers[0].kind else { panic!() };
+            let (_, _, w, h) = shape.frame();
+            (w.round(), h.round())
+        };
+        studio.pointer_moved(corner.0, corner.1, Mods::default());
+        studio.pressed(1, 1000);
+        // Pulled out of shape: wider, not taller.
+        let far = studio.to_window((400.0, 210.0));
+        studio.pointer_moved(far.0, far.1, Mods::default());
+        let (w, h) = size(&studio);
+        assert!((w / h - 2.0).abs() > 0.3, "{w}x{h}");
+        // Shift pressed, the pointer still: at once its shape again.
+        studio.mods_changed(Mods { shift: true, ..Mods::default() });
+        let (w, h) = size(&studio);
+        assert!((w / h - 2.0).abs() < 0.02, "{w}x{h}");
+        // Let go: free again, as it was.
+        studio.mods_changed(Mods::default());
+        let (w, h) = size(&studio);
+        assert!((w / h - 2.0).abs() > 0.3, "{w}x{h}");
+        studio.released();
+    }
     #[test]
     fn a_frame_beside_the_view_is_drawn_as_nothing() {
         let mut studio = studio();
