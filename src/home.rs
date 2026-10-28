@@ -128,6 +128,9 @@ pub struct Home {
     pub list: bool,
     file_menu: Option<(Menu, (i32, i32))>,
     renaming_file: Option<(PathBuf, String)>,
+    /// The name being typed, of a project or a file, is all picked out, as
+    /// it is when begun: the first key types over it.
+    name_picked: bool,
     facts: HashMap<PathBuf, (SystemTime, usize, String)>,
     dirty: bool,
 }
@@ -137,7 +140,7 @@ const SIDE: i32 = 248;
 
 impl Home {
     pub fn new(text: Text, width: i32, height: i32, captures: PathBuf) -> Home {
-        Home { text, width, height, place: Place::Recent, pointer: (0, 0), scroll: 0, thumbs: HashMap::new(), naming: None, captures, last_press: (0, (-100, -100)), list: false, file_menu: None, renaming_file: None, facts: HashMap::new(), dirty: true }
+        Home { text, width, height, place: Place::Recent, pointer: (0, 0), scroll: 0, thumbs: HashMap::new(), naming: None, captures, last_press: (0, (-100, -100)), list: false, file_menu: None, renaming_file: None, name_picked: false, facts: HashMap::new(), dirty: true }
     }
 
     /// The text it draws with, handed back for the canvas to draw with.
@@ -151,6 +154,17 @@ impl Home {
 
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
+    }
+
+    /// A name being typed as it is shown: with a caret after it; or, all
+    /// of it picked out, on the color of a selection.
+    fn typed_shown(&mut self, canvas: &mut Canvas, (x, y): (i32, i32), px: u32, typed: String) -> String {
+        if !self.name_picked {
+            return format!("{typed}|");
+        }
+        let wide = self.text.width(&typed, px);
+        canvas.round_fill(x - 2, y, wide + 4, Text::line_height(px), 3, ACCENT, 120);
+        typed
     }
 
     pub fn title(&self) -> String {
@@ -371,7 +385,7 @@ impl Home {
         match control {
             Some(Control::Go(Place::Project(dir))) if double => {
                 let name = dir.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
-                self.naming = Some((dir, name));
+                (self.naming, self.name_picked) = (Some((dir, name)), true);
             }
             Some(Control::Go(place)) => {
                 (self.place, self.scroll) = (place, 0);
@@ -413,8 +427,15 @@ impl Home {
     pub fn key(&mut self, key: Key, mods: Mods) -> Outcome {
         self.dirty = true;
         if let Some((path, typed)) = &mut self.renaming_file {
+            let whole = std::mem::take(&mut self.name_picked);
             match key {
-                Key::Char(letter) if !mods.ctrl => typed.push(letter),
+                Key::Char(letter) if !mods.ctrl => {
+                    if whole {
+                        typed.clear();
+                    }
+                    typed.push(letter);
+                }
+                Key::Backspace if whole => typed.clear(),
                 Key::Backspace => drop(typed.pop()),
                 Key::Enter => {
                     let (path, typed) = (path.clone(), typed.clone());
@@ -434,8 +455,15 @@ impl Home {
             return self.file_act(0);
         }
         if let Some((_, typed)) = &mut self.naming {
+            let whole = std::mem::take(&mut self.name_picked);
             match key {
-                Key::Char(letter) if !mods.ctrl => typed.push(letter),
+                Key::Char(letter) if !mods.ctrl => {
+                    if whole {
+                        typed.clear();
+                    }
+                    typed.push(letter);
+                }
+                Key::Backspace if whole => typed.clear(),
                 Key::Backspace => drop(typed.pop()),
                 Key::Enter => self.commit_name(),
                 Key::Escape => self.naming = None,
@@ -482,8 +510,8 @@ impl Home {
                         Place::Captures => (icons::PICTURE, "Captures".to_owned(), Some(captures)),
                         Place::Drafts => (icons::DRAFTS, "Drafts".to_owned(), Some(drafts)),
                         Place::Project(dir) => {
-                            let name = match &self.naming {
-                                Some((naming, typed)) if naming == dir => format!("{typed}|"),
+                            let name = match self.naming.clone() {
+                                Some((naming, typed)) if naming == *dir => self.typed_shown(&mut canvas, (rect.x + 34, cy - line / 2), 13, typed),
                                 _ => dir.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned()),
                             };
                             (if on { icons::FOLDER_OPEN } else { icons::FOLDER }, name, Some(listed(dir, &is_file).len()))
@@ -555,7 +583,10 @@ impl Home {
                     if hovered {
                         canvas.round_outline(rect.x, rect.y, rect.w, thumb, 10, 2, ACCENT);
                     }
-                    let name = path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned());
+                    let name = match self.renaming_file.clone() {
+                        Some((known, typed)) if known == *path => self.typed_shown(&mut canvas, (rect.x, rect.y + thumb + 10), 13, typed),
+                        _ => path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned()),
+                    };
                     self.text.draw(&mut canvas, rect.x, rect.y + thumb + 10, 13, TEXT_COLOR, &name);
                     let meta = match (&self.place, path.parent().and_then(|dir| dir.file_name())) {
                         (Place::Recent, Some(project)) => format!("{} \u{b7} {}", project.to_string_lossy(), ago(modified(path))),
@@ -748,10 +779,10 @@ impl Home {
                     let _ = std::process::Command::new(me).arg("--canvas").arg(&path).spawn();
                 }
             }
-            (Menu::File(path), Act::Rename) => self.renaming_file = Some((path.clone(), stem(&path))),
+            (Menu::File(path), Act::Rename) => (self.renaming_file, self.name_picked) = (Some((path.clone(), stem(&path))), true),
             (Menu::Project(dir), Act::Rename) => {
                 let name = dir.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
-                self.naming = Some((dir, name));
+                (self.naming, self.name_picked) = (Some((dir, name)), true);
             }
             (Menu::File(path), Act::Duplicate) => {
                 let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(drafts);
@@ -874,8 +905,8 @@ impl Home {
             blit(canvas, &pixels, w, h, thumb);
         }
         let middle = rect.y + (rect.h - Text::line_height(13)) / 2;
-        let name = match &self.renaming_file {
-            Some((known, typed)) if known == path => format!("{typed}|"),
+        let name = match self.renaming_file.clone() {
+            Some((known, typed)) if known == *path => self.typed_shown(canvas, (rect.x + 90, middle), 13, typed),
             _ => path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned()),
         };
         self.text.draw(canvas, rect.x + 90, middle, 13, TEXT_COLOR, &name);
@@ -919,7 +950,15 @@ mod tests {
         assert_eq!(home.file_act(row(&home, "Duplicate")), Outcome::Continue);
         assert!(dir.join("Launch post copy.hotshot").exists());
         home.file_menu = Some((Menu::File(renamed.clone()), (10, 10)));
-        assert_eq!(home.file_act(0), Outcome::Open(renamed));
+        assert_eq!(home.file_act(0), Outcome::Open(renamed.clone()));
+        // Renamed from the menu, what is typed takes the old name's place.
+        home.file_menu = Some((Menu::File(renamed.clone()), (10, 10)));
+        home.file_act(row(&home, "Rename"));
+        for letter in "Teaser".chars() {
+            home.key(Key::Char(letter), Mods::default());
+        }
+        home.key(Key::Enter, Mods::default());
+        assert!(dir.join("Teaser.hotshot").exists() && !renamed.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
