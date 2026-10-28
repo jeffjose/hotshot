@@ -457,19 +457,23 @@ impl Display {
         let mapping = self.conn.get_keyboard_mapping(first, last - first + 1)?;
         let database = x11rb::resource_manager::new_from_default(&self.conn)?;
         let handle = x11rb::cursor::Handle::new(&self.conn, self.screen, &database)?.reply()?;
-        let names = [
-            (Cursor::Arrow, "left_ptr"),
-            (Cursor::Crosshair, "crosshair"),
-            (Cursor::Move, "fleur"),
-            (Cursor::Text, "xterm"),
-            (Cursor::Falling, "bottom_right_corner"),
-            (Cursor::Rising, "bottom_left_corner"),
-            (Cursor::Across, "sb_h_double_arrow"),
-            (Cursor::Upright, "sb_v_double_arrow"),
-            (Cursor::Turn, "exchange"),
+        // Each by the names themes give it, the first the theme has: a
+        // corner pulled both ways, as Figma shows it, before the old
+        // arrows into one corner, which point the wrong way at half the
+        // corners.
+        let names: [(Cursor, &[&str]); 9] = [
+            (Cursor::Arrow, &["left_ptr"]),
+            (Cursor::Crosshair, &["crosshair"]),
+            (Cursor::Move, &["fleur"]),
+            (Cursor::Text, &["xterm"]),
+            (Cursor::Falling, &["nwse-resize", "fd_double_arrow", "size_fdiag", "bottom_right_corner"]),
+            (Cursor::Rising, &["nesw-resize", "bd_double_arrow", "size_bdiag", "bottom_left_corner"]),
+            (Cursor::Across, &["ew-resize", "sb_h_double_arrow"]),
+            (Cursor::Upright, &["ns-resize", "sb_v_double_arrow"]),
+            (Cursor::Turn, &["exchange"]),
         ];
-        for (cursor, name) in names {
-            if let Ok(id) = handle.load_cursor(&self.conn, name) {
+        for (cursor, names) in names {
+            if let Some(id) = names.iter().filter_map(|name| handle.load_cursor(&self.conn, name).ok()).find(|&id| id != 0) {
                 self.cursors.insert(cursor, id);
             }
         }
