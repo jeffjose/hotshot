@@ -365,25 +365,37 @@ pub struct Layer {
     pub kind: Kind,
     pub hidden: bool,
     pub locked: bool,
+    /// What a shape has been renamed, in place of what it is called for
+    /// what it is; a picture keeps its own name.
+    pub named: Option<String>,
 }
 
 impl Layer {
     fn picture(picture: Picture) -> Layer {
-        Layer { kind: Kind::Picture(picture), hidden: false, locked: false }
+        Layer { kind: Kind::Picture(picture), hidden: false, locked: false, named: None }
     }
 
     fn shape(shape: Shape) -> Layer {
-        Layer { kind: Kind::Shape(shape), hidden: false, locked: false }
+        Layer { kind: Kind::Shape(shape), hidden: false, locked: false, named: None }
     }
 
     /// What the list of layers calls it.
     fn name(&self) -> String {
         match &self.kind {
             Kind::Picture(picture) => picture.name.clone(),
+            Kind::Shape(_) if self.named.is_some() => self.named.clone().unwrap_or_default(),
             Kind::Shape(shape) => match shape.tool {
                 Tool::Text | Tool::Badge => shape.text.lines().next().unwrap_or("Text").chars().take(24).collect(),
                 tool => tool_name(tool).to_owned(),
             },
+        }
+    }
+
+    /// It renamed, where it is listed.
+    fn rename(&mut self, name: String) {
+        match &mut self.kind {
+            Kind::Picture(picture) => picture.name = name,
+            Kind::Shape(_) => self.named = Some(name),
         }
     }
 
@@ -705,6 +717,11 @@ impl Doc {
                 }
                 Kind::Shape(shape) => *out += &format!("shape {flags} {}\n", shape.write()),
             }
+            // What a shape was renamed, on a line after its own, which a
+            // file from before names did without.
+            if let (Kind::Shape(_), Some(name)) = (&layer.kind, &layer.named) {
+                *out += &format!("named {}\n", one_line(name));
+            }
         }
     }
 
@@ -736,7 +753,7 @@ impl Doc {
                 let name = words.collect::<Vec<_>>().join(" ");
                 let picture = Picture { shadow: shadow.min(CUSTOM_SHADOW), opacity: opacity.min(256), flip, id, radius, crop, angle, ..Picture::new(image, name, (cx, cy)) };
                 let picture = Picture { w, h, ..picture };
-                self.layers.push(Layer { kind: Kind::Picture(picture), hidden, locked });
+                self.layers.push(Layer { kind: Kind::Picture(picture), hidden, locked, named: None });
             }
             // What a picture has besides, on lines after its own.
             "drop" | "adjust" | "window" | "corners" => {
@@ -773,10 +790,14 @@ impl Doc {
                 }
                 self.exports = sizes;
             }
+            "named" => {
+                let Some(Layer { kind: Kind::Shape(_), named, .. }) = self.layers.last_mut() else { return None };
+                *named = Some(line["named ".len().min(line.len())..].to_owned());
+            }
             "shape" => {
                 let rest = line.splitn(4, ' ').collect::<Vec<_>>();
                 let shape = Shape::read(rest.get(3)?)?;
-                self.layers.push(Layer { kind: Kind::Shape(shape), hidden: rest[1] == "1", locked: rest[2] == "1" });
+                self.layers.push(Layer { kind: Kind::Shape(shape), hidden: rest[1] == "1", locked: rest[2] == "1", named: None });
             }
             _ => return None,
         }
@@ -1895,6 +1916,9 @@ pub struct Studio {
     /// Which change it was at when the button went down, to say whether a
     /// drag changed anything.
     pressed_at: u64,
+    /// Where the pill saying how large what is picked out is was drawn
+    /// last, for what is said along the bottom to keep off it.
+    pill: Option<Rect>,
     dirty: bool,
 }
 
@@ -1995,6 +2019,7 @@ impl Studio {
             open_next: None,
             frame_sizes: Vec::new(),
             pressed_at: 0,
+            pill: None,
             dirty: true,
         };
         studio.doc = std::mem::replace(&mut studio.pages[0].frames[0], Doc::new(1, 1));
@@ -2224,8 +2249,7 @@ impl Studio {
         self.left_panel(&mut layout);
         self.right_panel(&mut layout);
         // The frames' names on the page, to pick a frame by.
-        for index in 0..self.frame_count() {
-            let (place, _) = self.frame_label(index);
+        for (index, place, _) in self.frame_labels() {
             if self.over_page(place.center()) {
                 layout.controls.push((place, Control::Frame(index)));
             }
@@ -2567,6 +2591,21 @@ impl Studio {
         let corner = self.to_window_page(at);
         let wide = self.text.width(&name, 12).max(24) + 4;
         (Rect::new(corner.0, corner.1 - Text::line_height(12) - 4, wide, Text::line_height(12)), name)
+    }
+
+    /// The frames' names that show, with where each is: those that would
+    /// run into one shown already left out, as frames far apart crowd
+    /// together zoomed far out; the one worked in first, always shown.
+    fn frame_labels(&mut self) -> Vec<(usize, Rect, String)> {
+        let order = std::iter::once(self.active).chain((0..self.frame_count()).filter(|&index| index != self.active));
+        let mut shown: Vec<(usize, Rect, String)> = Vec::new();
+        for index in order.filter(|&index| index < self.frame_count()).collect::<Vec<_>>() {
+            let (place, name) = self.frame_label(index);
+            if !shown.iter().any(|(_, other, _)| !other.inflate(3).intersect(place).is_empty()) {
+                shown.push((index, place, name));
+            }
+        }
+        shown
     }
 
     /// Whether a point of the window is over the page, and not a panel.
@@ -3288,14 +3327,14 @@ impl Studio {
                     false => self.selected = vec![index],
                 }
                 if double {
-                    // A picture renamed where it is listed; text typed into.
+                    // Text typed into; anything else renamed where it is
+                    // listed, a shape as well as a picture.
                     match &self.doc.layers[index].kind {
-                        Kind::Picture(picture) => self.start_naming(Naming::Layer(index), picture.name.clone()),
                         Kind::Shape(shape) if matches!(shape.tool, Tool::Text | Tool::Badge) => {
                             self.checkpoint();
                             self.edit_text(index);
                         }
-                        Kind::Shape(_) => {}
+                        _ => self.start_naming(Naming::Layer(index), self.doc.layers[index].name()),
                     }
                 }
             }
@@ -4130,8 +4169,8 @@ impl Studio {
             }
             Naming::Hex | Naming::Filter => {}
             Naming::Layer(index) => {
-                if let Some(Layer { kind: Kind::Picture(picture), .. }) = self.doc.layers.get_mut(index) {
-                    picture.name = typed;
+                if let Some(layer) = self.doc.layers.get_mut(index) {
+                    layer.rename(typed);
                 }
             }
             Naming::Suffix(index) => {
@@ -4431,6 +4470,11 @@ impl Studio {
                 self.library_key(key);
             }
             return Outcome::Continue;
+        }
+        // Undo and redo close any list open first, the colors and a group
+        // of tools' too, as what they were open over may be gone.
+        if down && mods.ctrl && matches!(key, Key::Char('z' | 'Z' | 'y' | 'Y')) {
+            (self.menu, self.menu_row, self.flyout, self.palette, self.styling, self.eyedropping) = (None, None, None, None, false, false);
         }
         // An open list takes the keys, as Ctrl+K does: Up and Down, Enter,
         // Right and Left into and out of the list a row opens, and Esc;
@@ -4788,6 +4832,7 @@ impl Studio {
         let layout = self.layout();
         let view = layout.view;
         out.par_chunks_mut(1 << 16).for_each(|part| part.fill(VIEW_COLOR));
+        self.pill = None;
         // The page: dots on its ground, the frames on that, each over light
         // squares where it is see-through.
         let dots = 24;
@@ -4844,8 +4889,7 @@ impl Studio {
         // picked out, lit.
         let mut canvas = Canvas::new(out, width, height);
         canvas.set_clip(view);
-        for index in 0..self.frame_count() {
-            let (place, name) = self.frame_label(index);
+        for (index, place, name) in self.frame_labels() {
             let color = if index == self.active && self.frame_picked { ACCENT_TEXT } else if index == self.active { TEXT_COLOR } else { DIM_TEXT_COLOR };
             let name = match self.renaming.clone() {
                 Some((Naming::Frame, typed)) if index == self.active => self.typed_shown(&mut canvas, (place.x, place.y), 12, typed),
@@ -5030,12 +5074,30 @@ impl Studio {
         }
     }
 
+    /// Where what was last done is said, so wide: over the bar of tools,
+    /// or near the bottom with no bar; and beside the pill saying how large
+    /// what is picked out is rather than over it, to its right, or to its
+    /// left where there is no room.
+    fn note_at(&self, dock: Rect, wide: i32) -> (i32, i32) {
+        let (x, y) = match dock.w {
+            0 => ((self.width - wide) / 2, self.height - 64),
+            _ => (dock.x + (dock.w - wide) / 2, dock.y - 44),
+        };
+        let Some(pill) = self.pill.filter(|pill| !pill.inflate(4).intersect(Rect::new(x, y, wide, 32)).is_empty()) else { return (x, y) };
+        let open = self.open_area();
+        match pill.right() + 12 + wide <= open.right() {
+            true => (pill.right() + 12, y),
+            false => ((pill.x - 12 - wide).max(open.x), y),
+        }
+    }
+
     /// "W × H" in a small pill of the accent, under what is picked out.
     fn size_label(&mut self, canvas: &mut Canvas, cx: i32, bottom: i32, w: f32, h: f32) {
         let says = format!("{} \u{d7} {}", w.abs().round() as i32, h.abs().round() as i32);
         let wide = self.text.width(&says, 11) + 10;
         let (x, y) = (cx - wide / 2, bottom + 8);
         canvas.round_fill(x, y, wide, 18, 3, ACCENT, 256);
+        self.pill = Some(Rect::new(x, y, wide, 18));
         self.text.draw(canvas, x + 5, y + (18 - Text::line_height(11)) / 2, 11, 0xFFFFFF, &says);
     }
 
@@ -5080,6 +5142,7 @@ impl Studio {
             let wide = self.text.width(&says, 11) + 12;
             let (x, y) = (crop.x + (crop.w - wide) / 2, crop.bottom() + 12);
             canvas.round_fill(x, y, wide, 18, 4, ACCENT, 256);
+            self.pill = Some(Rect::new(x, y, wide, 18));
             self.text.draw(canvas, x + 6, y + (18 - Text::line_height(11)) / 2, 11, 0xFFFFFF, &says);
         }
         for side in 0..4 {
@@ -5662,10 +5725,7 @@ impl Studio {
             if when.elapsed().as_secs_f32() < self.note_lasts() {
                 let note = note.clone();
                 let wide = self.text.width(&note, px) + 24;
-                let (x, y) = match layout.dock.w {
-                    0 => ((self.width - wide) / 2, self.height - 64),
-                    _ => (layout.dock.x + (layout.dock.w - wide) / 2, layout.dock.y - 44),
-                };
+                let (x, y) = self.note_at(layout.dock, wide);
                 canvas.round_fill(x, y, wide, 32, 8, 0x000000, 210);
                 self.text.draw(canvas, x + 12, y + (32 - line_high) / 2, px, TEXT_COLOR, &note);
             }
@@ -6429,6 +6489,92 @@ mod tests {
     }
 
     #[test]
+    fn a_shape_is_renamed_where_it_is_listed_and_keeps_its_name_in_its_file() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (100.0, 100.0));
+        boxed.points[1] = (200.0, 160.0);
+        let mut arrow = Shape::new(Tool::Arrow, 0xE5484D, 3.5, (300.0, 100.0));
+        arrow.points[1] = (380.0, 160.0);
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.doc.layers.push(Layer::shape(arrow));
+        studio.changed();
+        // Double-clicked in the list, the box's name is typed over.
+        let at = studio.control_rect(Control::Layer(0)).unwrap().center();
+        studio.pointer_moved(at.0, at.1, Mods::default());
+        for time in [5000, 5100] {
+            studio.pressed(1, time);
+            studio.released();
+        }
+        assert_eq!(studio.renaming.clone(), Some((Naming::Layer(0), "Rectangle".to_owned())));
+        for letter in "Card".chars() {
+            studio.key(Key::Char(letter), Mods::default(), true);
+        }
+        studio.key(Key::Enter, Mods::default(), true);
+        assert_eq!(studio.doc.layers[0].name(), "Card");
+        // The arrow from its menu.
+        let at = studio.control_rect(Control::Layer(1)).unwrap().center();
+        studio.pointer_moved(at.0, at.1, Mods::default());
+        studio.pressed(3, 6000);
+        choose(&mut studio, "Rename");
+        studio.renaming = Some((Naming::Layer(1), "Look here".into()));
+        studio.commit_name();
+        // Kept in the file; undone, the name it had.
+        let back = Doc::read(&studio.doc.write()).unwrap();
+        assert_eq!(back.layers.iter().map(Layer::name).collect::<Vec<_>>(), ["Card", "Look here"]);
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert_eq!(studio.doc.layers[1].name(), "Arrow");
+        // A file from before names has them called for what they are.
+        let old = String::from_utf8_lossy(&studio.doc.write()).lines().filter(|line| !line.starts_with("named ")).collect::<Vec<_>>().join("\n");
+        let back = Doc::read(old.as_bytes()).unwrap();
+        assert_eq!(back.layers.iter().map(Layer::name).collect::<Vec<_>>(), ["Rectangle", "Arrow"]);
+    }
+
+    #[test]
+    fn undo_closes_an_open_list_first_and_crowded_frame_names_are_left_out() {
+        let mut studio = studio();
+        studio.add_picture(checker(40, 40), "Shot");
+        let at = studio.control_rect(Control::Layer(0)).unwrap().center();
+        studio.pointer_moved(at.0, at.1, Mods::default());
+        studio.pressed(3, 1000);
+        assert!(studio.menu.is_some());
+        studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
+        assert!(studio.menu.is_none() && studio.doc.layers.is_empty(), "closed, and undone");
+        // Frames side by side, seen from far off: the names that would
+        // run into each other are not drawn.
+        for at in 1..6 {
+            studio.new_frame((at as f32 * 900.0, 0.0), (800.0, 600.0));
+        }
+        studio.zoom = 1.0;
+        assert_eq!(studio.frame_labels().len(), 6);
+        studio.zoom = 0.02;
+        let shown = studio.frame_labels();
+        assert!(shown.len() < 6 && shown[0].0 == studio.active);
+        for (at, (_, a, _)) in shown.iter().enumerate() {
+            assert!(shown[at + 1..].iter().all(|(_, b, _)| a.intersect(*b).is_empty()));
+        }
+    }
+
+    #[test]
+    fn what_is_said_along_the_bottom_keeps_off_the_size_of_what_is_picked_out() {
+        let mut studio = studio();
+        studio.add_picture(checker(400, 300), "Shot");
+        // The picture low in the view, its size just over the bar of tools.
+        let dock = studio.layout().dock;
+        let (x, y, w, h) = studio.doc.layers[0].bounds(&mut studio.text);
+        studio.pan.1 = dock.y as f32 - 60.0 - (studio.doc.y + y + h) * studio.zoom;
+        studio.pan.0 = (dock.x + dock.w / 2) as f32 - (studio.doc.x + x + w / 2.0) * studio.zoom;
+        studio.say("Copied");
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let pill = studio.pill.expect("a size shown");
+        let wide = studio.text.width("Copied", 12) + 24;
+        let (x, y) = (dock.x + (dock.w - wide) / 2, dock.y - 44);
+        assert!(!pill.intersect(Rect::new(x, y, wide, 32)).is_empty(), "where it would be, it is over {pill:?}");
+        let note = studio.note_at(dock, wide);
+        assert!(pill.intersect(Rect::new(note.0, note.1, wide, 32)).is_empty(), "the note at {note:?} is beside the pill at {pill:?}");
+    }
+
+    #[test]
     fn the_export_tab_chooses_frames_and_says_what_was_written() {
         let dir = std::env::temp_dir().join(format!("hotshot-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -6651,7 +6797,7 @@ mod tests {
         doc.layers.push(Layer::picture(Picture::new(image, "again".into(), (10.0, 10.0))));
         let mut arrow = Shape::new(Tool::Arrow, 0x30A46C, 3.5, (1.0, 2.0));
         arrow.points[1] = (50.0, 60.0);
-        doc.layers.push(Layer { kind: Kind::Shape(arrow), hidden: true, locked: true });
+        doc.layers.push(Layer { kind: Kind::Shape(arrow), hidden: true, locked: true, named: None });
         let back = Doc::read(&doc.write()).expect("read back");
         assert_eq!((back.width, back.height, back.background, back.layers.len()), (640, 360, doc.background, 3));
         let Kind::Picture(first) = &back.layers[0].kind else { panic!("a picture first") };

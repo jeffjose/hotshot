@@ -406,9 +406,14 @@ impl Studio {
                 let (hidden, locked) = layer.map_or((false, false), |layer| (layer.hidden, layer.locked));
                 let mut items = Vec::new();
                 match layer.map(|layer| &layer.kind) {
-                    Some(Kind::Picture(_)) => items.push(do_("Rename", "Double-click", Command::RenameLayer(index))),
-                    Some(Kind::Shape(shape)) if matches!(shape.tool, Tool::Text | Tool::Badge) => items.push(do_("Edit text", "Enter", Command::EditText(index))),
-                    _ => {}
+                    // Text is typed into with a double click, and renamed
+                    // from here alone.
+                    Some(Kind::Shape(shape)) if matches!(shape.tool, Tool::Text | Tool::Badge) => {
+                        items.push(do_("Edit text", "Enter", Command::EditText(index)));
+                        items.push(do_("Rename", "", Command::RenameLayer(index)));
+                    }
+                    Some(_) => items.push(do_("Rename", "Double-click", Command::RenameLayer(index))),
+                    None => {}
                 }
                 if !items.is_empty() {
                     items.push(Item::Rule);
@@ -815,8 +820,8 @@ impl Studio {
             Command::DeletePage(page) => self.delete_page(page),
             Command::PastePicture => return Outcome::Paste,
             Command::RenameLayer(index) => {
-                if let Some(Kind::Picture(picture)) = self.doc.layers.get(index).map(|layer| &layer.kind) {
-                    self.renaming = Some((Naming::Layer(index), picture.name.clone()));
+                if let Some(name) = self.doc.layers.get(index).map(Layer::name) {
+                    self.start_naming(Naming::Layer(index), name);
                 }
             }
             Command::EditText(index) => {

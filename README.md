@@ -131,7 +131,10 @@ as it went from the first, so a row or a grid lays itself out; anything
 else done in between starts over. Alt-drag a layer, or a frame by its
 name, to drag off a copy and leave it where it was; Alt on empty space
 still pans. Each duplicate is one step to undo. The layers of the frame you are in are listed
-under it. The tools float along the bottom, grouped as Figma's are, and
+under it; double-click one, or right click it and Rename, to rename it,
+a box, an arrow or a blur as well as a picture (text is typed into
+instead, and renamed from its menu). Zoomed far out, frames' names that
+would run into each other are left out, the one you are in kept. The tools float along the bottom, grouped as Figma's are, and
 the right panel holds the properties of whatever is selected, a section
 at a time. With nothing selected it belongs to the frame:
 its size (X post, square, 16:9, story, A4, or typed), its background (a
