@@ -160,7 +160,11 @@ Style Mode) puts a spotlight down: everything under it in the frame but
 its box or oval is darkened, as much as the panel says, its box with
 corners as round as you like. Several spotlights darken the rest once
 between them, and one brought from capture mode goes just over the
-picture, so what was drawn on it stays bright.
+picture, so what was drawn on it stays bright. `Z` drags out what a
+zoom lens is of, and puts its lens beside it, round or square, twice
+the size; drag the lens from inside it to move it on its own, its rim
+to make it larger, or a corner of what it is of, and the lens keeps
+how many times larger it shows it.
 
 Hover a button, a swatch, a shadow or a style and the canvas shows what
 it would do; only a click keeps it. While moving, a layer also snaps to

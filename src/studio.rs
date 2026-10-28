@@ -133,7 +133,7 @@ const FONT_SIZES: [u32; 4] = [18, 26, 40, 64];
 /// The tools, with their keys: those along the bottom, and after them
 /// those the More tools button holds, with capture mode's keys where the
 /// canvas has no other use for them.
-const TOOLS: [(Tool, &str, &str); 11] = [
+const TOOLS: [(Tool, &str, &str); 12] = [
     (Tool::Select, "Move", "V"),
     (Tool::Rect, "Rectangle", "R"),
     (Tool::Ellipse, "Oval", "O"),
@@ -145,11 +145,12 @@ const TOOLS: [(Tool, &str, &str); 11] = [
     (Tool::Counter, "Counter", "N"),
     (Tool::Blur, "Blur", "B"),
     (Tool::Spotlight, "Spotlight", "D"),
+    (Tool::Zoom, "Zoom lens", "Z"),
 ];
 
 /// The tools kept behind the More tools button, at the end of the bar,
 /// in the order its list has them.
-const MORE_TOOLS: [Tool; 2] = [Tool::Blur, Tool::Spotlight];
+const MORE_TOOLS: [Tool; 3] = [Tool::Blur, Tool::Spotlight, Tool::Zoom];
 /// The group the More tools button opens, after the shapes' and the pens'.
 const MORE: u8 = 2;
 
@@ -1198,6 +1199,8 @@ enum Field {
     /// How strong a blur is; how much a spotlight darkens the rest.
     Strength,
     Dim,
+    /// How many times larger a zoom lens shows what it is of.
+    Magnify,
 }
 
 impl Field {
@@ -1224,6 +1227,7 @@ impl Field {
             Field::LineAngle => "\u{b0}",
             Field::Strength => "Strength",
             Field::Dim => "Dim",
+            Field::Magnify => "Larger",
             Field::ExportTimes(_) => "\u{d7}",
         }
     }
@@ -2409,6 +2413,15 @@ impl Studio {
             Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => {
                 [0, 1].iter().map(|&end| (self.to_window(shape.points[end as usize]), (END, end))).collect()
             }
+            // A zoom by the corners of what it is of, and its lens by its
+            // middle and its rim, which pull as LENS does.
+            Kind::Shape(shape) if shape.tool == Tool::Zoom => {
+                let (of, _) = shape.zoomed();
+                let corners = [(-1, -1), (1, -1), (1, 1), (-1, 1)].map(|(px, py)| ((if px < 0 { of.x } else { of.right() } as f32, if py < 0 { of.y } else { of.bottom() } as f32), (px, py)));
+                let [middle, rim] = shape.zoom_handles();
+                let lens = [((middle.0 as f32, middle.1 as f32), (effects::LENS, 2)), ((rim.0 as f32, rim.1 as f32), (effects::LENS, 3))];
+                corners.into_iter().chain(lens).map(|(spot, pull)| (self.to_window(spot), pull)).collect()
+            }
             Kind::Shape(_) => Vec::new(),
         }
     }
@@ -2561,6 +2574,11 @@ impl Studio {
                     tool => {
                         let to = if mods.shift { shapes::constrained(tool, from, at) } else { at };
                         shape.points[1] = to;
+                        // A zoom's lens beside what it is of, as capture
+                        // mode puts it.
+                        if tool == Tool::Zoom {
+                            shape.place_zoom();
+                        }
                     }
                 }
                 shape.touch();
@@ -2572,6 +2590,7 @@ impl Studio {
                 let step = match field {
                     Field::Turn => 0.5,
                     Field::Opacity => 1.0,
+                    Field::Magnify => 0.05,
                     _ => 1.0,
                 } * if mods.shift { 10.0 } else { 1.0 };
                 self.set_field(field, start + (x - from) as f32 * step);
@@ -2762,6 +2781,20 @@ impl Studio {
             self.held = self.chosen().iter().map(|&index| self.doc.layers[index].clone()).collect();
             self.drag = Drag::Scale { pull, from: at };
             return;
+        }
+        // A zoom's lens is moved on its own, from anywhere inside it.
+        if let Some(index) = self.layer_at(at).filter(|_| !self.mods.shift && !double) {
+            if let Kind::Shape(shape) = &self.doc.layers[index].kind {
+                let (of, shown) = if shape.tool == Tool::Zoom { shape.zoomed() } else { (Rect::default(), Rect::default()) };
+                let (x, y) = (at.0.round() as i32, at.1.round() as i32);
+                if shown.contains(x, y) && !of.contains(x, y) {
+                    self.selected = vec![index];
+                    self.checkpoint();
+                    self.held = vec![self.doc.layers[index].clone()];
+                    self.drag = Drag::Scale { pull: (effects::LENS, 2), from: at };
+                    return;
+                }
+            }
         }
         // A side is pulled anywhere along it, as Figma has it: only the
         // corners have handles drawn.
@@ -3482,6 +3515,11 @@ impl Studio {
                 (picture.w, picture.h) = (w, h);
                 (picture.cx, picture.cy) = (was.cx + dx * cos - dy * sin, was.cy + dx * sin + dy * cos);
             }
+            Kind::Shape(shape) if shape.tool == Tool::Zoom => {
+                if let Kind::Shape(was) = &before.kind {
+                    effects::pull_zoom(shape, was, pull, from, at);
+                }
+            }
             // An end of a line where the pointer is; with Shift, along
             // one of the eight ways from the other end.
             Kind::Shape(shape) if pull.0 == END => {
@@ -3669,6 +3707,7 @@ impl Studio {
                 Field::Stroke => shape.stroke,
                 Field::Strength => effects::strength(shape),
                 Field::Dim => effects::dim(shape) as f32,
+                Field::Magnify if shape.tool == Tool::Zoom => shape.zoom_times(),
                 Field::StartX => shape.points[0].0,
                 Field::StartY => shape.points[0].1,
                 Field::EndX => shape.points[1.min(shape.points.len() - 1)].0,
@@ -3760,6 +3799,7 @@ impl Studio {
                         (Kind::Shape(shape), Field::Stroke) => shape.stroke = (value * 2.0).round().clamp(1.0, 80.0) / 2.0,
                         (Kind::Shape(shape), Field::Strength) => shape.stroke = effects::stroke_for(value),
                         (Kind::Shape(shape), Field::Dim) => shape.number = value.round().clamp(1.0, 100.0) as u32,
+                        (Kind::Shape(shape), Field::Magnify) if shape.tool == Tool::Zoom => effects::magnify(shape, value),
                         (Kind::Shape(shape), Field::StartX | Field::StartY | Field::EndX | Field::EndY) => {
                             let at = if matches!(field, Field::StartX | Field::StartY) { 0 } else { 1.min(shape.points.len() - 1) };
                             if matches!(field, Field::StartX | Field::EndX) {
@@ -5049,6 +5089,7 @@ impl Studio {
                         Some(typed) => format!("{typed}|"),
                         None => self.field(field).map_or("\u{2014}".to_owned(), |value| match field {
                             Field::Opacity | Field::Dim => format!("{}%", value.round() as i32),
+                            Field::Magnify => format!("{:.1}\u{d7}", value),
                             Field::Turn | Field::Angle | Field::LineAngle => format!("{}\u{b0}", value.round() as i32),
                             _ => format!("{}", value.round() as i32),
                         }),

@@ -1,17 +1,58 @@
-//! Blurs and spotlights on the canvas: layers that draw nothing of their
-//! own, but change what is under them in the frame. Each works on what
-//! the frame shows
-//! beneath it at the size it is drawn at, pictures and layers alike, so
-//! that a frame exported at twice the size is blurred from pixels drawn
-//! at twice the size too, and a part of the frame drawn on its own comes
-//! out as it does in the whole.
+//! Blurs, spotlights and zoom lenses on the canvas: layers that change
+//! what is under them in the frame rather than only draw over it. Each
+//! works on what the frame shows beneath it at the size it is drawn at,
+//! pictures and layers alike, so that a frame exported at twice the size
+//! is blurred, darkened or enlarged from pixels drawn at twice the size
+//! too, and a part of the frame drawn on its own comes out as it does in
+//! the whole.
 
 use super::*;
 
 /// Whether a tool's layers change what is beneath them, rather than
 /// draw over it.
 pub(super) fn changes_beneath(tool: Tool) -> bool {
-    matches!(tool, Tool::Blur | Tool::Spotlight)
+    matches!(tool, Tool::Blur | Tool::Spotlight | Tool::Zoom)
+}
+
+/// How a handle of a zoom's lens pulls: by its middle, which moves it,
+/// as 2, or by its rim, which makes it larger, as 3.
+pub(super) const LENS: i32 = 12;
+
+/// A zoom made so many times larger, its lens's middle where it was.
+pub(super) fn magnify(shape: &mut Shape, times: f32) {
+    let (of, _) = shape.zoomed();
+    let times = times.clamp(1.25, 12.0);
+    let (from, far) = (shape.points[2], shape.points[3]);
+    let middle = ((from.0 + far.0) / 2.0, (from.1 + far.1) / 2.0);
+    let (w, h) = (of.w as f32 * times / 2.0, of.h as f32 * times / 2.0);
+    (shape.points[2], shape.points[3]) = ((middle.0 - w, middle.1 - h), (middle.0 + w, middle.1 + h));
+}
+
+/// A zoom pulled by a handle, from as it was when it was taken hold of:
+/// its lens moved by its middle or made larger by its rim, or what it is
+/// of made larger or smaller by a corner, its lens as many times larger
+/// as it was, about the same middle.
+pub(super) fn pull_zoom(shape: &mut Shape, was: &Shape, pull: (i32, i32), from: (f32, f32), at: (f32, f32)) {
+    let (dx, dy) = (at.0 - from.0, at.1 - from.1);
+    match pull {
+        (LENS, 2) => {
+            for point in 2..4 {
+                shape.points[point] = (was.points[point].0 + dx, was.points[point].1 + dy);
+            }
+        }
+        (LENS, _) => shape.zoom_to(3, at),
+        (px, py) => {
+            let times = was.zoom_times();
+            let (of, _) = was.zoomed();
+            let (mut left, mut top, mut right, mut bottom) = (of.x as f32, of.y as f32, of.right() as f32, of.bottom() as f32);
+            if px < 0 { left = (left + dx).min(right - 4.0) } else if px > 0 { right = (right + dx).max(left + 4.0) }
+            if py < 0 { top = (top + dy).min(bottom - 4.0) } else if py > 0 { bottom = (bottom + dy).max(top + 4.0) }
+            (shape.points[0], shape.points[1]) = ((left, top), (right, bottom));
+            (shape.points[2], shape.points[3]) = (was.points[2], was.points[3]);
+            magnify(shape, times);
+        }
+    }
+    shape.touch();
 }
 
 /// The two ways a blur hides what is under it: a mosaic of squares, as
@@ -97,7 +138,30 @@ impl Doc {
         match shape.tool {
             Tool::Blur => self.blur(index, &shape, out, (part, whole, times), text),
             Tool::Spotlight => self.spotlight(index, out, part, times),
+            Tool::Zoom => self.zoom(index, &shape, out, (part, whole, times), text),
             _ => {}
+        }
+    }
+
+    /// A zoom, as capture mode draws it, on what is under it: what it is
+    /// of and its lens are drawn on a sheet that holds both, from what is
+    /// beneath there, and as much of the sheet as is in the part laid
+    /// over it, so that the lens shows what it is of though that is far
+    /// outside the part.
+    fn zoom(&self, index: usize, shape: &Shape, out: &mut [u32], (part, whole, times): (Rect, Rect, f32), text: &mut Text) {
+        let sheet = shape.bounds(text).inflate((shape.stroke * 3.0) as i32 + 10).intersect(whole);
+        let shown = sheet.intersect(part);
+        if shown.is_empty() || i64::from(sheet.w) * i64::from(sheet.h) > 64_000_000 {
+            return;
+        }
+        let mut pixels = self.beneath(index, out, part, sheet, times, text);
+        let mut flat = shape.clone();
+        flat.translate(-sheet.x as f32, -sheet.y as f32);
+        draw_shape(&mut pixels, sheet.w, sheet.h, &flat, text);
+        for y in shown.y..shown.bottom() {
+            let from = ((y - sheet.y) * sheet.w + shown.x - sheet.x) as usize;
+            let into = ((y - part.y) * part.w + shown.x - part.x) as usize;
+            out[into..into + shown.w as usize].copy_from_slice(&pixels[from..from + shown.w as usize]);
         }
     }
 
@@ -210,7 +274,10 @@ impl Studio {
         let act = Control::Action;
         rows.section(tool_name(shape.tool), "over what is under it", None);
         rows.fields(&[Field::X, Field::Y], &[]);
-        rows.fields(&[Field::W, Field::H], &[act(Action::LockRatio)]);
+        // A zoom is sized by the corners of what it is of.
+        if shape.tool != Tool::Zoom {
+            rows.fields(&[Field::W, Field::H], &[act(Action::LockRatio)]);
+        }
         if shape.tool == Tool::Blur {
             rows.section("Style", "", None);
             rows.chips(&mut self.text, [MOSAIC, SMOOTH].map(|style| (Action::BlurStyle(style).says().to_owned(), act(Action::BlurStyle(style)))).to_vec());
@@ -224,6 +291,13 @@ impl Studio {
                 false => rows.fields(&[Field::Dim, Field::Radius], &[]),
             }
             rows.note("The rest of the frame under it is darkened");
+        }
+        if shape.tool == Tool::Zoom {
+            rows.section("Lens", "drag it, or its rim", None);
+            rows.chips(&mut self.text, [true, false].map(|round| (Action::Round(round).says().to_owned(), act(Action::Round(round)))).to_vec());
+            rows.fields(&[Field::Magnify], &[]);
+            rows.section("Stroke", "", None);
+            rows.split(&[(Control::ColorField(Paint::Line), 0), (Control::Field(Field::Stroke), 76)]);
         }
     }
 
@@ -442,6 +516,63 @@ mod tests {
         let part = Rect::new(100, 100, 200, 150);
         let drawn = doc.render_part(2.0, part, &mut text);
         assert!((0..part.h).all(|y| (0..part.w).all(|x| drawn[(y * part.w + x) as usize] == whole[((part.y + y) * 400 + part.x + x) as usize])));
+    }
+
+    #[test]
+    fn a_zoom_lens_shows_what_it_is_of_larger_though_that_is_outside_the_part_drawn() {
+        let mut text = Text::load();
+        let mut doc = Doc::new(200, 200);
+        doc.layers.push(Layer::picture(Picture::new(Arc::new(checker(200, 200)), "squares".into(), (100.0, 100.0))));
+        let mut zoom = Shape::new(Tool::Zoom, 0xFFFFFF, 2.0, (20.0, 20.0));
+        (zoom.points[1], zoom.points[2], zoom.points[3], zoom.filled) = ((40.0, 40.0), (100.0, 100.0), (140.0, 140.0), true);
+        doc.layers.push(Layer::shape(zoom));
+        let (_, _, whole) = doc.render(1.0, &mut text);
+        // Twice as large: the square of red at 20,20 and the blue beside it,
+        // away from the lines across what it is of.
+        assert_eq!((whole[116 * 200 + 104], whole[108 * 200 + 124]), (0xFFFF0000, 0xFF0000FF));
+        assert_eq!(whole[115 * 200 + 160], 0xFF0000FF, "beside the lens, the squares as they were");
+        // A part with the lens and nothing of what it is of.
+        let part = Rect::new(180, 180, 120, 120);
+        let drawn = doc.render_part(2.0, part, &mut text);
+        let (_, _, larger) = doc.render(2.0, &mut text);
+        assert!((0..part.h).all(|y| (0..part.w).all(|x| drawn[(y * part.w + x) as usize] == larger[((part.y + y) * 400 + part.x + x) as usize])));
+    }
+
+    #[test]
+    fn z_draws_a_zoom_whose_lens_is_dragged_and_sized_on_its_own() {
+        let mut studio = studio();
+        studio.add_picture(checker(400, 300), "squares");
+        studio.key(Key::Char('z'), Mods::default(), true);
+        assert_eq!(studio.tool, Tool::Zoom);
+        drag(&mut studio, (200.0, 200.0), (260.0, 240.0));
+        let index = studio.doc.layers.len() - 1;
+        assert_eq!((studio.selected.clone(), studio.doc.layers[index].name()), (vec![index], "Zoom".to_owned()));
+        let shape = |studio: &Studio| match &studio.doc.layers[index].kind {
+            Kind::Shape(shape) => shape.clone(),
+            _ => panic!(),
+        };
+        let (of, lens) = shape(&studio).zoomed();
+        assert!((of.x - 200).abs() <= 1 && (of.w - 60).abs() <= 2 && (of.h - 40).abs() <= 2, "{of:?}");
+        assert_eq!((lens.w, lens.h), (of.w * 2, of.h * 2));
+        assert_eq!(studio.handles().len(), 6);
+        // The lens dragged from inside it moves, and what it is of stays.
+        let inside = (lens.x as f32 + 30.0, lens.y as f32 + 20.0);
+        drag(&mut studio, inside, (inside.0 + 50.0, inside.1 + 70.0));
+        let (of_now, moved) = shape(&studio).zoomed();
+        assert!(of_now == of && (moved.x - lens.x - 50).abs() <= 1 && (moved.y - lens.y - 70).abs() <= 1 && moved.w == lens.w, "{moved:?}");
+        // Three times larger from the panel; a corner of what it is of keeps that.
+        studio.set_field(Field::Magnify, 3.0);
+        assert_eq!(shape(&studio).zoomed().1.w, of.w * 3);
+        studio.held = vec![studio.doc.layers[index].clone()];
+        studio.drag = Drag::Scale { pull: (1, 1), from: studio.to_doc(studio.to_window((260.0, 240.0))) };
+        studio.pointer_moved(studio.to_window((280.0, 250.0)).0, studio.to_window((280.0, 250.0)).1, Mods::default());
+        studio.released();
+        let (grown, lens) = shape(&studio).zoomed();
+        assert!((grown.w - of.w - 20).abs() <= 1 && (grown.h - of.h - 10).abs() <= 1 && grown.x == of.x, "{grown:?}");
+        assert!((lens.w - grown.w * 3).abs() <= 1);
+        // Square, from its chip.
+        press(&mut studio, Control::Action(Action::Round(false)));
+        assert!(shape(&studio).filled);
     }
 
     #[test]
