@@ -2303,6 +2303,13 @@ impl Studio {
         if self.typing.is_some() && self.control_at(at_window) != self.typing.as_ref().map(|(field, _)| Control::Field(*field)) {
             self.commit_typing();
         }
+        // Another layer clicked in the list ends the typing of text first,
+        // so that what is typed next goes nowhere it should not.
+        if let (Some(editing), Some(Control::Layer(index))) = (self.editing, self.control_at(at_window)) {
+            if index != editing {
+                self.commit_text();
+            }
+        }
         let control = self.control_at(at_window);
         if let Some(control) = control {
             let outcome = self.press_control(control, double);
@@ -3493,6 +3500,10 @@ impl Studio {
     // ---- What is done to what is picked out ----
 
     fn restack(&mut self, forward: bool) {
+        // The text typed into and the picture cropped are known by where
+        // they are among the layers, which is about to change.
+        self.commit_text();
+        self.cropping = None;
         let mut chosen = self.chosen();
         chosen.sort_unstable();
         if chosen.is_empty() {
@@ -5877,6 +5888,30 @@ mod tests {
         assert!(studio.doc.layers[0].locked);
         studio.key(Key::Char('z'), Mods { ctrl: true, ..Mods::default() }, true);
         assert!(!studio.doc.layers[0].locked);
+    }
+
+    #[test]
+    fn text_being_typed_ends_when_the_layers_are_put_in_another_order() {
+        let mut studio = studio();
+        let mut words = Shape::new(Tool::Text, 0x000000, 2.0, (100.0, 100.0));
+        words.text = "Hi".into();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (300.0, 300.0));
+        boxed.points[1] = (400.0, 400.0);
+        studio.doc.layers = vec![Layer::shape(words), Layer::shape(boxed)];
+        studio.selected = vec![0];
+        studio.edit_text(0);
+        studio.act(Action::Forward);
+        assert_eq!((studio.editing, studio.selected.clone()), (None, vec![1]));
+        studio.key(Key::Char('x'), Mods::default(), true);
+        let Kind::Shape(shape) = &studio.doc.layers[1].kind else { panic!() };
+        assert_eq!(shape.text, "Hi");
+        // Another layer clicked in the list ends it too.
+        studio.edit_text(1);
+        let row = studio.control_rect(Control::Layer(0)).unwrap().center();
+        studio.pointer_moved(row.0, row.1, Mods::default());
+        studio.pressed(1, 100_000);
+        studio.released();
+        assert_eq!((studio.editing, studio.selected.clone()), (None, vec![0]));
     }
 
     #[test]

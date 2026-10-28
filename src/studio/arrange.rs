@@ -202,6 +202,13 @@ impl Studio {
         if target == index || index >= self.doc.layers.len() {
             return;
         }
+        // What is typed into or cropped is known by where it is, which moves.
+        let count = self.doc.layers.len();
+        self.commit_text();
+        self.cropping = None;
+        if self.doc.layers.len() != count {
+            return;
+        }
         self.checkpoint();
         let layer = self.doc.layers.remove(index);
         self.doc.layers.insert(target, layer);
