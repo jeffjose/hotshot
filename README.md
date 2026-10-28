@@ -307,7 +307,10 @@ Style Mode) puts a spotlight down: everything under it in the frame but
 its box or oval is darkened, as much as the panel says, its box with
 corners as round as you like. Several spotlights darken the rest once
 between them, and one brought from capture mode goes just over the
-picture, so what was drawn on it stays bright. `Z` drags out what a
+picture, so what was drawn on it stays bright. One put down on the page,
+outside the frames, darkens everything under it on the page as it is
+stacked, frames and all, as far as the view goes, and what is over it
+not; as the page's own, it is in no export. `Z` drags out what a
 zoom lens is of, and puts its lens beside it, round or square, twice
 the size; drag the lens from inside it to move it on its own, its rim
 to make it larger, or a corner of what it is of, and the lens keeps

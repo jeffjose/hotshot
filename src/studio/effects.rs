@@ -207,11 +207,12 @@ impl Doc {
             _ => None,
         }).collect();
         let Some((top, shape)) = lit.last() else { return };
-        if *top != index {
+        // One of the page's own darkens all under it on the page, frames
+        // and all, as the page is drawn: not here.
+        if *top != index || self.page {
             return;
         }
         let dark = dim(shape) as f32 / 100.0;
-        let on_page = self.page;
         let shapes: Vec<Lit> = lit.iter().map(|(_, shape)| Lit { frame: shape.frame(), radius: shape.radius, round: shape.filled }).collect();
         out.par_chunks_mut(part.w.max(1) as usize).enumerate().for_each(|(row, pixels)| {
             let y = (part.y + row as i32) as f32 + 0.5;
@@ -219,10 +220,37 @@ impl Doc {
                 let x = (part.x + column as i32) as f32 + 0.5;
                 let inside = shapes.iter().map(|lit| lit.cover(x, y)).fold(0.0f32, f32::max);
                 let amount = dark * (1.0 - inside);
-                // On the page, outside the frames, there is no frame to
-                // darken: only what is under it of the page's own layers.
-                if amount > 0.0 && !(on_page && *pixel >> 24 == 0) {
+                if amount > 0.0 {
                     *pixel = darkened(*pixel, amount);
+                }
+            }
+        });
+    }
+
+    /// The page's own spotlights: everything drawn under the topmost of
+    /// them in the window, the frames and the page round them, darkened
+    /// but what any of them is on, once, within the view, as the topmost
+    /// says; the page's points shown `zoom` times larger from `pan`.
+    pub(super) fn light_page(&self, out: &mut [u32], width: i32, view: Rect, (zoom, pan): (f32, (f32, f32))) {
+        let lit: Vec<&Shape> = self.layers.iter().filter_map(|layer| match &layer.kind {
+            Kind::Shape(shape) if shape.tool == Tool::Spotlight && !layer.hidden => Some(shape),
+            _ => None,
+        }).collect();
+        let Some(top) = lit.last() else { return };
+        let dark = dim(top) as f32 / 100.0;
+        let shapes: Vec<Lit> = lit.iter().map(|shape| {
+            let (x, y, w, h) = shape.frame();
+            Lit { frame: (x * zoom + pan.0, y * zoom + pan.1, w * zoom, h * zoom), radius: shape.radius * zoom, round: shape.filled }
+        }).collect();
+        let rows = &mut out[(view.y * width) as usize..(view.bottom() * width) as usize];
+        rows.par_chunks_mut(width.max(1) as usize).enumerate().for_each(|(row, line)| {
+            let y = (view.y + row as i32) as f32 + 0.5;
+            for (column, pixel) in line.iter_mut().enumerate().take(view.right() as usize).skip(view.x as usize) {
+                let inside = shapes.iter().map(|lit| lit.cover(column as f32 + 0.5, y)).fold(0.0f32, f32::max);
+                let keep = 1.0 - dark * (1.0 - inside);
+                if keep < 1.0 {
+                    let channel = |shift: u32| (((*pixel >> shift & 255) as f32 * keep).round() as u32).min(255) << shift;
+                    *pixel = channel(16) | channel(8) | channel(0);
                 }
             }
         });
@@ -325,7 +353,7 @@ impl Studio {
                 true => rows.fields(&[Field::Dim], &[]),
                 false => rows.fields(&[Field::Dim, Field::Radius], &[]),
             }
-            rows.note("The rest of the frame under it is darkened");
+            rows.note(if self.on_page() { "All under it on the page is darkened, in no export" } else { "The rest of the frame under it is darkened" });
         }
         if shape.tool == Tool::Zoom {
             rows.section("Lens", "drag it, or its rim", None);

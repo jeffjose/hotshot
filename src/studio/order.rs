@@ -206,18 +206,25 @@ impl Studio {
     }
 }
 
-/// What the page is drawn in, bottom to top: a frame, or a band of the
+/// What the page is drawn in, bottom to top: a frame; a band of the
 /// page's own layers between two frames, from one up to before another,
-/// by which band it is.
+/// by which band it is; or, where the topmost of the page's own
+/// spotlights is, all drawn so far darkened but what they are on.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum Piece {
     Frame(usize),
     Band(usize, (usize, usize)),
+    Spot,
 }
 
 impl Studio {
-    /// The page as it is drawn, piece by piece, bottom to top.
+    /// The page as it is drawn, piece by piece, bottom to top: a spotlight
+    /// of the page's own ends a band, as it darkens what is under it of
+    /// everything on the page and not only of the page's own layers.
     pub(super) fn pieces(&self) -> Vec<Piece> {
+        let layers = &self.loose().layers;
+        let spot = |index: usize| matches!(&layers[index].kind, Kind::Shape(shape) if shape.tool == Tool::Spotlight) && !layers[index].hidden;
+        let top_spot = (0..layers.len()).rev().find(|&index| spot(index));
         let mut pieces = Vec::new();
         let mut band: Option<(usize, usize)> = None;
         let mut bands = 0;
@@ -232,6 +239,12 @@ impl Studio {
                 Child::Frame(index) => {
                     close(&mut band, &mut pieces);
                     pieces.push(Piece::Frame(index));
+                }
+                Child::Layer(index) if spot(index) => {
+                    close(&mut band, &mut pieces);
+                    if top_spot == Some(index) {
+                        pieces.push(Piece::Spot);
+                    }
                 }
                 Child::Layer(index) => match &mut band {
                     Some((_, to)) => *to = index + 1,

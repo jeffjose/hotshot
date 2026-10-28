@@ -5594,6 +5594,12 @@ impl Studio {
             let (index, band, range) = match piece {
                 order::Piece::Frame(index) => (index, 0, drawn::ALL),
                 order::Piece::Band(band, range) => (LOOSE, band, range),
+                // The page's own spotlights darken everything drawn so far,
+                // frames and all, within the view.
+                order::Piece::Spot => {
+                    self.loose().light_page(out, width, view, (self.zoom, self.pan));
+                    continue;
+                }
             };
             let (origin, whole) = self.shown_frame(index, band, range, view, stop);
             let shown = whole.moved(origin.0, origin.1).intersect(view);
@@ -7938,6 +7944,37 @@ mod tests {
         studio.activate(0);
         studio.run_command(menu::Command::DuplicateFrame);
         assert_eq!(studio.page_order(), vec![Child::Layer(0), Child::Frame(0), Child::Frame(2), Child::Layer(1), Child::Frame(1)]);
+    }
+
+    #[test]
+    fn a_spotlight_of_the_pages_own_darkens_everything_under_it_on_the_page_and_no_export() {
+        let mut studio = with_room_beside();
+        studio.set_tool(Tool::Spotlight);
+        drag_page(&mut studio, (900.0, 100.0), (1000.0, 300.0));
+        assert!(studio.on_page());
+        if let Kind::Shape(shape) = &mut studio.doc.layers[0].kind {
+            shape.points = vec![(100.0, 100.0), (300.0, 300.0)];
+            shape.touch();
+        }
+        studio.changed();
+        // The frame under it darkened but where it is on, and the page
+        // round the frame too.
+        assert_eq!(shown_at(&mut studio, (200.0, 200.0)), 0xFFFFFF);
+        let dimmed = shown_at(&mut studio, (500.0, 400.0));
+        assert!(dimmed & 0xFF < 0x80, "darkened: {dimmed:06X}");
+        assert!(shown_at(&mut studio, (1100.0, 700.0)) & 0xFF < VIEW_COLOR & 0xFF);
+        // A box of the page's own over it is not darkened.
+        studio.set_tool(Tool::Rect);
+        drag_page(&mut studio, (1200.0, 100.0), (1300.0, 200.0));
+        studio.paint(Paint::Fill, Some(0x00AA00));
+        assert_eq!(shown_at(&mut studio, (1250.0, 150.0)), 0x00AA00);
+        // The frame put over it is not darkened either.
+        studio.press_control(Control::Frame(0), false);
+        studio.key(Key::Char('}'), Mods { ctrl: true, shift: true, alt: false }, true);
+        assert_eq!(shown_at(&mut studio, (500.0, 400.0)), 0xFFFFFF);
+        // Exported, the frame is as it is.
+        let (_, _, pixels) = studio.doc.render(1.0, &mut studio.text);
+        assert!(pixels.iter().all(|&pixel| pixel == 0xFFFF_FFFF));
     }
 
     #[test]
