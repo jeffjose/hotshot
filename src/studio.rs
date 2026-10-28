@@ -2534,7 +2534,24 @@ impl Studio {
                     self.checkpoint();
                     self.drag = Drag::MoveFrame { from, origin, moved: true };
                 }
-                (self.doc.x, self.doc.y) = ((origin.0 + dx).round(), (origin.1 + dy).round());
+                // Snapped to the other frames, as a layer is to the rest,
+                // but for along the way Shift holds it to, or with Ctrl.
+                let across = dx.abs() >= dy.abs();
+                let (dx, dy) = match (mods.shift, across) {
+                    (true, true) => (dx, 0.0),
+                    (true, false) => (0.0, dy),
+                    _ => (dx, dy),
+                };
+                let mut at = self.snap_frame((origin.0 + dx, origin.1 + dy), mods.ctrl);
+                if mods.shift {
+                    match across {
+                        true => at.1 = origin.1,
+                        false => at.0 = origin.0,
+                    }
+                    self.guides.retain(|&(upright, _)| upright == across);
+                    self.gaps.retain(|gap| gap.down != across);
+                }
+                (self.doc.x, self.doc.y) = at;
                 self.changed();
             }
             Drag::Pan { from, origin } => {
@@ -3430,75 +3447,6 @@ impl Studio {
                 }
             }
         }
-    }
-
-    /// How far what is held is to go, made to bring its edges or its
-    /// middle onto those of the artboard or of another layer near enough,
-    /// as Figma's do: and the lines it is brought onto, to show.
-    fn snap(&mut self, dx: f32, dy: f32) -> (f32, f32) {
-        self.guides.clear();
-        self.gaps.clear();
-        let held: Vec<(f32, f32, f32, f32)> = self.held.clone().iter().map(|layer| layer.bounds(&mut self.text)).collect();
-        let Some(&(mut left, mut top, _, _)) = held.first() else { return (dx, dy) };
-        let (mut right, mut bottom) = (f32::MIN, f32::MIN);
-        for &(x, y, w, h) in &held {
-            (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h));
-        }
-        let chosen = self.chosen();
-        let (mut across, mut down) = (vec![0.0, self.doc.width as f32 / 2.0, self.doc.width as f32], vec![0.0, self.doc.height as f32 / 2.0, self.doc.height as f32]);
-        across.extend(self.guide_lines(true));
-        down.extend(self.guide_lines(false));
-        for index in 0..self.doc.layers.len() {
-            if chosen.contains(&index) || self.doc.layers[index].hidden {
-                continue;
-            }
-            let (x, y, w, h) = self.doc.layers[index].bounds(&mut self.text);
-            across.extend([x, x + w / 2.0, x + w]);
-            down.extend([y, y + h / 2.0, y + h]);
-        }
-        let reach = 6.0 / self.zoom;
-        // The nearest of its edges and middle to any of the lines.
-        let nearest = |mine: [f32; 3], lines: &[f32]| -> Option<(f32, f32)> {
-            let mut best: Option<(f32, f32)> = None;
-            for &line in lines {
-                for &at in &mine {
-                    let by = line - at;
-                    if by.abs() <= reach && best.is_none_or(|(was, _)| by.abs() < was.abs()) {
-                        best = Some((by, line));
-                    }
-                }
-            }
-            best
-        };
-        // Or, nearer still, where it is spaced evenly with what is beside it.
-        let others = self.other_edges();
-        let moved = [left + dx, top + dy, right + dx, bottom + dy];
-        let (mut dx, mut dy) = (dx, dy);
-        let line_x = nearest([left + dx, (left + right) / 2.0 + dx, right + dx], &across);
-        match (line_x, snap::equal_gap(moved, &others, reach)) {
-            (line, Some((by, gaps))) if line.is_none_or(|(line_by, _)| by.abs() < line_by.abs()) => {
-                dx += by;
-                self.gaps.extend(gaps);
-            }
-            (Some((by, line)), _) => {
-                dx += by;
-                self.guides.push((true, line));
-            }
-            _ => {}
-        }
-        let line_y = nearest([top + dy, (top + bottom) / 2.0 + dy, bottom + dy], &down);
-        match (line_y, snap::equal_gap_down(moved, &others, reach)) {
-            (line, Some((by, gaps))) if line.is_none_or(|(line_by, _)| by.abs() < line_by.abs()) => {
-                dy += by;
-                self.gaps.extend(gaps);
-            }
-            (Some((by, line)), _) => {
-                dy += by;
-                self.guides.push((false, line));
-            }
-            _ => {}
-        }
-        (dx, dy)
     }
 
     /// The one picked out pulled by a handle to a point: the side or
@@ -6813,6 +6761,54 @@ mod tests {
         studio.draw(&mut out);
         studio.pan.0 += 6000.0;
         studio.draw(&mut out);
+    }
+
+    /// A frame's name pressed and dragged so far across the window, held
+    /// there, not yet let go of, to be looked at.
+    fn drag_frame(studio: &mut Studio, frame: usize, by: (i32, i32), mods: Mods) {
+        let label = studio.frame_label(frame).0.center();
+        studio.pointer_moved(label.0, label.1, mods);
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.pointer_moved(label.0 + by.0 / 2, label.1 + by.1 / 2, mods);
+        studio.pointer_moved(label.0 + by.0, label.1 + by.1, mods);
+    }
+
+    #[test]
+    fn a_frame_moved_on_its_page_snaps_to_the_others_and_spaces_evenly_with_them() {
+        let mut studio = studio();
+        // Two more beside the first, the first two 100 apart and the third
+        // 200 from the second.
+        studio.new_frame((900.0, 0.0), (400.0, 300.0));
+        studio.new_frame((1500.0, 0.0), (400.0, 300.0));
+        (studio.zoom, studio.pan) = (0.5, (50.0, 300.0));
+        let ctrl = Mods { ctrl: true, ..Mods::default() };
+        let shift = Mods { shift: true, ..Mods::default() };
+        // Down 8, within 6 of the window of the others' tops: back to them,
+        // with a line across where.
+        drag_frame(&mut studio, 2, (0, 4), Mods::default());
+        assert_eq!((studio.doc.x, studio.doc.y), (1500.0, 0.0));
+        assert_eq!(studio.guides, [(false, 0.0)]);
+        studio.released();
+        assert!(studio.guides.is_empty() && studio.gaps.is_empty());
+        // Left 96, 104 from the second: to 100 from it, the gap the first
+        // two have, both gaps shown.
+        drag_frame(&mut studio, 2, (-48, 0), Mods::default());
+        assert_eq!(studio.doc.x, 1400.0);
+        assert!(studio.gaps.len() >= 2 && studio.gaps.iter().all(|gap| (gap.to - gap.from - 100.0).abs() < 0.5), "{:?}", studio.gaps);
+        studio.released();
+        // Ctrl: where it is put.
+        drag_frame(&mut studio, 2, (2, 3), ctrl);
+        assert_eq!((studio.doc.x, studio.doc.y), (1404.0, 6.0));
+        assert!(studio.guides.is_empty() && studio.gaps.is_empty());
+        studio.released();
+        // Shift: only across, the way it went further.
+        drag_frame(&mut studio, 2, (60, 20), shift);
+        assert_eq!((studio.doc.x, studio.doc.y), (1524.0, 6.0));
+        studio.released();
+        // One step to undo each move.
+        studio.key(Key::Char('z'), ctrl, true);
+        assert_eq!((studio.doc.x, studio.doc.y), (1404.0, 6.0));
     }
     #[test]
     fn drawing_sharp_after_a_zoom_is_given_up_for_what_comes() {

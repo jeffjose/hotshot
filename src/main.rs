@@ -23,6 +23,7 @@ mod output;
 mod pin;
 mod record;
 mod shapes;
+mod spacing;
 mod strips;
 mod studio;
 mod text;
