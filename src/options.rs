@@ -349,6 +349,8 @@ pub struct Options {
     pub forget: bool,
     /// A PNG, or text, in a file to put on the clipboard.
     pub clip: Option<PathBuf>,
+    /// A file to put on the clipboard as a file, by where it is.
+    pub clip_file: Option<PathBuf>,
     /// A recording made of the area, not a picture taken of it: so
     /// many frames a second, as a file of some kind, for so long (or
     /// until it is stopped, at 0), with the mouse pointer in it or not,
@@ -429,6 +431,7 @@ fn defaults() -> Options {
         at: None,
         forget: false,
         clip: None,
+        clip_file: None,
         record: false,
         fps: 60,
         video: Video::Mp4,
@@ -483,7 +486,7 @@ fn pair(text: &str, mark: char) -> Option<(i32, i32)> {
 }
 
 fn takes_value(name: &str) -> bool {
-    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "window-theme", "window-bar", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size", "convert", "export", "frame", "scale"].contains(&name)
+    ["show", "at", "clip", "fps", "record-format", "duration", "format", "quality", "aspect", "fixed", "monitor", "region", "delay", "output", "dir", "filename", "accent", "color", "fill-color", "window-frame", "window-theme", "window-bar", "size", "corner-radius", "rounded", "border-radius", "frame-radius", "opacity", "tool", "arrow-heads", "zoom", "dim", "enter", "windows", "font", "title", "place", "save-to", "backdrop", "padding", "photo", "frame-size", "convert", "export", "frame", "scale", "clip-file"].contains(&name)
 }
 
 /// Sets one option, named the way the config file spells it. A flag
@@ -557,6 +560,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         // What is in a file, put on the clipboard: for a picture left
         // on the screen to be copied from, or text from the canvas.
         "clip" => options.clip = Some(path(&value()?)),
+        "clip-file" => options.clip_file = Some(path(&value()?)),
         "record" => options.record = true,
         "fps" => {
             let text = value()?;

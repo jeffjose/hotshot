@@ -282,6 +282,26 @@ good to the eye); the line under the row says what that row will
 write, "Lossless · 89 KB · −54% vs PNG" or "Quality 88 · 96 KB ·
 score 87".
 
+Fine-tune…, at the end of the list, in a row's right-click menu or
+beside Copy, opens jog's Convert panel by the row: the kinds across
+the top, each with how much smaller than a PNG it comes out; its mode,
+quality (with a tick at the usual one), speed or effort, color and bit
+depth; and the numbers, the size against a PNG's, the SSIMULACRA2 score
+and what it means, and how long it took to encode. Fit score 85 looks
+for the smallest file that still scores 85, Fit under… for the best
+one under a size you type ("200 KB"), Reset puts the usual settings
+back and Save as default writes them into the config file's
+`[convert]` table. Use for this row keeps them for the row, and Export
+now exports with them. While the panel is open the frame itself is the
+comparison: split by a line that follows the pointer, the original to
+its left and what the panel would write, decoded again, to its right,
+at the canvas's zoom, so Ctrl+scroll looks closer as ever; hold `Z` for
+a loupe at 800%. Esc or a click off the panel puts the frame back.
+`Copy` puts a PNG on the clipboard, which everything pastes; Copy as
+file exports the frame and puts the file itself on the clipboard, as a
+file manager copies one, for the programs that take an AVIF or a JPEG
+XL that way.
+
 `Ctrl+E` exports the frame you are in to the screenshots folder at each
 size the panel's Export lists, a new frame at 1x; a size other than 1x
 with no suffix of its own is named for it, as Figma does, so twice the

@@ -34,6 +34,7 @@ mod drawn;
 mod duplicate;
 mod effects;
 mod export;
+mod fine;
 mod library;
 mod menu;
 pub use menu::parse_frame_size;
@@ -1049,7 +1050,7 @@ fn slot(page: &mut Page, index: usize) -> &mut Doc {
 
 
 /// A path as said to someone: with the home folder as ~.
-fn shortened(path: &Path) -> String {
+pub(crate) fn shortened(path: &Path) -> String {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     match path.strip_prefix(&home) {
         Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
@@ -1736,6 +1737,10 @@ enum Action {
     Round(bool),
     /// A radius for each corner shown in the panel, or one for them all.
     Corners,
+    /// Fine-tune opened for an export row; and the frame exported and
+    /// the file put on the clipboard, for programs that take files.
+    FineTune(u8),
+    CopyFile,
     /// A box or an oval filled in one color, a linear gradient or a radial
     /// one: 0, 1 or 2.
     FillKind(u8),
@@ -1779,6 +1784,8 @@ impl Action {
         match self {
             Action::Export => "Export",
             Action::Copy => "Copy",
+            Action::FineTune(_) => "Fine-tune\u{2026}",
+            Action::CopyFile => "Copy as file",
             Action::Capture => "Capture",
             Action::Crop => "Crop",
             Action::FlipAcross => "Flip \u{2194}",
@@ -2065,6 +2072,8 @@ pub struct Studio {
     pub convert: crate::convert::Settings,
     /// What the frame comes to in each kind of file, tried on a thread.
     sizes: sizes::Sizes,
+    /// Fine-tune, open for an export row.
+    fine: Option<fine::Fine>,
     /// What was last done, said along the bottom for a while.
     note: Option<(String, std::time::Instant)>,
     last_press: (u32, (i32, i32)),
@@ -2203,6 +2212,7 @@ impl Studio {
             filename,
             convert: crate::convert::Settings::default(),
             sizes: sizes::Sizes::default(),
+            fine: None,
             note: None,
             last_press: (0, (-100, -100)),
             guides: Vec::new(),
@@ -3074,6 +3084,9 @@ impl Studio {
         self.crop_window();
         let mods = self.steady_mods(mods);
         (self.pointer, self.mods) = ((x, y), mods);
+        if self.fine.is_some() && self.drag == Drag::None {
+            return self.fine_moved(x, y);
+        }
         self.pointer_cursor = self.pointer_shape();
         let at = self.to_doc((x, y));
         match self.drag {
@@ -3223,6 +3236,12 @@ impl Studio {
         self.crop_window();
         self.end_preview();
         self.menu_row = None;
+        // Fine-tune open takes a click, and closes with one off it.
+        if self.fine.is_some() {
+            if let Some(outcome) = self.fine_pressed(button) {
+                return outcome;
+            }
+        }
         // The window of what was written closes with a click off it.
         if self.exported.is_some() && button <= 3 && !matches!(self.control_at(self.pointer), Some(Control::ExportDone(_) | Control::Panel)) {
             self.exported = None;
@@ -3893,6 +3912,8 @@ impl Studio {
         match action {
             Action::Export => self.export(),
             Action::Copy => self.copy(),
+            Action::FineTune(row) => self.open_fine(usize::from(row)),
+            Action::CopyFile => self.copy_file(),
             Action::Capture => return Outcome::Capture,
             Action::Crop => {
                 self.cropping = match self.cropping {
@@ -3957,6 +3978,7 @@ impl Studio {
 
     pub fn released(&mut self) {
         self.crop_window();
+        self.fine_released();
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.dirty = true;
         // A handle, a crop or a number taken hold of and let go of where it
@@ -4886,6 +4908,10 @@ impl Studio {
             self.mods = mods;
             return if down { self.search_key(key, mods) } else { Outcome::Continue };
         }
+        if let Some(outcome) = self.fine_key(key, mods, down) {
+            self.mods = mods;
+            return outcome;
+        }
         self.mods = mods;
         self.dirty = true;
         // The library open takes what is typed, to search it by.
@@ -5486,9 +5512,13 @@ impl Studio {
             canvas.round_fill(self.pointer.0 - 1, self.pointer.1 - high / 2 - 1, 4, high + 2, 0, 0x000000, 70);
             canvas.round_fill(self.pointer.0, self.pointer.1 - high / 2, 2, high, 0, 0xFFFFFF, 190);
         }
+        // Fine-tune open: the frame split, the original against the
+        // converted picture.
+        self.draw_split(&mut canvas, view);
         canvas.reset_clip();
         self.draw_rulers(&mut canvas);
         self.draw_panels(&mut canvas, &layout);
+        self.draw_fine(&mut canvas);
     }
 
     /// Zoomed far in, a faint grid between the pixels of the page over
@@ -6462,7 +6492,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         // page zoomed or moved has been still a moment, a look then, to
         // draw it sharp. Otherwise nothing until something happens.
         let wait = match &mut screen {
-            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in(), studio.sizes_wait()].into_iter().flatten().min(),
+            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in(), studio.sizes_wait(), studio.fine_wait()].into_iter().flatten().min(),
             Shown::Home(_) => None,
         };
         let mut events: Vec<Event> = match (held.is_empty(), wait) {
@@ -6474,6 +6504,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             studio.note_left();
             studio.settle();
             studio.take_sizes();
+            studio.take_fine();
         }
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);

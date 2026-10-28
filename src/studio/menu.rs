@@ -303,6 +303,7 @@ impl Studio {
                     }
                     items.push(Item::entry(format.title(), self.listed_words(format), MenuAct::Format(index, format)).on(Some(format) == now));
                 }
+                items.extend([Item::Rule, Item::entry("Fine-tune\u{2026}", "quality, speed, size", MenuAct::Act(Action::FineTune(index as u8)))]);
                 items
             }
             MenuKind::Styles => style::STYLE_NAMES.iter().enumerate().map(|(at, name)| Item::entry(*name, ["Q", "W", "E", "R", "T", "A", "S", "D", "G", "H"][at], MenuAct::Style(at as u8))).collect(),
@@ -459,6 +460,7 @@ impl Studio {
             MenuKind::Export(index) => vec![
                 Item::entry("Duplicate", "", MenuAct::Act(Action::DuplicateExport(index as u8))),
                 Item::sub("Format", MenuKind::Format(index)),
+                Item::entry("Fine-tune\u{2026}", "", MenuAct::Act(Action::FineTune(index as u8))),
                 Item::Rule,
                 Item::entry("Remove", "", MenuAct::Act(Action::RemoveExport(index as u8))),
             ],

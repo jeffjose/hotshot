@@ -128,6 +128,24 @@ impl<'a> Canvas<'a> {
         self.rows(x, y, w, h).for_each(|row| row.fill(color));
     }
 
+    /// Each pixel of a rectangle set to what `paint` says for where it
+    /// is, opaque, the rows shared out among the cores.
+    pub fn paint(&mut self, area: Rect, paint: impl Fn(i32, i32) -> u32 + Sync) {
+        use rayon::prelude::*;
+        let part = area.intersect(self.clip);
+        if part.is_empty() {
+            return;
+        }
+        let width = self.width as usize;
+        let rows = &mut self.pixels[part.y as usize * width..part.bottom() as usize * width];
+        rows.par_chunks_mut(width).enumerate().for_each(|(down, row)| {
+            let y = part.y + down as i32;
+            for x in part.x..part.right() {
+                row[x as usize] = paint(x, y);
+            }
+        });
+    }
+
     /// An outline `thickness` wide with rounded corners, `radius` being
     /// that of its outer edge.
     #[allow(clippy::too_many_arguments)]

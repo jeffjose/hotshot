@@ -349,7 +349,10 @@ impl Studio {
         }
         self.export_sizes(rows);
         let says = format!("Export {}", self.doc.name);
-        rows.chips(&mut self.text, vec![(says, Control::Action(Action::Export)), ("Copy".into(), Control::Action(Action::Copy))]);
+        // Copy is a PNG, as other programs paste nothing else yet; Copy as
+        // file hands over the file the first row writes.
+        let act = |action: Action| (action.says().to_owned(), Control::Action(action));
+        rows.chips(&mut self.text, vec![(says, Control::Action(Action::Export)), act(Action::Copy), act(Action::CopyFile), act(Action::FineTune(0))]);
     }
 
     /// The panel with one shape picked out.

@@ -32,6 +32,7 @@ mod strips;
 mod studio;
 mod text;
 mod tray;
+mod tune;
 mod wayland;
 mod x11;
 
@@ -198,6 +199,12 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     }
     // What is in a file, to the clipboard; and a picture in a file,
     // left on the screen: neither takes a picture of anything.
+    // A file put on the clipboard as a file, for chat programs and file
+    // managers to take: "Copy as file" on the canvas.
+    if let Some(file) = &options.clip_file {
+        clipboard::offer_file(Display::open()?, file)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(file) = &options.clip {
         let bytes = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
         if options.forget {

@@ -57,6 +57,24 @@ impl Studio {
         }
     }
 
+    /// The frame worked in exported, and the file its first row writes put
+    /// on the clipboard as a file, by a hotshot of its own that stays to
+    /// hand it over: for programs that take files, which an AVIF or a
+    /// JPEG XL can only go to that way.
+    pub(super) fn copy_file(&mut self) {
+        let active = self.active;
+        let written = match self.export_frames(&[active]) {
+            Ok(written) => written,
+            Err(error) => return self.say(error),
+        };
+        let Some(file) = written.first() else { return };
+        let name = file.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+        match crate::pin::again(&["--clip-file".as_ref(), file.as_os_str()]) {
+            Ok(()) => self.say(format!("Copied {name} as a file")),
+            Err(error) => self.say(format!("Could not copy: {error}")),
+        }
+    }
+
     /// The window of what was written opened, a small picture of each
     /// made from the file.
     pub(super) fn show_exported(&mut self, written: Vec<PathBuf>) {
