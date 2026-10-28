@@ -127,6 +127,8 @@ pub struct Home {
     /// how many pages each file has and what its frames are called.
     pub list: bool,
     file_menu: Option<(Menu, (i32, i32))>,
+    /// The row of the open menu come to by the keys.
+    menu_row: Option<usize>,
     renaming_file: Option<(PathBuf, String)>,
     /// The name being typed, of a project or a file, is all picked out, as
     /// it is when begun: the first key types over it.
@@ -140,7 +142,7 @@ const SIDE: i32 = 248;
 
 impl Home {
     pub fn new(text: Text, width: i32, height: i32, captures: PathBuf) -> Home {
-        Home { text, width, height, place: Place::Recent, pointer: (0, 0), scroll: 0, thumbs: HashMap::new(), naming: None, captures, last_press: (0, (-100, -100)), list: false, file_menu: None, renaming_file: None, name_picked: false, facts: HashMap::new(), dirty: true }
+        Home { text, width, height, place: Place::Recent, pointer: (0, 0), scroll: 0, thumbs: HashMap::new(), naming: None, captures, last_press: (0, (-100, -100)), list: false, file_menu: None, menu_row: None, renaming_file: None, name_picked: false, facts: HashMap::new(), dirty: true }
     }
 
     /// The text it draws with, handed back for the canvas to draw with.
@@ -344,6 +346,7 @@ impl Home {
 
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
         self.dirty = true;
+        self.menu_row = None;
         match button {
             4 => {
                 self.scroll = (self.scroll - 60).max(0);
@@ -457,12 +460,31 @@ impl Home {
             }
             return Outcome::Continue;
         }
-        if key == Key::Escape && self.file_menu.take().is_some() {
+        // An open menu takes the keys, as the canvas's do: Up and Down from
+        // row to row, Enter to choose, Esc to close; Enter with no row come
+        // to opens the file whose menu it is, as the menu says.
+        if self.file_menu.is_some() && !mods.ctrl {
+            let rows: Vec<usize> = self.menu_rows().iter().enumerate().filter(|(_, row)| matches!(row, Row::Entry(..))).map(|(at, _)| at).collect();
+            let place = self.menu_row.and_then(|row| rows.iter().position(|&at| at == row));
+            match key {
+                Key::Escape => (self.file_menu, self.menu_row) = (None, None),
+                Key::Down | Key::Up if !rows.is_empty() => {
+                    let next = match (place, key == Key::Down) {
+                        (None, true) => 0,
+                        (None, false) => rows.len() - 1,
+                        (Some(at), true) => (at + 1) % rows.len(),
+                        (Some(at), false) => (at + rows.len() - 1) % rows.len(),
+                    };
+                    self.menu_row = Some(rows[next]);
+                }
+                Key::Enter => match self.menu_row.take() {
+                    Some(row) => return self.file_act(row as u8),
+                    None if matches!(self.file_menu, Some((Menu::File(_), _))) => return self.file_act(0),
+                    None => {}
+                },
+                _ => {}
+            }
             return Outcome::Continue;
-        }
-        // Enter opens the file whose menu is open, as the menu says.
-        if key == Key::Enter && matches!(self.file_menu, Some((Menu::File(_), _))) {
-            return self.file_act(0);
         }
         if let Some((_, typed)) = &mut self.naming {
             // Shift and the like come as keys of their own, and leave it
@@ -896,7 +918,7 @@ impl Home {
         }
         for (rect, index) in entries {
             let Some(Row::Entry(says, keys, act)) = rows.get(index) else { continue };
-            if hover == Some(&Control::FileAct(index as u8)) {
+            if hover == Some(&Control::FileAct(index as u8)) || self.menu_row == Some(index) {
                 canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, ACCENT, 256);
             }
             let ink = if *act == Act::Trash { 0xFF6B6B } else { TEXT_COLOR };
@@ -1024,5 +1046,26 @@ mod tests {
         home.file_menu = Some((Menu::File(std::env::temp_dir().join("Elsewhere.hotshot")), (600, 300)));
         row(&home, "Move to Drafts");
         assert_eq!(home.key(Key::Enter, Mods::default()), Outcome::Open(std::env::temp_dir().join("Elsewhere.hotshot")));
+    }
+
+    #[test]
+    fn a_menu_of_the_projects_is_gone_through_with_the_arrow_keys() {
+        let mut home = Home::new(Text::load(), 1200, 800, std::env::temp_dir());
+        let none = Mods::default();
+        home.pointer_moved(900, 700);
+        home.pressed(3, 0);
+        // Down to the first row, Down past the rule, Up round to the last.
+        home.key(Key::Down, none);
+        assert_eq!(home.menu_row, Some(usize::from(row(&home, "New file"))));
+        home.key(Key::Up, none);
+        assert_eq!(home.menu_row, Some(usize::from(row(&home, "Paste a picture"))));
+        home.key(Key::Up, none);
+        assert_eq!(home.menu_row, Some(usize::from(row(&home, "New project"))));
+        // A letter does nothing; Enter does what the row says.
+        home.key(Key::Char('x'), none);
+        assert!(home.file_menu.is_some());
+        home.key(Key::Down, none);
+        assert_eq!(home.key(Key::Enter, none), Outcome::Paste(home.folder()));
+        assert!(home.file_menu.is_none() && home.menu_row.is_none());
     }
 }
