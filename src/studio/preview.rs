@@ -34,6 +34,11 @@ impl Studio {
             Control::MenuRow(level, row) => {
                 let Some(menu) = self.menu else { return false };
                 let kind = if level == 0 { menu.kind } else { menu.sub.map_or(menu.kind, |(_, kind)| kind) };
+                // A row of any list that flips what is picked out, as the
+                // buttons that flip it do.
+                if matches!(self.menu_items(kind).get(usize::from(row)), Some(menu::Item::Entry { act: menu::MenuAct::Act(Action::FlipAcross | Action::FlipDown), .. })) {
+                    return true;
+                }
                 if !matches!(kind, MenuKind::Shadows | MenuKind::Styles | MenuKind::Dash | MenuKind::Edge | MenuKind::Hand | MenuKind::Window | MenuKind::Heads(_) | MenuKind::Fonts) {
                     return false;
                 }
@@ -87,5 +92,31 @@ impl Studio {
         self.version += 1;
         self.doc.stamp = self.version;
         self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_flip_row_of_a_right_click_menu_shows_the_flip_while_it_is_hovered() {
+        let mut studio = Studio::new(Doc::new(800, 600), Text::load(), 1400, 900, std::env::temp_dir(), "test-%Y.png".into());
+        studio.add_picture(Image::new(100, 80, vec![0xFF33_8844; 100 * 80]), "pic");
+        let flipped = |studio: &Studio| matches!(&studio.doc.layers[0].kind, Kind::Picture(picture) if picture.flip.0);
+        let on = studio.to_window((400.0, 300.0));
+        studio.right_click(on);
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Context));
+        let row = studio.menu_items(MenuKind::Context).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == "Flip across")).expect("a picture can be flipped");
+        let rect = studio.control_rect(Control::MenuRow(0, row as u16)).expect("the row is shown");
+        let undo = studio.undo.len();
+        studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+        assert!(flipped(&studio) && studio.undo.len() == undo, "shown, and nothing to undo yet");
+        studio.pointer_moved(rect.x - 40, rect.y - 40, Mods::default());
+        assert!(!flipped(&studio));
+        studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+        studio.pressed(1, 100_000);
+        studio.released();
+        assert!(flipped(&studio) && studio.menu.is_none() && studio.undo.len() == undo + 1);
     }
 }

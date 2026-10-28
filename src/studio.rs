@@ -1394,6 +1394,8 @@ enum Action {
     Match(u8),
     ToFrame(u8),
     Turn(i16),
+    /// An export size copied, under it.
+    DuplicateExport(u8),
     /// A blur made a mosaic, or smooth; a spotlight round, or square.
     BlurStyle(u8),
     Round(bool),
@@ -1500,6 +1502,7 @@ impl Action {
             Action::Align(4) => "\u{2195}",
             Action::Align(_) => "\u{2913}",
             Action::Halo => "White edge",
+            Action::DuplicateExport(_) => "Duplicate",
             Action::BlurStyle(effects::SMOOTH) => "Smooth",
             Action::BlurStyle(_) => "Mosaic",
             Action::Round(true) => "Round",
@@ -4185,6 +4188,14 @@ impl Studio {
         }
     }
 
+    /// Whatever is being typed kept, as the window goes or the file is
+    /// left: a name being typed, a number, text.
+    pub fn finish(&mut self) {
+        self.commit_name();
+        self.commit_typing();
+        self.commit_text();
+    }
+
     /// The canvas kept in its file, or a new one among the pictures.
     /// The file kept where it is kept, or as a new one in Drafts: written
     /// beside it first and put in its place, so that a file half written
@@ -4259,6 +4270,8 @@ impl Studio {
                     }
                     typed.push(letter);
                 }
+                // Ctrl+Q and Ctrl+W still close the window, the name kept.
+                Key::Char('q' | 'w' | 'Q' | 'W') if mods.ctrl => return Outcome::Quit,
                 Key::Backspace if whole => typed.clear(),
                 Key::Backspace => drop(typed.pop()),
                 Key::Enter => self.commit_name(),
@@ -5812,12 +5825,14 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             }
             (Shown::Home(_), crate::home::Outcome::Quit) => break,
             (Shown::Studio(mut studio), _) if outcome == Outcome::Open && studio.open_next.is_some() => {
+                studio.finish();
                 studio.save(false);
                 let path = studio.open_next.take().unwrap_or_default();
                 let pages = std::fs::read(&path).ok().and_then(|bytes| read_pages(&bytes));
                 Shown::Studio(Box::new(opened(pages, Vec::new(), path, studio.into_text(), size, options)))
             }
             (Shown::Studio(mut studio), _) if outcome == Outcome::Home => {
+                studio.finish();
                 studio.save(false);
                 let place = studio.path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf);
                 let mut home = crate::home::Home::new(studio.into_text(), size.0, size.1, options.dir.clone());
@@ -5833,6 +5848,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         if let Shown::Studio(studio) = &mut screen {
             match outcome {
                 Outcome::Quit => {
+                    studio.finish();
                     studio.save(false);
                     break;
                 }

@@ -44,6 +44,8 @@ pub(super) enum MenuKind {
     Color(u32),
     /// What can be done with any other color right clicked in the panel.
     Hex(u32),
+    /// What can be done with one of the sizes the frame is exported at.
+    Export(usize),
 }
 
 /// An open list: where it hangs from, and the one open beside it.
@@ -438,6 +440,12 @@ impl Studio {
             ],
             MenuKind::Color(color) => vec![do_("Select all with this color", "", Command::SelectColor(color)), do_("Replace color\u{2026}", "", Command::ReplaceColor(color)), Item::Rule, do_("Copy hex", "", Command::CopyHex(color))],
             MenuKind::Hex(color) => vec![do_("Copy hex", "", Command::CopyHex(color))],
+            MenuKind::Export(index) => vec![
+                Item::entry("Duplicate", "", MenuAct::Act(Action::DuplicateExport(index as u8))),
+                Item::sub("Format", MenuKind::Format(index)),
+                Item::Rule,
+                Item::entry("Remove", "", MenuAct::Act(Action::RemoveExport(index as u8))),
+            ],
             MenuKind::Zoom => vec![
                 do_("Zoom in", "Ctrl +", Command::ZoomIn),
                 do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut),

@@ -102,6 +102,14 @@ impl Studio {
                 self.doc.exports.push(ExportSize { suffix, ..ExportSize::new(times) });
                 self.changed();
             }
+            // A copy of a size, under it.
+            Action::DuplicateExport(index) => {
+                if let Some(size) = self.doc.exports.get(usize::from(index)).cloned() {
+                    self.checkpoint();
+                    self.doc.exports.insert(usize::from(index) + 1, size);
+                    self.changed();
+                }
+            }
             Action::RemoveExport(index) => {
                 if usize::from(index) < self.doc.exports.len() {
                     self.checkpoint();
@@ -442,6 +450,9 @@ impl Studio {
                 Some(MenuKind::Frame(index))
             }
             Some(Control::ColorField(Paint::Recolor(color)) | Control::ColorOpen(color)) => Some(MenuKind::Color(color)),
+            // A size the frame is exported at, by any part of its row.
+            Some(Control::Field(Field::ExportTimes(index)) | Control::Action(Action::RemoveExport(index))) => Some(MenuKind::Export(usize::from(index))),
+            Some(Control::Entry(Naming::Suffix(index)) | Control::Menu(MenuKind::Format(index))) => Some(MenuKind::Export(index)),
             // Any other color: its hex, to copy.
             Some(Control::ColorField(paint)) => self.paint_color(paint).map(MenuKind::Hex),
             _ => None,

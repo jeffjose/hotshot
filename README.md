@@ -182,7 +182,10 @@ Mode, ten styles from its own color picked with Q W E R T / A S D G H.
 `Ctrl+K` searches actions, layers, pages, frames and files, and every
 menu is gone through with the arrow keys and Enter as it is. A color
 right clicked in the panel copies its hex, and a file or project right
-clicked on the projects its path. Lines of
+clicked on the projects its path; an export size right clicked is
+duplicated, given another format or removed, and a menu's flips show
+while hovered, as the panel's buttons do. A name being typed is kept if
+the window is closed before Enter. Lines of
 text starting `# `, `## ` or `### ` are headings. A frame's size comes
 from a list of social, device and document sizes; "Save W×H as a size"
 adds yours to the config file as `frame-size = "Pixel 11 = 1080x2424"`,

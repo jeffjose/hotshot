@@ -142,3 +142,56 @@ impl Studio {
         self.dirty = true;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn studio() -> Studio {
+        Studio::new(Doc::new(800, 600), Text::load(), 1400, 900, std::env::temp_dir(), "test-%Y.png".into())
+    }
+
+    /// The row of a list that says something.
+    fn row(studio: &mut Studio, kind: MenuKind, said: &str) -> u16 {
+        studio.menu_items(kind).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == said)).unwrap_or_else(|| panic!("no {said}")) as u16
+    }
+
+    #[test]
+    fn an_export_size_right_clicked_is_duplicated_given_another_format_and_removed() {
+        let mut studio = studio();
+        let size = studio.control_rect(Control::Field(Field::ExportTimes(0))).expect("the frame's export size is in the panel").center();
+        studio.right_click(size);
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Export(0)));
+        let duplicate = row(&mut studio, MenuKind::Export(0), "Duplicate");
+        studio.press_menu(0, duplicate);
+        assert_eq!(studio.doc.exports.len(), 2);
+        assert_eq!(studio.doc.exports[0], studio.doc.exports[1]);
+        // Its format, from the list that opens beside it.
+        let format = studio.control_rect(Control::Menu(MenuKind::Format(1))).unwrap().center();
+        studio.right_click(format);
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Export(1)));
+        let formats = row(&mut studio, MenuKind::Export(1), "Format");
+        studio.press_menu(0, formats);
+        let jpeg = row(&mut studio, MenuKind::Format(1), "JPG");
+        studio.press_menu(1, jpeg);
+        assert_eq!(studio.doc.exports[1].format, crate::output::Format::Jpeg);
+        let remove = studio.control_rect(Control::Action(Action::RemoveExport(0))).unwrap().center();
+        studio.right_click(remove);
+        let gone = row(&mut studio, MenuKind::Export(0), "Remove");
+        studio.press_menu(0, gone);
+        assert_eq!((studio.doc.exports.len(), studio.doc.exports[0].format), (1, crate::output::Format::Jpeg));
+    }
+
+    #[test]
+    fn a_name_being_typed_is_kept_when_the_window_closes() {
+        let mut studio = studio();
+        studio.start_naming(Naming::Frame, studio.doc.name.clone());
+        for letter in "Cover".chars() {
+            studio.key(Key::Char(letter), Mods::default(), true);
+        }
+        // Ctrl+Q while typing it still closes the window.
+        assert_eq!(studio.key(Key::Char('q'), Mods { ctrl: true, ..Mods::default() }, true), Outcome::Quit);
+        studio.finish();
+        assert_eq!((studio.doc.name.as_str(), studio.renaming.is_none()), ("Cover", true));
+    }
+}
