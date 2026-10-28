@@ -222,7 +222,9 @@ height, size, corners, shadow or the whole look to the first one picked,
 puts them to the frame, turns them, and lists their colors once each:
 hover one to see who uses it. `S` with a shape selected opens Style
 Mode, ten styles from its own color picked with Q W E R T / A S D G H.
-`Ctrl+K` searches actions, layers, pages, frames and files, and every
+`Ctrl+K` searches tools, actions, layers, pages, frames and files: type
+"rect" or "box", "oval", "pen", "zoom lens", "emoji", "frame" or "crop"
+and the tool is listed with its key, taken up with Enter. Every
 menu is gone through with the arrow keys and Enter as it is. A color
 right clicked in the panel copies its hex, and a file or project right
 clicked on the projects its path; an export size right clicked is

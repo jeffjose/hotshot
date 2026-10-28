@@ -176,6 +176,25 @@ fn tool_name(tool: Tool) -> &'static str {
     }
 }
 
+/// The icon a tool is shown by.
+fn tool_icon(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Select => icons::SELECT,
+        Tool::Rect => icons::RECT,
+        Tool::Ellipse => icons::ELLIPSE,
+        Tool::Line => icons::LINE,
+        Tool::Arrow => icons::ARROW,
+        Tool::Pen => icons::PEN,
+        Tool::Marker => icons::MARKER,
+        Tool::Text => icons::TEXT,
+        Tool::Blur => icons::BLUR,
+        Tool::Spotlight => icons::SPOTLIGHT,
+        Tool::Zoom => icons::ZOOM,
+        Tool::Badge => icons::BADGE,
+        Tool::Counter => icons::COUNTER,
+    }
+}
+
 /// What a file of the canvas begins with.
 const MAGIC: &str = "HOTSHOT CANVAS 2";
 /// What a file from before pages and frames begins with.
@@ -5116,21 +5135,6 @@ impl Studio {
         if let Some(x) = divider {
             canvas.fill(x, layout.dock.y + 14, 1, layout.dock.h - 28, HOVER_COLOR);
         }
-        let tool_icon = |tool: Tool| match tool {
-            Tool::Select => icons::SELECT,
-            Tool::Rect => icons::RECT,
-            Tool::Ellipse => icons::ELLIPSE,
-            Tool::Line => icons::LINE,
-            Tool::Arrow => icons::ARROW,
-            Tool::Pen => icons::PEN,
-            Tool::Marker => icons::MARKER,
-            Tool::Text => icons::TEXT,
-            Tool::Blur => icons::BLUR,
-            Tool::Spotlight => icons::SPOTLIGHT,
-            Tool::Zoom => icons::ZOOM,
-            Tool::Badge => icons::BADGE,
-            Tool::Counter => icons::COUNTER,
-        };
         let field_text = |text: &mut Text, canvas: &mut Canvas, rect: Rect, label: &str, icon: bool, value: &str, label_color: u32| {
             let middle = rect.y + rect.h / 2;
             let at = if icon {
@@ -6485,6 +6489,58 @@ mod tests {
         assert!(matches!(studio.hits()[0].found, search::Found::Act(_)));
         studio.key(Key::Enter, Mods::default(), true);
         assert!(studio.doc.layers.is_empty());
+    }
+
+    #[test]
+    fn ctrl_k_finds_the_tools_by_name_or_another_word_and_takes_one_up() {
+        let mut studio = studio();
+        let ctrl = Mods { ctrl: true, ..Mods::default() };
+        let find = |studio: &mut Studio, typed: &str| {
+            studio.key(Key::Char('k'), ctrl, true);
+            for letter in typed.chars() {
+                studio.key(Key::Char(letter), Mods::default(), true);
+            }
+            let first = studio.hits().into_iter().next().expect("something found");
+            assert!(matches!(first.found, search::Found::Tool(_)), "{typed} finds {:?} first", first.says);
+            (first.says, first.hint)
+        };
+        for (typed, says, key) in [
+            ("rect", "Rectangle", "R"),
+            ("box", "Rectangle", "R"),
+            ("oval", "Oval", "O"),
+            ("arrow", "Arrow", "A"),
+            ("line", "Line", "L"),
+            ("pen", "Pen", "P"),
+            ("marker", "Marker", "M"),
+            ("text", "Text", "T"),
+            ("counter", "Counter", "N"),
+            ("blur", "Blur", "B"),
+            ("spotlight", "Spotlight", "D"),
+            ("zoom lens", "Zoom lens", "Z"),
+            ("library", "Library", "J"),
+            ("emoji", "Emoji", "E"),
+            ("frame", "Frame", "F"),
+            ("crop", "Crop", "Enter"),
+        ] {
+            assert_eq!(find(&mut studio, typed), (says.to_owned(), key.to_owned()));
+            studio.key(Key::Escape, Mods::default(), true);
+        }
+        // Enter takes it up, a tool of a group shown as its group's.
+        find(&mut studio, "oval");
+        studio.key(Key::Enter, Mods::default(), true);
+        assert_eq!((studio.search.is_none(), studio.tool, studio.groups[0]), (true, Tool::Ellipse, Tool::Ellipse));
+        find(&mut studio, "frame");
+        studio.key(Key::Enter, Mods::default(), true);
+        assert!(studio.framing);
+        // Crop begins a crop of the picture picked out.
+        studio.add_picture(checker(40, 40), "Shot");
+        find(&mut studio, "crop");
+        studio.key(Key::Enter, Mods::default(), true);
+        assert_eq!(studio.cropping, Some(0));
+        // Nothing typed lists no tools.
+        studio.key(Key::Escape, Mods::default(), true);
+        studio.key(Key::Char('k'), ctrl, true);
+        assert!(!studio.hits().iter().any(|hit| matches!(hit.found, search::Found::Tool(_))));
     }
 
     #[test]

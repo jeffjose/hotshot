@@ -23,6 +23,8 @@ pub(super) const TABS: [&str; 5] = ["All", "Actions", "Layers", "Pages", "Files"
 #[derive(Clone, PartialEq, Debug)]
 pub(super) enum Found {
     Act(MenuAct),
+    /// A tool, by where it is among `FOUND_TOOLS`.
+    Tool(usize),
     Layer(usize),
     Page(usize),
     Frame(usize),
@@ -43,6 +45,28 @@ pub(super) struct Hit {
 const WIDE: i32 = 620;
 const ROW: i32 = 28;
 const SHOWN: usize = 12;
+
+/// The tools, found by name or by another word for them: those of the
+/// bar, as `TOOLS` has them, then the emoji, the frame and the crop, each
+/// with its key.
+const FOUND_TOOLS: [(&str, &str, &str); 16] = [
+    ("Move", "V", "select pointer"),
+    ("Rectangle", "R", "rect box square"),
+    ("Oval", "O", "ellipse circle"),
+    ("Line", "L", ""),
+    ("Arrow", "A", ""),
+    ("Pen", "P", "draw pencil"),
+    ("Marker", "M", "highlighter"),
+    ("Text", "T", "words type"),
+    ("Counter", "N", "number step"),
+    ("Blur", "B", "mosaic pixelate redact"),
+    ("Spotlight", "D", "dim focus"),
+    ("Zoom lens", "Z", "magnifier loupe"),
+    ("Library", "J", "label badge note"),
+    ("Emoji", "E", "sticker"),
+    ("Frame", "F", "artboard"),
+    ("Crop", "Enter", "trim"),
+];
 
 /// Where in what is said what was typed is, ignoring case, if it is.
 pub(super) fn matched(says: &str, typed: &str) -> Option<(usize, usize)> {
@@ -89,7 +113,7 @@ impl Studio {
 
     /// Everything that can be found, before what was typed narrows it.
     fn everything(&mut self) -> Vec<Hit> {
-        let mut hits = Vec::new();
+        let mut hits: Vec<Hit> = FOUND_TOOLS.iter().enumerate().map(|(at, (says, key, _))| Hit { heading: "TOOLS", says: (*says).to_owned(), hint: (*key).to_owned(), found: Found::Tool(at) }).collect();
         let mut acts: Vec<(String, &'static str, MenuAct)> = Vec::new();
         let gather = |items: Vec<menu::Item>, acts: &mut Vec<(String, &'static str, MenuAct)>| {
             for item in items {
@@ -137,16 +161,29 @@ impl Studio {
     pub(super) fn hits(&mut self) -> Vec<Hit> {
         let Some(search) = self.search.clone() else { return Vec::new() };
         let wanted = |hit: &Hit| match search.tab {
-            1 => matches!(hit.found, Found::Act(_)),
+            1 => matches!(hit.found, Found::Act(_) | Found::Tool(_)),
             2 => matches!(hit.found, Found::Layer(_)),
             3 => matches!(hit.found, Found::Page(_) | Found::Frame(_)),
             4 => matches!(hit.found, Found::File(_)),
             _ => true,
         };
-        let mut hits: Vec<Hit> = self.everything().into_iter().filter(|hit| wanted(hit) && matched(&hit.says, search.typed.trim()).is_some()).collect();
-        // Those that begin with what was typed first, each heading kept.
         let typed = search.typed.trim().to_lowercase();
-        hits.sort_by_key(|hit| (hit.heading != "ACTIONS", hit.heading, !hit.says.to_lowercase().starts_with(&typed)));
+        // A tool is found by another word for it too, as "box" finds the
+        // rectangle; only once something is typed.
+        let also = |hit: &Hit| match hit.found {
+            Found::Tool(at) => !typed.is_empty() && FOUND_TOOLS[at].2.split(' ').any(|word| !word.is_empty() && word.starts_with(&typed)),
+            _ => false,
+        };
+        let tool_unasked = |hit: &Hit| matches!(hit.found, Found::Tool(_)) && typed.is_empty();
+        let mut hits: Vec<Hit> = self.everything().into_iter().filter(|hit| wanted(hit) && !tool_unasked(hit) && (matched(&hit.says, search.typed.trim()).is_some() || also(hit))).collect();
+        // The tools first, then what can be done, then the rest; those that
+        // begin with what was typed first, each heading kept.
+        let rank = |heading: &str| match heading {
+            "TOOLS" => 0,
+            "ACTIONS" => 1,
+            _ => 2,
+        };
+        hits.sort_by_key(|hit| (rank(hit.heading), hit.heading, !hit.says.to_lowercase().starts_with(&typed)));
         hits
     }
 
@@ -182,6 +219,40 @@ impl Studio {
         Outcome::Continue
     }
 
+    /// A tool found taken up, as its key would: the library opened for
+    /// it, or its emoji; the frame tool; a crop begun of the picture
+    /// picked out.
+    fn take_found_tool(&mut self, at: usize) {
+        match FOUND_TOOLS[at].0 {
+            "Emoji" => self.open_library(Some(crate::editor::EMOJI_SHELF)),
+            "Frame" => {
+                if !self.framing {
+                    self.press_control(Control::FrameTool, false);
+                }
+            }
+            "Crop" => match self.picked().filter(|&index| matches!(self.doc.layers[index].kind, Kind::Picture(_))) {
+                Some(index) => {
+                    self.set_tool(Tool::Select);
+                    (self.selected, self.cropping) = (vec![index], Some(index));
+                }
+                None => self.say("Pick a picture to crop it"),
+            },
+            _ => match TOOLS.get(at) {
+                Some(&(Tool::Badge, ..)) => self.open_library(None),
+                Some(&(tool, ..)) => {
+                    // A tool of a group shows on the bar as its group's.
+                    match tool {
+                        Tool::Rect | Tool::Ellipse | Tool::Line => self.groups[0] = tool,
+                        Tool::Pen | Tool::Marker => self.groups[1] = tool,
+                        _ => {}
+                    }
+                    self.set_tool(tool);
+                }
+                None => {}
+            },
+        }
+    }
+
     /// A row of what is found chosen: done, and the search closed.
     pub(super) fn choose_hit(&mut self, row: usize) -> Outcome {
         let Some(hit) = self.hits().into_iter().nth(row) else { return Outcome::Continue };
@@ -189,6 +260,7 @@ impl Studio {
         self.dirty = true;
         match hit.found {
             Found::Act(act) => return self.run_menu(act),
+            Found::Tool(at) => self.take_found_tool(at),
             Found::Layer(index) => {
                 self.selected = vec![index];
                 self.zoom_to_selection();
@@ -242,7 +314,7 @@ impl Studio {
         let Some(search) = self.search.clone() else { return };
         let middle = place.y + 26;
         self.text.draw_centered(canvas, place.x + 24, middle, 16, DIM_TEXT_COLOR, icons::SEARCH);
-        let typed = if search.typed.is_empty() { "Search actions, layers, pages and files".to_owned() } else { search.typed.clone() };
+        let typed = if search.typed.is_empty() { "Search tools, actions, layers, pages and files".to_owned() } else { search.typed.clone() };
         self.text.draw(canvas, place.x + 44, middle - Text::line_height(15) / 2, 15, if search.typed.is_empty() { 0x777777 } else { TEXT_COLOR }, &typed);
         if !search.typed.is_empty() {
             let at = place.x + 44 + self.text.width(&search.typed, 15) + 2;
@@ -291,6 +363,12 @@ impl Studio {
         let cy = rect.y + rect.h / 2;
         let icon = match &hit.found {
             Found::Act(_) => icons::POINTER,
+            Found::Tool(at) => match (TOOLS.get(*at), FOUND_TOOLS[*at].0) {
+                (Some(&(tool, ..)), _) => tool_icon(tool),
+                (None, "Emoji") => icons::STICKER,
+                (None, "Frame") => icons::HASH,
+                _ => icons::CROP,
+            },
             Found::Layer(index) => match self.doc.layers.get(*index).map(|layer| &layer.kind) {
                 Some(Kind::Picture(_)) => icons::PICTURE,
                 _ => icons::RECT,
@@ -311,9 +389,11 @@ impl Studio {
             if lit {
                 self.text.look.heavy = 1;
             }
+            // Measured as heavy as it is drawn, or what comes after it would
+            // run into it, its space after it lost.
             self.text.draw(canvas, x, top, 12, ink, part);
-            self.text.look.heavy = 0;
             x += self.text.width(part, 12);
+            self.text.look.heavy = 0;
         }
         if !hit.hint.is_empty() {
             let hint: String = hit.hint.chars().take(40).collect();
