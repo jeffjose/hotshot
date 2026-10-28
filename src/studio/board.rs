@@ -111,6 +111,7 @@ impl Board {
 mod bar;
 mod dots;
 mod nest;
+mod map;
 mod typing;
 
 /// Whether the last canvas switched to Board, kept in `canvas-mode` among
@@ -271,6 +272,10 @@ impl Studio {
     pub(super) fn board_dress(&self, shape: &mut Shape) {
         let board = &self.board;
         (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width, LETTERING, board.px);
+        // The one look there is yet: by hand, or clean where it is set so.
+        match board.look {
+            Look::Sketchy => shape.sketch = board.sketch,
+        }
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
                 (shape.sketch, shape.border, shape.radius) = (board.sketch, true, 6.0);

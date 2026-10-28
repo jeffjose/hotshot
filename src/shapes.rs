@@ -318,7 +318,7 @@ pub const FORM_CLOUD: u8 = 4;
 pub const FORM_STICKY: u8 = 5;
 
 mod forms;
-pub use forms::{label_wrap, ui_kind, PAPER};
+pub use forms::PAPER;
 
 /// The heads a line can have at either end, by what each is called: the
 /// usual solid one, two strokes, an outline, a dot, a ring, a diamond

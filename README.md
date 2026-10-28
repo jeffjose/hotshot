@@ -469,6 +469,21 @@ others is an auto layout stack in a loose form, whose members stay
 where they are put and whose box only grows round them; it is kept in
 the file as one.
 
+A mind map keeps up with thinking. With a box picked out or typed
+into, `Tab` adds a child: to its right, or under it in a tree that goes
+down, after any it has, joined, in its look a shade lighter, and typed
+into. `Enter`, typing in a box of a map, ends it and begins the next one
+under it, the same parent's; in a box of no map it just ends the
+typing. `Shift+Tab` goes back to the parent, and `Shift+Enter` begins a
+new line in a box's words. `Shift+L` lays the map or tree the box picked
+out is in out neatly, when asked and only then: from its top, left to
+right, or top down where it goes down, each level in its order with
+even gaps and each parent in the middle of its children, a mind map's
+two sides kept; nothing else on the board moves, and it is one step to
+undo. Type an indented list as text and press `Ctrl+Enter`, and it
+becomes a map, a box a line, each joined to the line it is indented
+under.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

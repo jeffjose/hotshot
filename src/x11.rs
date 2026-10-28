@@ -827,6 +827,7 @@ impl Display {
             0xFF54 | 0xFF99 => return Key::Down,
             0xFF50 | 0xFF95 => return Key::Home,
             0xFF57 | 0xFF9C => return Key::End,
+            0xFF09 | 0xFE20 => return Key::Tab,
             0xFFAA..=0xFFB9 => char::from_u32(symbol - 0xFF80),
             0x20..=0x7E | 0xA0..=0xFF => char::from_u32(symbol),
             0x0100_0000..=0x0110_FFFF => char::from_u32(symbol - 0x0100_0000),

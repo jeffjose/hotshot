@@ -175,9 +175,27 @@ impl Studio {
     pub(in crate::studio) fn board_typing_key(&mut self, key: Key, mods: Mods) -> Option<Outcome> {
         let index = self.editing?;
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return None };
+        // An indented list, Ctrl+Enter: a map of it.
+        if shape.tool == Tool::Text && mods.ctrl && key == Key::Enter {
+            return Some(Outcome::Continue).filter(|_| self.list_to_map(index));
+        }
         let worded = matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow);
         if !worded || mods.ctrl {
             return None;
+        }
+        // Tab, a child joined to it; Shift+Tab, back to its parent.
+        let boxy = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
+        match key {
+            Key::Tab if boxy && mods.shift => return Some(Outcome::Continue).filter(|_| self.to_parent()),
+            Key::Tab if boxy => {
+                if !self.add_child() {
+                    self.commit_text();
+                }
+                return Some(Outcome::Continue);
+            }
+            // Enter in a box of a map, the next one under it.
+            Key::Enter if boxy && !mods.shift && self.add_sibling() => return Some(Outcome::Continue),
+            _ => {}
         }
         let picked = std::mem::take(&mut self.words_picked) && key != Key::Other;
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return None };
@@ -236,6 +254,15 @@ impl Studio {
                 self.words_changed(index);
                 return Some(Outcome::Continue);
             }
+        }
+        match key {
+            Key::Tab if mods.shift && self.to_parent() => return Some(Outcome::Continue),
+            Key::Tab if !mods.shift && self.add_child() => return Some(Outcome::Continue),
+            Key::Char('L' | 'l') if mods.shift => {
+                self.tidy();
+                return Some(Outcome::Continue);
+            }
+            _ => {}
         }
         if let (Some(index), Key::Enter) = (picked, key) {
             self.checkpoint();

@@ -99,6 +99,8 @@ pub enum Key {
     Down,
     Home,
     End,
+    /// Tab, and Shift+Tab, which a board makes a map with.
+    Tab,
     Other,
 }
 
