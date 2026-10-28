@@ -182,10 +182,9 @@ impl Studio {
             let Kind::Shape(shape) = &self.doc.layers[at].kind else { continue };
             // How far its middle is from the arrow's path, and whether it is
             // along it rather than past an end.
-            let path: Vec<(f32, f32)> = match shape.points.get(2) {
-                Some(&bend) => vec![shape.points[0], bend, shape.points[1]],
-                None => vec![shape.points[0], shape.points[1]],
-            };
+            let mut path: Vec<(f32, f32)> = vec![shape.points[0]];
+            path.extend_from_slice(&shape.points[2..]);
+            path.push(shape.points[1]);
             let mut far = f32::MAX;
             let mut along = false;
             for pair in path.windows(2) {

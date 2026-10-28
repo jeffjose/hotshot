@@ -75,7 +75,7 @@ impl Studio {
 
     /// Some layers as a frame of their own, a part of the board in size,
     /// on its paper on a board and on nothing elsewhere.
-    fn part_sheet(&self, layers: &[Layer], (x, y, w, h): (f32, f32, f32, f32)) -> Doc {
+    pub(in crate::studio) fn part_sheet(&self, layers: &[Layer], (x, y, w, h): (f32, f32, f32, f32)) -> Doc {
         let mut sheet = Doc::new(w.ceil().max(1.0) as i32, h.ceil().max(1.0) as i32);
         sheet.background = if self.on_board() { Fill::Color(self.board_ground()) } else { Fill::None };
         sheet.layers = layers.iter().map(|layer| {
@@ -156,7 +156,7 @@ impl Studio {
         let (x, y, w, h) = shape.frame();
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
-                let forms = matches!(shape.form, shapes::FORM_DIAMOND | shapes::FORM_CYLINDER | shapes::FORM_PERSON | shapes::FORM_CLOUD) && shape.tool == Tool::Rect;
+                let forms = shape.has_form();
                 let filled = shape.filled && !shape.placeholder();
                 if filled {
                     let fill = hex(shape.fill);
@@ -185,6 +185,13 @@ impl Studio {
                         };
                     }
                 }
+                // A table's rules.
+                if shape.form == shapes::FORM_TABLE && shape.tool == Tool::Rect && !shape.titled {
+                    let (_, rules, _) = shape.table(&mut self.text);
+                    for down in rules {
+                        out += &line(&[(x, down), (x + w, down)], (shape.stroke * 0.7).max(1.0), false);
+                    }
+                }
             }
             Tool::Line | Tool::Arrow => {
                 if shape.sketch {
@@ -192,29 +199,18 @@ impl Studio {
                         out += &line(&points, half * 2.0, false);
                     }
                 } else {
-                    let (a, b) = (shape.points[0], shape.points[1]);
-                    let path: Vec<(f32, f32)> = match shape.bend() {
-                        Some(through) => {
-                            let pull = (2.0 * through.0 - (a.0 + b.0) / 2.0, 2.0 * through.1 - (a.1 + b.1) / 2.0);
-                            (0..=24).map(|step| {
-                                let t = step as f32 / 24.0;
-                                let u = 1.0 - t;
-                                (u * u * a.0 + 2.0 * u * t * pull.0 + t * t * b.0, u * u * a.1 + 2.0 * u * t * pull.1 + t * t * b.1)
-                            }).collect()
-                        }
-                        None => vec![a, b],
-                    };
-                    out += &line(&path, shape.stroke, false);
-                    // Its heads, two strokes back from each tip.
-                    for (end, tip, from) in [(1, path[path.len() - 1], path[path.len().saturating_sub(3)]), (0, path[0], path[2.min(path.len() - 1)])] {
-                        if shape.heads[end] {
-                            let long = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
-                            let (dx, dy) = ((tip.0 - from.0) / long, (tip.1 - from.1) / long);
-                            let head = shape.stroke * 3.2 + 9.0;
-                            let side = |s: f32| (tip.0 - dx * head - dy * head * 0.5 * s, tip.1 - dy * head + dx * head * 0.5 * s);
-                            out += &line(&[side(1.0), tip, side(-1.0)], shape.stroke, false);
-                        }
+                    // Its way, dashed as it is, and its heads.
+                    let dash = if shape.dashed { " stroke-dasharray=\"8 6\"" } else if shape.dotted { " stroke-dasharray=\"1 5\"" } else { "" };
+                    for (at, points) in shape.line_strokes().into_iter().enumerate() {
+                        let drawn = line(&points, shape.stroke, false);
+                        out += &if at == 0 { drawn.replacen(" opacity=", &format!("{dash} opacity="), 1) } else { drawn };
                     }
+                }
+                // Its number, where it is counted, on a disc at its start.
+                if shape.votes > 0 {
+                    let (at, radius) = (shape.points[0], shape.number_radius());
+                    out += &format!("  <circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"{radius:.1}\" fill=\"{ink}\" opacity=\"{opacity:.2}\"/>\n", at.0, at.1);
+                    out += &format!("  <text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"Geist, sans-serif\" font-size=\"{:.0}\" fill=\"{}\">{}</text>\n", at.0, at.1, radius * 1.15, hex(shapes::ink_on(shape.color)), shape.votes);
                 }
             }
             Tool::Pen => out += &line(&shape.points, shape.stroke, false),

@@ -4416,7 +4416,7 @@ impl Studio {
         let mut anchors = Vec::new();
         for layer in self.doc.layers.iter().filter(|layer| !layer.hidden) {
             match &layer.kind {
-                Kind::Picture(picture) => anchors.push(shapes::Anchor { id: picture.id, middle: (picture.cx, picture.cy), half: (picture.w / 2.0, picture.h / 2.0), angle: picture.angle, round: false }),
+                Kind::Picture(picture) => anchors.push(shapes::Anchor { id: picture.id, middle: (picture.cx, picture.cy), half: (picture.w / 2.0, picture.h / 2.0), angle: picture.angle, round: false, pointed: false }),
                 Kind::Shape(shape) => anchors.extend(shape.anchor(&mut self.text)),
             }
         }

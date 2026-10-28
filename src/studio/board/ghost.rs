@@ -156,7 +156,7 @@ impl Studio {
         self.board_dress(&mut arrow);
         arrow.points[1] = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0);
         arrow.stuck = [Some((from, shapes::WHOLE, shapes::WHOLE)), Some((to, shapes::WHOLE, shapes::WHOLE))];
-        let anchor = |(x, y, w, h): (f32, f32, f32, f32), id: u32| shapes::Anchor { id, middle: (x + w / 2.0, y + h / 2.0), half: (w / 2.0, h / 2.0), angle: 0.0, round: false };
+        let anchor = |(x, y, w, h): (f32, f32, f32, f32), id: u32| shapes::Anchor { id, middle: (x + w / 2.0, y + h / 2.0), half: (w / 2.0, h / 2.0), angle: 0.0, round: false, pointed: false };
         shapes::route(&mut arrow, &anchor(a, from), &anchor(b, to));
         Layer::shape(arrow)
     }

@@ -324,6 +324,28 @@ pub const FORM_CYLINDER: u8 = 2;
 pub const FORM_PERSON: u8 = 3;
 pub const FORM_CLOUD: u8 = 4;
 pub const FORM_STICKY: u8 = 5;
+/// And what a diagram's boxes are drawn as besides: a stick figure, its
+/// words under it; a box with round ends; one with a line down inside
+/// either end; a hexagon; a box leaning right and leaning left; a box
+/// wider at the bottom and wider at the top; a flag, its left end cut in
+/// to a point; two rings, one in the other; a table, its rows in
+/// compartments between rules and its columns lined up; a slice of a
+/// pie, from and to the angles its corners say; and a face, as happy as
+/// its votes say.
+pub const FORM_STICK: u8 = 6;
+pub const FORM_STADIUM: u8 = 7;
+pub const FORM_SUBROUTINE: u8 = 8;
+pub const FORM_HEXAGON: u8 = 9;
+pub const FORM_LEAN_RIGHT: u8 = 10;
+pub const FORM_LEAN_LEFT: u8 = 11;
+pub const FORM_TRAPEZOID: u8 = 12;
+pub const FORM_TRAPEZOID_DOWN: u8 = 13;
+pub const FORM_FLAG: u8 = 14;
+pub const FORM_DOUBLE: u8 = 15;
+pub const FORM_TABLE: u8 = 16;
+pub const FORM_WEDGE: u8 = 17;
+pub const FORM_FACE: u8 = 18;
+const FORM_LAST: u8 = FORM_FACE;
 
 mod forms;
 pub use forms::PAPER;
@@ -333,12 +355,22 @@ pub use forms::PAPER;
 /// and a bar across, which says where a measure stops.
 pub const HEADS: [&str; 7] = ["Filled", "Open", "Hollow", "Dot", "Ring", "Diamond", "Bar"];
 pub const FILLED_HEAD: u8 = 0;
-const OPEN_HEAD: u8 = 1;
-const HOLLOW_HEAD: u8 = 2;
-const DOT_HEAD: u8 = 3;
-const RING_HEAD: u8 = 4;
-const DIAMOND_HEAD: u8 = 5;
-const BAR_HEAD: u8 = 6;
+pub const OPEN_HEAD: u8 = 1;
+pub const HOLLOW_HEAD: u8 = 2;
+pub const DOT_HEAD: u8 = 3;
+pub const RING_HEAD: u8 = 4;
+pub const DIAMOND_HEAD: u8 = 5;
+pub const BAR_HEAD: u8 = 6;
+/// And the heads a diagram's lines end in, which are not offered in a
+/// menu: a cross; a hollow diamond; and the crow's feet of a database's
+/// relations, saying one, none or one, one or more, and none or more.
+pub const CROSS_HEAD: u8 = 7;
+pub const HOLLOW_DIAMOND_HEAD: u8 = 8;
+pub const ONE_HEAD: u8 = 9;
+pub const ZERO_ONE_HEAD: u8 = 10;
+pub const ONE_MANY_HEAD: u8 = 11;
+pub const ZERO_MANY_HEAD: u8 = 12;
+const HEAD_KINDS: u8 = 13;
 
 /// What a highlight is the color of, and how opaque out of 256.
 const HIGHLIGHT_COLOR: (u32, u32) = (0xFFE629, 150);
@@ -405,8 +437,8 @@ impl Shape {
                 self.style,
                 self.angle,
                 u8::from(self.border),
-                self.ends[0],
-                self.ends[1],
+                char::from_digit(u32::from(self.ends[0]), 36).unwrap_or('0'),
+                char::from_digit(u32::from(self.ends[1]), 36).unwrap_or('0'),
                 u8::from(self.dotted),
                 u8::from(self.halo),
                 u8::from(self.elbow),
@@ -468,7 +500,7 @@ impl Shape {
         // And what each head is, dots, a white edge, an elbow and a
         // hand-drawn look, which a file from before them has not.
         if let Some(ends) = more.next() {
-            let mut digits = ends.chars().filter_map(|digit| digit.to_digit(10)).map(|digit| (digit as u8).min(HEADS.len() as u8 - 1));
+            let mut digits = ends.chars().filter_map(|digit| digit.to_digit(36)).map(|digit| (digit as u8).min(HEAD_KINDS - 1));
             shape.ends = [digits.next().unwrap_or(FILLED_HEAD), digits.next().unwrap_or(FILLED_HEAD)];
         }
         let mut flag = || more.next() == Some("1");
@@ -497,10 +529,10 @@ impl Shape {
         // the size it was drawn at, which a file from before boards has
         // none of.
         let mut small = |most: u8| more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(most);
-        (shape.form, shape.titled, shape.status, shape.votes, shape.routed) = (small(FORM_STICKY), small(1) == 1, small(3), small(99), small(1) == 1);
+        (shape.form, shape.titled, shape.status, shape.votes, shape.routed) = (small(FORM_LAST), small(1) == 1, small(3), small(255), small(1) == 1);
         shape.base = more.next().and_then(|word| word.split_once(':')).and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))).filter(|(w, h)| w.is_finite() && h.is_finite()).unwrap_or((0.0, 0.0));
         shape.heading = more.next() == Some("1");
-        shape.region = more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(4);
+        shape.region = more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(15);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -850,6 +882,11 @@ impl Shape {
             let (half_w, half_h) = ((longest * px * 0.36).min(px * 6.5) + px, (self.text.split('\n').count() as f32 + 1.0) * px);
             (left, top, right, bottom) = (left.min(mx - half_w), top.min(my - half_h), right.max(mx + half_w), bottom.max(my + half_h));
         }
+        // And the disc its number is on, where it is counted.
+        if matches!(self.tool, Tool::Arrow | Tool::Line) && self.votes > 0 {
+            let (at, radius) = (self.points[0], self.number_radius() + 1.0);
+            (left, top, right, bottom) = (left.min(at.0 - radius), top.min(at.1 - radius), right.max(at.0 + radius), bottom.max(at.1 + radius));
+        }
         let (x, y) = ((left - margin).floor() as i32, (top - margin).floor() as i32);
         Rect::new(x, y, (right + margin).ceil() as i32 - x, (bottom + margin).ceil() as i32 - y)
     }
@@ -895,9 +932,11 @@ impl Shape {
     }
 
     /// The point a line or an arrow bends through, half way along it,
-    /// if it bends.
+    /// if it bends: the middle one of the points it goes by, where it
+    /// goes by more than one.
     pub fn bend(&self) -> Option<Point> {
-        self.points.get(2).copied().filter(|_| matches!(self.tool, Tool::Line | Tool::Arrow))
+        let middle = 2 + self.points.len().saturating_sub(3) / 2;
+        self.points.get(middle).copied().filter(|_| matches!(self.tool, Tool::Line | Tool::Arrow))
     }
 
     /// Where the dot is that a line or an arrow is bent by: on its
@@ -948,7 +987,8 @@ impl Shape {
     }
 
     /// A bent line as the short straight ones it is drawn as: a curve
-    /// from one end to the other, through its bend half way.
+    /// from one end to the other, through its bend half way; or, with
+    /// more points to go by than one, smoothly through each in turn.
     fn curve(&self) -> Option<[Point; BENDS + 1]> {
         if self.elbow && matches!(self.tool, Tool::Line | Tool::Arrow) && self.points.len() >= 2 {
             return Some(self.elbow_path());
@@ -957,6 +997,9 @@ impl Shape {
         // as it is begun. Only a line or an arrow that bends has one.
         let through = self.bend()?;
         let (a, b) = (self.points[0], self.points[1]);
+        if self.points.len() > 3 {
+            return Some(self.through_all());
+        }
         // What the curve is pulled towards, which is twice as far from
         // the straight line as the curve gets.
         let pull = (2.0 * through.0 - (a.0 + b.0) / 2.0, 2.0 * through.1 - (a.1 + b.1) / 2.0);
@@ -966,6 +1009,58 @@ impl Shape {
             *point = (u * u * a.0 + 2.0 * u * t * pull.0 + t * t * b.0, u * u * a.1 + 2.0 * u * t * pull.1 + t * t * b.1);
         }
         Some(points)
+    }
+
+    /// A line through all the points it goes by, from its first end to
+    /// its last: smooth through each, each stretch given points by how
+    /// long it is, and a corner turned no wider than half the shorter of
+    /// the two stretches it is between.
+    fn through_all(&self) -> [Point; BENDS + 1] {
+        let mut stops = vec![self.points[0]];
+        stops.extend_from_slice(&self.points[2..]);
+        stops.push(self.points[1]);
+        let long = |a: Point, b: Point| (b.0 - a.0).hypot(b.1 - a.1);
+        let lengths: Vec<f32> = stops.windows(2).map(|pair| long(pair[0], pair[1]).max(1e-3)).collect();
+        let whole: f32 = lengths.iter().sum();
+        // The way through each stop: along the line from the one before
+        // it to the one after, as far as half the shorter stretch.
+        let ways: Vec<(f32, f32)> = (0..stops.len())
+            .map(|at| {
+                let (before, after) = (stops[at.saturating_sub(1)], stops[(at + 1).min(stops.len() - 1)]);
+                let span = long(before, after).max(1e-3);
+                let reach = match at {
+                    0 => lengths[0],
+                    _ if at == stops.len() - 1 => lengths[at - 1],
+                    _ => lengths[at - 1].min(lengths[at]),
+                } * 0.5;
+                ((after.0 - before.0) / span * reach, (after.1 - before.1) / span * reach)
+            })
+            .collect();
+        let mut points = [stops[0]; BENDS + 1];
+        for (step, point) in points.iter_mut().enumerate() {
+            // How far along the whole, and so which stretch and how far in.
+            let mut gone = step as f32 / BENDS as f32 * whole;
+            let mut at = 0;
+            while at < lengths.len() - 1 && gone > lengths[at] {
+                gone -= lengths[at];
+                at += 1;
+            }
+            let t = (gone / lengths[at]).clamp(0.0, 1.0);
+            let (p, q, m, n) = (stops[at], stops[at + 1], ways[at], ways[at + 1]);
+            let (t2, t3) = (t * t, t * t * t);
+            let (h00, h10, h01, h11) = (2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, -2.0 * t3 + 3.0 * t2, t3 - t2);
+            *point = (h00 * p.0 + h10 * m.0 + h01 * q.0 + h11 * n.0, h00 * p.1 + h10 * m.1 + h01 * q.1 + h11 * n.1);
+        }
+        points
+    }
+
+    /// The way it goes, as the points it is drawn through from its first
+    /// end to its last: straight, bent or round its corners.
+    pub fn path(&self) -> Vec<Point> {
+        match self.curve() {
+            Some(curve) => curve.to_vec(),
+            None => vec![self.points[0], self.points[1]],
+        }
     }
 }
 
@@ -996,7 +1091,7 @@ fn stuck_read(word: &str) -> Option<(u32, f32, f32)> {
 }
 
 /// Something an end of an arrow can be stuck to: a box of a size about a
-/// middle, turned so far, and whether it is round.
+/// middle, turned so far, and whether it is round, or a diamond.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Anchor {
     pub id: u32,
@@ -1004,6 +1099,7 @@ pub struct Anchor {
     pub half: (f32, f32),
     pub angle: f32,
     pub round: bool,
+    pub pointed: bool,
 }
 
 impl Anchor {
@@ -1022,9 +1118,10 @@ impl Anchor {
             return self.middle;
         }
         let (hw, hh) = (self.half.0.max(1e-3), self.half.1.max(1e-3));
-        let reach = match self.round {
-            true => 1.0 / ((dx / hw).powi(2) + (dy / hh).powi(2)).sqrt(),
-            false => (hw / dx.abs().max(1e-6)).min(hh / dy.abs().max(1e-6)),
+        let reach = match (self.round, self.pointed) {
+            (true, _) => 1.0 / ((dx / hw).powi(2) + (dy / hh).powi(2)).sqrt(),
+            (_, true) => 1.0 / (dx.abs() / hw + dy.abs() / hh),
+            _ => (hw / dx.abs().max(1e-6)).min(hh / dy.abs().max(1e-6)),
         };
         // Beyond its edge by a gap, unless the point is inside it.
         let out = (reach + STUCK_GAP / long).min(1.0);
@@ -1046,7 +1143,7 @@ impl Shape {
             }
             _ => return None,
         };
-        Some(Anchor { id: self.id, middle: (x + w / 2.0, y + h / 2.0), half: (w / 2.0, h / 2.0), angle: self.angle, round: self.tool == Tool::Ellipse })
+        Some(Anchor { id: self.id, middle: (x + w / 2.0, y + h / 2.0), half: (w / 2.0, h / 2.0), angle: self.angle, round: self.tool == Tool::Ellipse, pointed: self.tool == Tool::Rect && self.form == FORM_DIAMOND })
     }
 
     /// A copy of it, called something of its own, with its ends stuck to
@@ -1116,8 +1213,13 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                 };
                 // The ends are the first two points; a third is where the
                 // line is bent through, which an end stuck as a whole
-                // points itself towards.
-                let (at, near) = (end, if shape.points.len() > 2 && !shape.elbow { 2 } else { 1 - end });
+                // points itself towards; with more than one, the first of
+                // them from the first end and the last from the last.
+                let near = match shape.points.len() {
+                    len if len > 2 && !shape.elbow => if end == 0 { 2 } else { len - 1 },
+                    _ => 1 - end,
+                };
+                let at = end;
                 let to = match u == WHOLE {
                     // Towards the other end, or what that is stuck to as a
                     // whole; or towards a bend, where there is one.
@@ -1221,7 +1323,7 @@ pub fn turned_around(place: Rect, about: Point, by: f32) -> Rect {
 }
 
 /// How many straight lines a bent one is drawn as.
-const BENDS: usize = 24;
+const BENDS: usize = 48;
 
 /// The few numbers a shape's outline is worked out from, apart from the
 /// shape, so that every core can be at it.
@@ -1343,6 +1445,43 @@ impl Outline {
                 (triangle(p, tip, side(middle, wide * 0.8), far).min(triangle(p, tip, far, side(middle, -wide * 0.8))) - 0.6, head)
             }
             BAR_HEAD => (segment(p, side(tip, wide), side(tip, -wide)) - half, 0.0),
+            CROSS_HEAD => {
+                let (middle, arm) = (back(head * 0.5), wide * 0.75);
+                let ends = |s: f32| ((middle.0 - dx * arm - dy * arm * s, middle.1 - dy * arm + dx * arm * s), (middle.0 + dx * arm + dy * arm * s, middle.1 + dy * arm - dx * arm * s));
+                let ((a, b), (c, d)) = (ends(1.0), ends(-1.0));
+                (segment(p, a, b).min(segment(p, c, d)) - half, head * 0.5)
+            }
+            HOLLOW_DIAMOND_HEAD => {
+                let (middle, far) = (back(head * 0.55), back(head * 1.1));
+                (triangle(p, tip, side(middle, wide * 0.8), far).min(triangle(p, tip, far, side(middle, -wide * 0.8))).abs() - half, head * 1.1)
+            }
+            // The crow's feet: a bar or two across near the end, a ring
+            // further back with the line stopped either side of it, and
+            // the foot itself spread out to the end.
+            ONE_HEAD..=ZERO_MANY_HEAD => {
+                let (long, spread) = (head * 1.3, wide * 1.4);
+                let bar = |at: f32| segment(p, side(back(at), spread), side(back(at), -spread));
+                let foot = matches!(style, ONE_MANY_HEAD | ZERO_MANY_HEAD);
+                let ring = matches!(style, ZERO_ONE_HEAD | ZERO_MANY_HEAD);
+                let mut near = match style {
+                    ONE_HEAD => bar(long * 0.35).min(bar(long * 0.6)),
+                    ZERO_ONE_HEAD => bar(long * 0.35),
+                    ONE_MANY_HEAD => bar(long * 0.95),
+                    _ => f32::MAX,
+                };
+                if foot {
+                    let root = back(long * 0.7);
+                    near = near.min(segment(p, root, side(tip, spread))).min(segment(p, root, side(tip, -spread)));
+                }
+                if ring {
+                    let (radius, middle) = (spread * 0.55, back(long * 0.95 + spread * 0.55));
+                    near = near.min(((p.0 - middle.0).hypot(p.1 - middle.1) - radius).abs());
+                    // The line on to the end, the other side of the ring.
+                    near = near.min(segment(p, tip, back(long * 0.95)));
+                    return (near - half, long * 0.95 + spread * 1.1);
+                }
+                (near - half, 0.0)
+            }
             // A head at an end: its point there, its barbs back along the
             // line. The line stops inside it, where its round end would
             // otherwise blunt the point.
@@ -1631,20 +1770,24 @@ impl Shape {
                         Some(curve) => curve.iter().map(|point| (point.0 + wobble(off * 0.5), point.1 + wobble(off * 0.5))).collect(),
                         None => stroke((a.0 + wobble(off), a.1 + wobble(off)), (b.0 + wobble(off), b.1 + wobble(off)), &mut wobble),
                     };
-                    // Each head two strokes back from the tip, as a hand
-                    // makes one, whatever the kind it is drawn as clean.
+                    // Each head as a hand draws it: an arrow's two strokes
+                    // back from the tip, the rest by their outlines; and
+                    // the line left out under those that are hollow.
                     let (head, wide) = self.head();
-                    let (head, wide) = (head * 1.25, wide * 1.4);
+                    let mut path = path;
                     for (end, tip, from) in [(1, path[path.len() - 1], path[path.len().saturating_sub(4)]), (0, path[0], path[3.min(path.len() - 1)])] {
                         if !self.heads[end] {
                             continue;
                         }
                         let length = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
-                        let (dx, dy) = ((tip.0 - from.0) / length, (tip.1 - from.1) / length);
-                        let base = (tip.0 - dx * head * 1.1, tip.1 - dy * head * 1.1);
-                        for side in [1.0, -1.0] {
-                            let barb = (base.0 - dy * wide * side + wobble(off), base.1 + dx * wide * side + wobble(off));
-                            strokes.push((stroke(barb, tip, &mut wobble), thin));
+                        let way = ((tip.0 - from.0) / length, (tip.1 - from.1) / length);
+                        let (lines, cut) = head_strokes(self.ends[end], tip, way, head, wide);
+                        for line in lines {
+                            let line: Vec<Point> = line.into_iter().map(|(x, y)| (x + wobble(off * 0.5), y + wobble(off * 0.5))).collect();
+                            strokes.push((if line.len() == 2 { stroke(line[0], line[1], &mut wobble) } else { line }, thin));
+                        }
+                        if cut > 0.0 {
+                            path = cut_end(path, end, cut);
                         }
                     }
                     // Dashed, its path cut into dashes, each a stroke.
@@ -1944,6 +2087,123 @@ impl Shape {
             }
         }
     }
+}
+
+/// The strokes a hand draws a head of a kind with, at a tip the line
+/// comes to going `way`, a head `head` long and `wide` across half; and
+/// how much of the line to leave out under it, for those it would show
+/// through. Filled ones are hatched.
+fn head_strokes(style: u8, tip: Point, way: (f32, f32), head: f32, wide: f32) -> (Vec<Vec<Point>>, f32) {
+    let (dx, dy) = way;
+    let back = |by: f32| (tip.0 - dx * by, tip.1 - dy * by);
+    let side = |at: Point, by: f32| (at.0 - dy * by, at.1 + dx * by);
+    let ring = |middle: Point, radius: f32| -> Vec<Point> { (0..=20).map(|step| {
+        let angle = std::f32::consts::TAU * step as f32 / 20.0;
+        (middle.0 + radius * angle.cos(), middle.1 + radius * angle.sin())
+    }).collect() };
+    let (head, wide) = (head * 1.15, wide * 1.3);
+    match style {
+        HOLLOW_HEAD => (vec![vec![tip, side(back(head), wide), side(back(head), -wide), tip]], head),
+        DOT_HEAD => (vec![ring(tip, wide * 0.75), ring(tip, wide * 0.4), vec![tip, tip]], 0.0),
+        RING_HEAD => (vec![ring(back(wide * 0.75), wide * 0.75)], wide * 1.5),
+        DIAMOND_HEAD | HOLLOW_DIAMOND_HEAD => {
+            let (middle, far) = (back(head * 0.55), back(head * 1.1));
+            let mut lines = vec![vec![tip, side(middle, wide * 0.8), far, side(middle, -wide * 0.8), tip]];
+            if style == DIAMOND_HEAD {
+                for step in 1..6 {
+                    let t = step as f32 / 6.0 * 2.0 - 1.0;
+                    lines.push(vec![side(middle, wide * 0.8 * t), tip]);
+                    lines.push(vec![side(middle, wide * 0.8 * t), far]);
+                }
+            }
+            (lines, head * 1.1)
+        }
+        BAR_HEAD => (vec![vec![side(tip, wide), side(tip, -wide)]], 0.0),
+        CROSS_HEAD => {
+            let (middle, arm) = (back(head * 0.5), wide * 0.75);
+            let ends = |s: f32| vec![(middle.0 - dx * arm - dy * arm * s, middle.1 - dy * arm + dx * arm * s), (middle.0 + dx * arm + dy * arm * s, middle.1 + dy * arm - dx * arm * s)];
+            (vec![ends(1.0), ends(-1.0)], head * 0.5)
+        }
+        ONE_HEAD..=ZERO_MANY_HEAD => {
+            let (long, spread) = (head * 1.15, wide * 1.1);
+            let bar = |at: f32| vec![side(back(at), spread), side(back(at), -spread)];
+            let mut lines = match style {
+                ONE_HEAD => vec![bar(long * 0.35), bar(long * 0.6)],
+                ZERO_ONE_HEAD => vec![bar(long * 0.35)],
+                ONE_MANY_HEAD => vec![bar(long * 0.95)],
+                _ => Vec::new(),
+            };
+            if matches!(style, ONE_MANY_HEAD | ZERO_MANY_HEAD) {
+                let root = back(long * 0.7);
+                lines.push(vec![root, side(tip, spread)]);
+                lines.push(vec![root, side(tip, -spread)]);
+            }
+            if matches!(style, ZERO_ONE_HEAD | ZERO_MANY_HEAD) {
+                let radius = spread * 0.55;
+                lines.push(ring(back(long * 0.95 + radius), radius));
+                lines.push(vec![tip, back(long * 0.95)]);
+                return (lines, long * 0.95 + radius * 2.0);
+            }
+            (lines, 0.0)
+        }
+        // An arrow's, and an open one: two strokes back from the tip.
+        _ => {
+            let base = back(head * 1.1);
+            (vec![vec![side(base, wide), tip], vec![side(base, -wide), tip]], 0.0)
+        }
+    }
+}
+
+impl Shape {
+    /// A line's way and its heads, as runs of points a pen would draw
+    /// them with, unsteadied by nothing: what an SVG of it is made of.
+    pub fn line_strokes(&self) -> Vec<Vec<Point>> {
+        let mut path = self.path();
+        let (head, wide) = self.head();
+        let mut heads = Vec::new();
+        for (end, tip, from) in [(1, path[path.len() - 1], path[path.len().saturating_sub(4)]), (0, path[0], path[3.min(path.len() - 1)])] {
+            if !self.heads[end] {
+                continue;
+            }
+            let length = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
+            let (lines, cut) = head_strokes(self.ends[end], tip, ((tip.0 - from.0) / length, (tip.1 - from.1) / length), head, wide);
+            heads.extend(lines);
+            if cut > 0.0 {
+                path = cut_end(path, end, cut);
+            }
+        }
+        let mut all = vec![path];
+        all.extend(heads);
+        all
+    }
+}
+
+/// A run of points with so much of it taken off at its first end or its
+/// last, along it.
+fn cut_end(mut path: Vec<Point>, end: usize, by: f32) -> Vec<Point> {
+    if end == 0 {
+        path.reverse();
+    }
+    let mut left = by;
+    while path.len() >= 2 {
+        let (a, b) = (path[path.len() - 2], path[path.len() - 1]);
+        let long = (b.0 - a.0).hypot(b.1 - a.1);
+        if long > left {
+            let t = (long - left) / long.max(1e-6);
+            let last = path.len() - 1;
+            path[last] = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            break;
+        }
+        left -= long;
+        path.pop();
+    }
+    if path.len() < 2 {
+        path = vec![path.first().copied().unwrap_or((0.0, 0.0)); 2];
+    }
+    if end == 0 {
+        path.reverse();
+    }
+    path
 }
 
 /// A triangle filled with a color, its edges smoothed.

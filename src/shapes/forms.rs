@@ -69,6 +69,16 @@ fn inside(p: Point, path: &[Point]) -> bool {
     odd
 }
 
+/// A straight line drawn from one point to another, half so wide.
+fn rule(canvas: &mut Canvas, a: Point, b: Point, half: f32, color: u32, opacity: u32) {
+    let left = (a.0.min(b.0) - half - 2.0).floor() as i32;
+    let top = (a.1.min(b.1) - half - 2.0).floor() as i32;
+    let bounds = Rect::new(left, top, (a.0.max(b.0) + half + 2.0).ceil() as i32 - left, (a.1.max(b.1) + half + 2.0).ceil() as i32 - top);
+    let mut mask = Mask { bounds, alpha: vec![0; bounds.w.max(0) as usize * bounds.h.max(0) as usize] };
+    stamp(&mut mask, a, b, half);
+    canvas.mask(&mask, color, opacity);
+}
+
 /// Points round an oval, from one angle to another, so many of them.
 fn arc(middle: Point, radii: (f32, f32), from: f32, to: f32, count: usize) -> Vec<Point> {
     (0..=count).map(|step| {
@@ -80,8 +90,30 @@ fn arc(middle: Point, radii: (f32, f32), from: f32, to: f32, count: usize) -> Ve
 impl Shape {
     /// Whether it is drawn by an outline of its own, rather than as a box
     /// or an oval.
-    pub(super) fn has_form(&self) -> bool {
-        self.tool == Tool::Rect && matches!(self.form, FORM_DIAMOND | FORM_CYLINDER | FORM_PERSON | FORM_CLOUD)
+    pub fn has_form(&self) -> bool {
+        match self.tool {
+            Tool::Rect => matches!(self.form, FORM_DIAMOND | FORM_CYLINDER | FORM_PERSON | FORM_CLOUD | FORM_STICK..=FORM_FLAG),
+            Tool::Ellipse => matches!(self.form, FORM_DOUBLE | FORM_WEDGE | FORM_FACE),
+            _ => false,
+        }
+    }
+
+    /// How far in from either side a form's words keep, where its sides
+    /// slant or curve: its left and its right.
+    fn form_sides(&self) -> (f32, f32) {
+        let (_, _, w, h) = self.frame();
+        let slant = (h * 0.5).min(w * 0.2);
+        match self.form {
+            FORM_STADIUM => (h * 0.3, h * 0.3),
+            FORM_SUBROUTINE => (Self::subroutine_inset(w), Self::subroutine_inset(w)),
+            FORM_HEXAGON | FORM_LEAN_RIGHT | FORM_LEAN_LEFT | FORM_TRAPEZOID | FORM_TRAPEZOID_DOWN => (slant * 0.85, slant * 0.85),
+            FORM_FLAG => ((h * 0.4).min(w * 0.2) * 0.8, 0.0),
+            _ => (0.0, 0.0),
+        }
+    }
+
+    fn subroutine_inset(w: f32) -> f32 {
+        (w * 0.08).min(10.0)
     }
 
     /// Whether its words say it is not known yet, "?" or "TBD": drawn
@@ -137,6 +169,79 @@ impl Shape {
                     .collect();
                 (vec![points], Vec::new())
             }
+            FORM_STICK => {
+                // A stick figure in the upper part of it, its words under.
+                let figure = h * 0.7;
+                let radius = (figure * 0.15).min(w * 0.25).max(2.0);
+                let head = arc((cx, y + radius + 1.0), (radius, radius), 0.0, 2.0 * pi, 32);
+                let (neck, hip, arms) = (y + radius * 2.0 + 1.0, y + figure * 0.66, y + figure * 0.42);
+                let reach = (figure * 0.26).min(w / 2.0);
+                let open = vec![vec![(cx, neck), (cx, hip)], vec![(cx - reach, arms), (cx + reach, arms)], vec![(cx - reach * 0.85, y + figure), (cx, hip), (cx + reach * 0.85, y + figure)]];
+                (vec![head], open)
+            }
+            FORM_STADIUM => {
+                let r = (h / 2.0).min(w / 2.0);
+                let mut body = arc((x + w - r, cy), (r, h / 2.0), -pi / 2.0, pi / 2.0, 20);
+                body.extend(arc((x + r, cy), (r, h / 2.0), pi / 2.0, 1.5 * pi, 20));
+                body.push(body[0]);
+                (vec![body], Vec::new())
+            }
+            FORM_SUBROUTINE => {
+                let inset = Self::subroutine_inset(w);
+                (vec![vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]], vec![vec![(x + inset, y), (x + inset, y + h)], vec![(x + w - inset, y), (x + w - inset, y + h)]])
+            }
+            FORM_HEXAGON | FORM_LEAN_RIGHT | FORM_LEAN_LEFT | FORM_TRAPEZOID | FORM_TRAPEZOID_DOWN | FORM_FLAG => {
+                let s = (h * 0.5).min(w * 0.2);
+                let corners = match self.form {
+                    FORM_HEXAGON => vec![(x + s, y), (x + w - s, y), (x + w, cy), (x + w - s, y + h), (x + s, y + h), (x, cy)],
+                    FORM_LEAN_RIGHT => vec![(x + s, y), (x + w, y), (x + w - s, y + h), (x, y + h)],
+                    FORM_LEAN_LEFT => vec![(x, y), (x + w - s, y), (x + w, y + h), (x + s, y + h)],
+                    FORM_TRAPEZOID => vec![(x + s, y), (x + w - s, y), (x + w, y + h), (x, y + h)],
+                    FORM_TRAPEZOID_DOWN => vec![(x, y), (x + w, y), (x + w - s, y + h), (x + s, y + h)],
+                    _ => {
+                        let s = (h * 0.4).min(w * 0.2);
+                        vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x + s, cy)]
+                    }
+                };
+                let mut path = corners;
+                path.push(path[0]);
+                (vec![path], Vec::new())
+            }
+            FORM_DOUBLE => {
+                let gap = (w.min(h) * 0.1).clamp(2.0, 6.0);
+                (vec![arc((cx, cy), (w / 2.0, h / 2.0), 0.0, 2.0 * pi, 64), arc((cx, cy), ((w / 2.0 - gap).max(1.0), (h / 2.0 - gap).max(1.0)), 0.0, 2.0 * pi, 64)], Vec::new())
+            }
+            FORM_WEDGE => {
+                // From the middle out along its first angle, round to its
+                // last, and back: angles in degrees, clockwise from the top.
+                let [from, sweep, ..] = self.corners.unwrap_or([0.0, 360.0, 0.0, 0.0]);
+                let (start, end) = ((from - 90.0).to_radians(), (from + sweep.clamp(0.0, 360.0) - 90.0).to_radians());
+                let steps = ((sweep.abs() / 4.0).ceil() as usize).max(2);
+                let rim = arc((cx, cy), (w / 2.0, h / 2.0), start, end, steps);
+                let path = match sweep >= 359.9 {
+                    true => rim,
+                    false => {
+                        let mut path = vec![(cx, cy)];
+                        path.extend(rim);
+                        path.push((cx, cy));
+                        path
+                    }
+                };
+                (vec![path], Vec::new())
+            }
+            FORM_FACE => {
+                // A ring, two eyes, and a mouth as glad as its votes, one
+                // to five, say: a frown, a straight line, or a smile.
+                let r = w.min(h) / 2.0;
+                let eye = (r * 0.09).max(1.0);
+                let eyes = [-1.0, 1.0].map(|side| arc((cx + side * r * 0.35, cy - r * 0.22), (eye, eye), 0.0, 2.0 * pi, 12));
+                let glad = (f32::from(self.votes.clamp(1, 5)) - 3.0) / 2.0;
+                let mouth: Vec<Point> = (0..=12).map(|step| {
+                    let t = step as f32 / 12.0;
+                    (cx - r * 0.42 + r * 0.84 * t, cy + r * 0.36 + glad * r * 0.28 * 4.0 * t * (1.0 - t) - glad * r * 0.1)
+                }).collect();
+                (vec![arc((cx, cy), (r, r), 0.0, 2.0 * pi, 48), eyes[0].clone(), eyes[1].clone()], vec![mouth])
+            }
             _ => (Vec::new(), Vec::new()),
         };
         let turn = |paths: Vec<Vec<Point>>| -> Vec<Vec<Point>> {
@@ -187,8 +292,9 @@ impl Shape {
                 seed ^= seed << 5;
                 (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * amount
             };
-            let reach = (self.stroke * 1.2 + 3.0).min(10.0);
             let (x, y, w, h) = self.frame();
+            // Less unsteady, the smaller it is: a dot keeps its shape.
+            let reach = (self.stroke * 1.2 + 3.0).min(10.0) * (w.min(h) / 60.0).clamp(0.25, 1.0);
             let middle = (x + w / 2.0, y + h / 2.0);
             for pass in 0..2 {
                 let thin = if pass == 0 { half } else { (half * 0.7).max(0.6) };
@@ -211,7 +317,11 @@ impl Shape {
 
     /// What is inside its outline, which its fill is laid in.
     pub(super) fn form_inside(&self, bounds: Rect) -> Mask {
-        let (closed, _) = self.form_paths();
+        let (mut closed, _) = self.form_paths();
+        // Two rings are filled inside the inner one, a gap round it.
+        if self.form == FORM_DOUBLE && closed.len() > 1 {
+            closed.remove(0);
+        }
         covered(bounds, move |px, py| {
             let far = nearest((px, py), &closed);
             if closed.iter().any(|path| inside((px, py), path)) { -far } else { far }
@@ -234,9 +344,15 @@ impl Shape {
         };
         match self.form {
             FORM_PERSON if self.tool == Tool::Rect => (x, y + h * 0.64, w, h * 0.36),
+            FORM_STICK if self.tool == Tool::Rect => (x, y + h * 0.72, w, h * 0.28),
             FORM_CYLINDER if self.tool == Tool::Rect => {
                 let top = (h * 0.24).min(w * 0.36);
                 (x + pad, y + top, (w - 2.0 * pad).max(8.0), h - top)
+            }
+            FORM_TABLE if self.tool == Tool::Rect => (x + pad, y, (w - 2.0 * pad).max(8.0), h),
+            FORM_STADIUM..=FORM_FLAG if self.tool == Tool::Rect => {
+                let (left, right) = self.form_sides();
+                (x + left + pad, y, (w - left - right - 2.0 * pad).max(8.0), h)
             }
             _ => {
                 let (iw, ih) = (w * across - 2.0 * pad * across, h * down);
@@ -257,8 +373,14 @@ impl Shape {
         if matches!(self.tool, Tool::Line | Tool::Arrow) {
             let lines = label_wrap(text, self.face, px, (px as i32 * 12).max(120), &self.text);
             let (mx, my) = self.middle();
-            let top = my - (lines.len() as i32 * high) as f32 / 2.0;
+            // Over its middle, as a message's words are, or across it.
+            let tall = (lines.len() as i32 * high) as f32;
+            let top = if self.titled { my - tall - self.stroke - 3.0 } else { my - tall / 2.0 };
             return (lines.into_iter().enumerate().map(|(at, (line, wide))| (line, mx - wide as f32 / 2.0, top + (at as i32 * high) as f32, wide)).collect(), high);
+        }
+        if self.form == FORM_TABLE && self.tool == Tool::Rect && !self.titled {
+            let (lines, _, _) = self.table(text);
+            return (lines, high);
         }
         let (x, y, w, h) = self.label_area();
         let lines = label_wrap(text, self.face, px, w.floor() as i32, &self.text);
@@ -273,6 +395,57 @@ impl Shape {
             })
             .collect();
         (shown, high)
+    }
+
+    /// A table's words, laid out: the lines before its first rule, its
+    /// heading, each in the middle; the rest from the left, a tab between
+    /// columns lining them up; each line with where it begins and how
+    /// wide it is. And where each rule is down it, a line `---` of its
+    /// words; and how large it needs to be for all of it.
+    pub fn table(&self, text: &mut Text) -> (Vec<(String, f32, f32, i32)>, Vec<f32>, (f32, f32)) {
+        let (x, y, w, _) = self.frame();
+        let px = self.font_px;
+        let high = Text::line_height(px) as f32;
+        let pad = (px as f32 * 0.6).max(6.0);
+        let (gap, between) = (high * 0.5, px as f32 * 0.9);
+        let rows: Vec<&str> = self.text.split('\n').collect();
+        let heading = rows.iter().position(|row| row.trim() == "---").unwrap_or(rows.len());
+        // How wide each column is, over every line under the heading.
+        let mut columns: Vec<f32> = Vec::new();
+        for row in rows.iter().skip(heading).filter(|row| row.trim() != "---") {
+            for (at, cell) in row.split('\t').enumerate() {
+                let wide = text.width_in(self.face, cell, px) as f32;
+                match columns.get_mut(at) {
+                    Some(known) => *known = known.max(wide),
+                    None => columns.push(wide),
+                }
+            }
+        }
+        let body = columns.iter().sum::<f32>() + between * columns.len().saturating_sub(1) as f32;
+        let top_wide = rows.iter().take(heading).map(|row| text.width_in(self.face, row, px) as f32).fold(0.0, f32::max);
+        let (mut lines, mut rules, mut down) = (Vec::new(), Vec::new(), y + pad * 0.5);
+        for (at, row) in rows.iter().enumerate() {
+            if row.trim() == "---" {
+                rules.push(down + gap / 2.0);
+                down += gap;
+                continue;
+            }
+            if at < heading {
+                let wide = text.width_in(self.face, row, px);
+                lines.push(((*row).to_owned(), x + (w - wide as f32) / 2.0, down, wide));
+            } else {
+                let mut left = x + pad;
+                for (column, cell) in row.split('\t').enumerate() {
+                    let wide = text.width_in(self.face, cell, px);
+                    if !cell.is_empty() {
+                        lines.push((cell.to_owned(), left, down, wide));
+                    }
+                    left += columns.get(column).copied().unwrap_or(0.0) + between;
+                }
+            }
+            down += high;
+        }
+        (lines, rules, (top_wide.max(body) + 2.0 * pad + 2.0, down + pad * 0.5 - y))
     }
 
     /// Where the caret goes at the end of its words: across, down, and how
@@ -301,6 +474,10 @@ impl Shape {
         if self.text.is_empty() || self.titled || !matches!(self.tool, Tool::Rect | Tool::Ellipse) || ui_kind(&self.text).is_some() {
             return least;
         }
+        if self.form == FORM_TABLE && self.tool == Tool::Rect {
+            let (_, _, (w, h)) = self.table(text);
+            return (w.max(least.0), h.max(least.1));
+        }
         let (x, y, _, _) = self.frame();
         let probe = |w: f32, h: f32| {
             let mut probe = self.clone();
@@ -325,7 +502,24 @@ impl Shape {
     /// it, a status dot at its top right, and its votes along its top.
     pub(super) fn draw_label(&self, canvas: &mut Canvas, text: &mut Text) {
         let boxed = matches!(self.tool, Tool::Rect | Tool::Ellipse);
+        let paper = if self.paper == 0 { PAPER } else { self.paper };
         if boxed {
+            // A hollow box's title on a patch of the paper, over what
+            // runs under it; a table's rules across it.
+            if self.titled && !self.filled {
+                let (lines, high) = self.label_lines(text);
+                let room = high / 5;
+                for (_, left, top, wide) in &lines {
+                    canvas.round_fill(*left as i32 - room, *top as i32, wide + room * 2, high, room, paper, self.opacity);
+                }
+            }
+            if self.form == FORM_TABLE && self.tool == Tool::Rect && !self.titled {
+                let (x, _, w, _) = self.frame();
+                let (_, rules, _) = self.table(text);
+                for down in rules {
+                    rule(canvas, (x, down), (x + w, down), (self.stroke * 0.35).max(0.5), self.color, self.opacity);
+                }
+            }
             if let Some(kind) = ui_kind(&self.text).filter(|_| self.tool == Tool::Rect && self.form == FORM_BOX) {
                 self.draw_piece(canvas, text, kind);
             } else {
@@ -342,17 +536,35 @@ impl Shape {
                 let (cx, cy) = ((x + dot * 2.2) as i32 + vote * (dot * 2.4) as i32, (y + dot * 2.2) as i32);
                 canvas.disc(cx, cy, dot.round() as i32, VOTE, self.opacity);
             }
-        } else if !self.text.is_empty() {
+        } else {
             // An arrow's words, on a patch of the paper, across its middle.
-            let (lines, high) = self.label_lines(text);
-            if let (Some(first), Some(last)) = (lines.first(), lines.last()) {
-                let left = lines.iter().map(|line| line.1).fold(f32::MAX, f32::min);
-                let wide = lines.iter().map(|line| line.3).max().unwrap_or(0);
-                let room = high / 5;
-                canvas.round_fill(left as i32 - room * 2, first.2 as i32 - room / 2, wide + room * 4, (last.2 - first.2) as i32 + high + room, room * 2, if self.paper == 0 { PAPER } else { self.paper }, self.opacity);
+            if !self.text.is_empty() {
+                let (lines, high) = self.label_lines(text);
+                if let (Some(first), Some(last)) = (lines.first(), lines.last()) {
+                    let left = lines.iter().map(|line| line.1).fold(f32::MAX, f32::min);
+                    let wide = lines.iter().map(|line| line.3).max().unwrap_or(0);
+                    let room = high / 5;
+                    canvas.round_fill(left as i32 - room * 2, first.2 as i32 - room / 2, wide + room * 4, (last.2 - first.2) as i32 + high + room, room * 2, paper, self.opacity);
+                }
+                self.draw_words(canvas, text);
             }
-            self.draw_words(canvas, text);
+            // Its number, where it is counted, on a disc at its start.
+            if self.votes > 0 && matches!(self.tool, Tool::Line | Tool::Arrow) {
+                let (at, radius) = (self.points[0], self.number_radius());
+                canvas.disc(at.0.round() as i32, at.1.round() as i32, radius.round() as i32, self.color, self.opacity);
+                let number = self.votes.to_string();
+                let px = (radius * 1.15).round() as u32;
+                let wide = text.width_in(0, &number, px);
+                text.look = Look { opacity: self.opacity, ..Look::default() };
+                text.draw_in(0, canvas, (at.0 - wide as f32 / 2.0).round() as i32, (at.1 - Text::line_height(px) as f32 / 2.0).round() as i32, px, ink_on(self.color), &number);
+                text.look = Look::default();
+            }
         }
+    }
+
+    /// How large the disc a counted line's number is on is, across half.
+    pub fn number_radius(&self) -> f32 {
+        (self.font_px as f32 * 0.5).max(8.0)
     }
 
     /// Its words where `label_lines` puts them, in its face, in what reads
