@@ -209,7 +209,7 @@ impl Home {
     }
 
     /// The folder a new file goes in from where the window is.
-    fn folder(&self) -> PathBuf {
+    pub fn folder(&self) -> PathBuf {
         match &self.place {
             Place::Project(dir) => dir.clone(),
             _ => drafts(),

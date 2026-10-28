@@ -5971,6 +5971,11 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let (protocols, delete) = (atom("WM_PROTOCOLS")?, atom("WM_DELETE_WINDOW")?);
     conn.change_property32(PropMode::REPLACE, window, protocols, AtomEnum::ATOM, &[delete])?;
     let (utf8, net_name) = (atom("UTF8_STRING")?, atom("_NET_WM_NAME")?);
+    // Files dropped on it from a file manager, by XDND: a picture of any
+    // kind hotshot reads goes on the canvas, or begins a file.
+    let dnd = Dnd { enter: atom("XdndEnter")?, position: atom("XdndPosition")?, status: atom("XdndStatus")?, drop: atom("XdndDrop")?, finished: atom("XdndFinished")?, selection: atom("XdndSelection")?, copy: atom("XdndActionCopy")?, uris: atom("text/uri-list")? };
+    conn.change_property32(PropMode::REPLACE, window, atom("XdndAware")?, AtomEnum::ATOM, &[5])?;
+    let mut dropped: Option<(u32, u32)> = None;
     let gc = conn.generate_id()?;
     conn.create_gc(gc, window, &CreateGCAux::new().graphics_exposures(0))?;
     conn.map_window(window)?;
@@ -6124,6 +6129,18 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     }
                 }
                 Event::ClientMessage(message) if message.type_ == protocols && message.data.as_data32()[0] == delete => outcome = Outcome::Quit,
+                // Something dragged over the window is said to be welcome,
+                // to be copied; let go, what it is is asked for after.
+                Event::ClientMessage(message) if message.type_ == dnd.position => {
+                    let source = message.data.as_data32()[0];
+                    let status = ClientMessageEvent::new(32, source, dnd.status, [window, 1, 0, 0, dnd.copy]);
+                    conn.send_event(false, source, EventMask::NO_EVENT, status)?;
+                }
+                Event::ClientMessage(message) if message.type_ == dnd.drop => {
+                    let data = message.data.as_data32();
+                    dropped = Some((data[0], data[2]));
+                }
+                Event::ClientMessage(message) if message.type_ == dnd.enter => {}
                 _ => {}
             }
             if outcome != Outcome::Continue || homeward != crate::home::Outcome::Continue {
@@ -6133,9 +6150,45 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         if let Some(at) = motion {
             moved(&mut screen, at);
         }
+        // Files dropped: the paths asked for, the one who dropped them
+        // told it is done, and the pictures among them put on the
+        // canvas, or a new file begun with them on the projects; a file
+        // of the canvas dropped is opened.
+        let mut dropped_pictures = Vec::new();
+        if let Some((source, when)) = dropped.take() {
+            let words = selection(conn, window, dnd.selection, dnd.uris, atom("HOTSHOT_CANVAS")?, atom("INCR")?, when);
+            let finished = ClientMessageEvent::new(32, source, dnd.finished, [window, u32::from(words.is_some()), dnd.copy, 0, 0]);
+            conn.send_event(false, source, EventMask::NO_EVENT, finished)?;
+            let paths = words.map(|words| pasted_paths(&String::from_utf8_lossy(&words))).unwrap_or_default();
+            debug!("dropped {paths:?}");
+            let canvas_file = paths.iter().find(|path| path.extension().is_some_and(|ending| ending == "hotshot")).cloned();
+            dropped_pictures = paths.iter().filter(|path| crate::convert::reads(path)).filter_map(|path| Some((Image::open(&std::fs::read(path).ok()?)?, path.file_stem()?.to_string_lossy().into_owned()))).collect();
+            match &mut screen {
+                Shown::Studio(studio) => {
+                    for (image, name) in dropped_pictures.drain(..) {
+                        studio.add_picture(image, &name);
+                    }
+                    if let Some(path) = canvas_file {
+                        studio.open_next = Some(path);
+                        outcome = Outcome::Open;
+                    }
+                }
+                Shown::Home(_) => {
+                    if let Some(path) = canvas_file.filter(|_| dropped_pictures.is_empty()) {
+                        homeward = crate::home::Outcome::Open(path);
+                    }
+                }
+            }
+        }
         // Between the screens: a file opened or begun from the projects,
         // and the projects again from a file, which is kept first.
         screen = match (screen, homeward) {
+            (Shown::Home(home), _) if !dropped_pictures.is_empty() => {
+                let path = crate::home::fresh_file(&home.folder(), "Dropped");
+                let mut studio = opened(None, std::mem::take(&mut dropped_pictures), path, home.into_text(), size, options);
+                studio.save(false);
+                Shown::Studio(Box::new(studio))
+            }
             (Shown::Home(home), crate::home::Outcome::Open(path)) => {
                 let pages = std::fs::read(&path).ok().and_then(|bytes| read_pages(&bytes));
                 Shown::Studio(Box::new(opened(pages, Vec::new(), path, home.into_text(), size, options)))
@@ -6294,7 +6347,12 @@ fn framed(image: Image, name: &str) -> Doc {
 /// The file a copied path or URI names, from the first line of it that
 /// names one that is there.
 fn pasted_path(words: &str) -> Option<PathBuf> {
-    words.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).find_map(|line| {
+    pasted_paths(words).into_iter().next()
+}
+
+/// Every file a list of copied or dropped paths or URIs names that is there.
+fn pasted_paths(words: &str) -> Vec<PathBuf> {
+    words.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).filter_map(|line| {
         let path = match line.strip_prefix("file://") {
             Some(rest) => {
                 // Past the host, if one is said; and %20 and the rest put back.
@@ -6320,6 +6378,7 @@ fn pasted_path(words: &str) -> Option<PathBuf> {
         };
         path.is_file().then_some(path)
     })
+    .collect()
 }
 
 
@@ -6356,6 +6415,18 @@ fn stops_drawing(event: &x11rb::protocol::Event) -> bool {
         Event::XinputMotion(motion) => motion.valuator_mask.first().is_some_and(|mask| mask & !0b11 != 0) || motion.valuator_mask.iter().skip(1).any(|&mask| mask != 0) || motion.button_mask.first().is_some_and(|mask| mask & 0b100 != 0),
         _ => false,
     }
+}
+
+/// The atoms of XDND, by which files are dragged in from other programs.
+struct Dnd {
+    enter: u32,
+    position: u32,
+    status: u32,
+    drop: u32,
+    finished: u32,
+    selection: u32,
+    copy: u32,
+    uris: u32,
 }
 
 fn event_is_press(event: &x11rb::protocol::Event) -> bool {

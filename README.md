@@ -164,7 +164,8 @@ be, and `Ctrl+\` again, or the one button left at the top left, brings
 everything back.
 
 Pictures come from files given on the command line, from the clipboard
-(`Ctrl+V`), or from the screen (Capture, or `Ctrl+G`, which hides the
+(`Ctrl+V`), dropped from a file manager (on the projects, a new file
+begins with them; a `.hotshot` dropped opens), or from the screen (Capture, or `Ctrl+G`, which hides the
 window while you take one). Drag to move, drag a handle to resize
 (corners keep proportions unless Shift is held), and drag just outside a
 corner to rotate, in 15° steps with Shift, with how far shown by the
