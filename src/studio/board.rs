@@ -90,13 +90,22 @@ pub(super) struct Board {
     pub look: Look,
     /// Whether it guesses what comes next.
     pub guessing: bool,
+    /// The box whose sides show a dot each to pull an arrow out of, by its
+    /// layer: the one the pointer is over or near, or the one picked out.
+    pub dots_of: Option<usize>,
+    /// C pressed: the next key a color of the style bar.
+    pub coloring: bool,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, look: Look::Sketchy, guessing: true, dots_of: None, coloring: false }
     }
 }
+
+mod bar;
+mod dots;
+mod typing;
 
 /// Whether the last canvas switched to Board, kept in `canvas-mode` among
 /// hotshot's state, for a new file to begin as one.
@@ -387,24 +396,6 @@ impl Studio {
         }
     }
 
-    /// The parts of the style bar; none yet.
-    pub(super) fn press_style(&mut self, _ctl: Ctl) {}
-
-    pub(super) fn draw_style_control(&mut self, _canvas: &mut Canvas, _rect: Rect, _ctl: Ctl, _hovered: bool) {}
-
-    /// A key on a board, before Design's would take it: a letter takes up
-    /// one of its tools. Nothing, if it is not one of the board's.
-    pub(super) fn board_key(&mut self, lower: Key, mods: Mods) -> Option<Outcome> {
-        if mods.ctrl || mods.alt {
-            return None;
-        }
-        let Key::Char(letter) = lower else { return None };
-        if mods.shift {
-            return None;
-        }
-        let which = TOOLS.iter().position(|(_, key)| *key == letter)?;
-        Some(self.take_board_tool(which as u8))
-    }
 }
 
 /// A hand, for the tool that moves the board: a palm and four fingers.

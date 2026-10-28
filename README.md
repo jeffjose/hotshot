@@ -418,6 +418,39 @@ are alike. A box can be drawn as a box, a diamond or a sticky note,
 which is yellow on a soft shadow, with its words in the middle of it,
 wrapped to it.
 
+Draw a box and the caret is already in it: type its words. Enter, Esc
+or starting the next box ends the typing, Shift+Enter begins a new line,
+and an empty box simply stays empty. The box tool stays in hand, as
+boxes come in runs; once the last two drawn are the same size, a click
+without a drag makes the next that size, so a row of equal boxes is
+click, type, click, type. `V`, or before then a click on empty board,
+is back to the pointer. With a box picked out, typing replaces its
+words, as a spreadsheet's cell is typed over, and Enter types into them
+instead, the caret at the end; `C`, `F`, `D` on a note, `Shift+S` and
+`Shift+L` keep what they do. Double-click a box or an arrow to type
+into it, an arrow's words sitting across its middle on a patch of the
+paper; double-click empty board for a label.
+
+Hover a box and a dot shows on each side. Drag one out and let go on
+another box, and the two are joined by an arrow that goes from the side
+of one nearest the other, curving into it, as they move; let go on
+empty board, and a new box is made there, joined and typed into; click
+a dot and the new box goes the usual gap away that way. An arrow drawn
+with the arrow tool from one box to another is tied to both the same
+way, and to a picture at the point it is put down, to point at what is
+in it.
+
+A small bar of styles floats over what is picked out, rather than the
+panel: five line colors and five fills, as Excalidraw keeps them, no
+fill, Rough or Clean, how large the words are, a status dot for a box,
+and whether the board guesses what comes next. With nothing picked out
+and a tool in hand it sits over the tools, for the next shape. `C` and
+then `1` to `5` is a line color, `Q` `W` `E` `R` `T` a fill and `X` no
+fill. What was set last, the color, the fill, the look and the size of
+the words, carries on to the next shape drawn. A box let go a few
+pixels off a neighbor's line or gap slides onto it, with no guides
+drawn; hold Alt as it is let go to put it exactly where it is.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

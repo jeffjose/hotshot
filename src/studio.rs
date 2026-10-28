@@ -1555,6 +1555,9 @@ enum Drag {
     /// the one corner with `single`, or all of them; taken hold of `slack`
     /// further in than its radius.
     Radius { corner: usize, single: bool, slack: f32 },
+    /// A new arrow pulled out of a side of a box on a board, by its
+    /// dot, from the box by its layer: `moved` once it has gone anywhere.
+    Pull { from: usize, side: u8, moved: bool },
 }
 
 /// The last copy made, and what it was made from.
@@ -2016,6 +2019,8 @@ struct Layout {
     /// The window of what an export wrote.
     exported: Option<Rect>,
     menus: Vec<(Rect, MenuKind)>,
+    /// A board's bar of styles, by what is picked out.
+    board_bar: Option<Rect>,
 }
 
 /// The whole file as it was, to come back to with undo: its pages, the
@@ -2765,6 +2770,9 @@ impl Studio {
         self.layout_styles(&mut layout);
         self.layout_library(&mut layout);
         self.layout_search(&mut layout);
+        if self.on_board() {
+            self.layout_style_bar(&mut layout);
+        }
         self.layout_menus(&mut layout);
         layout
     }
@@ -3347,6 +3355,9 @@ impl Studio {
                 let stack = if self.over_page((x, y)) && over.is_none() && hovered.is_none() && hovered_page.is_none() && self.cropping.is_none() { self.stack_hover(at) } else { None };
                 self.dirty |= hovered != self.hovered || hovered_page != self.hovered_page || over != self.hover_shown || self.tool == Tool::Text || stack != self.stack_hovered;
                 (self.hovered, self.hovered_page, self.hover_shown, self.stack_hovered) = (hovered, hovered_page, over, stack);
+                if self.on_board() {
+                    self.board_hover((x, y), over.is_some());
+                }
             }
             Drag::NewFrame { .. } => self.dirty = true,
             Drag::MoveFrame { from, origin, moved, copy } => {
@@ -3408,7 +3419,14 @@ impl Studio {
                 }
                 // Snapped to the artboard and to the rest, but for along
                 // the way Shift holds it to, or with Ctrl held.
-                let (mut dx, mut dy) = if mods.ctrl { (dx.round(), dy.round()) } else { self.snap(dx.round(), dy.round()) };
+                // On a board, a soft settle: near enough is level, with no
+                // guides drawn; with Alt, exactly where it is.
+                let free = mods.ctrl || (self.on_board() && mods.alt);
+                let (mut dx, mut dy) = if free { (dx.round(), dy.round()) } else { self.snap(dx.round(), dy.round()) };
+                if self.on_board() {
+                    self.guides.clear();
+                    self.gaps.clear();
+                }
                 if mods.shift && (at.0 - from.0).abs() >= (at.1 - from.1).abs() {
                     dy = 0.0;
                 } else if mods.shift {
@@ -3456,6 +3474,7 @@ impl Studio {
             }
             Drag::Crop { pull, from } => self.crop_to(pull, from, at, mods),
             Drag::Radius { corner, single, slack } => self.drag_radius(corner, single, slack, at),
+            Drag::Pull { .. } => self.pull_moved(),
         }
     }
 
@@ -3583,6 +3602,9 @@ impl Studio {
                 return Outcome::Continue;
             }
             self.commit_text();
+        }
+        if self.on_board() && self.board_pressed(at, at_window, double) {
+            return Outcome::Continue;
         }
         match self.tool {
             Tool::Select => self.press_select(at, at_window, double),
@@ -4249,6 +4271,13 @@ impl Studio {
         self.fine_released();
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.dirty = true;
+        // On a board, what was drawn or pulled out is typed into.
+        if self.on_board() && self.board_released(drag) {
+            self.held.clear();
+            self.guides.clear();
+            self.gaps.clear();
+            return;
+        }
         // A handle, a crop or a number taken hold of and let go of where it
         // was leaves no step to undo that would undo nothing.
         if matches!(drag, Drag::Scale { .. } | Drag::Turn { .. } | Drag::Crop { .. } | Drag::Scrub { .. } | Drag::Radius { .. }) && self.version == self.pressed_at {
@@ -4317,6 +4346,9 @@ impl Studio {
             }
             Drag::Scale { .. } if !self.doc.stacks.is_empty() => self.changed(),
             _ => {}
+        }
+        if self.on_board() {
+            self.board_after_release(drag);
         }
         self.held.clear();
         self.guides.clear();
@@ -5293,6 +5325,11 @@ impl Studio {
             }
             return Outcome::Continue;
         }
+        if self.editing.is_some() && self.on_board() {
+            if let Some(outcome) = self.board_typing_key(key, mods) {
+                return outcome;
+            }
+        }
         // Text being typed.
         if let (Some(index), false) = (self.editing, mods.ctrl) {
             if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
@@ -5350,7 +5387,7 @@ impl Studio {
             other => other,
         };
         if self.on_board() {
-            if let Some(outcome) = self.board_key(lower, mods) {
+            if let Some(outcome) = self.board_key(key, lower, mods) {
                 return outcome;
             }
         }
@@ -5843,6 +5880,11 @@ impl Studio {
                         let widest = lines.iter().map(|line| line.width).max().unwrap_or(0);
                         lines.last().map_or((0, 0, Text::line_height(shape.font_px)), |last| (last.width + (widest - last.width) * i32::from(shape.align.min(2)) / 2, last.top, Text::line_height(last.px)))
                     }
+                    // A box's or an arrow's words, after the last of them.
+                    Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow => {
+                        let (x, y, high) = shape.label_caret(&mut self.text);
+                        (x.round() as i32 - place.x, y.round() as i32 - place.y, high)
+                    }
                     _ => {
                         let last = shape.text.rsplit('\n').next().unwrap_or("");
                         let line = Text::line_height(shape.font_px);
@@ -5866,6 +5908,10 @@ impl Studio {
         }
         // Fine-tune open: the frame split, the original against the
         // converted picture.
+        // What a board shows over everything on it.
+        if self.on_board() {
+            self.draw_board(&mut canvas, view);
+        }
         self.draw_split(&mut canvas, view);
         canvas.reset_clip();
         self.draw_rulers(&mut canvas);
@@ -6074,7 +6120,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar].into_iter().flatten() {
             soft_shadow(canvas, place, 12);
             canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);
