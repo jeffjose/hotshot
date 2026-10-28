@@ -713,19 +713,38 @@ fn crosses(a: Point, b: Point, frames: &[(f32, f32, f32, f32)]) -> bool {
 
 /// Where an arrow from a point inside a box of boxes goes out of it, to
 /// get to another point outside without going through what else is in
-/// it: straight out of its nearer side across the way the graph goes. Or
-/// nothing, where the straight way is clear, or no side is.
-fn way_out(from: Point, to: Point, group: (f32, f32, f32, f32), dir: Dir, frames: &[(f32, f32, f32, f32)]) -> Option<Point> {
+/// it: straight out of its nearer side across the way the graph goes,
+/// and round its corner there if the other point is not that side of it,
+/// the points it goes by from the inside out. Nothing where the straight
+/// way is clear, or no side is.
+fn way_out(from: Point, to: Point, group: (f32, f32, f32, f32), dir: Dir, frames: &[(f32, f32, f32, f32)]) -> Vec<Point> {
     if !crosses(from, to, frames) {
-        return None;
+        return Vec::new();
     }
     let (x, y, w, h) = group;
-    let mut sides = match dir.vertical() {
-        true => [(x - 16.0, from.1), (x + w + 16.0, from.1)],
-        false => [(from.0, y - 16.0), (from.0, y + h + 16.0)],
+    let room = 16.0;
+    // Each side: where it leaves through it, and whether the other point
+    // is past that side already, or which corner to go round to it.
+    let sides: [(Point, bool, Point); 2] = match dir.vertical() {
+        true => {
+            let corner_y = if to.1 < from.1 { y - room } else { y + h + room };
+            [((x - room, from.1), to.0 <= x - room, (x - room, corner_y)), ((x + w + room, from.1), to.0 >= x + w + room, (x + w + room, corner_y))]
+        }
+        false => {
+            let corner_x = if to.0 < from.0 { x - room } else { x + w + room };
+            [((from.0, y - room), to.1 <= y - room, (corner_x, y - room)), ((from.0, y + h + room), to.1 >= y + h + room, (corner_x, y + h + room))]
+        }
     };
-    sides.sort_by(|a, b| ((a.0 - to.0).abs() + (a.1 - to.1).abs()).total_cmp(&((b.0 - to.0).abs() + (b.1 - to.1).abs())));
-    sides.into_iter().find(|&side| !crosses(from, side, frames))
+    let length = |points: &[Point]| points.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1)).sum::<f32>();
+    sides
+        .into_iter()
+        .filter(|&(out, ..)| !crosses(from, out, frames))
+        .map(|(out, past, corner)| if past { vec![out] } else { vec![out, corner] })
+        .min_by(|a, b| {
+            let whole = |way: &Vec<Point>| length(&[&[from][..], way, &[to]].concat());
+            whole(a).total_cmp(&whole(b))
+        })
+        .unwrap_or_default()
 }
 
 /// The gaps a diagram's layers are laid out with: between boxes side by
@@ -847,15 +866,13 @@ impl Studio {
             let outermost = |round: &[usize]| round.iter().take_while(|&&group| Some(group) != scope).last().copied();
             if let Some(group) = outermost(&round_from) {
                 let next = way.first().copied().unwrap_or(pb);
-                if let Some(out) = way_out(pa, next, at_frame(placement.groups[group], shift), dir, &node_frames) {
-                    way.insert(0, out);
-                }
+                let out = way_out(pa, next, at_frame(placement.groups[group], shift), dir, &node_frames);
+                way.splice(0..0, out);
             }
             if let Some(group) = outermost(&round_to) {
                 let before = way.last().copied().unwrap_or(pa);
-                if let Some(out) = way_out(pb, before, at_frame(placement.groups[group], shift), dir, &node_frames) {
-                    way.push(out);
-                }
+                let out = way_out(pb, before, at_frame(placement.groups[group], shift), dir, &node_frames);
+                way.extend(out.into_iter().rev());
             }
             if let Some(shape) = self.shape_mut(arrow) {
                 shape.heads = [edge.heads[0].is_some(), edge.heads[1].is_some()];
