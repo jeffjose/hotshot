@@ -3889,7 +3889,10 @@ impl Studio {
         }
         // A name being typed.
         if let Some((_, typed)) = &mut self.renaming {
-            let whole = std::mem::take(&mut self.name_picked);
+            // Shift and the like come as keys of their own, and leave it
+            // picked out.
+            let whole = self.name_picked;
+            self.name_picked &= key == Key::Other;
             match key {
                 Key::Char(letter) if !mods.ctrl => {
                     if whole {
@@ -5898,6 +5901,8 @@ mod tests {
     fn a_name_renamed_is_typed_over_not_added_to() {
         let mut studio = studio();
         studio.press_control(Control::Page(0), true);
+        // Shift, held for the capital, comes first as a key of its own.
+        studio.key(Key::Other, Mods { shift: true, ..Mods::default() }, true);
         for letter in "Home".chars() {
             studio.key(Key::Char(letter), Mods::default(), true);
         }

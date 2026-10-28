@@ -427,7 +427,10 @@ impl Home {
     pub fn key(&mut self, key: Key, mods: Mods) -> Outcome {
         self.dirty = true;
         if let Some((path, typed)) = &mut self.renaming_file {
-            let whole = std::mem::take(&mut self.name_picked);
+            // Shift and the like come as keys of their own, and leave it
+            // picked out.
+            let whole = self.name_picked;
+            self.name_picked &= key == Key::Other;
             match key {
                 Key::Char(letter) if !mods.ctrl => {
                     if whole {
@@ -455,7 +458,10 @@ impl Home {
             return self.file_act(0);
         }
         if let Some((_, typed)) = &mut self.naming {
-            let whole = std::mem::take(&mut self.name_picked);
+            // Shift and the like come as keys of their own, and leave it
+            // picked out.
+            let whole = self.name_picked;
+            self.name_picked &= key == Key::Other;
             match key {
                 Key::Char(letter) if !mods.ctrl => {
                     if whole {
