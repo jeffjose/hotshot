@@ -3079,7 +3079,10 @@ impl Studio {
                 }
                 if double {
                     match &self.doc.layers[index].kind {
-                        Kind::Picture(_) => self.cropping = Some(index),
+                        // The double click that begins a crop is not half of
+                        // the next, or a third click quickly after it would
+                        // fit the crop at once.
+                        Kind::Picture(_) => (self.cropping, self.last_press.1) = (Some(index), (i32::MIN / 2, i32::MIN / 2)),
                         Kind::Shape(shape) if matches!(shape.tool, Tool::Text | Tool::Badge) => {
                             self.checkpoint();
                             self.edit_text(index);
@@ -7174,6 +7177,26 @@ mod tests {
         // A single press inside it takes hold of it as ever.
         studio.press_crop(0, (150.0, 150.0), false);
         assert!(matches!(studio.drag, Drag::Crop { pull: (0, 0), .. }));
+    }
+
+    #[test]
+    fn a_third_click_quickly_after_the_double_click_that_begins_a_crop_does_not_fit_it() {
+        let mut studio = cropping_a_card();
+        (studio.cropping, studio.held) = (None, Vec::new());
+        let at = studio.to_window((150.0, 150.0));
+        studio.pointer_moved(at.0, at.1, Mods::default());
+        for time in [1000, 1100] {
+            studio.pressed(1, time);
+            studio.released();
+        }
+        assert_eq!(studio.cropping, Some(0));
+        studio.pressed(1, 1200);
+        studio.released();
+        assert_eq!(crop_of(&studio), (0.0, 0.0, 400.0, 300.0), "the whole picture still");
+        // Two more, and that is a double click in the crop.
+        studio.pressed(1, 1300);
+        studio.released();
+        assert_eq!(crop_of(&studio), (100.0, 80.0, 200.0, 120.0));
     }
 
     #[test]
