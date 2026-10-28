@@ -4534,7 +4534,7 @@ impl Studio {
         let (width, height) = (self.width, self.height);
         let layout = self.layout();
         let view = layout.view;
-        out.iter_mut().for_each(|pixel| *pixel = VIEW_COLOR);
+        out.par_chunks_mut(1 << 16).for_each(|part| part.fill(VIEW_COLOR));
         // The page: dots on its ground, the frames on that, each over light
         // squares where it is see-through.
         let dots = 24;
@@ -4566,8 +4566,12 @@ impl Studio {
             }
             let at = |along: i32, start: i32, size: i32| (((along as f32 + 0.5) * by) as i32 - start).clamp(0, size - 1) as usize;
             let columns: Vec<usize> = (drawn.x..drawn.right()).map(|x| at(x - origin.0, part.x, part.w)).collect();
-            for y in drawn.y..drawn.bottom() {
-                let row = &mut out[(y * width + drawn.x) as usize..(y * width + drawn.right()) as usize];
+            // The rows shared out among the cores, as a 4K window has
+            // millions of pixels to go through.
+            let rows = &mut out[(drawn.y * width) as usize..(drawn.bottom() * width) as usize];
+            rows.par_chunks_mut(width as usize).enumerate().for_each(|(down, line)| {
+                let y = drawn.y + down as i32;
+                let row = &mut line[drawn.x as usize..drawn.right() as usize];
                 let from = &pixels[at(y - origin.1, part.y, part.h) * part.w as usize..][..part.w as usize];
                 let light_row = (y - origin.1) / 10;
                 for (step, (pixel, &column)) in row.iter_mut().zip(&columns).enumerate() {
@@ -4581,7 +4585,7 @@ impl Studio {
                         }
                     };
                 }
-            }
+            });
         }
         // Each frame's name over its corner; the one worked in, and the one
         // picked out, lit.
@@ -5555,7 +5559,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     debug!("canvas scrolls {}", if smooth.is_some() { "smoothly, by XInput 2.1" } else { "a notch at a time" });
     conn.flush()?;
 
-    let mut frame = vec![0u32; (width * height) as usize];
+    // The window's pixels, in memory shared with the server where it
+    // will have that, for them to be sent without going through the socket.
+    let mut frame = display.pixels((width * height) as usize);
     let (mut size, mut title, mut cursor) = ((width, height), String::new(), None::<crate::editor::Cursor>);
     let mut time = 0u32;
     let mut saved = std::time::Instant::now();
@@ -5689,7 +5695,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     let now = (i32::from(configured.width).max(place::MIN.0), i32::from(configured.height).max(place::MIN.1));
                     if now != size {
                         size = now;
-                        frame = vec![0u32; (now.0 * now.1) as usize];
+                        crate::x11::let_go(conn, std::mem::replace(&mut frame, display.pixels((now.0 * now.1) as usize)));
                         match &mut screen {
                             Shown::Home(home) => home.resize(now.0, now.1),
                             Shown::Studio(studio) => studio.resize(now.0, now.1),
@@ -5830,7 +5836,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     false
                 }),
             }
-            crate::x11::put(conn, window, gc, false, size.0, size.1, &frame)?;
+            crate::x11::put_shared(conn, window, gc, size.0, size.1, &frame)?;
         }
         conn.flush()?;
     }

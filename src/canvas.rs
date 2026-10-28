@@ -155,7 +155,11 @@ impl<'a> Canvas<'a> {
                 self.cover(px, py, color, (cover * f64::from(amount)) as u32);
             }
             for row in self.rows(x + inset, py, w - 2 * inset, 1) {
-                row.iter_mut().for_each(|pixel| *pixel = mix(*pixel, color, amount.min(256)));
+                // Solid, as a panel is: the color alone, with nothing to mix.
+                match amount >= 256 {
+                    true => row.fill(color & 0xFF_FFFF),
+                    false => row.iter_mut().for_each(|pixel| *pixel = mix(*pixel, color, amount)),
+                }
             }
         }
     }

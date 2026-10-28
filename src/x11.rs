@@ -158,6 +158,13 @@ impl Display {
         Buffer::Own(vec![0; len])
     }
 
+    /// So many pixels, for a window of the program's own: shared with the
+    /// server if it will have that, to be sent by `put_shared` without
+    /// going through the socket.
+    pub fn pixels(&self, len: usize) -> Buffer {
+        self.shared.then(|| self.share(len)).flatten().unwrap_or_else(|| Buffer::Own(vec![0; len]))
+    }
+
     fn share(&self, len: usize) -> Option<Buffer> {
         // SAFETY: a segment of `len` pixels is made and mapped; the
         // server is told of it, and it is marked to go once both let go.
@@ -784,6 +791,30 @@ impl Display {
             Some(letter) => Key::Char(letter),
             None => Key::Other,
         }
+    }
+}
+
+/// A window's pixels sent to it. Those from `Display::pixels` in memory
+/// shared with the server go from there, the server told to copy them
+/// and waited on until it has, so that nothing is drawn over them before;
+/// the rest through the socket, as `put` sends them.
+pub fn put_shared(conn: &RustConnection, window: Window, gc: Gcontext, width: i32, height: i32, pixels: &Buffer) -> Result<()> {
+    match pixels {
+        Buffer::Shared { segment, .. } => {
+            let (w, h) = (width as u16, height as u16);
+            conn.shm_put_image(window, gc, w, h, 0, 0, w, h, 0, 0, 24, Z_PIXMAP, false, *segment, 0)?;
+            conn.sync()?;
+            Ok(())
+        }
+        Buffer::Own(pixels) => put(conn, window, gc, false, width, height, pixels),
+    }
+}
+
+/// Pixels from `Display::pixels` given up: the server told to let go of
+/// the memory they share, and that let go of here.
+pub fn let_go(conn: &RustConnection, pixels: Buffer) {
+    if let Some(segment) = pixels.segment() {
+        let _ = conn.shm_detach(segment);
     }
 }
 
