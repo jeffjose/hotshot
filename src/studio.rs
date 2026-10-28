@@ -7094,6 +7094,25 @@ mod tests {
     }
 
     #[test]
+    fn a_color_right_clicked_copies_its_hex() {
+        let mut studio = studio();
+        let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (100.0, 100.0));
+        boxed.points[1] = (200.0, 200.0);
+        studio.doc.layers.push(Layer::shape(boxed));
+        studio.selected = vec![0];
+        // The color of what is picked out.
+        let field = studio.control_rect(Control::ColorField(Paint::Line)).expect("its color").center();
+        studio.right_click(field);
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Hex(0xE5484D)));
+        choose(&mut studio, "Copy hex");
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Copied #E5484D"));
+        // A color among several picked out has it too, under the rest.
+        studio.menu = Some(MenuState { kind: MenuKind::Color(0x3E63DD), at: (600, 300), sub: None });
+        choose(&mut studio, "Copy hex");
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Copied #3E63DD"));
+    }
+
+    #[test]
     fn a_gradient_goes_the_way_it_is_turned_and_is_kept() {
         let mut text = Text::load();
         let mut doc = Doc::new(200, 100);

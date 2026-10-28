@@ -312,7 +312,7 @@ pub struct Options {
     pub show: Option<PathBuf>,
     pub at: Option<(i32, i32)>,
     pub forget: bool,
-    /// A PNG in a file to put on the clipboard.
+    /// A PNG, or text, in a file to put on the clipboard.
     pub clip: Option<PathBuf>,
     /// A recording made of the area, not a picture taken of it: so
     /// many frames a second, as a file of some kind, for so long (or
@@ -494,7 +494,7 @@ fn apply(options: &mut Options, name: &str, value: &mut dyn FnMut() -> Result<St
         }
         "forget" => options.forget = true,
         // What is in a file, put on the clipboard: for a picture left
-        // on the screen to be copied from.
+        // on the screen to be copied from, or text from the canvas.
         "clip" => options.clip = Some(path(&value()?)),
         "record" => options.record = true,
         "fps" => {

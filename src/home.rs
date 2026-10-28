@@ -716,6 +716,7 @@ enum Act {
     NewFile,
     NewProject,
     Paste,
+    CopyPath,
 }
 
 /// A row of a menu: what it says, its keys and what it does; or a line
@@ -788,10 +789,10 @@ impl Home {
                         rows.push(Row::Entry(format!("Move to {name}"), "", Act::MoveTo(dir)));
                     }
                 }
-                rows.extend([Row::Rule, entry("Show in folder", "", Act::ShowFolder), Row::Rule, entry("Move to trash", "", Act::Trash)]);
+                rows.extend([Row::Rule, entry("Show in folder", "", Act::ShowFolder), entry("Copy path", "", Act::CopyPath), Row::Rule, entry("Move to trash", "", Act::Trash)]);
                 rows
             }
-            Some(Menu::Project(_)) => vec![entry("Open", "", Act::Open), entry("Rename", "Double-click", Act::Rename), entry("New file in it", "", Act::NewFileIn), Row::Rule, entry("Show in folder", "", Act::ShowFolder), Row::Rule, entry("Move to trash", "", Act::Trash)],
+            Some(Menu::Project(_)) => vec![entry("Open", "", Act::Open), entry("Rename", "Double-click", Act::Rename), entry("New file in it", "", Act::NewFileIn), Row::Rule, entry("Show in folder", "", Act::ShowFolder), entry("Copy path", "", Act::CopyPath), Row::Rule, entry("Move to trash", "", Act::Trash)],
             Some(Menu::Empty) => vec![entry("New file", "Ctrl N", Act::NewFile), entry("New project", "", Act::NewProject), Row::Rule, entry("Paste a picture", "Ctrl V", Act::Paste)],
         }
     }
@@ -830,6 +831,9 @@ impl Home {
             }
             (Menu::File(path), Act::ShowFolder) => show_folder(path.parent().unwrap_or(&path)),
             (Menu::Project(dir), Act::ShowFolder) => show_folder(&dir),
+            // Where it is, as text on the clipboard; tests leave the
+            // clipboard be.
+            (Menu::File(path) | Menu::Project(path), Act::CopyPath) if !cfg!(test) => drop(crate::clipboard::copy_text(&path.to_string_lossy())),
             (Menu::File(path), Act::Trash) => to_trash(&path),
             (Menu::Project(dir), Act::Trash) => {
                 to_trash(&dir);
@@ -1067,5 +1071,11 @@ mod tests {
         home.key(Key::Down, none);
         assert_eq!(home.key(Key::Enter, none), Outcome::Paste(home.folder()));
         assert!(home.file_menu.is_none() && home.menu_row.is_none());
+        // A file's menu, and a project's, copy where it is.
+        for menu in [Menu::File(std::env::temp_dir().join("Here.hotshot")), Menu::Project(library().join("Somewhere"))] {
+            home.file_menu = Some((menu, (600, 300)));
+            assert_eq!(home.file_act(row(&home, "Copy path")), Outcome::Continue);
+            assert!(home.file_menu.is_none());
+        }
     }
 }

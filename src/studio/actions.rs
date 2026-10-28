@@ -442,6 +442,8 @@ impl Studio {
                 Some(MenuKind::Frame(index))
             }
             Some(Control::ColorField(Paint::Recolor(color)) | Control::ColorOpen(color)) => Some(MenuKind::Color(color)),
+            // Any other color: its hex, to copy.
+            Some(Control::ColorField(paint)) => self.paint_color(paint).map(MenuKind::Hex),
             _ => None,
         };
         if let Some(kind) = kind {

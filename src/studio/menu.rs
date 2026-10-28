@@ -42,6 +42,8 @@ pub(super) enum MenuKind {
     Layer(usize),
     Frame(usize),
     Color(u32),
+    /// What can be done with any other color right clicked in the panel.
+    Hex(u32),
 }
 
 /// An open list: where it hangs from, and the one open beside it.
@@ -145,6 +147,8 @@ pub(super) enum Command {
     /// another in what is picked out.
     SelectColor(u32),
     ReplaceColor(u32),
+    /// A color put on the clipboard as hex, `#RRGGBB`.
+    CopyHex(u32),
 }
 
 /// The sizes a frame can be, by what each is for.
@@ -432,7 +436,8 @@ impl Studio {
                 Item::Rule,
                 do_("Delete frame", "Del", Command::DeleteFrame),
             ],
-            MenuKind::Color(color) => vec![do_("Select all with this color", "", Command::SelectColor(color)), do_("Replace color\u{2026}", "", Command::ReplaceColor(color))],
+            MenuKind::Color(color) => vec![do_("Select all with this color", "", Command::SelectColor(color)), do_("Replace color\u{2026}", "", Command::ReplaceColor(color)), Item::Rule, do_("Copy hex", "", Command::CopyHex(color))],
+            MenuKind::Hex(color) => vec![do_("Copy hex", "", Command::CopyHex(color))],
             MenuKind::Zoom => vec![
                 do_("Zoom in", "Ctrl +", Command::ZoomIn),
                 do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut),
@@ -827,6 +832,14 @@ impl Studio {
                     .collect();
             }
             Command::ReplaceColor(color) => self.open_picker(Paint::Recolor(color)),
+            Command::CopyHex(color) => {
+                let hex = format!("#{:06X}", color & 0xFF_FFFF);
+                // Tests say it, and leave the clipboard be.
+                match if cfg!(test) { Ok(()) } else { crate::clipboard::copy_text(&hex) } {
+                    Ok(()) => self.say(format!("Copied {hex}")),
+                    Err(error) => self.say(format!("Could not copy: {error}")),
+                }
+            }
         }
         Outcome::Continue
     }

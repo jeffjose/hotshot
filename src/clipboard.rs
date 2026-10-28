@@ -44,6 +44,31 @@ pub fn offer(display: Display, png: Vec<u8>) -> Result<()> {
     offer_all(display, vec![("image/png", png)])
 }
 
+/// Puts text on the clipboard, in each of the kinds programs ask text
+/// for by.
+pub fn offer_text(display: Display, text: &str) -> Result<()> {
+    let bytes = text.as_bytes().to_vec();
+    let kinds = ["UTF8_STRING", "text/plain;charset=utf-8", "text/plain", "STRING", "TEXT"];
+    offer_all(display, kinds.iter().map(|kind| (*kind, bytes.clone())).collect())
+}
+
+/// Text put on the clipboard from the canvas or the projects, which go
+/// on with other things: by a hotshot of its own, started to stay and
+/// hand it over, as a picture copied from the canvas is.
+pub fn copy_text(text: &str) -> std::result::Result<(), String> {
+    let dir = crate::output::state_file("pins").ok_or("there is nowhere to keep it")?;
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_nanos());
+    let file = dir.join(format!("{}-{stamp}-text.txt", std::process::id()));
+    std::fs::write(&file, text).map_err(|error| error.to_string())?;
+    crate::pin::again(&["--clip".as_ref(), file.as_os_str(), "--forget".as_ref()]).map_err(|error| error.to_string())
+}
+
+/// Whether what is in a file is a PNG, by how it begins; and so not text.
+pub fn is_png(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+}
+
 /// Puts something on the clipboard in each of the kinds it can be had
 /// as: whoever pastes says which it wants.
 fn offer_all(display: Display, kinds: Vec<(&str, Vec<u8>)>) -> Result<()> {

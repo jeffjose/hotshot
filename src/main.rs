@@ -194,11 +194,15 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // What is in a file, to the clipboard; and a picture in a file,
     // left on the screen: neither takes a picture of anything.
     if let Some(file) = &options.clip {
-        let png = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+        let bytes = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
         if options.forget {
             let _ = std::fs::remove_file(file);
         }
-        clipboard::offer(Display::open()?, png)?;
+        // A picture as a picture, and anything else as the text it is.
+        match clipboard::is_png(&bytes) {
+            true => clipboard::offer(Display::open()?, bytes)?,
+            false => clipboard::offer_text(Display::open()?, &String::from_utf8_lossy(&bytes))?,
+        }
         return Ok(ExitCode::SUCCESS);
     }
     // The canvas, in its own window.
