@@ -82,6 +82,15 @@ const DOCK_ROOM: i32 = 72;
 /// A trackpad's strokes come as parts of a notch, each zooming by as
 /// large a part of that, so that many small ones add up to the same.
 const WHEEL_STEP: f32 = 60.0;
+/// How far out and in the page zooms: 2% to 25600%, Figma's furthest in,
+/// where a pixel of a screenshot is 256 of the window's.
+const MIN_ZOOM: f32 = 0.02;
+const MAX_ZOOM: f32 = 256.0;
+/// How many pixels of the window a picture's pixel is shown as before it
+/// is drawn as a hard square, nearest its middle, to be looked at pixel
+/// by pixel; and before a faint grid shows between the page's pixels.
+const HARD_PIXELS: f32 = 8.0;
+const PIXEL_GRID: f32 = 16.0;
 const WHEEL_ZOOM: f32 = 1.15;
 
 /// How much larger so many notches of the wheel down make the page:
@@ -665,7 +674,7 @@ impl Doc {
         for (index, layer) in self.layers[..count.min(self.layers.len())].iter().enumerate().filter(|(_, layer)| !layer.hidden) {
             match &layer.kind {
                 Kind::Picture(picture) => draw_picture(&mut out, part, picture, times, text),
-                Kind::Shape(shape) if effects::changes_beneath(shape.tool) => self.change_beneath(index, &mut out, part, times, text),
+                Kind::Shape(shape) if effects::changes_beneath(shape.tool) => self.change_beneath_at_most(index, &mut out, part, times, text),
                 Kind::Shape(shape) => {
                     let mut shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
                     if (part.x, part.y) != (0, 0) {
@@ -1037,6 +1046,9 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
     let dark = picture.window == frame::Window::Terminal || (bar > 0.0 && frame::darkish(pixels, lw, lh));
     let bar_scale = bar / 30.0;
     let adjusted = picture.adjust != [0.0; 3];
+    // Each pixel of it shown as many: drawn as hard squares, as Figma
+    // shows a screenshot zoomed far in, rather than smoothed between.
+    let hard = (picture.w / cw.max(1e-3)).min(picture.h / ch.max(1e-3)) >= HARD_PIXELS;
     out[(area.y * wide) as usize..(area.bottom() * wide) as usize].par_chunks_mut(wide as usize).enumerate().for_each(|(row, line)| {
         let y = area.y + row as i32;
         for x in area.x..area.right() {
@@ -1068,7 +1080,10 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
                         v = 1.0 - v;
                     }
                     let (fx, fy) = ((cx + u * cw) * ratio_x - 0.5, (cy + v * ch) * ratio_y - 0.5);
-                    let mut color = sample(pixels, lw, lh, fx, fy);
+                    let mut color = match hard {
+                        true => pixels[((fy + 0.5).floor().clamp(0.0, (lh - 1) as f32) as i32 * lw + (fx + 0.5).floor().clamp(0.0, (lw - 1) as f32) as i32) as usize],
+                        false => sample(pixels, lw, lh, fx, fy),
+                    };
                     if adjusted {
                         color = adjust(color, picture.adjust);
                     }
@@ -1162,8 +1177,9 @@ fn draw_shape_shadow(out: &mut [u32], wide: i32, high: i32, shape: &Shape, drop:
     let (blur, spread) = (f32::from(drop.blur.max(0)), f32::from(drop.spread));
     let reach = (blur * 1.5 + spread.max(0.0)).ceil() as i32 + 2;
     let body = shape.bounds(text).inflate((shape.stroke * 3.0) as i32 + 8);
-    let sheet = body.inflate(reach);
-    // Only as much of it as could fall on the picture.
+    // Only as much of it as could fall on the picture, as far again round
+    // that as it is blurred: zoomed far in, a little of a large shadow.
+    let sheet = body.inflate(reach).intersect(Rect::new(-i32::from(drop.x), -i32::from(drop.y), wide, high).inflate(reach));
     let moved = Rect::new(sheet.x + i32::from(drop.x), sheet.y + i32::from(drop.y), sheet.w, sheet.h);
     if moved.intersect(Rect::new(0, 0, wide, high)).is_empty() || i64::from(sheet.w) * i64::from(sheet.h) > 16_000_000 {
         return;
@@ -2429,7 +2445,7 @@ impl Studio {
         let panel = Rect::new(self.width - INSET - RIGHT_W, INSET, RIGHT_W, self.height - 2 * INSET);
         layout.panels.push(panel);
         let (left, inner) = (panel.x + 14, panel.w - 28);
-        layout.controls.push((Rect::new(left - 4, panel.y + 10, 64, 30), Control::Zoom));
+        layout.controls.push((Rect::new(left - 4, panel.y + 10, 80, 30), Control::Zoom));
         layout.controls.push((Rect::new(self.side_button(1).x - 6 - 92, panel.y + 10, 92, 30), Control::Action(Action::Export)));
         layout.controls.push((Rect::new(left - 4, panel.y + 46, 70, 26), Control::Tab(0)));
         layout.controls.push((Rect::new(left + 70, panel.y + 46, 70, 26), Control::Tab(1)));
@@ -2546,7 +2562,7 @@ impl Studio {
     fn fit(&mut self) {
         let open = self.open_area();
         let (w, h) = (self.doc.width as f32, self.doc.height as f32);
-        self.zoom = (open.w as f32 * 0.86 / w).min(open.h as f32 * 0.86 / h).clamp(0.02, 8.0);
+        self.zoom = (open.w as f32 * 0.86 / w).min(open.h as f32 * 0.86 / h).clamp(MIN_ZOOM, MAX_ZOOM);
         let middle = (open.x as f32 + open.w as f32 / 2.0, open.y as f32 + open.h as f32 / 2.0);
         self.pan = (middle.0 - (self.doc.x + w / 2.0) * self.zoom, middle.1 - (self.doc.y + h / 2.0) * self.zoom);
         self.dirty = true;
@@ -2556,7 +2572,7 @@ impl Studio {
     /// the same point of the page.
     fn zoom_about(&mut self, times: f32, at: (i32, i32)) {
         let before = self.to_page(at);
-        self.zoom = (self.zoom * times).clamp(0.02, 16.0);
+        self.zoom = (self.zoom * times).clamp(MIN_ZOOM, MAX_ZOOM);
         self.pan = (at.0 as f32 + 0.5 - before.0 * self.zoom, at.1 as f32 + 0.5 - before.1 * self.zoom);
         self.dirty = true;
     }
@@ -4916,6 +4932,7 @@ impl Studio {
         // picked out, lit.
         let mut canvas = Canvas::new(out, width, height);
         canvas.set_clip(view);
+        self.draw_pixel_grid(&mut canvas, view);
         for (index, place, name) in self.frame_labels() {
             let color = if index == self.active && self.frame_picked { ACCENT_TEXT } else if index == self.active { TEXT_COLOR } else { DIM_TEXT_COLOR };
             let name = match self.renaming.clone() {
@@ -5039,6 +5056,36 @@ impl Studio {
         canvas.reset_clip();
         self.draw_rulers(&mut canvas);
         self.draw_panels(&mut canvas, &layout);
+    }
+
+    /// Zoomed far in, a faint grid between the pixels of the page over
+    /// each frame, as Figma draws one, to count them by.
+    fn draw_pixel_grid(&mut self, canvas: &mut Canvas, view: Rect) {
+        if self.zoom < PIXEL_GRID {
+            return;
+        }
+        for index in 0..self.frame_count() {
+            let frame = self.frame(index);
+            let (x0, y0, x1, y1) = (frame.x, frame.y, frame.x + frame.width as f32, frame.y + frame.height as f32);
+            let (a, b) = (self.to_window_page((x0, y0)), self.to_window_page((x1, y1)));
+            let area = Rect::new(a.0, a.1, b.0 - a.0, b.1 - a.1).intersect(view);
+            if area.is_empty() {
+                continue;
+            }
+            // The page's pixels whose edges are in what is seen.
+            let first = self.to_page((area.x, area.y));
+            let (from_x, from_y) = (first.0.ceil() as i64, first.1.ceil() as i64);
+            let mut x = from_x;
+            while let Some(at) = Some((x as f32 * self.zoom + self.pan.0).round() as i32).filter(|&at| at < area.right()) {
+                canvas.round_fill(at, area.y, 1, area.h, 0, 0x8A8A8A, 56);
+                x += 1;
+            }
+            let mut y = from_y;
+            while let Some(at) = Some((y as f32 * self.zoom + self.pan.1).round() as i32).filter(|&at| at < area.bottom()) {
+                canvas.round_fill(area.x, at, area.w, 1, 0, 0x8A8A8A, 56);
+                y += 1;
+            }
+        }
     }
 
     /// A layer's box, as Figma draws it: a box or an oval by its own
@@ -7214,24 +7261,85 @@ mod tests {
         studio.add_picture(checker(300, 200), "one");
         let mut boxed = Shape::new(Tool::Rect, 0xE5484D, 3.5, (500.0, 100.0));
         boxed.points[1] = (780.0, 580.0);
+        boxed.shadow = Some(frame::Layer { x: 0, y: 12, blur: 16, spread: 2, color: 0x6000_0000 });
         let mut arrow = Shape::new(Tool::Arrow, 0x3E63DD, 3.5, (20.0, 580.0));
         arrow.points[1] = (790.0, 10.0);
         let mut words = Shape::new(Tool::Text, 0x1A1A1A, 2.0, (700.0, 500.0));
-        words.text = "At the edge".into();
-        for shape in [boxed, arrow, words] {
+        words.text = "At the edge \u{1F600}".into();
+        let mut blur = Shape::new(Tool::Blur, 0x1A1A1A, 2.0, (40.0, 40.0));
+        blur.points[1] = (140.0, 120.0);
+        let mut lens = Shape::new(Tool::Zoom, 0x3E63DD, 3.5, (200.0, 300.0));
+        lens.points[1] = (260.0, 360.0);
+        lens.place_zoom();
+        let mut spot = Shape::new(Tool::Spotlight, 0x1A1A1A, 2.0, (320.0, 20.0));
+        spot.points[1] = (420.0, 90.0);
+        let mut pen = Shape::new(Tool::Pen, 0x3E63DD, 6.0, (100.0, 400.0));
+        pen.points.extend([(160.0, 430.0), (220.0, 390.0)]);
+        let counter = Shape::new(Tool::Counter, 0xE5484D, 3.5, (600.0, 60.0));
+        for shape in [boxed, arrow, words, blur, lens, spot, pen, counter] {
             studio.doc.layers.push(Layer::shape(shape));
         }
         studio.selected = vec![0, 1, 2, 3];
         let mut out = vec![0u32; 1776 * 1540];
         let ctrl = Mods { ctrl: true, ..Mods::default() };
-        for (at, turns, up) in [((1770, 10), 30, true), ((5, 1535), 40, false), ((900, 770), 30, true), ((1775, 1539), 50, false)] {
+        // Far enough in, every way, to reach Figma's furthest, 25600%, and
+        // drawn sharp there as well as while it moves.
+        for (at, turns, up) in [((1770, 10), 70, true), ((5, 1535), 80, false), ((900, 770), 70, true), ((700, 560), 4, true), ((1775, 1539), 20, false), ((1000, 300), 90, false)] {
             studio.pointer_moved(at.0, at.1, ctrl);
             for turn in 0..turns {
                 studio.mods.ctrl = true;
                 studio.pressed(if up { 4 } else { 5 }, turn);
                 studio.draw(&mut out);
             }
+            if at == (900, 770) {
+                assert_eq!(studio.zoom, MAX_ZOOM);
+            }
+            studio.moving = None;
+            studio.draw(&mut out);
         }
+        assert_eq!(studio.zoom, MIN_ZOOM);
+        // The menu's zooms, fit and Shift+1 from far in and far out.
+        for zoom in [MAX_ZOOM, MIN_ZOOM] {
+            studio.zoom = zoom;
+            studio.run_command(menu::Command::Zoom(25600));
+            studio.draw(&mut out);
+            studio.key(Key::Char('!'), Mods { shift: true, ..Mods::default() }, true);
+            studio.draw(&mut out);
+            studio.run_command(menu::Command::ZoomIn);
+            studio.draw(&mut out);
+        }
+    }
+
+    #[test]
+    fn a_picture_zoomed_far_in_is_drawn_as_hard_pixels_with_a_grid_between_them() {
+        let mut studio = studio();
+        studio.add_picture(Image::new(4, 4, (0..16).map(|at| if (at % 4 + at / 4) % 2 == 0 { 0xFFFF0000 } else { 0xFF0000FF }).collect()), "tiny");
+        let Kind::Picture(picture) = studio.doc.layers[0].kind.clone() else { panic!() };
+        let colors: Vec<u32> = picture.image.levels[0].2.clone();
+        // Drawn twenty times its size: every pixel one of its own.
+        let mut out = vec![0u32; 80 * 80];
+        let mut placed = picture.clone();
+        (placed.cx, placed.cy) = (2.0, 2.0);
+        draw_picture(&mut out, Rect::new(0, 0, 80, 80), &placed, 20.0, &mut studio.text);
+        assert!(out.iter().all(|pixel| colors.contains(pixel)), "nothing between its colors");
+        // Twice its size, smoothed between them as ever.
+        let mut out = vec![0u32; 8 * 8];
+        draw_picture(&mut out, Rect::new(0, 0, 8, 8), &placed, 2.0, &mut studio.text);
+        assert!(out.iter().any(|pixel| !colors.contains(pixel)));
+        // At 1600% and more, a grid between the page's pixels.
+        let shot = |studio: &mut Studio, zoom: f32| {
+            studio.zoom = zoom;
+            studio.pan = (300.0, 300.0);
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            // A row of the frame's white, away from the picture.
+            let y = (studio.to_window((10.0, 10.0)).1 + 3) as usize;
+            out[y * studio.width as usize + 400..y * studio.width as usize + 900].iter().filter(|pixel| **pixel & 0xFF_FFFF != 0xFFFFFF).count()
+        };
+        studio.doc.layers.clear();
+        studio.changed();
+        assert_eq!(shot(&mut studio, 8.0), 0);
+        assert!(shot(&mut studio, 20.0) >= 20);
     }
 
 

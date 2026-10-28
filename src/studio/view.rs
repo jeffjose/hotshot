@@ -65,7 +65,7 @@ impl Studio {
         self.go_to_page(view.page);
         self.activate(view.frame);
         if view.zoom > 0.0 {
-            self.zoom = view.zoom.clamp(0.02, 16.0);
+            self.zoom = view.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
             let middle = self.open_area().center();
             self.pan = (middle.0 as f32 + 0.5 - view.middle.0 * self.zoom, middle.1 as f32 + 0.5 - view.middle.1 * self.zoom);
             self.dirty = true;

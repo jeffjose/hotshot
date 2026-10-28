@@ -11,6 +11,23 @@ use rayon::prelude::*;
 use crate::canvas::{Canvas, Mask, Rect};
 use crate::text::{Look, Text};
 
+thread_local! {
+    /// What a shape being drawn can be seen in, which what it covers is
+    /// worked out no further than: a shape on the canvas zoomed far in is
+    /// many thousands of pixels across, a little of it in the window.
+    static SEEN: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
+}
+
+/// A rectangle a mask is worked out over, kept to what can be seen while
+/// a shape is drawn; and whether it was cut, which leaves it not to be
+/// kept for another drawing that may see more.
+fn seen_part(bounds: Rect) -> (Rect, bool) {
+    match SEEN.with(std::cell::Cell::get) {
+        Some(seen) if bounds.intersect(seen) != bounds => (bounds.intersect(seen), true),
+        _ => (bounds, false),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
     Select,
@@ -1327,6 +1344,7 @@ impl Shape {
             Tool::Rect | Tool::Ellipse if self.angle != 0.0 => turned_around(self.extent(), self.centre_of_frame(), self.angle),
             _ => self.extent(),
         };
+        let (bounds, cut) = seen_part(bounds);
         let mask = match self.tool {
             _ if self.sketched() => self.sketch_mask(bounds),
             Tool::Pen | Tool::Marker => {
@@ -1346,7 +1364,9 @@ impl Shape {
             }
         };
         let mask = Rc::new(mask);
-        *self.mask.borrow_mut() = Some(mask.clone());
+        if !cut {
+            *self.mask.borrow_mut() = Some(mask.clone());
+        }
         mask
     }
 
@@ -1357,20 +1377,23 @@ impl Shape {
             return mask.clone();
         }
         let grow = self.halo_width();
+        let (bounds, cut) = seen_part(self.extent());
         let mask = match self.sketched() {
             // Drawn by hand: its strokes, each made wider.
             true => {
                 let mut wide = self.clone();
                 (wide.stroke, wide.halo) = (self.stroke + 2.0 * grow, false);
-                wide.sketch_mask(self.extent())
+                wide.sketch_mask(bounds)
             }
             false => {
                 let outline = self.outline();
-                covered(self.extent(), move |x, y| outline.distance(x, y) - grow)
+                covered(bounds, move |x, y| outline.distance(x, y) - grow)
             }
         };
         let mask = Rc::new(mask);
-        *self.inside.borrow_mut() = Some(mask.clone());
+        if !cut {
+            *self.inside.borrow_mut() = Some(mask.clone());
+        }
         mask
     }
 
@@ -1479,9 +1502,12 @@ impl Shape {
             0.0 => self.extent(),
             angle => turned_around(self.extent(), self.centre_of_frame(), angle),
         };
+        let (bounds, cut) = seen_part(bounds);
         let outline = Outline { filled: true, stroke: 0.0, ..self.outline() };
         let mask = Rc::new(covered(bounds, move |x, y| outline.distance(x, y)));
-        *self.inside.borrow_mut() = Some(mask.clone());
+        if !cut {
+            *self.inside.borrow_mut() = Some(mask.clone());
+        }
         mask
     }
 
@@ -1506,6 +1532,14 @@ impl Shape {
     }
 
     pub fn draw(&self, canvas: &mut Canvas, text: &mut Text) {
+        // What it covers worked out only as far as the canvas, and a pixel
+        // round it for its edges.
+        let before = SEEN.with(|seen| seen.replace(Some(canvas.clip().inflate(2))));
+        self.draw_seen(canvas, text);
+        SEEN.with(|seen| seen.set(before));
+    }
+
+    fn draw_seen(&self, canvas: &mut Canvas, text: &mut Text) {
         match self.tool {
             // Words turned: drawn straight on a sheet of their own, and
             // the sheet laid down turned.
@@ -1576,7 +1610,7 @@ impl Shape {
                     }
                 };
                 for (from, to) in lines {
-                    let reach = Rect::spanning((from.0 as i32, from.1 as i32), (to.0 as i32, to.1 as i32)).inflate(thick + 2);
+                    let (reach, _) = seen_part(Rect::spanning((from.0 as i32, from.1 as i32), (to.0 as i32, to.1 as i32)).inflate(thick + 2));
                     let mut line = Mask { bounds: reach, alpha: vec![0; reach.w as usize * reach.h as usize] };
                     stamp(&mut line, from, to, self.stroke / 4.0 + 0.5);
                     canvas.mask(&line, self.color, 256);

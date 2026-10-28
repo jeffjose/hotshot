@@ -343,7 +343,7 @@ impl Studio {
         let boxes: Vec<_> = self.chosen().iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
         let Some((x, y, w, h)) = union(&boxes) else { return self.fit() };
         let open = self.open_area();
-        self.zoom = (open.w as f32 * 0.7 / w.max(1.0)).min(open.h as f32 * 0.7 / h.max(1.0)).clamp(0.02, 16.0);
+        self.zoom = (open.w as f32 * 0.7 / w.max(1.0)).min(open.h as f32 * 0.7 / h.max(1.0)).clamp(MIN_ZOOM, MAX_ZOOM);
         let middle = (open.x as f32 + open.w as f32 / 2.0, open.y as f32 + open.h as f32 / 2.0);
         self.pan = (middle.0 - (self.doc.x + x + w / 2.0) * self.zoom, middle.1 - (self.doc.y + y + h / 2.0) * self.zoom);
         self.dirty = true;

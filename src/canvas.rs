@@ -104,6 +104,11 @@ impl<'a> Canvas<'a> {
         self.clip = clip.intersect(Rect::new(0, 0, self.width, self.height));
     }
 
+    /// What may be drawn on: the buffer, or the rectangle of it set.
+    pub fn clip(&self) -> Rect {
+        self.clip
+    }
+
     pub fn reset_clip(&mut self) {
         self.clip = Rect::new(0, 0, self.width, self.height);
     }

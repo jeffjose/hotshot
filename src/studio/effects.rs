@@ -128,7 +128,39 @@ fn darkened(pixel: u32, amount: f32) -> u32 {
     ((shown * 255.0).round() as u32).min(255) << 24 | channel(16) | channel(8) | channel(0)
 }
 
+/// The largest a blur or a zoom is worked out at: zoomed further in, it
+/// is worked out at this and shown larger, or what it takes from under it
+/// would be millions of pixels at 25600%.
+const EFFECT_TIMES: f32 = 8.0;
+
 impl Doc {
+    /// The same as `change_beneath`, but a blur or a zoom wanted larger
+    /// than `EFFECT_TIMES` is worked out at that, over what is under it
+    /// drawn at that, and where it changes that it is laid over the part,
+    /// each pixel from the nearest of it. A spotlight, which takes nothing
+    /// from under it, is worked out at any size.
+    pub(super) fn change_beneath_at_most(&self, index: usize, out: &mut [u32], part: Rect, times: f32, text: &mut Text) {
+        let large = matches!(self.layers.get(index).map(|layer| &layer.kind), Some(Kind::Shape(shape)) if shape.tool != Tool::Spotlight);
+        if times <= EFFECT_TIMES || !large || part.is_empty() {
+            return self.change_beneath(index, out, part, times, text);
+        }
+        let by = times / EFFECT_TIMES;
+        let (left, top) = ((part.x as f32 / by).floor() as i32, (part.y as f32 / by).floor() as i32);
+        let small = Rect::new(left, top, (part.right() as f32 / by).ceil() as i32 - left + 1, (part.bottom() as f32 / by).ceil() as i32 - top + 1);
+        let before = self.render_under(index, EFFECT_TIMES, small, text);
+        let mut after = before.clone();
+        self.change_beneath(index, &mut after, small, EFFECT_TIMES, text);
+        let columns: Vec<usize> = (part.x..part.right()).map(|x| ((((x as f32 + 0.5) / by).floor() as i32 - small.x).clamp(0, small.w - 1)) as usize).collect();
+        out.par_chunks_mut(part.w as usize).enumerate().for_each(|(row, line)| {
+            let from = ((((part.y + row as i32) as f32 + 0.5) / by).floor() as i32 - small.y).clamp(0, small.h - 1) as usize * small.w as usize;
+            for (pixel, &column) in line.iter_mut().zip(&columns) {
+                if after[from + column] != before[from + column] {
+                    *pixel = after[from + column];
+                }
+            }
+        });
+    }
+
     /// A layer that changes what is under it, laid over the part of the
     /// frame drawn so far, `times` its size.
     pub(super) fn change_beneath(&self, index: usize, out: &mut [u32], part: Rect, times: f32, text: &mut Text) {

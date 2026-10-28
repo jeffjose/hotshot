@@ -191,7 +191,10 @@ lines clicked in, and again for the box round that.
 The markup tools draw over everything, with the
 same arrow heads, fills and sketched lines as the editor. Space or the
 middle button pans, Ctrl+scroll zooms, `Ctrl+0` fits the artboard and
-`Ctrl+1` shows it at 100%. Shift-click or drag a box to select several,
+`Ctrl+1` shows it at 100%. It zooms from 2% to 25600%, as far as
+Figma's; once a picture's pixel is eight of the screen's it is drawn as
+a hard square rather than smoothed, to look at a screenshot pixel by
+pixel, and from 1600% a faint grid shows between the pixels. Shift-click or drag a box to select several,
 and line them up from the panel. Things being moved snap to the edges
 and middles of the artboard and of each other, with a guide drawn where
 they do; hold Ctrl not to snap. Boxes, ovals and text keep their handles

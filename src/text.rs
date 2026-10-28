@@ -172,6 +172,11 @@ impl Default for Look {
 /// Which font an emoji is said to be in: none of the others, since it
 /// is no outline to be filled but a small picture in colors.
 const EMOJI: usize = usize::MAX - 16;
+/// The largest a letter is kept once made, and the largest an emoji is
+/// drawn: text on the canvas zoomed far in would otherwise be made, and
+/// kept, thousands of pixels high.
+const BIG_LETTER: u32 = 480;
+const BIG_EMOJI: u32 = 1024;
 
 /// Where the system's emoji usually are.
 const EMOJI_PATHS: &[&str] = &["/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", "/usr/share/fonts/noto/NotoColorEmoji.ttf", "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf", "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf"];
@@ -494,7 +499,7 @@ impl Text {
         while let Some(c) = letters.next() {
             let which = self.font_before(c, letters.peek().copied(), face);
             if which == EMOJI {
-                width += self.picture(c, px).map_or(0.0, |picture| picture.0 as f32 * 1.08);
+                width += self.picture(c, px.min(BIG_EMOJI)).map_or(0.0, |picture| picture.0 as f32 * 1.08);
                 continue;
             }
             width += self.font(which).map_or(0.0, |font| font.metrics(c, Self::size(which, px)).advance_width) + heavy as f32;
@@ -526,7 +531,7 @@ impl Text {
             // of the line, whatever color the words are in.
             let which = self.font_before(c, letters.peek().copied(), face);
             if which == EMOJI {
-                if let Some((wide, high, pixels)) = self.picture(c, px) {
+                if let Some((wide, high, pixels)) = self.picture(c, px.min(BIG_EMOJI)) {
                     let (left, top) = (pen.round() as i32, y + (Self::line_height(px) - high) / 2);
                     for (at, pixel) in pixels.iter().enumerate() {
                         canvas.blend(left + at as i32 % wide, top + at as i32 / wide, pixel & 0xFF_FFFF, (pixel >> 24) as u8);
@@ -535,12 +540,35 @@ impl Text {
                 }
                 continue;
             }
-            if !self.glyphs.contains_key(&(which, c, px)) {
-                let Some(font) = self.font(which) else { continue };
-                let glyph = font.rasterize(c, Self::size(which, px));
-                self.glyphs.insert((which, c, px), glyph);
+            // A letter wholly off what can be drawn on is passed over, not
+            // made: text on the canvas zoomed far in is drawn thousands of
+            // pixels high, a letter or two of it in the window.
+            let size = Self::size(which, px);
+            let Some(outline) = self.font(which).map(|font| font.metrics(c, size)) else { continue };
+            let room = crate::canvas::Rect::new(pen.floor() as i32 - 2 - (size * slant.abs()) as i32, y - Self::line_height(px), outline.advance_width.ceil() as i32 + outline.width as i32 + 4 + heavy + 2 * (size * slant.abs()) as i32, 3 * Self::line_height(px));
+            if room.intersect(canvas.clip()).is_empty() {
+                pen += outline.advance_width + heavy as f32;
+                continue;
             }
-            let (metrics, coverage) = &self.glyphs[&(which, c, px)];
+            // Letters that large are made each time rather than kept, or
+            // each step of a zoom would keep more of them.
+            let made;
+            let (metrics, coverage) = match px > BIG_LETTER {
+                true => {
+                    let Some(font) = self.font(which) else { continue };
+                    made = font.rasterize(c, size);
+                    (&made.0, &made.1)
+                }
+                false => {
+                    if !self.glyphs.contains_key(&(which, c, px)) {
+                        let Some(font) = self.font(which) else { continue };
+                        let glyph = font.rasterize(c, size);
+                        self.glyphs.insert((which, c, px), glyph);
+                    }
+                    let (metrics, coverage) = &self.glyphs[&(which, c, px)];
+                    (metrics, coverage)
+                }
+            };
             let left = pen.round() as i32 + metrics.xmin;
             // An icon sits in the middle of the line, whatever its font
             // takes for a baseline; letters stand on the text's.
