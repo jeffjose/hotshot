@@ -228,6 +228,21 @@ mod tests {
         let (top, bottom) = (studio.to_window_page((0.0, 230.0)).1, studio.to_window_page((0.0, 290.0)).1);
         let a = studio.to_window_page((0.0, 172.0)).1;
         assert!(bar.y >= bottom || (bar.bottom() <= top && bar.y >= a), "{bar:?} between {a} and {top}, or under {bottom}");
+        // A box inside another: the bar goes outside the one round it,
+        // where a click on that box is not taken by the bar.
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (500.0, 300.0), (560.0, 340.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let inner = studio.doc.layers.len() - 1;
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (300.0, 200.0), (800.0, 500.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected = vec![inner];
+        let layout = studio.layout();
+        let bar = layout.board_bar.unwrap();
+        let outer = Rect::spanning(studio.to_window_page((300.0, 200.0)), studio.to_window_page((800.0, 500.0)));
+        assert!(!bar.intersects(outer), "{bar:?} clear of {outer:?}");
     }
 
     #[test]

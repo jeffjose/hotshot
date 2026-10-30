@@ -76,11 +76,16 @@ impl Studio {
                     }).sum::<i32>()
                 };
                 let fits = |top: i32| top >= view.y + 40 && top + high <= view.bottom() - 4;
-                let top = match (fits(over), fits(under)) {
-                    (true, true) if covers(under) < covers(over) => under,
-                    (true, _) => over,
-                    _ => under,
-                };
+                // Then over or under each box round it, from the nearest out,
+                // as both of its own would be over the box it is in.
+                let mut holders: Vec<(f32, f32, f32, f32)> = styled.first().map(|&index| self.round(index)).unwrap_or_default().into_iter().filter_map(|id| self.index_of(id)).map(|index| self.box_frame(index)).collect();
+                holders.sort_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)));
+                let mut places = vec![over, under];
+                for (_, y, _, h) in holders {
+                    places.push(self.to_window((0.0, y)).1 - 30 - high);
+                    places.push(self.to_window((0.0, y + h)).1 + 30);
+                }
+                let top = places.iter().copied().filter(|&top| fits(top)).min_by_key(|&top| covers(top)).unwrap_or(under);
                 ((left + right) / 2, top)
             }
         };
