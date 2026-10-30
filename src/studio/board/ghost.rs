@@ -661,7 +661,7 @@ mod tests {
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 100.0), (240.0, 160.0), Mods::default());
         type_in(&mut studio, "Read");
-        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Enter, Mods::default());
         assert!(studio.board.ghost.is_none(), "one box is no pattern");
         pull(&mut studio, (300.0, 100.0), (440.0, 160.0), Mods::default());
         assert_eq!(kind(&studio), Some(Guess::Row), "a third waits at the same gap");
@@ -767,6 +767,7 @@ mod tests {
         type_in(&mut studio, "Build");
         assert_eq!(shape(&studio, 1).text, "Step 2 Build");
         press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 500.0), (240.0, 560.0), Mods::default());
         assert!(studio.board.ghost.as_ref().is_some_and(|ghost| ghost.label.is_some()));
         type_in(&mut studio, "Ship");

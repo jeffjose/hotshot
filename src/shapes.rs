@@ -1115,7 +1115,7 @@ impl Anchor {
 
     /// Where a line from its middle to a point leaves it, a little out
     /// from its edge.
-    fn edge_towards(&self, to: Point) -> Point {
+    pub fn edge_towards(&self, to: Point) -> Point {
         let (lx, ly) = turn_point(to, self.middle, -self.angle);
         let (dx, dy) = (lx - self.middle.0, ly - self.middle.1);
         let long = (dx * dx + dy * dy).sqrt();

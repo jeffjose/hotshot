@@ -131,9 +131,24 @@ impl Studio {
             Drag::None => {}
             _ => return None,
         }
-        if self.tool != Tool::Select || !self.over_page(at) || self.space || self.framing {
+        // A box typed into on a board is moved and sized whatever is in hand.
+        let typing = self.on_board() && self.editing.is_some();
+        if (self.tool != Tool::Select && !typing) || !self.over_page(at) || self.space || self.framing {
             return None;
         }
+        if let Some(cursor) = self.grip_cursor() {
+            return Some(cursor);
+        }
+        if self.on_board() {
+            return self.board_cursor();
+        }
+        None
+    }
+
+    /// The pointer over a handle of what is picked out, a side of it or
+    /// just outside a corner: the way it sizes or turns it.
+    pub(super) fn grip_cursor(&mut self) -> Option<Cursor> {
+        let at = self.pointer;
         // The dots that round corners keep the arrow.
         if self.radius_handles().iter().any(|(spot, _)| (spot.0 - at.0).abs() <= 5 && (spot.1 - at.1).abs() <= 5) {
             return None;

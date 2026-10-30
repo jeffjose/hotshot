@@ -553,7 +553,7 @@ mod tests {
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 100.0), (220.0, 160.0), Mods::default());
         type_in(&mut studio, "One");
-        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Enter, Mods::default());
         pull(&mut studio, (300.0, 100.0), (420.0, 160.0), Mods::default());
         type_in(&mut studio, "Two");
         press_key(&mut studio, Key::Escape, Mods::default());

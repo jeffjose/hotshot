@@ -58,7 +58,8 @@ impl Studio {
                 let corners: Vec<(i32, i32)> = styled.iter().flat_map(|&index| self.box_corners(index)).collect();
                 let (left, right) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.0).max().unwrap_or(0));
                 let (above, below) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
-                let top = if above - 14 - high >= view.y + 40 { above - 14 - high } else { below + 30 };
+                // Clear of the dots of its sides, which are pulled from.
+                let top = if above - 30 - high >= view.y + 40 { above - 30 - high } else { below + 30 };
                 ((left + right) / 2, top)
             }
         };

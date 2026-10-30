@@ -2584,6 +2584,15 @@ impl Studio {
         self.doc = std::mem::replace(slot(&mut self.pages[self.page], self.active), Doc::new(1, 1));
         self.selected.retain(|&index| index < self.doc.layers.len());
         (self.cropping, self.editing, self.repeat) = (None, None, None);
+        // What was being typed into when the step was taken is not now.
+        for layer in &mut self.doc.layers {
+            if let Kind::Shape(shape) = &mut layer.kind {
+                if shape.editing {
+                    shape.editing = false;
+                    shape.touch();
+                }
+            }
+        }
         self.frame_picked &= self.active != LOOSE;
         self.shown.clear();
         self.shown_page.clear();
@@ -3373,7 +3382,8 @@ impl Studio {
         match self.drag {
             Drag::Pan { .. } => return Cursor::Move,
             Drag::Turn { .. } => return Cursor::Turn,
-            Drag::Draw { .. } | Drag::Marquee { .. } | Drag::NewFrame { .. } => return Cursor::Crosshair,
+            Drag::Draw { .. } | Drag::Marquee { .. } | Drag::NewFrame { .. } | Drag::Pull { .. } => return Cursor::Crosshair,
+            Drag::Move { moved: true, .. } if self.on_board() => return Cursor::Move,
             Drag::MoveFrame { .. } => return Cursor::Move,
             Drag::Scrub { .. } => return Cursor::Across,
             _ => {}
@@ -3550,7 +3560,12 @@ impl Studio {
                 let chosen = self.chosen();
                 self.changed_layers(&chosen);
             }
-            Drag::Scale { pull, from } => self.scale_to(pull, from, at, mods),
+            Drag::Scale { pull, from } => {
+                self.scale_to(pull, from, at, mods);
+                if let (END, true, Some(index)) = (pull.0, self.on_board(), self.picked()) {
+                    self.bind_live(index, pull.1 as usize, at);
+                }
+            }
             Drag::Turn { about, began } => self.drag_turn(about, began, at, mods.shift),
             Drag::Draw { from } => {
                 let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.last_mut() else { return };
@@ -3567,8 +3582,14 @@ impl Studio {
                     }
                 }
                 shape.touch();
+                let sticks = shape.sticks();
                 let last = self.doc.layers.len() - 1;
                 self.changed_layers(&[last]);
+                // On a board, its head drawn to the edge of what it would
+                // be tied to.
+                if sticks && self.on_board() {
+                    self.bind_live(last, 1, at);
+                }
             }
             Drag::Marquee { .. } => self.dirty = true,
             Drag::Scrub { field, from, start } => {
@@ -3685,6 +3706,7 @@ impl Studio {
         }
         // On the page.
         self.commit_name();
+        self.board.typed = None;
         (self.palette, self.flyout) = (None, None);
         let off_everything = self.frame_at(self.to_page(at_window)).is_none() && self.page_layer_at(self.to_page(at_window)).is_none() && !self.near_selection(at_window);
         if self.space || self.tool == Tool::Select && self.mods.alt && off_everything {
@@ -3706,6 +3728,9 @@ impl Studio {
             return self.press_crop(index, at, double);
         }
         if let Some(index) = self.editing {
+            if self.on_board() && self.press_while_typing(index, at, at_window, double) {
+                return Outcome::Continue;
+            }
             if self.doc.layers[index].hit(at, &mut self.text) {
                 return Outcome::Continue;
             }
@@ -3762,6 +3787,10 @@ impl Studio {
                 self.doc.layers.push(Layer::shape(shape));
                 self.selected.clear();
                 self.drag = Drag::Draw { from: at };
+                // On a board, an arrow begun on or near a shape is tied to it.
+                if self.on_board() && matches!(tool, Tool::Arrow | Tool::Line) {
+                    self.bind_end(self.doc.layers.len() - 1, 0, at);
+                }
                 self.changed();
             }
         }
@@ -4378,6 +4407,7 @@ impl Studio {
         self.crop_window();
         self.fine_released();
         let drag = std::mem::replace(&mut self.drag, Drag::None);
+        self.board.bind = None;
         self.dirty = true;
         // On a board, what was drawn or pulled out is typed into.
         if self.on_board() && self.board_released(drag) {
@@ -5048,7 +5078,7 @@ impl Studio {
     /// Text taken to be typed into, by its layer: its headings show
     /// their hashes while it is.
     fn edit_text(&mut self, index: usize) {
-        (self.editing, self.words_picked) = (Some(index), false);
+        (self.editing, self.words_picked, self.board.type_step, self.board.typed) = (Some(index), false, false, None);
         if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
             shape.editing = true;
             shape.touch();
@@ -5477,6 +5507,11 @@ impl Studio {
                 _ => {}
             }
             return Outcome::Continue;
+        }
+        // A box moved or sized as it was typed into: what is typed after is
+        // a step of its own to undo, rather than undone with the move.
+        if self.editing.is_some() && !mods.ctrl && matches!(key, Key::Char(_) | Key::Backspace) && std::mem::take(&mut self.board.type_step) {
+            self.checkpoint();
         }
         if self.editing.is_some() && self.on_board() {
             if let Some(outcome) = self.board_typing_key(key, mods) {

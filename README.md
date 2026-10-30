@@ -445,18 +445,29 @@ last. A box can be drawn as a box, a diamond or a sticky note,
 which is yellow on a soft shadow, with its words in the middle of it,
 wrapped to it.
 
-Draw a box and the caret is already in it: type its words. Enter, Esc
-or starting the next box ends the typing, Shift+Enter begins a new line,
-and an empty box simply stays empty. The box tool stays in hand, as
-boxes come in runs; once the last two drawn are the same size, a click
-without a drag makes the next that size, so a row of equal boxes is
-click, type, click, type. `V`, or before then a click on empty board,
-is back to the pointer. With a box picked out, typing replaces its
-words, as a spreadsheet's cell is typed over, and Enter types into them
-instead, the caret at the end; `C`, `F`, `D` on a note, `Shift+S` and
-`Shift+L` keep what they do. Double-click a box or an arrow to type
-into it, an arrow's words sitting across its middle on a patch of the
-paper; double-click empty board for a label.
+Draw a box and the caret is already in it: type its words. Enter or
+starting the next box ends the typing, Shift+Enter begins a new line,
+and an empty box simply stays empty. While the caret is in it the box
+is still the box: drag it from anywhere inside to move it, or by a
+corner or a side to size it, and the caret stays, so the words can be
+typed before or after; a click on it without a drag leaves the caret
+where it was. The box tool stays in hand, as boxes come in runs; once
+the last two drawn are the same size, a click without a drag makes the
+next that size, so a row of equal boxes is click, type, Enter, click,
+type. Esc is done with it: the typing ends, the box is left picked out
+with the pointer in hand, to move or size, and a letter then takes up a
+tool rather than typing over what was just typed. `V`, or before then a
+click on empty board, is back to the pointer. With a box picked out by
+a click, typing replaces its words, as a spreadsheet's cell is typed
+over, and Enter types into them instead, the caret at the end; `C`,
+`F`, `D` on a note, `Shift+S` and `Shift+L` keep what they do. An arrow
+just drawn is picked out in the same way, a letter a tool and Enter its
+words. Double-click a box or an arrow to type into it, an arrow's words
+sitting across its middle on a patch of the paper; double-click empty
+board for a label. Over the board the pointer says what a press will
+do: the four arrows of a move over a shape, a two-headed arrow over a
+handle or a side, a cross over a dot or the middle of an arrow, which
+pull an arrow out.
 
 With the box tool in hand, the pointer over a box of the board, or over
 a part of a screenshot the edge finder sees as a box (a window, a pane,
@@ -464,14 +475,21 @@ a card, a button), outlines it at once; a click draws the new box
 exactly round it, and a drag still draws freely. Where boxes are nested
 and share edges, Alt goes out to the one round it, and round again.
 
-Hover a box and a dot shows on each side. Drag one out and let go on
-another box, and the two are joined by an arrow that goes from the side
-of one nearest the other, curving into it, as they move; let go on
+Hover a box, or near it, and a dot shows on each side; the box being
+typed into shows them too. Drag one out and let go on another box, or
+anywhere near it, and the two are joined by an arrow that goes from the
+side of one nearest the other, curving into it, as they move: while it
+is dragged, the box it would be tied to glows and the arrow is drawn to
+its edge. Within twenty pixels of a box is near enough, the nearest box
+wins, and a box inside another wins over the one round it; and where the
+new box would be made over a box, that box is what was meant. Let go on
 empty board, and a new box is made there, joined and typed into; click
 a dot and the new box goes the usual gap away that way. An arrow drawn
-with the arrow tool from one box to another is tied to both the same
-way, and to a picture at the point it is put down, to point at what is
-in it.
+with the arrow tool, begun on or near a box and let go on or near
+another, is tied to both the same way, the box glowing as it nears;
+let go on empty board, it simply ends there. It is tied to a picture at
+the point it is put down, to point at what is in it. Hold Ctrl as an
+end is let go to tie it to nothing.
 
 A small bar of styles floats over what is picked out, rather than the
 panel: five line colors and five fills, as Excalidraw keeps them, no
@@ -614,8 +632,9 @@ offered replaces it. The spark at the end of the bar of styles turns
 guessing off and on.
 
 Changing your mind is one gesture, and everything else stays as it
-was. Drag an arrow's head or tail onto another box and it is tied there
-instead, routed again. Drag from the middle of an arrow to branch it,
+was. Drag an arrow's head or tail onto or near another box and it is tied
+there instead, routed again; onto empty board, it is tied to nothing and
+ends there, straight. Drag from the middle of an arrow to branch it,
 "and it also goes there": let go on a box, and the box the arrow comes
 from is joined to it too; on empty board, to a new box there. Drop a
 box right on an arrow and it goes between its two ends, A to B becoming

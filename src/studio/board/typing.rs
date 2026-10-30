@@ -60,7 +60,10 @@ impl Studio {
         if self.tool != Tool::Select || self.space {
             return false;
         }
-        if self.press_dot(at_window) {
+        // A handle of what is picked out, an arrow's end among them, before
+        // a dot of the box it is at.
+        let on_handle = self.handles().iter().any(|&(spot, _)| (spot.0 - at_window.0).abs() <= 6 && (spot.1 - at_window.1).abs() <= 6);
+        if !on_handle && self.press_dot(at_window) {
             return true;
         }
         if !double {
@@ -119,9 +122,16 @@ impl Studio {
     /// what they are on, and the pointer back.
     fn board_drawn(&mut self, from: (f32, f32)) {
         let Some(index) = self.doc.layers.len().checked_sub(1) else { return };
+        let to = self.to_doc(self.pointer);
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return };
         let boxy = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
-        let (slight, sticky) = (shape.is_slight(), shape.form == shapes::FORM_STICKY);
+        // An arrow by how far it was dragged, as its tail may have gone to
+        // the edge of what it was begun near.
+        let slight = match shape.tool {
+            Tool::Arrow | Tool::Line => (to.0 - from.0).hypot(to.1 - from.1) * self.zoom < 3.0 || shape.is_slight(),
+            _ => shape.is_slight(),
+        };
+        let sticky = shape.form == shapes::FORM_STICKY;
         // A click on what the box tool outlines: a box exactly round it.
         if let (true, true, Some((x, y, w, h))) = (slight, boxy, self.picked_round(from)) {
             if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
@@ -153,10 +163,17 @@ impl Studio {
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return };
         match shape.tool {
             Tool::Rect | Tool::Ellipse => self.board_drawn_box(index),
+            // Its head tied to what it is let go on or near, where the
+            // pointer is; its tail was tied as it was pressed.
             Tool::Arrow | Tool::Line => {
                 self.selected = vec![index];
                 self.tool = Tool::Select;
-                self.board_stick(index, &[0, 1]);
+                let at = self.to_doc(self.pointer);
+                self.bind_end(index, 1, at);
+                // Picked out, a letter takes up a tool, as the next arrow
+                // is more likely than words on it; Enter writes on it.
+                self.board.typed = Some(index);
+                self.changed();
                 self.guess(true);
             }
             Tool::Pen | Tool::Marker => {
@@ -191,21 +208,47 @@ impl Studio {
     /// box as a whole, wherever on it, for the arrow to go from side to
     /// side as it moves; a picture at the point, to point at what is in it.
     pub(in crate::studio) fn board_stick(&mut self, index: usize, ends: &[usize]) {
-        self.stick(index, ends);
-        let boxes: Vec<u32> = self.doc.layers.iter().filter_map(|layer| match &layer.kind {
-            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge) => Some(shape.id),
-            _ => None,
-        }).collect();
-        if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
-            let same = shape.stuck[0].map(|(id, ..)| id) == shape.stuck[1].map(|(id, ..)| id);
-            for &end in ends {
-                if let Some((id, _, _)) = shape.stuck[end].filter(|(id, ..)| boxes.contains(id) && !same) {
-                    shape.stuck[end] = Some((id, shapes::WHOLE, shapes::WHOLE));
-                }
-            }
-            shape.routed = true;
+        for &end in ends {
+            let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return };
+            let at = shape.points[end];
+            self.bind_end(index, end, at);
         }
         self.changed();
+    }
+
+    /// A press on a board while a box's words are typed: on the box, or on
+    /// a handle of it, it is moved or sized as with the pointer, the caret
+    /// kept in it, so that a box can be put right before or after its words
+    /// are typed, as tldraw has it; a click on it without a move leaves the
+    /// caret as it was. A dot of its side pulls an arrow out of it, the
+    /// typing done. Whether the press was taken.
+    pub(in crate::studio) fn press_while_typing(&mut self, index: usize, at: (f32, f32), at_window: (i32, i32), double: bool) -> bool {
+        let movable = matches!(self.doc.layers.get(index), Some(Layer { kind: Kind::Shape(shape), .. }) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text));
+        if double || self.mods.shift || !movable {
+            return false;
+        }
+        if self.board.dots_of == Some(index) && self.press_dot(at_window) {
+            self.commit_text();
+            return true;
+        }
+        self.selected = vec![index];
+        let (x, y, w, h) = self.doc.layers[index].bounds(&mut self.text);
+        let top = self.layer_at(at);
+        let on = at.0 >= x && at.0 <= x + w && at.1 >= y && at.1 <= y + h && top.is_none_or(|top| top <= index);
+        let grip = self.grip_cursor().is_some();
+        if !on && !grip {
+            return false;
+        }
+        // With Alt, a copy is what moves: the typing is done first.
+        if self.mods.alt {
+            self.commit_text();
+        }
+        self.board.ghost = None;
+        self.press_select(at, at_window, false);
+        // A click without a move leaves the caret, and picks out nothing
+        // under the box.
+        self.under_press = None;
+        true
     }
 
     /// A key while a board's words are typed: Enter ends them, or with
@@ -241,6 +284,18 @@ impl Studio {
             }
             // Enter in a box of a map, the next one under it.
             Key::Enter if boxy && !mods.shift && self.add_sibling() => return Some(Outcome::Continue),
+            // Esc is done with it: the typing ended, it picked out, to move
+            // or size, and the pointer back in hand, as Excalidraw has it.
+            // Where the box tool was in hand, a letter next takes up a tool
+            // as it did, rather than typing over the words just typed.
+            // Enter keeps the box tool for the next.
+            Key::Escape => {
+                self.selected = vec![index];
+                self.commit_text();
+                self.board.typed = (self.tool != Tool::Select).then_some(index);
+                self.set_tool(Tool::Select);
+                return Some(Outcome::Continue);
+            }
             _ => {}
         }
         let picked = std::mem::take(&mut self.words_picked) && key != Key::Other;
@@ -291,9 +346,11 @@ impl Studio {
             return Some(Outcome::Continue);
         }
         // Typed over only with the pointer in hand: with the box tool, the
-        // box just drawn is picked out, and a letter takes up a tool.
+        // box just drawn is picked out, and a letter takes up a tool; so it
+        // does just after Esc ended the typing, as the words are done with.
         let picked = self.picked().filter(|&index| self.tool == Tool::Select && self.has_words(index));
-        if let (Some(index), Key::Char(letter)) = (picked, key) {
+        let done = picked.is_some() && picked == self.board.typed;
+        if let (Some(index), Key::Char(letter), false) = (picked, key, done) {
             if !self.keeps_key(index, letter) {
                 self.checkpoint();
                 if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
@@ -452,7 +509,7 @@ mod tests {
         assert!(bar.bottom() <= layout.dock.y);
         let fill = studio.control_rect(Control::Board(Ctl::Fill(1))).unwrap().center();
         click(&mut studio, fill);
-        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        pull(&mut studio, (100.0, 300.0), (260.0, 372.0), Mods::default());
         assert_eq!(shape(&studio, 0).fill, FILLS[1]);
         // Picked out, by it; C and a key colors it, and the next.
         press_key(&mut studio, Key::Escape, Mods::default());
@@ -468,6 +525,9 @@ mod tests {
         assert_eq!(studio.pages[0].look, 1);
         click(&mut studio, look);
         assert_eq!(studio.pages[0].look, 2);
+        // R takes up the box tool again, rather than typing over its words.
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        assert_eq!((studio.board_tool(), shape(&studio, 0).text.as_str()), (BOX_TOOL, ""));
         pull(&mut studio, (400.0, 100.0), (500.0, 200.0), Mods::default());
         let next = shape(&studio, 1);
         assert_eq!((next.color, next.fill), (STROKES[1], FILLS[1]));
@@ -478,7 +538,7 @@ mod tests {
         let mut studio = board();
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
-        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Enter, Mods::default());
         pull(&mut studio, (400.0, 300.0), (560.0, 372.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
         press_key(&mut studio, Key::Char('v'), Mods::default());
@@ -505,7 +565,7 @@ mod tests {
         let mut studio = board();
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
-        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Enter, Mods::default());
         pull(&mut studio, (600.0, 400.0), (760.0, 472.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
         press_key(&mut studio, Key::Char('v'), Mods::default());
@@ -580,5 +640,50 @@ mod tests {
         studio.released();
         type_in(&mut studio, "Note");
         assert_eq!((shape(&studio, 1).tool, shape(&studio, 1).text.as_str(), shape(&studio, 1).face), (Tool::Text, "Note", LETTERING));
+    }
+
+    #[test]
+    fn a_box_being_typed_into_is_moved_and_sized_the_caret_kept_and_esc_leaves_it_picked_out() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        type_in(&mut studio, "Hel");
+        // Dragged from inside, the box tool still in hand: moved, typing on.
+        pull(&mut studio, (180.0, 136.0), (380.0, 336.0), Mods::default());
+        assert!((shape(&studio, 0).frame().0 - 300.0).abs() < 1.0 && (shape(&studio, 0).frame().1 - 300.0).abs() < 1.0);
+        assert_eq!((studio.editing, studio.doc.layers.len(), studio.board_tool()), (Some(0), 1, BOX_TOOL));
+        type_in(&mut studio, "lo");
+        assert_eq!(shape(&studio, 0).text, "Hello");
+        // A click on it without a move leaves the caret where it was.
+        tap(&mut studio, (380.0, 336.0));
+        assert_eq!((studio.editing, studio.doc.layers.len()), (Some(0), 1));
+        // Its corner pulled: larger, still typed into.
+        let corner = studio.to_window_page((460.0, 372.0));
+        let far = studio.to_window_page((520.0, 420.0));
+        studio.pointer_moved(corner.0, corner.1, Mods::default());
+        assert!(matches!(studio.cursor(), Cursor::Falling), "the pointer says it sizes");
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.pointer_moved(far.0 - 10, far.1 - 10, Mods::default());
+        studio.pointer_moved(far.0, far.1, Mods::default());
+        studio.released();
+        assert!((shape(&studio, 0).frame().2 - 220.0).abs() < 1.5 && (shape(&studio, 0).frame().3 - 120.0).abs() < 1.5 && studio.editing == Some(0), "{:?}", shape(&studio, 0).frame());
+        // Each a step to undo: the size, then the letters after the move,
+        // then the move.
+        studio.undo();
+        assert!((shape(&studio, 0).frame().2 - 160.0).abs() < 1.5 && shape(&studio, 0).text == "Hello" && !shape(&studio, 0).editing);
+        studio.undo();
+        assert!((shape(&studio, 0).frame().0 - 300.0).abs() < 1.0 && shape(&studio, 0).text == "Hel");
+        studio.undo();
+        assert!((shape(&studio, 0).frame().0 - 100.0).abs() < 1.0);
+        // Esc is done with it: picked out, the pointer in hand, and dragged
+        // it moves; a letter then takes up a tool rather than typing over.
+        studio.redo();
+        studio.redo();
+        studio.edit_text(0);
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert_eq!((studio.editing, studio.selected.clone(), studio.board_tool()), (None, vec![0], SELECT));
+        press_key(&mut studio, Key::Char('o'), Mods::default());
+        assert_eq!((studio.board_tool(), shape(&studio, 0).text.as_str()), (OVAL, "Hello"));
     }
 }

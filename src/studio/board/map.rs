@@ -412,7 +412,7 @@ mod tests {
             type_in(&mut studio, words);
         }
         // A box on its own, which tidying leaves alone.
-        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Enter, Mods::default());
         pull(&mut studio, (100.0, 700.0), (200.0, 740.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
         let alone = shape(&studio, 4).frame();

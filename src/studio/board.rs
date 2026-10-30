@@ -125,15 +125,24 @@ pub(super) struct Board {
     pub level: f32,
     /// Whether the pen neatens what it draws: off until asked for.
     pub neaten: bool,
+    /// What the end of an arrow being dragged would be tied to, glowing.
+    pub bind: Option<usize>,
+    /// A box typed into was moved or sized: the next letter typed is a
+    /// step of its own to undo.
+    pub type_step: bool,
+    /// Esc has just ended the typing of the box picked out: a letter is a
+    /// tool's, not typed over its words.
+    pub typed: Option<usize>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, type_step: false, typed: None }
     }
 }
 
 mod bar;
+mod bind;
 mod dots;
 mod nest;
 mod map;

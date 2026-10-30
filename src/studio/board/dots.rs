@@ -9,7 +9,7 @@ use super::*;
 /// How far out from a side its dot is, and how near it a press takes it,
 /// in pixels of the window.
 const OUT: i32 = 14;
-const NEAR: i32 = 9;
+const NEAR: i32 = 12;
 /// How far the next box goes from one, across and down.
 pub(in crate::studio) const GAP_ACROSS: f32 = 80.0;
 pub(in crate::studio) const GAP_DOWN: f32 = 48.0;
@@ -47,30 +47,64 @@ impl Studio {
             return self.history_at(at.0);
         }
         self.hover_pick(at, over_control);
-        let shows = self.tool == Tool::Select && !self.space && !over_control && self.editing.is_none();
+        let shows = !self.space && !over_control;
+        // Out as far as its dots and a little more: near enough to show them.
         let near = |studio: &Studio, index: usize| {
             let spots = studio.dot_spots(index);
             let (left, right) = (spots[3].0 - NEAR, spots[1].0 + NEAR);
             let (top, bottom) = (spots[0].1 - NEAR, spots[2].1 + NEAR);
             (left..=right).contains(&at.0) && (top..=bottom).contains(&at.1)
         };
-        let kept = self.board.dots_of.filter(|&index| shows && self.is_box(index) && near(self, index));
-        // A box under the pointer by its frame, hollow or not: the smallest.
-        let page = self.to_doc(at);
-        let under = (0..self.doc.layers.len()).filter(|&index| self.is_box(index) && !self.doc.layers[index].hidden).filter(|&index| {
-            let (x, y, w, h) = self.box_frame(index);
-            page.0 >= x && page.0 <= x + w && page.1 >= y && page.1 <= y + h
-        }).min_by(|&a, &b| (self.box_frame(a).2 * self.box_frame(a).3).total_cmp(&(self.box_frame(b).2 * self.box_frame(b).3)));
-        let now = kept.or_else(|| under.filter(|_| shows)).or_else(|| self.picked().filter(|&index| shows && self.is_box(index)));
+        let kept = self.board.dots_of.filter(|&index| shows && self.dots_show(index) && near(self, index));
+        // A box the pointer is over or near, hollow or not: the smallest.
+        let under = (0..self.doc.layers.len()).filter(|&index| self.dots_show(index) && !self.doc.layers[index].hidden && near(self, index)).min_by(|&a, &b| (self.box_frame(a).2 * self.box_frame(a).3).total_cmp(&(self.box_frame(b).2 * self.box_frame(b).3)));
+        let now = kept.or_else(|| under.filter(|_| shows)).or_else(|| self.picked().filter(|&index| shows && self.dots_show(index)));
         if now != self.board.dots_of {
             self.board.dots_of = now;
             self.dirty = true;
         }
     }
 
+    /// Whether a box's dots are to be shown: with the pointer in hand and
+    /// nothing typed, or on the box being typed into, whatever is in hand.
+    pub(in crate::studio) fn dots_show(&self, index: usize) -> bool {
+        self.is_box(index) && !self.space && match self.editing {
+            Some(editing) => editing == index,
+            None => self.tool == Tool::Select,
+        }
+    }
+
+    /// The pointer on a board for what a press there would do, past the
+    /// handles: on a dot, or the middle of an arrow, the cross an arrow is
+    /// pulled out with; on a shape, or the box being typed into, the move.
+    pub(in crate::studio) fn board_cursor(&mut self) -> Option<Cursor> {
+        let at = self.pointer;
+        if self.control_at(at).is_some() {
+            return None;
+        }
+        if let Some(index) = self.board.dots_of.filter(|&index| self.dots_show(index)) {
+            if self.dot_spots(index).iter().any(|spot| (spot.0 - at.0).abs() <= NEAR && (spot.1 - at.1).abs() <= NEAR) {
+                return Some(Cursor::Crosshair);
+            }
+        }
+        let page = self.to_doc(at);
+        if let Some(index) = self.editing {
+            let (x, y, w, h) = self.doc.layers[index].bounds(&mut self.text);
+            let on = page.0 >= x && page.0 <= x + w && page.1 >= y && page.1 <= y + h && self.layer_at(page).is_none_or(|top| top <= index);
+            return on.then_some(Cursor::Move);
+        }
+        if self.tool != Tool::Select {
+            return None;
+        }
+        if self.arrow_middle_at(at).is_some() {
+            return Some(Cursor::Crosshair);
+        }
+        self.layer_at(page).is_some().then_some(Cursor::Move)
+    }
+
     /// A press on a dot of a box's side: an arrow begun out of it.
     pub(in crate::studio) fn press_dot(&mut self, at: (i32, i32)) -> bool {
-        let Some(index) = self.board.dots_of.filter(|&index| self.is_box(index)) else { return false };
+        let Some(index) = self.board.dots_of.filter(|&index| self.dots_show(index)) else { return false };
         let spots = self.dot_spots(index);
         let Some(side) = spots.iter().position(|spot| (spot.0 - at.0).abs() <= NEAR && (spot.1 - at.1).abs() <= NEAR) else { return false };
         self.drag = Drag::Pull { from: index, side: side as u8, moved: false };
@@ -86,16 +120,40 @@ impl Studio {
                 self.drag = Drag::Pull { from, side, moved: true };
             }
         }
+        if let Drag::Pull { from, moved: true, .. } = self.drag {
+            self.board.bind = self.pulled_onto(from);
+        }
         self.dirty = true;
     }
 
-    /// The box an arrow pulled out would be let go on, but the one it is
-    /// pulled out of.
+    /// The box an arrow pulled out would be let go on or near, but the one
+    /// it is pulled out of and those round that.
     fn pulled_onto(&mut self, from: usize) -> Option<usize> {
+        if from >= self.doc.layers.len() {
+            return None;
+        }
         let at = self.to_doc(self.pointer);
-        (0..self.doc.layers.len()).rev().find(|&index| index != from && self.is_box(index) && !self.doc.layers[index].hidden && {
-            let (x, y, w, h) = self.box_frame(index);
-            at.0 >= x && at.0 <= x + w && at.1 >= y && at.1 <= y + h
+        let mut skip = self.round(from);
+        skip.push(self.id_of(from));
+        if let Some(onto) = self.bind_target(at, &skip, true) {
+            return Some(onto);
+        }
+        // Nor is a new box made over another: the box it would be made on
+        // is what it was meant for, the one nearest the pointer.
+        if self.mods.ctrl {
+            return None;
+        }
+        let (_, _, w, h) = self.box_frame(from);
+        let made = (at.0 - w / 2.0, at.1 - h / 2.0, w, h);
+        // How far the pointer is from a box, and how large it is, for the
+        // smaller of two as near.
+        let away = |f: (f32, f32, f32, f32)| ((at.0 - at.0.clamp(f.0, f.0 + f.2)).hypot(at.1 - at.1.clamp(f.1, f.1 + f.3)), f.2 * f.3);
+        (0..self.doc.layers.len()).filter(|&index| self.is_box(index) && !self.doc.layers[index].hidden && !skip.contains(&self.id_of(index))).filter(|&index| {
+            let f = self.box_frame(index);
+            f.0 < made.0 + made.2 && f.0 + f.2 > made.0 && f.1 < made.1 + made.3 && f.1 + f.3 > made.1
+        }).min_by(|&a, &b| {
+            let (a, b) = (away(self.box_frame(a)), away(self.box_frame(b)));
+            a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
         })
     }
 
@@ -186,13 +244,14 @@ impl Studio {
         if let Drag::Pull { from, side, moved: true } = self.drag {
             if from < self.doc.layers.len() {
                 let spot = self.pull_start(from, side);
-                let onto = self.pulled_onto(from);
+                let onto = self.board.bind.filter(|&index| self.is_box(index));
                 let to = match onto {
+                    // To the edge of the box it would be tied to, which glows.
                     Some(index) => {
-                        let (x, y, w, h) = self.box_frame(index);
-                        let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
-                        canvas.round_outline(a.0 - 3, a.1 - 3, b.0 - a.0 + 6, b.1 - a.1 + 6, 6, 2, ACCENT);
-                        self.pointer
+                        let anchor = self.doc.layers[index].kind.clone().anchor_of(&mut self.text);
+                        let edge = anchor.map_or(self.to_doc(self.pointer), |anchor| anchor.edge_towards(self.to_doc(spot)));
+                        self.draw_bind(canvas);
+                        self.to_window(edge)
                     }
                     None => {
                         let (_, _, w, h) = self.box_frame(from);
@@ -206,12 +265,15 @@ impl Studio {
                 }
             }
         }
+        if matches!(self.drag, Drag::Draw { .. } | Drag::Scale { .. }) {
+            self.draw_bind(canvas);
+        }
         self.draw_ghost(canvas);
         self.draw_pick(canvas);
         self.draw_drop(canvas);
         self.draw_laser(canvas);
         if self.drag == Drag::None {
-            if let Some(index) = self.board.dots_of.filter(|&index| self.is_box(index)) {
+            if let Some(index) = self.board.dots_of.filter(|&index| self.dots_show(index)) {
                 for spot in self.dot_spots(index) {
                     canvas.disc(spot.0, spot.1, 6, ACCENT, 220);
                     canvas.disc(spot.0, spot.1, 2, 0xFFFFFF, 256);
@@ -226,10 +288,26 @@ impl Studio {
         if let Some(history) = &mut self.board.history {
             history.sliding = false;
         }
+        self.board.bind = None;
+        // A box moved or sized as it is typed into: what is typed next is a
+        // step of its own.
+        // Whether the pointer went anywhere from where it was pressed.
+        let now = self.to_doc(self.pointer);
+        let changed = match drag {
+            Drag::Move { moved, .. } => moved,
+            Drag::Scale { from, .. } => (now.0 - from.0).hypot(now.1 - from.1) * self.zoom >= 3.0,
+            _ => false,
+        };
+        if self.editing.is_some() && changed {
+            self.board.type_step = true;
+        }
         match drag {
+            // Tied to what it is let go on or near, where the pointer is.
             Drag::Scale { pull, .. } if pull.0 == END => {
-                if let Some(index) = self.picked() {
-                    self.board_stick(index, &[pull.1 as usize]);
+                if let Some(index) = self.picked().filter(|_| changed) {
+                    let at = self.to_doc(self.pointer);
+                    self.bind_end(index, pull.1 as usize, at);
+                    self.changed();
                 }
             }
             // A box sized by hand is that size from now on, its words
