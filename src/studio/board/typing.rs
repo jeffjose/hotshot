@@ -227,7 +227,7 @@ impl Studio {
         if double || self.mods.shift || !movable {
             return false;
         }
-        if self.board.dots_of == Some(index) && self.press_dot(at_window) {
+        if self.dots_now(at_window, false) == Some(index) && self.press_dot(at_window) {
             self.commit_text();
             return true;
         }
@@ -239,14 +239,18 @@ impl Studio {
         if !on && !grip {
             return false;
         }
+        // On its words, the caret there, and a drag picks words out.
+        if !grip && !self.mods.alt && self.press_words(at) {
+            return true;
+        }
         // With Alt, a copy is what moves: the typing is done first.
         if self.mods.alt {
             self.commit_text();
         }
         self.board.ghost = None;
         self.press_select(at, at_window, false);
-        // A click without a move leaves the caret, and picks out nothing
-        // under the box.
+        // A click without a move puts the caret at the end of the words,
+        // and picks out nothing under the box.
         self.under_press = None;
         true
     }
@@ -262,7 +266,7 @@ impl Studio {
             return Some(Outcome::Continue).filter(|_| self.list_to_map(index));
         }
         let worded = matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow);
-        if !worded || mods.ctrl {
+        if !worded || (mods.ctrl && key != Key::Backspace) {
             return None;
         }
         // Tab, a child joined to it; Shift+Tab, back to its parent.
@@ -299,26 +303,13 @@ impl Studio {
             _ => {}
         }
         let picked = std::mem::take(&mut self.words_picked) && key != Key::Other;
-        let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return None };
-        match key {
-            Key::Enter if mods.shift => shape.text.push('\n'),
-            Key::Enter => {
-                self.commit_text();
-                return Some(Outcome::Continue);
-            }
-            Key::Char(letter) => {
-                if picked {
-                    shape.text.clear();
-                }
-                shape.text.push(letter);
-            }
-            Key::Backspace if picked => shape.text.clear(),
-            Key::Backspace => drop(shape.text.pop()),
-            _ => return None,
+        if key == Key::Enter && !mods.shift {
+            self.commit_text();
+            return Some(Outcome::Continue);
         }
-        shape.touch();
-        self.words_changed(index);
-        Some(Outcome::Continue)
+        // At the caret, over what is picked out.
+        let over = picked && matches!(key, Key::Char(_) | Key::Backspace);
+        Some(Outcome::Continue).filter(|_| self.caret_key(key, mods, over))
     }
 
     /// A box's words changed as they are typed.
@@ -648,8 +639,9 @@ mod tests {
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
         type_in(&mut studio, "Hel");
-        // Dragged from inside, the box tool still in hand: moved, typing on.
-        pull(&mut studio, (180.0, 136.0), (380.0, 336.0), Mods::default());
+        // Dragged from inside, off its words, the box tool still in hand:
+        // moved, typing on.
+        pull(&mut studio, (120.0, 110.0), (320.0, 310.0), Mods::default());
         assert!((shape(&studio, 0).frame().0 - 300.0).abs() < 1.0 && (shape(&studio, 0).frame().1 - 300.0).abs() < 1.0);
         assert_eq!((studio.editing, studio.doc.layers.len(), studio.board_tool()), (Some(0), 1, BOX_TOOL));
         type_in(&mut studio, "lo");

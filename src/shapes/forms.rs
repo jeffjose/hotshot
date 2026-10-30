@@ -454,6 +454,24 @@ impl Shape {
         (lines, rules, (top_wide.max(body) + 2.0 * pad + 2.0, down + pad * 0.5 - y))
     }
 
+    /// Its words' lines as they are shown, each with where in its words it
+    /// begins, as wrapping takes the one space or line break between two
+    /// lines; and how tall a line is. None for a table, whose lines are not
+    /// its words in order.
+    pub fn label_runs(&self, text: &mut Text) -> Option<(Vec<(usize, String, f32, f32, i32)>, i32)> {
+        if self.form == FORM_TABLE && self.tool == Tool::Rect && !self.titled {
+            return None;
+        }
+        let (lines, high) = self.label_lines(text);
+        let mut start = 0;
+        let runs = lines.into_iter().map(|(line, x, y, wide)| {
+            let at = start;
+            start += line.len() + 1;
+            (at, line, x, y, wide)
+        }).collect();
+        Some((runs, high))
+    }
+
     /// Where the caret goes at the end of its words: across, down, and how
     /// tall.
     pub fn label_caret(&self, text: &mut Text) -> (f32, f32, i32) {

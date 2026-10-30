@@ -183,6 +183,74 @@ mod tests {
     }
 
     #[test]
+    fn a_box_deleted_takes_its_arrows_with_it_in_one_step() {
+        let mut studio = two_boxes();
+        pull_dot(&mut studio, 0, (680.0, 136.0), Mods::default(), |_| {});
+        assert_eq!(studio.doc.layers.len(), 3);
+        studio.selected = vec![1];
+        press_key(&mut studio, Key::Delete, Mods::default());
+        assert_eq!(studio.doc.layers.len(), 1, "B and the arrow to it gone");
+        studio.undo();
+        assert_eq!(studio.doc.layers.len(), 3, "both back in one step");
+    }
+
+    #[test]
+    fn the_pointer_says_what_a_press_will_do() {
+        let mut studio = two_boxes();
+        let at = |studio: &mut Studio, page: (f32, f32)| {
+            let window = studio.to_window_page(page);
+            studio.pointer_moved(window.0, window.1, Mods::default());
+            studio.cursor()
+        };
+        assert_eq!(at(&mut studio, (180.0, 120.0)), Cursor::Move, "a shape moves");
+        assert_eq!(at(&mut studio, (400.0, 400.0)), Cursor::Arrow, "empty board");
+        let dot = studio.dot_spots(0)[1];
+        studio.pointer_moved(dot.0, dot.1, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Crosshair, "a dot pulls an arrow");
+        // Picked out: its corner sizes it.
+        studio.selected = vec![0];
+        assert_eq!(at(&mut studio, (260.0, 172.0)), Cursor::Falling);
+        // Typed into: its words the I-beam, the rest of it the move.
+        studio.edit_text(0);
+        type_in(&mut studio, "Queue");
+        assert_eq!(at(&mut studio, (180.0, 136.0)), Cursor::Text);
+        assert_eq!(at(&mut studio, (110.0, 110.0)), Cursor::Move);
+    }
+
+    #[test]
+    fn the_bar_of_styles_goes_where_it_covers_no_other_shape() {
+        let mut studio = two_boxes();
+        // A box just under A: the bar goes over A, clear of it.
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 230.0), (260.0, 290.0), Mods::default());
+        let layout = studio.layout();
+        let bar = layout.board_bar.unwrap();
+        let (top, bottom) = (studio.to_window_page((0.0, 230.0)).1, studio.to_window_page((0.0, 290.0)).1);
+        let a = studio.to_window_page((0.0, 172.0)).1;
+        assert!(bar.y >= bottom || (bar.bottom() <= top && bar.y >= a), "{bar:?} between {a} and {top}, or under {bottom}");
+    }
+
+    #[test]
+    fn dots_show_for_where_the_pointer_is_now_not_where_it_last_rested() {
+        let mut studio = two_boxes();
+        let over = studio.to_window_page((680.0, 136.0));
+        studio.pointer_moved(over.0, over.1, Mods::default());
+        assert_eq!(studio.board.dots_of, Some(1));
+        // A marquee dragged round both, let go well away.
+        pull(&mut studio, (200.0, 250.0), (700.0, 150.0), Mods::default());
+        let away = studio.to_window_page((900.0, 500.0));
+        studio.pointer = away;
+        assert_eq!(studio.chosen().len(), 2);
+        let pointer = studio.pointer;
+        assert_eq!(studio.dots_now(pointer, false), None, "no dots left on B");
+        // Just outside a box, short of its dots: they show, and a press on
+        // one pulls.
+        let near = studio.to_window_page((272.0, 136.0));
+        studio.pointer_moved(near.0, near.1, Mods::default());
+        assert_eq!(studio.board.dots_of, Some(0));
+    }
+
+    #[test]
     fn the_nearest_shape_wins_and_a_box_inside_another_before_the_one_round_it() {
         let mut studio = two_boxes();
         // A small box drawn inside B.

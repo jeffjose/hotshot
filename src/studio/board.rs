@@ -133,16 +133,21 @@ pub(super) struct Board {
     /// Esc has just ended the typing of the box picked out: a letter is a
     /// tool's, not typed over its words.
     pub typed: Option<usize>,
+    /// Where in the words being typed the caret is, none being their end;
+    /// and the other end of the words picked out by a drag, if any are.
+    pub caret: Option<usize>,
+    pub anchor: Option<usize>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, type_step: false, typed: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, type_step: false, typed: None, caret: None, anchor: None }
     }
 }
 
 mod bar;
 mod bind;
+mod caret;
 mod dots;
 mod nest;
 mod map;

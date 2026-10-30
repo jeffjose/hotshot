@@ -58,8 +58,29 @@ impl Studio {
                 let corners: Vec<(i32, i32)> = styled.iter().flat_map(|&index| self.box_corners(index)).collect();
                 let (left, right) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.0).max().unwrap_or(0));
                 let (above, below) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
-                // Clear of the dots of its sides, which are pulled from.
-                let top = if above - 30 - high >= view.y + 40 { above - 30 - high } else { below + 30 };
+                // Clear of the dots of its sides, which are pulled from;
+                // over it, or under it where that covers less of the rest,
+                // so that the bar takes no click meant for another shape.
+                let x = ((left + right) / 2 - wide / 2).clamp(view.x + 4, (view.right() - wide - 4).max(view.x + 4));
+                let (over, under) = (above - 30 - high, below + 30);
+                let rest: Vec<usize> = (0..self.doc.layers.len()).filter(|index| !styled.contains(index) && !self.doc.layers[*index].hidden).collect();
+                let others: Vec<Rect> = rest.into_iter().map(|index| {
+                    let (bx, by, bw, bh) = self.doc.layers[index].bounds(&mut self.text);
+                    Rect::spanning(self.to_window((bx, by)), self.to_window((bx + bw, by + bh)))
+                }).collect();
+                let covers = |top: i32| {
+                    let bar = Rect::new(x, top, wide, high);
+                    others.iter().map(|other| {
+                        let both = bar.intersect(*other);
+                        if both.w > 0 && both.h > 0 { both.w * both.h } else { 0 }
+                    }).sum::<i32>()
+                };
+                let fits = |top: i32| top >= view.y + 40 && top + high <= view.bottom() - 4;
+                let top = match (fits(over), fits(under)) {
+                    (true, true) if covers(under) < covers(over) => under,
+                    (true, _) => over,
+                    _ => under,
+                };
                 ((left + right) / 2, top)
             }
         };

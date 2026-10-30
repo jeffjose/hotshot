@@ -47,22 +47,34 @@ impl Studio {
             return self.history_at(at.0);
         }
         self.hover_pick(at, over_control);
-        let shows = !self.space && !over_control;
-        // Out as far as its dots and a little more: near enough to show them.
-        let near = |studio: &Studio, index: usize| {
-            let spots = studio.dot_spots(index);
-            let (left, right) = (spots[3].0 - NEAR, spots[1].0 + NEAR);
-            let (top, bottom) = (spots[0].1 - NEAR, spots[2].1 + NEAR);
-            (left..=right).contains(&at.0) && (top..=bottom).contains(&at.1)
-        };
-        let kept = self.board.dots_of.filter(|&index| shows && self.dots_show(index) && near(self, index));
-        // A box the pointer is over or near, hollow or not: the smallest.
-        let under = (0..self.doc.layers.len()).filter(|&index| self.dots_show(index) && !self.doc.layers[index].hidden && near(self, index)).min_by(|&a, &b| (self.box_frame(a).2 * self.box_frame(a).3).total_cmp(&(self.box_frame(b).2 * self.box_frame(b).3)));
-        let now = kept.or_else(|| under.filter(|_| shows)).or_else(|| self.picked().filter(|&index| shows && self.dots_show(index)));
+        let now = self.dots_now(at, over_control);
         if now != self.board.dots_of {
             self.board.dots_of = now;
             self.dirty = true;
         }
+    }
+
+    /// The box whose dots show with the pointer at a point: the one shown
+    /// while the pointer is still near it, else the smallest it is over or
+    /// near, else the one picked out. Worked out afresh wherever it is
+    /// asked, as what is picked out and where the boxes are change under a
+    /// pointer that has not moved.
+    pub(in crate::studio) fn dots_now(&self, at: (i32, i32), over_control: bool) -> Option<usize> {
+        if self.space || over_control {
+            return None;
+        }
+        // Out as far as its dots and a little more: near enough to show them.
+        let near = |index: usize| {
+            let spots = self.dot_spots(index);
+            let (left, right) = (spots[3].0 - NEAR, spots[1].0 + NEAR);
+            let (top, bottom) = (spots[0].1 - NEAR, spots[2].1 + NEAR);
+            (left..=right).contains(&at.0) && (top..=bottom).contains(&at.1)
+        };
+        let kept = self.board.dots_of.filter(|&index| self.dots_show(index) && !self.doc.layers[index].hidden && near(index));
+        // A box the pointer is over or near, hollow or not: the smallest.
+        let area = |index: usize| self.box_frame(index).2 * self.box_frame(index).3;
+        let under = || (0..self.doc.layers.len()).filter(|&index| self.dots_show(index) && !self.doc.layers[index].hidden && near(index)).min_by(|&a, &b| area(a).total_cmp(&area(b)));
+        kept.or_else(under).or_else(|| self.picked().filter(|&index| self.dots_show(index)))
     }
 
     /// Whether a box's dots are to be shown: with the pointer in hand and
@@ -82,7 +94,11 @@ impl Studio {
         if self.control_at(at).is_some() {
             return None;
         }
-        if let Some(index) = self.board.dots_of.filter(|&index| self.dots_show(index)) {
+        // An arrow's end, picked out: taken hold of to tie it elsewhere.
+        if self.handles().iter().any(|&(spot, pull)| pull.0 == END && (spot.0 - at.0).abs() <= 6 && (spot.1 - at.1).abs() <= 6) {
+            return Some(Cursor::Move);
+        }
+        if let Some(index) = self.dots_now(at, false) {
             if self.dot_spots(index).iter().any(|spot| (spot.0 - at.0).abs() <= NEAR && (spot.1 - at.1).abs() <= NEAR) {
                 return Some(Cursor::Crosshair);
             }
@@ -91,7 +107,13 @@ impl Studio {
         if let Some(index) = self.editing {
             let (x, y, w, h) = self.doc.layers[index].bounds(&mut self.text);
             let on = page.0 >= x && page.0 <= x + w && page.1 >= y && page.1 <= y + h && self.layer_at(page).is_none_or(|top| top <= index);
-            return on.then_some(Cursor::Move);
+            // Its words the I-beam, where a press puts the caret; the rest
+            // of it the move.
+            return match on {
+                true if self.over_words(page) => Some(Cursor::Text),
+                true => Some(Cursor::Move),
+                false => None,
+            };
         }
         if self.tool != Tool::Select {
             return None;
@@ -104,7 +126,7 @@ impl Studio {
 
     /// A press on a dot of a box's side: an arrow begun out of it.
     pub(in crate::studio) fn press_dot(&mut self, at: (i32, i32)) -> bool {
-        let Some(index) = self.board.dots_of.filter(|&index| self.dots_show(index)) else { return false };
+        let Some(index) = self.dots_now(at, false) else { return false };
         let spots = self.dot_spots(index);
         let Some(side) = spots.iter().position(|spot| (spot.0 - at.0).abs() <= NEAR && (spot.1 - at.1).abs() <= NEAR) else { return false };
         self.drag = Drag::Pull { from: index, side: side as u8, moved: false };
@@ -273,7 +295,7 @@ impl Studio {
         self.draw_drop(canvas);
         self.draw_laser(canvas);
         if self.drag == Drag::None {
-            if let Some(index) = self.board.dots_of.filter(|&index| self.dots_show(index)) {
+            if let Some(index) = self.dots_now(self.pointer, self.hover_shown.is_some()) {
                 for spot in self.dot_spots(index) {
                     canvas.disc(spot.0, spot.1, 6, ACCENT, 220);
                     canvas.disc(spot.0, spot.1, 2, 0xFFFFFF, 256);
@@ -326,7 +348,17 @@ impl Studio {
             // A box picked out: the end of a chain is offered its way back.
             Drag::Move { moved: false, .. } => {
                 self.board.carried.clear();
+                // On the box typed into, off its words: the caret to the end.
+                if self.editing.is_some() {
+                    (self.board.caret, self.board.anchor) = (None, None);
+                }
                 self.guess(false);
+            }
+            // A click in the words, with no drag across them, picks none.
+            Drag::Words => {
+                if self.board.anchor == self.board.caret {
+                    self.board.anchor = None;
+                }
             }
             _ => self.board.carried.clear(),
         }

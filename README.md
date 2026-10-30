@@ -448,10 +448,13 @@ wrapped to it.
 Draw a box and the caret is already in it: type its words. Enter or
 starting the next box ends the typing, Shift+Enter begins a new line,
 and an empty box simply stays empty. While the caret is in it the box
-is still the box: drag it from anywhere inside to move it, or by a
-corner or a side to size it, and the caret stays, so the words can be
-typed before or after; a click on it without a drag leaves the caret
-where it was. The box tool stays in hand, as boxes come in runs; once
+is still the box: drag it from anywhere inside but its words to move
+it, or by a corner or a side to size it, and the caret stays, so the
+words can be typed before or after. Its words are a text field's: a
+click in them puts the caret there, a drag across them picks some out
+to type over, Left, Right, Home and End move the caret, with Shift
+picking out, and a click on the box off its words puts the caret at
+their end. The box tool stays in hand, as boxes come in runs; once
 the last two drawn are the same size, a click without a drag makes the
 next that size, so a row of equal boxes is click, type, Enter, click,
 type. Esc is done with it: the typing ends, the box is left picked out
@@ -465,9 +468,10 @@ just drawn is picked out in the same way, a letter a tool and Enter its
 words. Double-click a box or an arrow to type into it, an arrow's words
 sitting across its middle on a patch of the paper; double-click empty
 board for a label. Over the board the pointer says what a press will
-do: the four arrows of a move over a shape, a two-headed arrow over a
+do: the four arrows of a move over a shape, or over an arrow's end picked
+out, the I-beam over the words being typed, a two-headed arrow over a
 handle or a side, a cross over a dot or the middle of an arrow, which
-pull an arrow out.
+pull an arrow out. Delete a box and the arrows tied to it go with it.
 
 With the box tool in hand, the pointer over a box of the board, or over
 a part of a screenshot the edge finder sees as a box (a window, a pane,
@@ -491,7 +495,8 @@ let go on empty board, it simply ends there. It is tied to a picture at
 the point it is put down, to point at what is in it. Hold Ctrl as an
 end is let go to tie it to nothing.
 
-A small bar of styles floats over what is picked out, rather than the
+A small bar of styles floats over what is picked out, or under it where
+that covers less of the rest, clear of its dots, rather than the
 panel: five line colors and five fills, as Excalidraw keeps them, no
 fill, Rough or Clean, how large the words are, a status dot for a box,
 and whether the board guesses what comes next. With nothing picked out

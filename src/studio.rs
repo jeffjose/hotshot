@@ -1622,6 +1622,9 @@ enum Drag {
     /// A new arrow pulled out of a side of a box on a board, by its
     /// dot, from the box by its layer: `moved` once it has gone anywhere.
     Pull { from: usize, side: u8, moved: bool },
+    /// Words picked out by a drag across them, in a box or on an arrow of
+    /// a board as it is typed into.
+    Words,
 }
 
 /// The last copy made, and what it was made from.
@@ -3384,6 +3387,7 @@ impl Studio {
             Drag::Turn { .. } => return Cursor::Turn,
             Drag::Draw { .. } | Drag::Marquee { .. } | Drag::NewFrame { .. } | Drag::Pull { .. } => return Cursor::Crosshair,
             Drag::Move { moved: true, .. } if self.on_board() => return Cursor::Move,
+            Drag::Words => return Cursor::Text,
             Drag::MoveFrame { .. } => return Cursor::Move,
             Drag::Scrub { .. } => return Cursor::Across,
             _ => {}
@@ -3604,6 +3608,7 @@ impl Studio {
             Drag::Crop { pull, from } => self.crop_to(pull, from, at, mods),
             Drag::Radius { corner, single, slack } => self.drag_radius(corner, single, slack, at),
             Drag::Pull { .. } => self.pull_moved(),
+            Drag::Words => self.words_dragged(),
         }
     }
 
@@ -5079,6 +5084,7 @@ impl Studio {
     /// their hashes while it is.
     fn edit_text(&mut self, index: usize) {
         (self.editing, self.words_picked, self.board.type_step, self.board.typed) = (Some(index), false, false, None);
+        (self.board.caret, self.board.anchor) = (None, None);
         if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
             shape.editing = true;
             shape.touch();
@@ -5087,6 +5093,7 @@ impl Studio {
 
     fn commit_text(&mut self) {
         self.words_picked = false;
+        (self.board.caret, self.board.anchor) = (None, None);
         if let Some(index) = self.editing.take() {
             if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
                 shape.editing = false;
@@ -5154,6 +5161,18 @@ impl Studio {
             return;
         }
         self.checkpoint();
+        // On a board, the arrows tied to what goes go with it, rather than
+        // being left pointing at nothing.
+        if self.on_board() {
+            let gone: Vec<u32> = chosen.iter().map(|&index| stacks::layer_id(&self.doc.layers[index])).collect();
+            for (index, layer) in self.doc.layers.iter().enumerate() {
+                if let Kind::Shape(shape) = &layer.kind {
+                    if shape.sticks() && shape.stuck.iter().flatten().any(|(id, ..)| gone.contains(id)) && !chosen.contains(&index) {
+                        chosen.push(index);
+                    }
+                }
+            }
+        }
         chosen.sort_unstable();
         for index in chosen.into_iter().rev() {
             self.doc.layers.remove(index);
@@ -6083,7 +6102,11 @@ impl Studio {
             canvas.round_fill(reach.x, reach.y, reach.w, reach.h, 0, ACCENT, 40);
             canvas.round_outline(reach.x, reach.y, reach.w, reach.h, 0, 1, ACCENT);
         }
-        // The caret at the end of text being typed.
+        // Words picked out on a board, and the caret at the end of text
+        // being typed, or where it was put.
+        if self.on_board() {
+            self.draw_words_picked(&mut canvas);
+        }
         if let Some(index) = self.editing {
             if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index).cloned() {
                 let place = shape.bounds(&mut self.text);
@@ -6094,8 +6117,12 @@ impl Studio {
                         lines.last().map_or((0, 0, Text::line_height(shape.font_px)), |last| (last.width + (widest - last.width) * i32::from(shape.align.min(2)) / 2, last.top, Text::line_height(last.px)))
                     }
                     // A box's or an arrow's words, after the last of them.
+                    // On a board, where the caret was put in them.
                     Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow => {
-                        let (x, y, high) = shape.label_caret(&mut self.text);
+                        let (x, y, high) = match self.on_board().then(|| self.board_caret()).flatten() {
+                            Some(spot) => spot,
+                            None => shape.label_caret(&mut self.text),
+                        };
                         (x.round() as i32 - place.x, y.round() as i32 - place.y, high)
                     }
                     _ => {
