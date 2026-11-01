@@ -6070,7 +6070,15 @@ impl Studio {
         if self.cropping.is_none() && !previewing {
             // Corners only, small white squares edged in the accent; the
             // ends of a line the same.
+            // On a board, an arrow's ends are round, as Excalidraw's are,
+            // with a knob at its middle to branch it by.
+            if self.on_board() {
+                self.draw_arrow_handles(&mut canvas);
+            }
             for (spot, pull) in self.handles() {
+                if pull.0 == END && self.on_board() {
+                    continue;
+                }
                 if pull.0 == END || (pull.0 != 0 && pull.1 != 0) {
                     canvas.fill(spot.0 - 4, spot.1 - 4, 8, 8, ACCENT);
                     canvas.fill(spot.0 - 3, spot.1 - 3, 6, 6, 0xFFFFFF);
@@ -6194,6 +6202,12 @@ impl Studio {
     /// line or an arrow by the line itself.
     fn outline(&mut self, canvas: &mut Canvas, index: usize, thick: i32) {
         let corners = match &self.doc.layers[index].kind {
+            // A board's arrow picked out has its round handles instead, and
+            // hovered is traced along the way it goes, curve and all.
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) && self.on_board() => match thick {
+                1 => return,
+                _ => shape.path().into_iter().map(|point| self.to_window(point)).collect(),
+            },
             Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => shape.points.iter().map(|&point| self.to_window(point)).collect::<Vec<_>>(),
             _ => {
                 let corners = self.box_corners(index);

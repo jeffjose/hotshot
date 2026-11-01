@@ -8,8 +8,13 @@ use super::*;
 
 /// How far out from a side its dot is, and how near it a press takes it,
 /// in pixels of the window.
-const OUT: i32 = 14;
-const NEAR: i32 = 12;
+pub(in crate::studio) const OUT: i32 = 14;
+pub(in crate::studio) const NEAR: i32 = 12;
+/// How near an arrow's end a press takes hold of it, in pixels of the
+/// window: more than a handle's, as an end is small and often by a box.
+pub(in crate::studio) const END_REACH: i32 = 9;
+/// How much farther out a dot goes where an arrow's end is at it.
+const AWAY: i32 = 22;
 /// How far the next box goes from one, across and down.
 pub(in crate::studio) const GAP_ACROSS: f32 = 80.0;
 pub(in crate::studio) const GAP_DOWN: f32 = 48.0;
@@ -32,12 +37,60 @@ impl Studio {
     }
 
     /// Where the dots of a box's sides are, in the window: top, right,
-    /// bottom and left.
+    /// bottom and left. A dot where an arrow's end is goes farther out,
+    /// clear of it, as a press on the end takes hold of the end: one place
+    /// offers one thing, and another arrow can still be pulled out of
+    /// that side.
     pub(in crate::studio) fn dot_spots(&self, index: usize) -> [(i32, i32); 4] {
         let (x, y, w, h) = self.box_frame(index);
         let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
         let (cx, cy) = ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
-        [(cx, a.1 - OUT), (b.0 + OUT, cy), (cx, b.1 + OUT), (a.0 - OUT, cy)]
+        let ends = self.arrow_ends();
+        let taken = |spot: (i32, i32)| ends.iter().any(|&(end, ..)| (end.0 - spot.0).pow(2) + (end.1 - spot.1).pow(2) <= (END_REACH + NEAR).pow(2));
+        let mut spots = [(cx, a.1 - OUT), (b.0 + OUT, cy), (cx, b.1 + OUT), (a.0 - OUT, cy)];
+        for (spot, way) in spots.iter_mut().zip(SIDES) {
+            if taken(*spot) {
+                *spot = (spot.0 + way.0 as i32 * AWAY, spot.1 + way.1 as i32 * AWAY);
+            }
+        }
+        spots
+    }
+
+    /// The ends of the board's arrows and lines in the window, each with
+    /// its layer and which end it is.
+    fn arrow_ends(&self) -> Vec<((i32, i32), usize, usize)> {
+        let mut ends = Vec::new();
+        for (index, layer) in self.doc.layers.iter().enumerate() {
+            if let Kind::Shape(shape) = &layer.kind {
+                if shape.sticks() && !layer.hidden && !layer.locked && shape.points.len() >= 2 {
+                    ends.extend((0..2).map(|end| (self.to_window(shape.points[end]), index, end)));
+                }
+            }
+        }
+        ends
+    }
+
+    /// The end of an arrow or a line a press at a point of the window
+    /// takes hold of, by its layer and which end: the nearest within reach,
+    /// of the one picked out before the rest, then the topmost.
+    pub(in crate::studio) fn arrow_end_at(&self, at: (i32, i32)) -> Option<(usize, usize)> {
+        if self.tool != Tool::Select || self.space {
+            return None;
+        }
+        let picked = self.picked();
+        self.arrow_ends().into_iter().map(|(spot, index, end)| ((spot.0 - at.0).pow(2) + (spot.1 - at.1).pow(2), index, end)).filter(|&(away, ..)| away <= END_REACH.pow(2)).min_by_key(|&(away, index, _)| (picked != Some(index), away, std::cmp::Reverse(index))).map(|(_, index, end)| (index, end))
+    }
+
+    /// A press on an arrow's end: the arrow picked out and that end taken
+    /// hold of, to be let go on another box, or on nothing. Before a dot
+    /// of the box it is at, and before the box.
+    pub(in crate::studio) fn press_arrow_end(&mut self, at: (f32, f32), at_window: (i32, i32)) -> bool {
+        let Some((arrow, end)) = self.arrow_end_at(at_window) else { return false };
+        self.selected = vec![arrow];
+        self.checkpoint();
+        self.held = vec![self.doc.layers[arrow].clone()];
+        self.drag = Drag::Scale { pull: (END, end as i32), from: at };
+        true
     }
 
     /// The pointer moved with nothing held on a board: the box whose dots
@@ -94,8 +147,9 @@ impl Studio {
         if self.control_at(at).is_some() {
             return None;
         }
-        // An arrow's end, picked out: taken hold of to tie it elsewhere.
-        if self.handles().iter().any(|&(spot, pull)| pull.0 == END && (spot.0 - at.0).abs() <= 6 && (spot.1 - at.1).abs() <= 6) {
+        // An arrow's end, picked out or not: taken hold of to tie it
+        // elsewhere, before the dot or the box it is at.
+        if self.arrow_end_at(at).is_some() {
             return Some(Cursor::Move);
         }
         if let Some(index) = self.dots_now(at, false) {
@@ -301,6 +355,32 @@ impl Studio {
                     canvas.disc(spot.0, spot.1, 2, 0xFFFFFF, 256);
                 }
             }
+        }
+    }
+
+    /// The arrow or line picked out on a board: a round handle at each end,
+    /// white edged in the accent, and a smaller knob at its middle, the
+    /// one an end held drawn larger; so it is plain that the arrow is
+    /// what is taken hold of, as Excalidraw shows it.
+    pub(in crate::studio) fn draw_arrow_handles(&mut self, canvas: &mut Canvas) {
+        let Some(index) = self.picked() else { return };
+        let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return };
+        if !shape.sticks() || shape.points.len() < 2 || self.editing == Some(index) {
+            return;
+        }
+        let held = match self.drag {
+            Drag::Scale { pull: (END, end), .. } => Some(end as usize),
+            _ => None,
+        };
+        let (ends, middle) = ([self.to_window(shape.points[0]), self.to_window(shape.points[1])], self.to_window(shape.middle()));
+        if held.is_none() {
+            canvas.disc(middle.0, middle.1, 4, ACCENT, 256);
+            canvas.disc(middle.0, middle.1, 2, 0xFFFFFF, 256);
+        }
+        for (end, spot) in ends.into_iter().enumerate() {
+            let big = if held == Some(end) || self.arrow_end_at(self.pointer) == Some((index, end)) { 7 } else { 6 };
+            canvas.disc(spot.0, spot.1, big, ACCENT, 256);
+            canvas.disc(spot.0, spot.1, big - 2, 0xFFFFFF, 256);
         }
     }
 

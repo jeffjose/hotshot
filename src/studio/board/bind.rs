@@ -128,6 +128,7 @@ impl Kind {
 mod tests {
     use super::*;
     use crate::studio::board::tests::*;
+    use crate::studio::board::dots::{END_REACH, NEAR, OUT};
 
     /// Two boxes drawn on a board, A at the left and B at the right, with
     /// the pointer in hand and nothing picked out.
@@ -311,6 +312,158 @@ mod tests {
         pull(&mut studio, (300.0, 400.0), (500.0, 500.0), Mods::default());
         assert_eq!(studio.doc.layers.len(), 4);
         assert_eq!(shape(&studio, 3).stuck, [None, None]);
+    }
+
+    /// A press at a point of the window, dragged in small steps to a point
+    /// of the board, looked at before it is let go.
+    fn drag_from(studio: &mut Studio, from: (i32, i32), to: (f32, f32), mods: Mods, looked: impl FnOnce(&mut Studio)) {
+        studio.pointer_moved(from.0, from.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        let to = studio.to_window_page(to);
+        for step in 1..=6 {
+            let along = |a: i32, b: i32| a + (b - a) * step / 6;
+            studio.pointer_moved(along(from.0, to.0), along(from.1, to.1), mods);
+        }
+        looked(studio);
+        studio.released();
+    }
+
+    /// A, B and C, with A joined to B by an arrow pulled out of A's right
+    /// dot, nothing picked out: the arrow's layer.
+    fn joined() -> (Studio, usize) {
+        let mut studio = two_boxes();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (600.0, 400.0), (760.0, 472.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        pull_dot(&mut studio, 0, (680.0, 136.0), Mods::default(), |_| {});
+        studio.commit_text();
+        studio.selected.clear();
+        let arrow = studio.doc.layers.len() - 1;
+        assert!(shape(&studio, arrow).sticks());
+        (studio, arrow)
+    }
+
+    #[test]
+    fn an_arrows_end_at_a_boxs_dot_is_taken_hold_of_rather_than_a_new_arrow_pulled_out() {
+        let (mut studio, arrow) = joined();
+        let count = studio.doc.layers.len();
+        let tail = studio.to_window(shape(&studio, arrow).points[0]);
+        // Where A's right dot would be is right by the arrow's tail: the
+        // tail wins, from anywhere a few pixels round it.
+        let (x, y, w, h) = studio.box_frame(0);
+        let side = studio.to_window_page((x + w, y + h / 2.0));
+        assert!((side.0 + OUT - tail.0).abs() <= NEAR && (side.1 - tail.1).abs() <= NEAR, "the dot by the tail, {side:?} {tail:?}");
+        drag_from(&mut studio, (tail.0 + 3, tail.1 - 2), (680.0, 390.0), Mods::default(), |studio| {
+            assert!(matches!(studio.drag, Drag::Scale { pull: (END, 0), .. }), "the tail held, not a new arrow: {:?}", studio.drag);
+            assert_eq!(studio.board.bind, Some(2), "C glows");
+        });
+        assert_eq!(studio.doc.layers.len(), count, "no new arrow, no new box");
+        let moved = shape(&studio, arrow);
+        assert_eq!(moved.stuck[0].map(|s| s.0), Some(shape(&studio, 2).id), "tied to C");
+        assert_eq!(moved.stuck[1].map(|s| s.0), Some(shape(&studio, 1).id), "still to B");
+        assert_eq!(studio.chosen(), vec![arrow], "the arrow picked out");
+        // Its head, by B's left dot, the same; let go on empty board with
+        // Ctrl held, tied to nothing there.
+        studio.selected.clear();
+        let head = studio.to_window(shape(&studio, arrow).points[1]);
+        drag_from(&mut studio, head, (900.0, 600.0), Mods { ctrl: true, ..Mods::default() }, |studio| assert_eq!(studio.board.bind, None));
+        let free = shape(&studio, arrow);
+        assert_eq!((studio.doc.layers.len(), free.stuck[1]), (count, None));
+        assert!((free.points[1].0 - 900.0).abs() < 1.0 && (free.points[1].1 - 600.0).abs() < 1.0);
+        // And back onto A, from empty board.
+        let head = studio.to_window(free.points[1]);
+        drag_from(&mut studio, head, (180.0, 136.0), Mods::default(), |studio| assert_eq!(studio.board.bind, Some(0)));
+        assert_eq!(shape(&studio, arrow).stuck[1].map(|s| s.0), Some(shape(&studio, 0).id));
+    }
+
+    #[test]
+    fn an_arrows_end_partway_along_a_side_is_taken_hold_of_rather_than_the_box() {
+        let mut studio = two_boxes();
+        // An arrow tied to nothing, its end on A's right side well above
+        // its middle.
+        press_key(&mut studio, Key::Char('a'), Mods::default());
+        pull(&mut studio, (420.0, 300.0), (260.0, 110.0), Mods { ctrl: true, ..Mods::default() });
+        let arrow = studio.doc.layers.len() - 1;
+        assert_eq!(shape(&studio, arrow).stuck, [None, None]);
+        studio.selected.clear();
+        let a = shape(&studio, 0).frame();
+        let head = studio.to_window(shape(&studio, arrow).points[1]);
+        // The pointer over it says the end moves; a press there takes it.
+        studio.pointer_moved(head.0 - 4, head.1 + 3, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Move);
+        drag_from(&mut studio, (head.0 - 4, head.1 + 3), (680.0, 120.0), Mods::default(), |studio| assert_eq!(studio.board.bind, Some(1)));
+        assert_eq!(shape(&studio, arrow).stuck[1].map(|s| s.0), Some(shape(&studio, 1).id));
+        assert_eq!(shape(&studio, 0).frame(), a, "A not moved");
+    }
+
+    #[test]
+    fn a_boxs_dot_where_an_arrows_end_is_goes_farther_out_and_still_pulls_another() {
+        let (mut studio, arrow) = joined();
+        let tail = studio.to_window(shape(&studio, arrow).points[0]);
+        let over = studio.to_window_page((180.0, 136.0));
+        studio.pointer_moved(over.0, over.1, Mods::default());
+        assert_eq!(studio.board.dots_of, Some(0));
+        let (x, y, w, h) = studio.box_frame(0);
+        let (right, bottom) = (studio.to_window_page((x + w, y + h)).0, studio.to_window_page((x + w, y + h)).1);
+        let dots = studio.dot_spots(0);
+        assert!((dots[1].0 - tail.0).abs() > END_REACH + NEAR, "the right dot, where the tail is, clear of it: {:?} {tail:?}", dots[1]);
+        assert_eq!(dots[2].1, bottom + OUT, "the rest where they were");
+        assert!(dots[1].0 > right + OUT);
+        // Between the two, the cursor says which: the end moves, the dot
+        // pulls.
+        studio.pointer_moved(tail.0, tail.1, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Move);
+        studio.pointer_moved(dots[1].0, dots[1].1, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Crosshair);
+        // The dot moved out pulls another arrow out of that side.
+        let count = studio.doc.layers.len();
+        drag_from(&mut studio, dots[1], (420.0, 420.0), Mods::default(), |studio| assert!(matches!(studio.drag, Drag::Pull { .. })));
+        assert_eq!(studio.doc.layers.len(), count + 2, "a new box and an arrow to it");
+    }
+
+    #[test]
+    fn an_arrow_picked_out_shows_round_handles_at_its_ends_and_its_middle_and_no_straight_outline_while_an_end_is_dragged() {
+        let (mut studio, arrow) = joined();
+        // Bent, as it goes from A down to C.
+        let (x, y, w, h) = studio.box_frame(1);
+        studio.selected = vec![1];
+        let middle = studio.to_window_page((x + w / 2.0, y + h / 2.0));
+        studio.pointer_moved(middle.0, middle.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.pointer_moved(middle.0, middle.1 + 100, Mods::default());
+        studio.pointer_moved(middle.0, middle.1 + 200, Mods::default());
+        studio.released();
+        studio.selected = vec![arrow];
+        let shape_now = shape(&studio, arrow);
+        let ends = [studio.to_window(shape_now.points[0]), studio.to_window(shape_now.points[1])];
+        let knob = studio.to_window(shape_now.middle());
+        let pixels: Vec<u32> = { let mut out = vec![0u32; (studio.width * studio.height) as usize]; studio.draw(&mut out); out.into_iter().map(|pixel| pixel & 0xFF_FFFF).collect() };
+        let width = studio.width;
+        let at = |p: (i32, i32)| pixels[(p.1 * width + p.0) as usize];
+        for end in ends {
+            assert_eq!(at(end), 0xFFFFFF, "a white handle on its end");
+            // Round and larger than a square handle: its edge some five
+            // pixels out every way, but not out at its corners.
+            let edged = |dx: i32, dy: i32| (4..=6).any(|d| at((end.0 + dx * d, end.1 + dy * d)) == ACCENT);
+            assert!(edged(1, 0) && edged(-1, 0) && edged(0, 1) && edged(0, -1), "edged in the accent, round");
+            assert_ne!(at((end.0 + 5, end.1 + 5)), ACCENT, "no corner");
+        }
+        assert_eq!((at(knob), at((knob.0 - 3, knob.1))), (0xFFFFFF, ACCENT), "its middle knob");
+        // The straight line from its tail to its head is not drawn over it
+        // as it is dragged.
+        let (a, b) = (ends[0], ends[1]);
+        studio.pointer_moved(b.0, b.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 300_000);
+        studio.pointer_moved(b.0 + 30, b.1 + 30, Mods::default());
+        studio.pointer_moved(b.0 + 60, b.1 + 60, Mods::default());
+        let pixels: Vec<u32> = { let mut out = vec![0u32; (studio.width * studio.height) as usize]; studio.draw(&mut out); out.into_iter().map(|pixel| pixel & 0xFF_FFFF).collect() };
+        let straight = (3..17).map(|t| (a.0 + (b.0 - a.0) * t / 20, a.1 + (b.1 - a.1) * t / 20)).filter(|&(x, y)| pixels[(y * width + x) as usize] == ACCENT).count();
+        studio.released();
+        assert_eq!(straight, 0, "no outline of the route it had");
     }
 
     #[test]

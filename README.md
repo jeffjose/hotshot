@@ -468,8 +468,8 @@ just drawn is picked out in the same way, a letter a tool and Enter its
 words. Double-click a box or an arrow to type into it, an arrow's words
 sitting across its middle on a patch of the paper; double-click empty
 board for a label. Over the board the pointer says what a press will
-do: the four arrows of a move over a shape, or over an arrow's end picked
-out, the I-beam over the words being typed, a two-headed arrow over a
+do: the four arrows of a move over a shape, or over an arrow's end, the
+I-beam over the words being typed, a two-headed arrow over a
 handle or a side, a cross over a dot or the middle of an arrow, which
 pull an arrow out. Delete a box and the arrows tied to it go with it.
 
@@ -639,7 +639,11 @@ guessing off and on.
 Changing your mind is one gesture, and everything else stays as it
 was. Drag an arrow's head or tail onto or near another box and it is tied
 there instead, routed again; onto empty board, it is tied to nothing and
-ends there, straight. Drag from the middle of an arrow to branch it,
+ends there, straight. A press within a few pixels of an arrow's end,
+picked out or not, takes hold of that end, before the box it is at and
+before that box's dot, which goes farther out where an end is, so that
+one place offers one thing; an arrow picked out shows a round handle at
+each end and a knob at its middle. Drag from the middle of an arrow to branch it,
 "and it also goes there": let go on a box, and the box the arrow comes
 from is joined to it too; on empty board, to a new box there. Drop a
 box right on an arrow and it goes between its two ends, A to B becoming

@@ -60,8 +60,11 @@ impl Studio {
         if self.tool != Tool::Select || self.space {
             return false;
         }
-        // A handle of what is picked out, an arrow's end among them, before
-        // a dot of the box it is at.
+        // An arrow's end, picked out or not, before a dot of the box it is
+        // at and before the box; then a handle of what is picked out.
+        if !double && self.press_arrow_end(at, at_window) {
+            return true;
+        }
         let on_handle = self.handles().iter().any(|&(spot, _)| (spot.0 - at_window.0).abs() <= 6 && (spot.1 - at_window.1).abs() <= 6);
         if !on_handle && self.press_dot(at_window) {
             return true;
@@ -226,6 +229,11 @@ impl Studio {
         let movable = matches!(self.doc.layers.get(index), Some(Layer { kind: Kind::Shape(shape), .. }) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text));
         if double || self.mods.shift || !movable {
             return false;
+        }
+        // An arrow's end at the box takes the press, the typing done.
+        if self.arrow_end_at(at_window).is_some() {
+            self.commit_text();
+            return self.press_arrow_end(at, at_window);
         }
         if self.dots_now(at_window, false) == Some(index) && self.press_dot(at_window) {
             self.commit_text();
