@@ -247,6 +247,7 @@ impl Studio {
         match kind {
             MenuKind::Fonts => {
                 let now = match &picked {
+                    _ if self.on_board() => self.shown_font(),
                     Some(Kind::Shape(shape)) => shape.face,
                     _ => self.face,
                 };
@@ -528,6 +529,11 @@ impl Studio {
         wide.min(420)
     }
 
+    /// How tall a list is, as it is laid out.
+    pub(super) fn menu_high(&mut self, kind: MenuKind) -> i32 {
+        self.menu_items(kind).iter().map(Item::high).sum::<i32>() + 10
+    }
+
     /// The lists that are open, laid out first so that they come before
     /// what is under them: each row a control, each list a panel.
     pub(super) fn layout_menus(&mut self, layout: &mut Layout) {
@@ -726,6 +732,9 @@ impl Studio {
     fn run_menu_now(&mut self, act: MenuAct) -> Outcome {
         match act {
             MenuAct::Nothing => {}
+            // On a board, its font: what is picked out, and what is drawn
+            // next, the look left as it was.
+            MenuAct::Face(face) if self.on_board() => self.set_font(face),
             MenuAct::Face(face) => {
                 self.face = face;
                 self.restyle(|layer| {

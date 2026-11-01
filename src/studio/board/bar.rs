@@ -27,7 +27,9 @@ impl Studio {
     /// near the top of the window; or over the tools for the next shape.
     pub(in crate::studio) fn layout_style_bar(&mut self, layout: &mut Layout) {
         let dragging = matches!(self.drag, Drag::Move { moved: true, .. } | Drag::Scale { .. } | Drag::Turn { .. } | Drag::Draw { .. } | Drag::Marquee { .. } | Drag::Pull { .. });
-        if self.zen || self.presenting() || dragging || self.search.is_some() || self.menu.is_some() {
+        // Kept while its own list of fonts is open from it, which says so.
+        let menu = self.menu.is_some_and(|menu| menu.kind != MenuKind::Fonts);
+        if self.zen || self.presenting() || dragging || self.search.is_some() || menu {
             return;
         }
         let styled = self.bar_styled();
@@ -40,7 +42,11 @@ impl Studio {
         parts.push((Ctl::Guess, -SPLIT));
         parts.push((Ctl::Look, 74));
         parts.push((Ctl::Ground, SWATCH));
-        parts.push((Ctl::Words(0), 40));
+        parts.push((Ctl::Guess, -SPLIT));
+        // As wide as the font's name, in itself, and its arrow.
+        let face = self.shown_font();
+        parts.push((Ctl::Font, self.text.width_in(face, FACES[face], 13) + 30));
+        parts.push((Ctl::Words(0), 48));
         if boxes {
             parts.push((Ctl::Status, SWATCH + 4));
         }
@@ -116,6 +122,15 @@ impl Studio {
         }
     }
 
+    /// The font the bar shows: of the first shape picked out, or the
+    /// board's, for the next.
+    pub(in crate::studio) fn shown_font(&self) -> usize {
+        self.bar_styled().first().and_then(|&index| match &self.doc.layers[index].kind {
+            Kind::Shape(shape) => Some(shape.face.min(FACES.len() - 1)),
+            Kind::Picture(_) => None,
+        }).unwrap_or_else(|| self.board_font())
+    }
+
     pub(in crate::studio) fn draw_style_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
         let (stroke, fill, sketch, px, status) = self.shown_style();
         let (cx, cy) = rect.center();
@@ -160,19 +175,34 @@ impl Studio {
                 if hovered {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
                 }
-                // How the board draws: rounded, sketchy or clean.
+                // How the board draws its shapes and lines: rounded,
+                // sketchy or clean, said plainly, as it has nothing to do
+                // with the font.
                 let says = look::LOOKS[usize::from(self.pages[self.page].look.min(2))];
                 let _ = sketch;
-                self.text.draw_in(LETTERING, canvas, rect.x + 7, cy - Text::line_height(13) / 2, 13, TEXT_COLOR, says);
+                self.text.draw(canvas, rect.x + 7, cy - Text::line_height(12) / 2, 12, TEXT_COLOR, says);
+                self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);
+            }
+            Ctl::Font => {
+                let open = matches!(self.menu, Some(MenuState { kind: MenuKind::Fonts, .. }));
+                if hovered || open {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+                }
+                // The font's name, in itself.
+                let face = self.shown_font();
+                self.text.draw_in(face, canvas, rect.x + 7, cy - Text::line_height(13) / 2, 13, TEXT_COLOR, FACES[face]);
                 self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);
             }
             Ctl::Words(_) => {
                 if hovered {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
                 }
+                // How large the words are: a small A and a large one, and
+                // which of the sizes.
                 let which = WORD_SIZES.iter().position(|&size| size >= px).unwrap_or(WORD_SIZES.len() - 1);
-                self.text.draw(canvas, rect.x + 6, cy - line_high / 2 - 1, 13, TEXT_COLOR, "Aa");
-                self.text.draw(canvas, rect.x + 26, cy - line_high / 2 + 1, 10, DIM_TEXT_COLOR, ["S", "M", "L", "XL"][which]);
+                self.text.draw(canvas, rect.x + 6, cy - Text::line_height(10) / 2 + 2, 10, DIM_TEXT_COLOR, "A");
+                self.text.draw(canvas, rect.x + 13, cy - Text::line_height(15) / 2, 15, DIM_TEXT_COLOR, "A");
+                self.text.draw(canvas, rect.x + 28, cy - line_high / 2, 11, TEXT_COLOR, ["S", "M", "L", "XL"][which]);
             }
             Ctl::Neaten => {
                 if self.board.neaten {
@@ -241,6 +271,16 @@ impl Studio {
             Ctl::Look => {
                 let next = (self.pages[self.page].look + 1) % 3;
                 self.set_look(Some(next), None);
+            }
+            // The faces, under the bar, or over it where it is low.
+            Ctl::Font => {
+                let place = self.control_rect(Control::Board(Ctl::Font)).unwrap_or_default();
+                let high = self.menu_high(MenuKind::Fonts);
+                let y = match place.bottom() + 4 + high <= self.height - 6 {
+                    true => place.bottom() + 8,
+                    false => place.y - 8 - high,
+                };
+                self.menu = Some(MenuState { kind: MenuKind::Fonts, at: (place.x - 6, y), sub: None });
             }
             Ctl::Ground => {
                 let next = (self.pages[self.page].ground + 1) % 3;

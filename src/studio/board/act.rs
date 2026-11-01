@@ -32,9 +32,11 @@ pub(in crate::studio) enum Act {
     /// The board, a frame of it, or what is picked out written as one of
     /// `export::KINDS`.
     Export(u8),
-    /// The board drawn in one of `look::LOOKS`, or on one of `look::GROUNDS`.
+    /// The board drawn in one of `look::LOOKS`, or on one of `look::GROUNDS`;
+    /// its words in one of the faces.
     Look(u8),
     Ground(u8),
+    Font(u8),
     /// What is picked out, or the board, as Mermaid on the clipboard: as
     /// a flowchart or a sequence, or as a mind map.
     Mermaid(bool),
@@ -61,6 +63,9 @@ impl Studio {
         }
         for (at, name) in look::GROUNDS.iter().enumerate() {
             acts.push((format!("Board on {}", name.to_lowercase()), "", Act::Ground(at as u8)));
+        }
+        for (at, name) in FACES.iter().enumerate() {
+            acts.push((format!("Font: {name}"), "", Act::Font(at as u8)));
         }
         let what = if !self.on_page() { "frame" } else if self.chosen().is_empty() { "board" } else { "selection" };
         for (kind, name) in export::KINDS.iter().enumerate() {
@@ -111,6 +116,7 @@ impl Studio {
             Act::Mermaid(map) => self.copy_mermaid(map),
             Act::Neaten => self.press_style(Ctl::Neaten),
             Act::Ground(ground) => self.set_look(None, Some(ground)),
+            Act::Font(font) => self.set_font(usize::from(font)),
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {

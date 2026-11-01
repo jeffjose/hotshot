@@ -1,9 +1,10 @@
 //! How a board looks, for the page as a whole: by hand with rounded corners
 //! and looser lines, as it begins; by hand and angular; or clean, hairline
-//! borders and Geist, as Linear's and Vercel's are. And what it is on:
-//! light paper, dark gray or black, every color of the board turning to
-//! its shade for the dark, as Radix's light and dark scales do, so nothing
-//! is picked again. Switching draws it again; nothing moves.
+//! borders, as Linear's and Vercel's are. And what it is on: light paper,
+//! dark gray or black, every color of the board turning to its shade for
+//! the dark, as Radix's light and dark scales do, so nothing is picked
+//! again. Switching draws it again; nothing moves. The font its words are
+//! in is a choice of its own, which the look leaves as it was.
 
 use super::*;
 
@@ -73,18 +74,25 @@ pub(in crate::studio) fn shade(color: u32, ground: u8) -> u32 {
     }
 }
 
-/// The look and ground last chosen, kept in `board-look` among hotshot's
-/// state, for a new board to begin as.
-pub(in crate::studio) fn last_look() -> (u8, u8) {
-    if cfg!(test) {
-        return (0, 0);
-    }
-    let kept = crate::output::state_file("board-look").and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
-    let mut words = kept.split_whitespace().filter_map(|word| word.parse::<u8>().ok());
-    (words.next().unwrap_or(0).min(2), words.next().unwrap_or(0).min(2))
+/// The face a board's words were in before the font was its own choice:
+/// Geist where it was drawn Clean, else the lettering.
+pub(in crate::studio) fn implied_font(look: u8) -> usize {
+    if look == 2 { 0 } else { LETTERING }
 }
 
-fn keep_look(look: u8, ground: u8) {
+/// The look, ground and font last chosen, kept in `board-look` among
+/// hotshot's state, for a new board to begin as.
+pub(in crate::studio) fn last_look() -> (u8, u8, usize) {
+    if cfg!(test) {
+        return (0, 0, LETTERING);
+    }
+    let kept = crate::output::state_file("board-look").and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
+    let mut words = kept.split_whitespace().filter_map(|word| word.parse::<usize>().ok());
+    let (look, ground) = (words.next().unwrap_or(0).min(2) as u8, words.next().unwrap_or(0).min(2) as u8);
+    (look, ground, words.next().map_or(implied_font(look), |font| font.min(FACES.len() - 1)))
+}
+
+fn keep_look(look: u8, ground: u8, font: usize) {
     if cfg!(test) {
         return;
     }
@@ -92,13 +100,14 @@ fn keep_look(look: u8, ground: u8) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(file, format!("{look} {ground}\n"));
+    let _ = std::fs::write(file, format!("{look} {ground} {font}\n"));
 }
 
-/// A page made a board for the first time: drawn as the last board was.
+/// A page made a board for the first time: drawn as the last board was,
+/// its words in the font last chosen.
 pub(in crate::studio) fn first_look(page: &mut Page) {
     if !page.styled {
-        (page.look, page.ground) = last_look();
+        (page.look, page.ground, page.font) = last_look();
         page.styled = true;
     }
 }
@@ -117,16 +126,14 @@ pub(in crate::studio) fn dress(shape: &mut Shape, look: u8, ground: u8, times: f
             }
         }
         2 => {
-            // Clean: no hand, a hairline, rounded a little, in Geist.
+            // Clean: no hand, a hairline, rounded a little. Its words stay
+            // in their own font, which is chosen apart from the look.
             if shape.sketch {
                 shape.sketch = false;
                 shape.stroke = 1.5 * times;
                 if boxy {
                     shape.radius = 8.0 * times;
                 }
-            }
-            if shape.face == LETTERING {
-                shape.face = 0;
             }
         }
         _ => {}
@@ -180,12 +187,40 @@ impl Studio {
             page.ground = ground.min(2);
         }
         page.styled = true;
-        let (look, ground) = (page.look, page.ground);
-        keep_look(look, ground);
+        let (look, ground, font) = (page.look, page.ground, page.font);
+        keep_look(look, ground, font);
         self.shown.clear();
         self.shown_page.clear();
         self.changed();
         self.say(format!("{} on {}", LOOKS[usize::from(look)], GROUNDS[usize::from(ground)].to_lowercase()));
+    }
+
+    /// The font a board's words are in: what is picked out set in it, and
+    /// what is drawn next, on this board and on a new one; the look left
+    /// as it was. One step to undo.
+    pub(in crate::studio) fn set_font(&mut self, font: usize) {
+        let font = font.min(FACES.len() - 1);
+        self.checkpoint();
+        let page = &mut self.pages[self.page];
+        (page.font, page.styled) = (font, true);
+        // Kept for a new board once chosen, not while only hovered.
+        if self.preview.is_none() {
+            keep_look(page.look, page.ground, font);
+        }
+        let styled: Vec<usize> = self.chosen().into_iter().filter(|&index| matches!(self.doc.layers[index].kind, Kind::Shape(_))).collect();
+        for index in styled {
+            if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
+                shape.face = font;
+                shape.touch();
+            }
+        }
+        self.changed();
+        self.say(format!("Font: {}", FACES[font]));
+    }
+
+    /// The font the board's next words are in.
+    pub(in crate::studio) fn board_font(&self) -> usize {
+        self.pages[self.page].font.min(FACES.len() - 1)
     }
 
     /// The paper of the board shown, and its dots.
@@ -233,6 +268,104 @@ mod tests {
         assert_eq!(studio.board_ground(), 0x000000);
         studio.undo();
         assert_eq!(studio.pages[0].ground, 1);
+    }
+
+    #[test]
+    fn the_font_is_its_own_choice_apart_from_the_look_kept_in_the_file_and_used_for_what_is_drawn_next() {
+        let mut studio = board();
+        assert_eq!(studio.board_font(), LETTERING, "Architects Daughter to begin with");
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (300.0, 200.0), Mods::default());
+        type_in(&mut studio, "Cache");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        // Clean draws it crisp, its words still lettered.
+        studio.selected.clear();
+        studio.set_look(Some(2), None);
+        assert_eq!((shape(&studio, 0).face, studio.board_font()), (LETTERING, LETTERING), "the look leaves the font");
+        let lettered = shown_words(&mut studio);
+        studio.set_look(Some(0), None);
+        // Fira Code for the box picked out, and for the next; the look kept.
+        studio.selected = vec![0];
+        studio.set_font(3);
+        assert_eq!((shape(&studio, 0).face, studio.board_font(), studio.pages[0].look), (3, 3, 0), "the font leaves the look");
+        studio.set_look(Some(2), None);
+        assert_ne!(shown_words(&mut studio), lettered, "drawn in Fira Code now");
+        assert_eq!(shape(&studio, 0).face, 3);
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected.clear();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (400.0, 100.0), (560.0, 172.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert_eq!(shape(&studio, 1).face, 3, "the next box in it");
+        // With nothing picked out, only what is drawn next.
+        studio.selected.clear();
+        studio.set_font(0);
+        assert_eq!((shape(&studio, 0).face, shape(&studio, 1).face, studio.board_font()), (3, 3, 0));
+        // Kept in the file; one step to undo.
+        let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        assert_eq!((back[0].look, back[0].font), (2, 0));
+        studio.undo();
+        assert_eq!(studio.board_font(), 3);
+        // A diagram brought in is in the board's font.
+        assert!(studio.bring_mermaid("flowchart LR\n  API --> Database"));
+        let boxes: Vec<Shape> = studio.doc.layers.iter().filter_map(|layer| match &layer.kind {
+            Kind::Shape(shape) if shape.text == "API" || shape.text == "Database" => Some(shape.clone()),
+            _ => None,
+        }).collect();
+        assert!(boxes.len() == 2 && boxes.iter().all(|shape| shape.face == 3), "Mermaid in Fira Code");
+        crate::studio::board::mermaid::check::assert_words_fit(&mut studio);
+    }
+
+    #[test]
+    fn the_font_is_chosen_from_its_own_list_in_the_bar_beside_the_look() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
+        type_in(&mut studio, "Queue");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let (look, font) = (studio.control_rect(Control::Board(Ctl::Look)).unwrap(), studio.control_rect(Control::Board(Ctl::Font)).unwrap());
+        assert!(!look.intersects(font), "two controls");
+        click(&mut studio, font.center());
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Fonts));
+        let row = studio.menu_items(MenuKind::Fonts).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == "Instrument Serif")).unwrap();
+        let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+        click(&mut studio, rect.center());
+        assert_eq!((shape(&studio, 0).face, studio.board_font(), studio.pages[0].look), (1, 1, 0));
+        // The look's part still only changes the look.
+        click(&mut studio, look.center());
+        assert_eq!((shape(&studio, 0).face, studio.board_font(), studio.pages[0].look), (1, 1, 1));
+    }
+
+    #[test]
+    fn a_file_from_before_the_font_was_its_own_looks_as_it_did() {
+        let mut box_ = Shape::new(Tool::Rect, INK, LINE, (100.0, 100.0));
+        box_.points[1] = (260.0, 172.0);
+        (box_.text, box_.face, box_.sketch) = ("Cache".into(), LETTERING, true);
+        let mut serif = box_.clone();
+        serif.face = 1;
+        let mut pages = vec![Page::new("Clean", Vec::new()), Page::new("Rounded", Vec::new())];
+        for (page, look) in pages.iter_mut().zip([2, 0]) {
+            (page.board, page.styled, page.look) = (true, true, look);
+            page.loose.layers = vec![Layer::shape(box_.clone()), Layer::shape(serif.clone())];
+        }
+        // As it was written then: no font on its look's line.
+        let then = String::from_utf8(write_pages(&pages)).unwrap().replace("board-look 2 0 2\n", "board-look 2 0\n").replace("board-look 0 0 2\n", "board-look 0 0\n");
+        let back = read_pages(then.as_bytes()).unwrap();
+        let faces = |page: &Page| page.loose.layers.iter().map(|layer| match &layer.kind {
+            Kind::Shape(shape) => shape.face,
+            Kind::Picture(_) => usize::MAX,
+        }).collect::<Vec<_>>();
+        assert_eq!((back[0].font, faces(&back[0])), (0, vec![0, 1]), "Clean's words in Geist outright, as they were drawn");
+        assert_eq!((back[1].font, faces(&back[1])), (LETTERING, vec![LETTERING, 1]), "the rest lettered");
+    }
+
+    /// The pixels of the first box's words, as the board shows them.
+    fn shown_words(studio: &mut Studio) -> Vec<u32> {
+        let (x, y, w, h) = studio.box_frame(0);
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let (a, b) = (studio.to_window_page((x + 10.0, y + 10.0)), studio.to_window_page((x + w - 10.0, y + h - 10.0)));
+        (a.1..b.1).flat_map(|py| (a.0..b.0).map(move |px| (px, py))).map(|(px, py)| out[(py * studio.width + px) as usize]).collect()
     }
 
     #[test]

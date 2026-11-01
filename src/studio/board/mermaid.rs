@@ -182,10 +182,10 @@ pub(in crate::studio) const SERIES: [(u32, u32); 8] = [(0xD0EBFF, 0x1971C2), (0x
 const PAD: f32 = 20.0;
 
 impl Studio {
-    /// How wide some words are on a board, in whichever of its faces is
-    /// wider, so that they fit however the board is drawn.
+    /// How wide some words are on a board, in its font.
     fn words_wide(&mut self, words: &str, px: u32) -> f32 {
-        words.split('\n').map(|line| self.text.width_in(LETTERING, line, px).max(self.text.width_in(0, line, px))).max().unwrap_or(0) as f32
+        let font = self.board_font();
+        words.split('\n').map(|line| self.text.width_in(font, line, px)).max().unwrap_or(0) as f32
     }
 
     /// How tall some lines of words are.
@@ -193,8 +193,8 @@ impl Studio {
         (words.split('\n').count() as i32 * Text::line_height(px)) as f32
     }
 
-    /// A box of a diagram, its words in it, sized to them in either face,
-    /// drawn as a board draws one; where its middle is.
+    /// A box of a diagram, its words in it, sized to them in the board's
+    /// font, drawn as a board draws one; where its middle is.
     fn diagram_box(&mut self, words: &str, form: Form, middle: Point) -> usize {
         let tool = if matches!(form, Form::Circle | Form::Double | Form::Start | Form::End) { Tool::Ellipse } else { Tool::Rect };
         let mut shape = Shape::new(tool, INK, LINE, middle);
@@ -241,15 +241,11 @@ impl Studio {
         };
         shape.text = words.to_owned();
         shape.points = vec![(middle.0 - least.0 / 2.0, middle.1 - least.1 / 2.0), (middle.0 + least.0 / 2.0, middle.1 + least.1 / 2.0)];
-        // As large as its words need in the board's lettering and in the
-        // plain face the clean look draws them in, whichever needs more.
+        // As large as its words need in the board's font, whatever its
+        // look; and a little more across, for letters drawn a little wider
+        // zoomed.
         let mut needs = shape.label_needs(&mut self.text, least, nest::MOST_WIDE);
-        let face = shape.face;
-        shape.face = 0;
-        let plain_needs = shape.label_needs(&mut self.text, least, nest::MOST_WIDE);
-        shape.face = face;
-        // And a little more across, for letters drawn a little wider zoomed.
-        needs = (needs.0.max(plain_needs.0) + if words.is_empty() { 0.0 } else { 10.0 }, needs.1.max(plain_needs.1));
+        needs.0 += if words.is_empty() { 0.0 } else { 10.0 };
         let (w, h) = match form {
             Form::Circle | Form::Double => (needs.0.max(needs.1), needs.0.max(needs.1)),
             Form::Start | Form::End | Form::Bar => least,
@@ -297,7 +293,8 @@ impl Studio {
 
     /// Words on the board with their middle at a point.
     fn words_at(&mut self, words: &str, middle: Point, px: u32) -> usize {
-        let (wide, tall) = (self.text.width_in(LETTERING, words.split('\n').max_by_key(|line| line.len()).unwrap_or(""), px) as f32, Self::words_tall(words, px));
+        let font = self.board_font();
+        let (wide, tall) = (self.text.width_in(font, words.split('\n').max_by_key(|line| line.len()).unwrap_or(""), px) as f32, Self::words_tall(words, px));
         let index = self.diagram_words(words, (middle.0 - wide / 2.0, middle.1 - tall / 2.0), px);
         if let Some(shape) = self.shape_mut(index) {
             shape.align = 1;
@@ -593,8 +590,7 @@ pub(in crate::studio) mod check {
         }
     }
 
-    /// Every box's words inside it, in the board's lettering and in the
-    /// plain face the clean look draws them in.
+    /// Every box's words inside it, in its own font.
     pub(in crate::studio) fn assert_words_fit(studio: &mut Studio) {
         for layer in studio.doc.layers.clone() {
             let Kind::Shape(shape) = &layer.kind else { continue };
@@ -602,14 +598,10 @@ pub(in crate::studio) mod check {
                 continue;
             }
             let (x, y, w, h) = shape.frame();
-            for face in [LETTERING, 0] {
-                let mut drawn = shape.clone();
-                drawn.face = face;
-                let (lines, high) = drawn.label_lines(&mut studio.text);
-                for (line, left, top, wide) in lines {
-                    let inside = left >= x - 0.5 && left + wide as f32 <= x + w + 0.5 && top >= y - 0.5 && top + high as f32 <= y + h + 2.0;
-                    assert!(inside, "{line:?} of {:?} in face {face} at {:?} is out of {:?}", shape.text, (left, top, wide, high), (x, y, w, h));
-                }
+            let (lines, high) = shape.label_lines(&mut studio.text);
+            for (line, left, top, wide) in lines {
+                let inside = left >= x - 0.5 && left + wide as f32 <= x + w + 0.5 && top >= y - 0.5 && top + high as f32 <= y + h + 2.0;
+                assert!(inside, "{line:?} of {:?} in face {} at {:?} is out of {:?}", shape.text, shape.face, (left, top, wide, high), (x, y, w, h));
             }
         }
     }

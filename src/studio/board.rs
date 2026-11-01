@@ -16,8 +16,8 @@ pub(super) const FILLS: [u32; 5] = [0xFFF3BF, 0xD3F9D8, 0xD0EBFF, 0xFFE3E3, 0xE5
 #[cfg(test)]
 const DOTS: u32 = 0xD8D6CF;
 pub(super) const QUIET: u32 = 0x868E96;
-/// The lettering a board's words are in: Architects Daughter, by where it
-/// is among the faces; and how large, and how wide a line is.
+/// The lettering a new board's words are in: Architects Daughter, by where
+/// it is among the faces; and how large, and how wide a line is.
 pub(super) const LETTERING: usize = 2;
 pub(super) const WORDS_PX: u32 = 16;
 pub(super) const LINE: f32 = 2.0;
@@ -57,6 +57,8 @@ pub(super) enum Ctl {
     Fill(u8),
     NoFill,
     Look,
+    /// The font its words are in, a list of the faces, apart from the look.
+    Font,
     /// What the board is on: light paper, dark gray or black.
     Ground,
     Words(u8),
@@ -391,11 +393,11 @@ impl Studio {
     }
 
     /// A shape about to be drawn on a board, made as a board draws one: by
-    /// hand, in its ink and fill, its words lettered; a box the kind the
-    /// box tool makes; an arrow routed between what it joins.
+    /// hand, in its ink and fill, its words in the board's font; a box the
+    /// kind the box tool makes; an arrow routed between what it joins.
     pub(super) fn board_dress(&self, shape: &mut Shape) {
         let board = &self.board;
-        (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width, LETTERING, board.px);
+        (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width, self.board_font(), board.px);
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
                 (shape.sketch, shape.border, shape.radius) = (board.sketch, true, 6.0);

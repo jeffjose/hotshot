@@ -19,6 +19,8 @@ pub(super) struct Preview {
     border: bool,
     gradient: Option<shapes::Gradient>,
     edited: bool,
+    /// The font of a board's next words.
+    font: usize,
 }
 
 impl Studio {
@@ -59,7 +61,7 @@ impl Studio {
         }
         self.end_preview();
         let Some(key) = wanted else { return };
-        self.preview = Some(Preview { key, doc: self.doc.clone(), undo: self.undo.len(), redo: self.redo.clone(), color: self.color, fill: self.fill, face: self.face, border: self.border, gradient: self.gradient, edited: self.edited });
+        self.preview = Some(Preview { key, doc: self.doc.clone(), undo: self.undo.len(), redo: self.redo.clone(), color: self.color, fill: self.fill, face: self.face, border: self.border, gradient: self.gradient, edited: self.edited, font: self.pages[self.page].font });
         let (menu, palette, hsv) = (self.menu, self.palette, self.hsv);
         match key {
             Control::MenuRow(level, row) => {
@@ -89,6 +91,7 @@ impl Studio {
         let Some(preview) = self.preview.take() else { return };
         self.doc = preview.doc;
         (self.color, self.fill, self.face, self.border, self.gradient, self.edited) = (preview.color, preview.fill, preview.face, preview.border, preview.gradient, preview.edited);
+        self.pages[self.page].font = preview.font;
         self.undo.truncate(preview.undo);
         self.redo = preview.redo;
         self.version += 1;

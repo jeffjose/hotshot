@@ -420,7 +420,8 @@ hand `H`, a box `R`, an oval `O`, a diamond `D`, an arrow `A`, a line
 `L`, the pen `P`, text `T`, a sticky note `S`, and a picture `I`, which
 takes one off the clipboard (or drop one on the board). What a board
 draws is drawn by hand, in a dark ink two pixels wide with a soft fill,
-and its words are in Architects Daughter at a modest size: a box is
+and its words are in Architects Daughter, to begin with, at a modest
+size: a box is
 gone round twice through its corners, each a pixel or two off where it
 is, the second time thinner and fainter, its fill a little off its
 line, and nothing past its corners; an oval is gone round again a
@@ -432,16 +433,24 @@ from what the shape is called rather than where it is, and no two are
 alike, and zoomed in it is the same drawing larger. Each board has a
 look, from the bar of styles or `Ctrl+K`: Rounded, as it begins, by
 hand with its corners rounded off; Sketchy, by hand and angular; or
-Clean, one crisp line a pixel and a half wide, real round corners and
-Geist, as Linear's and Vercel's pages are. And a ground: light paper, dark gray
-or black, every color of the board turning to its shade for the dark,
-as Radix's light and dark scales do, so that red becomes a whitish
-red and nothing is picked again; exports follow it. Switching either
-draws the board again and moves nothing. The look and ground are the
-page's own, kept in the file and by undo: a board switched to Design is
-drawn crisp there, its shapes left as they were, and switched back it
-is drawn as it was. A new board begins in the look and ground chosen
-last. A box can be drawn as a box, a diamond or a sticky note,
+Clean, one crisp line a pixel and a half wide and real round corners,
+as Linear's and Vercel's pages are. The look is only how shapes and
+lines are drawn; the font is a choice of its own, beside it in the bar
+of styles or `Ctrl+K` Font: any of hotshot's faces, Architects
+Daughter, Geist, Instrument Serif, Fira Code or Anton. Chosen with
+shapes picked out, it is theirs; either way it is the board's for what
+is drawn next, a Mermaid diagram brought in too. Changing the look never
+changes the font, nor the font the look. And a ground: light paper, dark
+gray or black, every color of the board turning to its shade for the
+dark, as Radix's light and dark scales do, so that red becomes a whitish
+red and nothing is picked again; exports follow it. Switching any of
+them draws the board again and moves nothing. The look, ground and font
+are the page's own, kept in the file and by undo: a board switched to
+Design is drawn crisp there, its shapes left as they were, and switched
+back it is drawn as it was. A new board begins in the look, ground and
+font chosen last, Rounded in Architects Daughter on light at first. A
+board from before the font was its own looks as it did: drawn Clean,
+its words are set in Geist. A box can be drawn as a box, a diamond or a sticky note,
 which is yellow on a soft shadow, with its words in the middle of it,
 wrapped to it.
 
@@ -498,12 +507,13 @@ end is let go to tie it to nothing.
 A small bar of styles floats over what is picked out, or under it where
 that covers less of the rest, clear of its dots, rather than the
 panel: five line colors and five fills, as Excalidraw keeps them, no
-fill, Rough or Clean, how large the words are, a status dot for a box,
-and whether the board guesses what comes next. With nothing picked out
-and a tool in hand it sits over the tools, for the next shape. `C` and
-then `1` to `5` is a line color, `Q` `W` `E` `R` `T` a fill and `X` no
-fill. What was set last, the color, the fill, the look and the size of
-the words, carries on to the next shape drawn. A box let go a few
+fill, the look, the ground, and then the font, its name in itself, a
+list of the faces, apart from how large the words are; a status dot for
+a box, and whether the board guesses what comes next. With nothing
+picked out and a tool in hand it sits over the tools, for the next
+shape. `C` and then `1` to `5` is a line color, `Q` `W` `E` `R` `T` a
+fill and `X` no fill. What was set last, the color, the fill, the look,
+the font and the size of the words, carries on to the next shape drawn. A box let go a few
 pixels off a neighbor's line or gap slides onto it, with no guides
 drawn; hold Alt as it is let go to put it exactly where it is.
 
@@ -610,7 +620,7 @@ its title over it. Every kind is drawn in the board's look, Rounded,
 Sketchy or Clean, on its ground, light, dark gray or black, the colors
 a diagram tells its parts apart by turning to their own shades for the
 dark and the paper under its words to the ground's; every box is as
-large as its words need in either face, so none spill out. Nothing is
+large as its words need in the board's font, so none spill out. Nothing is
 a picture: each part is a board shape. `Ctrl+K` Copy as Mermaid puts what is
 picked out, or the board, on the clipboard as a flowchart, or as a
 sequence diagram for a sequence, and writes it beside the file as an

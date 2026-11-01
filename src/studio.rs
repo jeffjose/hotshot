@@ -1009,9 +1009,10 @@ pub fn write_pages(pages: &[Page]) -> Vec<u8> {
         if page.board {
             out += "board\n";
         }
-        // Its look as a board, kept while it is a page of frames too.
+        // Its look as a board, kept while it is a page of frames too, and
+        // the font of its words.
         if page.board || page.styled {
-            out += &format!("board-look {} {}\n", page.look, page.ground);
+            out += &format!("board-look {} {} {}\n", page.look, page.ground, page.font);
         }
         if !page.board && page.frames.is_empty() {
             // A board made a page of frames again before it had any.
@@ -1068,6 +1069,7 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
     // its frames, until another page or frame.
     let mut own = false;
     let mut frameless: Vec<usize> = Vec::new();
+    let mut implied: Vec<usize> = Vec::new();
     for line in lines {
         if let Some(name) = line.strip_prefix("page ") {
             pages.push(Page::new(name.to_owned(), Vec::new()));
@@ -1083,9 +1085,20 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
             continue;
         }
         if let Some(rest) = line.strip_prefix("board-look ").filter(|_| page.frames.is_empty() && !own) {
-            let mut words = rest.split(' ').filter_map(|word| word.parse::<u8>().ok());
-            (page.look, page.ground) = (words.next().unwrap_or(0).min(2), words.next().unwrap_or(0).min(2));
+            let mut words = rest.split(' ').filter_map(|word| word.parse::<usize>().ok());
+            (page.look, page.ground) = (words.next().unwrap_or(0).min(2) as u8, words.next().unwrap_or(0).min(2) as u8);
             page.styled = true;
+            // From before the font was its own: the face the look implied,
+            // and Clean's words, lettered underneath, set in it outright.
+            match words.next() {
+                Some(font) => page.font = font.min(FACES.len() - 1),
+                None => {
+                    page.font = board::look::implied_font(page.look);
+                    if page.look == 2 {
+                        implied.push(pages.len() - 1);
+                    }
+                }
+            }
             continue;
         }
         if line == "no-frames" && page.frames.is_empty() && !own {
@@ -1121,6 +1134,16 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
             page.frames.push(Doc::new(1200, 675));
         }
         page.seen = page.loose.layers.iter().map(stacks::layer_id).collect();
+        if implied.contains(&index) {
+            for layer in page.loose.layers.iter_mut().chain(page.frames.iter_mut().flat_map(|frame| frame.layers.iter_mut())) {
+                if let Kind::Shape(shape) = &mut layer.kind {
+                    if shape.face == board::LETTERING {
+                        shape.face = 0;
+                        shape.touch();
+                    }
+                }
+            }
+        }
     }
     (!pages.is_empty()).then_some(pages)
 }
@@ -1149,11 +1172,14 @@ pub struct Page {
     /// own, kept while it is a page of frames and back when it is a board
     /// again, rather than the last chosen.
     pub styled: bool,
+    /// The font a board's next words are in, by where it is among the
+    /// faces: a choice of its own, apart from the look.
+    pub font: usize,
 }
 
 impl Page {
     pub fn new(name: impl Into<String>, frames: Vec<Doc>) -> Page {
-        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false }
+        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false, font: board::LETTERING }
     }
 }
 
