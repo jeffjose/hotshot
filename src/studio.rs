@@ -5831,7 +5831,7 @@ impl Studio {
                         false => quick && reaches(drawn.part, drawn.zoom, seen, self.zoom),
                     })
         });
-        if !fresh && !seen.is_empty() && !self.redraw_touched(index, band, range, seen) {
+        if !fresh && !seen.is_empty() && !self.redraw_touched(index, band, range, seen, whole) {
             let (times, part) = match quick {
                 true => {
                     let times = self.zoom / 2.0;

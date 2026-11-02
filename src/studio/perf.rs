@@ -132,3 +132,96 @@ fn draw_timings() {
         figures("wheel pan", timed(&mut studio, &mut out, 30, |studio, at| studio.scrolled(0.0, if at < 15 { 0.5 } else { -0.5 })));
     }
 }
+
+/// A board as one is drawn by hand: thirty boxes with words in them, in
+/// rows of six, twenty arrows across the rows tied to them, and two down
+/// between rows, one from the box near the middle, which has three; the
+/// pointer in hand, nothing picked out. Gives the box with three arrows,
+/// and one with none.
+pub(super) fn busy_board(width: i32, height: i32, zoom: f32) -> (Studio, usize, usize) {
+    use super::board::tests::{press_key, pull, type_in};
+    let mut studio = Studio::with_pages(board::board_pages(), Text::load(), width, height, std::env::temp_dir(), "perf-%Y.png".into());
+    (studio.zoom, studio.pan) = (zoom, (0.0, 0.0));
+    let none = Mods::default();
+    let corner = |at: usize| (120.0 + (at % 6) as f32 * 240.0, 120.0 + (at / 6) as f32 * 160.0);
+    press_key(&mut studio, Key::Char('r'), none);
+    for at in 0..30 {
+        let (x, y) = corner(at);
+        pull(&mut studio, (x, y), (x + 150.0, y + 72.0), none);
+        type_in(&mut studio, &format!("Service {at}"));
+        press_key(&mut studio, Key::Enter, none);
+    }
+    press_key(&mut studio, Key::Escape, none);
+    let mut arrows = Vec::new();
+    for row in 0..5 {
+        for column in 0..4 {
+            arrows.push((row * 6 + column, row * 6 + column + 1));
+        }
+    }
+    arrows.push((8, 14));
+    arrows.push((21, 27));
+    for (from, to) in arrows {
+        let (a, b) = (corner(from), corner(to));
+        press_key(&mut studio, Key::Char('a'), none);
+        let (start, end) = match b.1 > a.1 {
+            true => ((a.0 + 75.0, a.1 + 80.0), (b.0 + 75.0, b.1 - 8.0)),
+            false => ((a.0 + 158.0, a.1 + 36.0), (b.0 - 8.0, b.1 + 36.0)),
+        };
+        pull(&mut studio, start, end, none);
+        press_key(&mut studio, Key::Escape, none);
+    }
+    press_key(&mut studio, Key::Escape, none);
+    studio.selected.clear();
+    let id = |studio: &Studio, at: usize| match &studio.doc.layers[at].kind {
+        Kind::Shape(shape) => shape.id,
+        Kind::Picture(_) => 0,
+    };
+    let tied = |studio: &Studio, at: usize| studio.doc.layers.iter().filter(|layer| matches!(&layer.kind, Kind::Shape(arrow) if arrow.stuck.iter().flatten().any(|s| s.0 == id(studio, at)))).count();
+    let boxes = studio.doc.layers.iter().filter(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.tool == Tool::Rect)).count();
+    let lines = studio.doc.layers.iter().filter(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.sticks())).count();
+    assert!(boxes == 30 && lines == 22, "{boxes} boxes, {lines} arrows tied");
+    assert_eq!(tied(&studio, 8), 3);
+    (studio, 8, 29)
+}
+
+/// How long each step of a drag of a box on a busy board takes, the
+/// pointer moved and the window drawn, apart and together: `cargo test
+/// --release board_timings -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn board_timings() {
+    for (width, height, zoom) in [(1600, 1000, 1.0), (3840, 2160, 2.0)] {
+        println!("{width}x{height}:");
+        let (mut studio, three, lone) = busy_board(width, height, zoom);
+        let mut out = vec![0u32; (width * height) as usize];
+        studio.draw(&mut out);
+        let none = Mods::default();
+        figures("first draw", timed(&mut studio, &mut out, 3, |studio, _| studio.dirty = true));
+        let empty = studio.to_window_page((60.0, 950.0));
+        figures("hover over the board", timed(&mut studio, &mut out, 60, |studio, at| studio.pointer_moved(empty.0 + at % 7, empty.1 + at % 5, none)));
+        for (name, layer) in [("drag a lone box", lone), ("drag a box, 3 arrows", three)] {
+            let (x, y, w, h) = studio.doc.layers[layer].bounds(&mut studio.text);
+            let start = studio.to_window_page((x + w * 0.3, y + h * 0.3));
+            studio.pointer_moved(start.0, start.1, none);
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            let (mut moves, mut draws) = (Vec::new(), Vec::new());
+            for at in 0..80 {
+                let began = Instant::now();
+                studio.pointer_moved(start.0 + at * 3, start.1 + at * 2, none);
+                moves.push(began.elapsed());
+                let began = Instant::now();
+                if studio.take_dirty() {
+                    studio.draw(&mut out);
+                }
+                draws.push(began.elapsed());
+            }
+            studio.released();
+            figures(name, moves.iter().zip(&draws).map(|(a, b)| *a + *b).collect());
+            figures("  pointer moved", moves);
+            figures("  drawn", draws);
+            studio.key(Key::Escape, none, true);
+            studio.selected.clear();
+        }
+    }
+}

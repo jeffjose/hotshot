@@ -79,8 +79,8 @@ fn reaches_beyond(layer: &Layer) -> bool {
 
 impl Studio {
     /// Something has changed, but of the frame worked in only these
-    /// layers, and the lines stuck to them: where those were and are is
-    /// all of it drawn again.
+    /// layers, and what goes with them, as the lines stuck to them do:
+    /// where those were and are is all of it drawn again.
     pub(super) fn changed_layers(&mut self, layers: &[usize]) {
         let before = self.doc.stamp;
         let (from, mut list) = match self.touched.take() {
@@ -88,8 +88,6 @@ impl Studio {
             _ => (before, Vec::new()),
         };
         list.extend_from_slice(layers);
-        let stuck = |layer: &Layer| matches!(&layer.kind, Kind::Shape(shape) if shape.stuck.iter().any(Option::is_some));
-        list.extend(self.doc.layers.iter().enumerate().filter(|(_, layer)| stuck(layer)).map(|(index, _)| index));
         list.sort_unstable();
         list.dedup();
         self.changed();
@@ -102,9 +100,14 @@ impl Studio {
 
     /// The frame worked in drawn again only where the layers changed since
     /// it was last drawn were and are, if that is all that has changed and
-    /// what was drawn is at the zoom it is shown at and reaches over what
-    /// is seen of it; whether it could be.
-    pub(super) fn redraw_touched(&mut self, index: usize, band: usize, range: (usize, usize), seen: Rect) -> bool {
+    /// what was drawn is at the zoom it is shown at; whether it could be.
+    /// Changed are those it was told of, any that has moved or grown since,
+    /// as a box holding another does round it, and the lines stuck to any
+    /// of those; not every line stuck to something, which on a board is
+    /// most of it. Where what is seen of it has gone past what was drawn,
+    /// as a box dragged out past the rest does, what was drawn is grown to
+    /// it, only what is new of it drawn.
+    pub(super) fn redraw_touched(&mut self, index: usize, band: usize, range: (usize, usize), seen: Rect, whole: Rect) -> bool {
         let Some((from, upto, list)) = &self.touched else { return false };
         let Some(drawn) = self.drawn_of(index, band) else { return false };
         let fits = index == self.active
@@ -113,38 +116,94 @@ impl Studio {
             && drawn.stamp == *from
             && self.doc.stamp == *upto
             && same_zoom(drawn.zoom, self.zoom)
-            && drawn.part.intersect(seen) == seen
             && drawn.reaches.len() == self.doc.layers.len()
             && list.iter().all(|&layer| layer < self.doc.layers.len())
             && !self.doc.layers.iter().any(reaches_beyond);
         if !fits {
             return false;
         }
-        let list = list.clone();
-        let mut damage = Rect::default();
-        let mut now = Vec::with_capacity(list.len());
-        for &layer in &list {
-            let reach = reach(&self.doc.layers[layer], self.zoom, &mut self.text);
-            damage = both(damage, both(reach, self.drawn_of(index, band).map_or(Rect::default(), |drawn| drawn.reaches[layer])));
-            now.push(reach);
-        }
+        let (list, part, zoom) = (list.clone(), drawn.part, drawn.zoom);
+        // Grown to what is seen and some way past it, past the edge of what
+        // is drawn too, for it not to be grown again with each step of a
+        // drag; so long as that leaves it not much larger than drawing it
+        // afresh would.
+        let grown = match part.intersect(seen) == seen {
+            true => part,
+            false => {
+                let afresh = seen.inflate(ROOM).intersect(whole.inflate(ROOM));
+                let grown = both(part, afresh);
+                if i64::from(grown.w) * i64::from(grown.h) > 2 * i64::from(afresh.w) * i64::from(afresh.h) {
+                    return false;
+                }
+                grown
+            }
+        };
+        let now = self.reaches(zoom);
         let Some(drawn) = self.drawn_of(index, band) else { return false };
-        let (part, zoom) = (drawn.part, drawn.zoom);
-        let damage = damage.intersect(part);
-        if !damage.is_empty() {
-            let fresh = self.doc.render_part(zoom, damage, &mut self.text);
+        let mut changed: Vec<bool> = (0..now.len()).map(|layer| now[layer] != drawn.reaches[layer]).collect();
+        for &layer in &list {
+            changed[layer] = true;
+        }
+        // The lines stuck to what changed, and to those, in turn.
+        loop {
+            let ids: Vec<u32> = self.doc.layers.iter().zip(&changed).filter(|(_, &changed)| changed).map(|(layer, _)| super::stacks::layer_id(layer)).collect();
+            let mut more = false;
+            for (layer, changed) in self.doc.layers.iter().zip(changed.iter_mut()) {
+                if let Kind::Shape(shape) = &layer.kind {
+                    if !*changed && shape.stuck.iter().flatten().any(|(id, ..)| ids.contains(id)) {
+                        (*changed, more) = (true, true);
+                    }
+                }
+            }
+            if !more {
+                break;
+            }
+        }
+        // Where each changed one was and is, those that overlap as one.
+        let mut damage: Vec<Rect> = Vec::new();
+        for layer in (0..now.len()).filter(|&layer| changed[layer]) {
+            let mut area = both(now[layer], drawn.reaches[layer]).intersect(grown);
+            if area.is_empty() {
+                continue;
+            }
+            while let Some(at) = damage.iter().position(|other| !other.intersect(area.inflate(1)).is_empty()) {
+                area = both(area, damage.swap_remove(at));
+            }
+            damage.push(area);
+        }
+        // What is new of it where it has grown: above and below what was
+        // drawn, and to either side of it.
+        if grown != part {
+            let rows = part.intersect(grown);
+            for strip in [
+                Rect::new(grown.x, grown.y, grown.w, rows.y - grown.y),
+                Rect::new(grown.x, rows.bottom(), grown.w, grown.bottom() - rows.bottom()),
+                Rect::new(grown.x, rows.y, rows.x - grown.x, rows.h),
+                Rect::new(rows.right(), rows.y, grown.right() - rows.right(), rows.h),
+            ] {
+                if strip.w > 0 && strip.h > 0 {
+                    damage.push(strip);
+                }
+            }
             let Some(drawn) = self.drawn_slot(index, band).as_mut() else { return false };
-            for row in 0..damage.h {
-                let into = ((damage.y - part.y + row) * part.w + damage.x - part.x) as usize;
-                drawn.pixels[into..into + damage.w as usize].copy_from_slice(&fresh[(row * damage.w) as usize..((row + 1) * damage.w) as usize]);
+            let mut pixels = vec![0u32; (grown.w * grown.h) as usize];
+            for row in 0..part.h {
+                let into = ((part.y - grown.y + row) * grown.w + part.x - grown.x) as usize;
+                pixels[into..into + part.w as usize].copy_from_slice(&drawn.pixels[(row * part.w) as usize..((row + 1) * part.w) as usize]);
+            }
+            (drawn.pixels, drawn.part) = (pixels, grown);
+        }
+        for area in damage {
+            let fresh = self.doc.render_part(zoom, area, &mut self.text);
+            let Some(drawn) = self.drawn_slot(index, band).as_mut() else { return false };
+            for row in 0..area.h {
+                let into = ((area.y - grown.y + row) * grown.w + area.x - grown.x) as usize;
+                drawn.pixels[into..into + area.w as usize].copy_from_slice(&fresh[(row * area.w) as usize..((row + 1) * area.w) as usize]);
             }
         }
         let stamp = self.doc.stamp;
         let Some(drawn) = self.drawn_slot(index, band).as_mut() else { return false };
-        for (&layer, reach) in list.iter().zip(now) {
-            drawn.reaches[layer] = reach;
-        }
-        drawn.stamp = stamp;
+        (drawn.reaches, drawn.stamp) = (now, stamp);
         // Drawn as it is now: the next change counts from here.
         self.touched = None;
         true
@@ -219,5 +278,74 @@ mod tests {
         assert!(studio.touched.is_none());
         studio.draw(&mut out);
         as_if_whole(&mut studio);
+    }
+
+    /// What is kept of a board's own layers, against the same part of
+    /// them drawn whole, each as it is shown on the board's paper: the
+    /// same, to a shade. A line drawn a shade into the paper here and not
+    /// there leaves it opaque in one and clear in the other, which on the
+    /// paper look the same.
+    fn board_as_if_whole(studio: &mut Studio) {
+        let drawn = studio.shown_page[0].as_ref().unwrap();
+        let (part, zoom, range, kept) = (drawn.part, drawn.zoom, drawn.range, drawn.pixels.clone());
+        assert_eq!(drawn.stamp, studio.doc.stamp);
+        let whole = studio.doc.render_range(range, zoom, part, &mut studio.text);
+        let paper = studio.paper().0;
+        let shown = |color: u32| match color >> 24 {
+            255 => color & 0xFF_FFFF,
+            alpha => canvas::mix(paper, color & 0xFF_FFFF, alpha + (alpha >> 7)),
+        };
+        let off: Vec<(i32, i32, u32, u32)> = kept.iter().zip(&whole).enumerate().filter(|(_, (a, b))| [0, 8, 16].iter().any(|shift| ((shown(**a) >> shift & 0xFF) as i32 - (shown(**b) >> shift & 0xFF) as i32).abs() > 2)).map(|(at, (a, b))| (part.x + at as i32 % part.w, part.y + at as i32 / part.w, *a, *b)).collect();
+        assert!(off.is_empty(), "{} pixels differ in {part:?}: {:x?}", off.len(), &off[..off.len().min(8)]);
+    }
+
+    #[test]
+    fn a_box_dragged_on_a_board_is_drawn_again_only_where_it_and_what_goes_with_it_were_and_are() {
+        use crate::studio::board::tests::{board, press_key, pull, type_in};
+        let none = Mods::default();
+        let mut studio = board();
+        // A box with one in it, joined by an arrow to another, and an
+        // arrow tied to nothing.
+        press_key(&mut studio, Key::Char('r'), none);
+        pull(&mut studio, (100.0, 100.0), (500.0, 400.0), none);
+        press_key(&mut studio, Key::Enter, none);
+        pull(&mut studio, (150.0, 150.0), (260.0, 210.0), none);
+        type_in(&mut studio, "In");
+        press_key(&mut studio, Key::Enter, none);
+        pull(&mut studio, (700.0, 100.0), (860.0, 172.0), none);
+        type_in(&mut studio, "Out");
+        press_key(&mut studio, Key::Enter, none);
+        press_key(&mut studio, Key::Escape, none);
+        press_key(&mut studio, Key::Char('a'), none);
+        pull(&mut studio, (268.0, 180.0), (692.0, 136.0), none);
+        press_key(&mut studio, Key::Escape, none);
+        press_key(&mut studio, Key::Char('a'), none);
+        pull(&mut studio, (900.0, 500.0), (1000.0, 600.0), none);
+        press_key(&mut studio, Key::Escape, none);
+        press_key(&mut studio, Key::Escape, none);
+        studio.selected.clear();
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        board_as_if_whole(&mut studio);
+        // The box inside dragged to the edge of the one round it, the one
+        // the arrow goes to dragged down past all the rest, and the box
+        // round the first dragged with it in it.
+        let mut partly = 0;
+        for (at, by) in [((200.0, 160.0), (30, 4)), ((780.0, 110.0), (6, 40)), ((300.0, 380.0), (-12, 15))] {
+            let start = studio.to_window_page(at);
+            studio.pointer_moved(start.0, start.1, none);
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for step in 1..12 {
+                studio.pointer_moved(start.0 + step * by.0, start.1 + step * by.1, none);
+                partly += usize::from(studio.touched.is_some());
+                studio.draw(&mut out);
+                board_as_if_whole(&mut studio);
+            }
+            studio.released();
+            studio.draw(&mut out);
+            board_as_if_whole(&mut studio);
+        }
+        assert!(partly > 20, "drawn again only in part {partly} times");
     }
 }
