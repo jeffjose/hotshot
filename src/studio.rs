@@ -2499,6 +2499,7 @@ impl Studio {
         studio.active = if studio.pages[0].frames.is_empty() { LOOSE } else { 0 };
         studio.doc = std::mem::replace(slot(&mut studio.pages[0], studio.active), Doc::new(1, 1));
         studio.board = board::Board::new(studio.pages[0].board);
+        studio.sync_look();
         studio.fit();
         studio
     }
@@ -5941,6 +5942,11 @@ impl Studio {
     /// something has come that it should be given up for.
     pub fn draw_stopping(&mut self, out: &mut [u32], stop: &mut dyn FnMut() -> bool) {
         self.crop_window();
+        // A board drawn as its page says from the first, on its paper, as
+        // it is once anything is changed: a file just opened, or a page
+        // just gone to, would otherwise be drawn over nothing, its lines'
+        // soft edges made solid.
+        self.sync_look();
         let (width, height) = (self.width, self.height);
         let layout = self.layout();
         let view = layout.view;

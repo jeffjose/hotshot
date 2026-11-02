@@ -394,4 +394,32 @@ mod tests {
         let (part, range, kept) = (drawn.part, drawn.range, drawn.pixels.clone());
         assert_eq!(studio.doc.render_range_stopping(range, zoom, part, &mut studio.text, &mut || false), Some(kept));
     }
+
+    #[test]
+    fn a_sketchy_board_opened_from_its_file_is_drawn_on_its_paper_before_anything_is_changed() {
+        use crate::studio::board::tests::{board, press_key, pull, type_in};
+        let none = Mods::default();
+        let mut studio = board();
+        studio.pages[0].look = 1;
+        press_key(&mut studio, Key::Char('r'), none);
+        pull(&mut studio, (300.0, 200.0), (560.0, 290.0), none);
+        type_in(&mut studio, "Enter email");
+        press_key(&mut studio, Key::Enter, none);
+        press_key(&mut studio, Key::Escape, none);
+        let bytes = write_pages(&studio.gathered());
+        // Opened, zoomed far in on the box's corner and drawn; and the
+        // same once something has been changed.
+        let opened = || {
+            let mut studio = Studio::with_pages(read_pages(&bytes).unwrap(), Text::load(), 1280, 800, std::env::temp_dir(), "test-%Y.png".into());
+            (studio.zoom, studio.pan) = (7.9, (-300.0 * 7.9 + 200.0, -200.0 * 7.9 + 200.0));
+            studio
+        };
+        let (mut first, mut changed) = (opened(), opened());
+        changed.changed();
+        let (mut a, mut b) = (vec![0u32; 1280 * 800], vec![0u32; 1280 * 800]);
+        first.draw(&mut a);
+        changed.draw(&mut b);
+        let off = a.iter().zip(&b).filter(|(a, b)| a != b).count();
+        assert!(off == 0, "{off} pixels differ");
+    }
 }
