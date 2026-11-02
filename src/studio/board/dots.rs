@@ -198,8 +198,26 @@ impl Studio {
         }
         if let Drag::Pull { from, moved: true, .. } = self.drag {
             self.board.bind = self.pulled_onto(from);
+            self.board.ports = self.board.bind.and_then(|onto| Some((onto, self.pulled_port(from, onto)?.0))).into_iter().collect();
         }
         self.dirty = true;
+    }
+
+    /// Where on a box an arrow pulled out of another would be put, with
+    /// the pointer where it is: the middle of the side nearest it, or of
+    /// the side facing the other where it is well inside, or a point of a
+    /// plain box's edge it is right on; and that across and down it, as it
+    /// is tied.
+    fn pulled_port(&mut self, from: usize, onto: usize) -> Option<((f32, f32), (f32, f32))> {
+        let anchor = self.doc.layers.get(onto)?.kind.clone().anchor_of(&mut self.text)?;
+        let (u, v) = self.port_at(&anchor, self.to_doc(self.pointer));
+        let (a, b) = (self.box_frame(from), self.box_frame(onto));
+        let mut arrow = Shape::new(Tool::Arrow, INK, LINE, (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0));
+        arrow.points[1] = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0);
+        arrow.stuck = [Some((self.id_of(from), shapes::WHOLE, shapes::WHOLE)), Some((anchor.id, u, v))];
+        arrow.routed = true;
+        shapes::follow(std::iter::once(&mut arrow), &self.anchors());
+        Some((arrow.points[1], (u, v)))
     }
 
     /// The box an arrow pulled out would be let go on or near, but the one
@@ -252,7 +270,16 @@ impl Studio {
         self.checkpoint();
         if moved {
             if let Some(onto) = self.pulled_onto(from) {
-                self.join(from, onto);
+                // Into the other where it was let go, as the dot lit there
+                // showed.
+                let port = self.pulled_port(from, onto);
+                let arrow = self.join(from, onto);
+                if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(arrow) {
+                    if let (Some((id, ..)), Some((_, (u, v)))) = (shape.stuck[1], port) {
+                        shape.stuck[1] = Some((id, u, v));
+                    }
+                }
+                self.follow();
                 self.selected = vec![onto];
                 self.changed();
                 return;
@@ -324,10 +351,9 @@ impl Studio {
                 let to = match onto {
                     // To the edge of the box it would be tied to, which glows.
                     Some(index) => {
-                        let anchor = self.doc.layers[index].kind.clone().anchor_of(&mut self.text);
-                        let edge = anchor.map_or(self.to_doc(self.pointer), |anchor| anchor.edge_towards(self.to_doc(spot)));
+                        let port = self.pulled_port(from, index).map_or(self.to_doc(self.pointer), |(at, _)| at);
                         self.draw_bind(canvas);
-                        self.to_window(edge)
+                        self.to_window(port)
                     }
                     None => {
                         let (_, _, w, h) = self.box_frame(from);
@@ -341,7 +367,7 @@ impl Studio {
                 }
             }
         }
-        if matches!(self.drag, Drag::Draw { .. } | Drag::Scale { .. }) {
+        if matches!(self.drag, Drag::Draw { .. } | Drag::Scale { .. } | Drag::Move { moved: true, .. }) {
             self.draw_bind(canvas);
         }
         self.draw_ghost(canvas);
@@ -391,6 +417,7 @@ impl Studio {
             history.sliding = false;
         }
         self.board.bind = None;
+        self.board.ports.clear();
         // A box moved or sized as it is typed into: what is typed next is a
         // step of its own.
         // Whether the pointer went anywhere from where it was pressed.

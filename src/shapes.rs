@@ -1233,7 +1233,12 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                             (Some((other, whole, _)), 2) if whole == WHOLE => find(other).map_or(shape.points[near], |anchor| anchor.middle),
                             _ => shape.points[near],
                         };
-                        anchor.edge_towards(other)
+                        // A board's arrow meets it at the middle of the
+                        // side facing that, as its dots are.
+                        match shape.routed {
+                            true => side_towards(anchor, other).0,
+                            false => anchor.edge_towards(other),
+                        }
                     }
                     false => anchor.at(u, v),
                 };
@@ -1243,15 +1248,41 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                 }
             }
         }
-        // A board's arrow, both ends stuck to things as a whole, goes from
-        // the side of one nearest the other, curving into the other's.
+        // A board's arrow, both ends stuck to things as a whole or at the
+        // middle of a side, goes from the side of one, the nearest the
+        // other where it is stuck as a whole, curving into the other's.
         if shape.routed {
-            if let (Some((first, WHOLE, _)), Some((last, WHOLE, _))) = (shape.stuck[0], shape.stuck[1]) {
-                if let (Some(from), Some(to)) = (find(first), find(last)) {
+            if let (Some((first, fu, fv)), Some((last, lu, lv))) = (shape.stuck[0], shape.stuck[1]) {
+                let side = |u: f32, v: f32| match u == WHOLE {
+                    true => Some(None),
+                    false => port_of(u, v).map(Some),
+                };
+                if let (Some(from), Some(to), Some(a), Some(b)) = (find(first), find(last), side(fu, fv), side(lu, lv)) {
                     let before = shape.points.clone();
-                    route(shape, from, to);
+                    route_sides(shape, from, to, [a, b]);
                     this |= shape.points != before;
                 }
+            }
+            // One end at the middle of a side, the other free: bowed so as
+            // to come into that side square, rather than across the box.
+            for end in 0..2 {
+                let (Some((id, u, v)), None) = (shape.stuck[end], shape.stuck[1 - end]) else { continue };
+                let (Some(anchor), Some(side)) = (find(id), port_of(u, v)) else { continue };
+                if shape.elbow {
+                    continue;
+                }
+                let before = shape.points.clone();
+                let (at, out) = side_point(anchor, side);
+                let free = shape.points[1 - end];
+                let reach = (free.0 - at.0).hypot(free.1 - at.1) * 0.4;
+                let pull = (at.0 + out.0 * reach, at.1 + out.1 * reach);
+                let through = ((at.0 + free.0 + 2.0 * pull.0) / 4.0, (at.1 + free.1 + 2.0 * pull.1) / 4.0);
+                shape.points.truncate(2);
+                shape.points[end] = at;
+                if segment(through, at, free) > 2.0 {
+                    shape.points.push(through);
+                }
+                this |= shape.points != before;
             }
         }
         if this {
@@ -1263,18 +1294,62 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
 }
 
 /// Where on a thing an arrow to or from another meets it: the middle of
-/// the side of it facing the other, a little out from it; and the way
-/// out of that side.
+/// the side of it facing the other, touching it; and the way out of that
+/// side.
 pub fn side_towards(anchor: &Anchor, to: Point) -> (Point, (f32, f32)) {
     let (lx, ly) = turn_point(to, anchor.middle, -anchor.angle);
     let (dx, dy) = (lx - anchor.middle.0, ly - anchor.middle.1);
     let (hw, hh) = (anchor.half.0.max(1.0), anchor.half.1.max(1.0));
-    let (u, v, way) = match dx.abs() / hw >= dy.abs() / hh {
-        true => (dx.signum() * (1.0 + STUCK_GAP / hw), 0.0, (dx.signum(), 0.0)),
-        false => (0.0, dy.signum() * (1.0 + STUCK_GAP / hh), (0.0, dy.signum())),
+    let side = match dx.abs() / hw >= dy.abs() / hh {
+        true if dx >= 0.0 => 1,
+        true => 3,
+        false if dy >= 0.0 => 2,
+        false => 0,
     };
+    side_point(anchor, side)
+}
+
+/// The middles of a thing's sides an arrow's end is put at, as its dots
+/// are: top, right, bottom and left, across and down it from -1 to 1.
+pub const PORTS: [(f32, f32); 4] = [(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
+
+/// Which side's middle an end stuck at a spot of a thing is at, if any.
+pub fn port_of(u: f32, v: f32) -> Option<usize> {
+    PORTS.iter().position(|&(pu, pv)| pu == u && pv == v)
+}
+
+/// The middle of a side of a thing, on its edge, and the way out of it.
+pub fn side_point(anchor: &Anchor, side: usize) -> (Point, (f32, f32)) {
+    let way = PORTS[side.min(3)];
     let (sin, cos) = anchor.angle.sin_cos();
-    (anchor.at(u, v), (way.0 * cos - way.1 * sin, way.0 * sin + way.1 * cos))
+    (anchor.at(way.0, way.1), (way.0 * cos - way.1 * sin, way.0 * sin + way.1 * cos))
+}
+
+/// An arrow between the sides of two things, either side given or the
+/// one facing the other: from the middle of one to the middle of the
+/// other, bowed so as to leave and come into each square, as a curve
+/// with its handles straight out of each side does.
+pub fn route_sides(shape: &mut Shape, from: &Anchor, to: &Anchor, sides: [Option<usize>; 2]) {
+    if sides == [None, None] {
+        return route(shape, from, to);
+    }
+    let (start, out) = match sides[0] {
+        Some(side) => side_point(from, side),
+        None => side_towards(from, sides[1].map_or(to.middle, |side| side_point(to, side).0)),
+    };
+    let (end, into) = match sides[1] {
+        Some(side) => side_point(to, side),
+        None => side_towards(to, start),
+    };
+    let reach = (end.0 - start.0).hypot(end.1 - start.1) * 0.4;
+    let through = ((start.0 + end.0) / 2.0 + 0.375 * reach * (out.0 + into.0), (start.1 + end.1) / 2.0 + 0.375 * reach * (out.1 + into.1));
+    shape.points.truncate(2);
+    shape.points[0] = start;
+    shape.points[1] = end;
+    shape.elbow = false;
+    if segment(through, start, end) > 2.0 {
+        shape.points.push(through);
+    }
 }
 
 /// An arrow taken from the side of one thing nearest another to the side

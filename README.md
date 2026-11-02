@@ -506,6 +506,17 @@ let go on empty board, it simply ends there. It is tied to a picture at
 the point it is put down, to point at what is in it. Hold Ctrl as an
 end is let go to tie it to nothing.
 
+An end let go near a box, from a dot, with the arrow tool or by an end
+dragged again, goes to one of its dots: while it is dragged the box's
+four dots show on its sides, the one it will go to filled, and the end
+is drawn there. It is the dot of the side nearest the pointer; let go
+right on a plain box's edge well away from its dots and it is that
+point of the edge instead; let go well inside the box and it is the
+side facing the other end, whichever that is as they move. An arrow's
+end touches the box it is tied to, its head pointing into it, and an
+arrow tied at one end only bows to come into that side square rather
+than across the box.
+
 A small bar of styles floats over what is picked out, or under it where
 that covers less of the rest, clear of its dots, rather than the
 panel: five line colors and five fills, as Excalidraw keeps them, no

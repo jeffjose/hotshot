@@ -9,6 +9,11 @@ use super::*;
 
 /// How near a shape an arrow's end is tied to it, in pixels of the window.
 pub(in crate::studio) const REACH: f32 = 20.0;
+/// How near a plain box's edge an end let go is tied at that point of it,
+/// rather than at the middle of a side, and how far from those it has to
+/// be: in pixels of the window.
+const ON_EDGE: f32 = 6.0;
+const CLEAR: f32 = 24.0;
 
 /// The key held while an end is dragged that ties it to nothing.
 fn unbound(mods: Mods) -> bool {
@@ -62,27 +67,64 @@ impl Studio {
         if !shape.sticks() {
             return None;
         }
-        let skip: Vec<u32> = shape.stuck[1 - end].filter(|&(_, u, _)| u == shapes::WHOLE).map(|(id, ..)| id).into_iter().collect();
-        let target = self.bind_target(at, &skip, false);
+        // Not to what the other end is tied to, but a picture, which an
+        // arrow is drawn on.
+        let other = shape.stuck[1 - end].map(|(id, ..)| id).filter(|&id| self.index_of(id).is_some_and(|other| !matches!(self.doc.layers[other].kind, Kind::Picture(_))));
+        let target = self.bind_target(at, &other.into_iter().collect::<Vec<_>>(), false);
         let anchor = target.and_then(|target| self.doc.layers[target].kind.clone().anchor_of(&mut self.text));
-        let whole = target.is_some_and(|target| !matches!(self.doc.layers[target].kind, Kind::Picture(_)));
+        let spot = match (target, anchor) {
+            (Some(target), Some(anchor)) => Some(match &self.doc.layers[target].kind {
+                Kind::Picture(_) => {
+                    let (lx, ly) = shapes::turn_point(at, anchor.middle, -anchor.angle);
+                    let (hw, hh) = (anchor.half.0.max(1.0), anchor.half.1.max(1.0));
+                    (anchor.id, ((lx - anchor.middle.0) / hw).clamp(-1.0, 1.0), ((ly - anchor.middle.1) / hh).clamp(-1.0, 1.0))
+                }
+                _ if self.is_box(target) => {
+                    let (u, v) = self.port_at(&anchor, at);
+                    (anchor.id, u, v)
+                }
+                _ => (anchor.id, shapes::WHOLE, shapes::WHOLE),
+            }),
+            _ => None,
+        };
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return None };
-        shape.stuck[end] = anchor.map(|anchor| match whole {
-            true => (anchor.id, shapes::WHOLE, shapes::WHOLE),
-            false => {
-                let (lx, ly) = shapes::turn_point(at, anchor.middle, -anchor.angle);
-                let (hw, hh) = (anchor.half.0.max(1.0), anchor.half.1.max(1.0));
-                (anchor.id, ((lx - anchor.middle.0) / hw).clamp(-1.0, 1.0), ((ly - anchor.middle.1) / hh).clamp(-1.0, 1.0))
-            }
-        });
+        shape.stuck[end] = spot;
         shape.routed = true;
         // A bend is the route's between two boxes, and goes with it.
-        let routed = matches!((shape.stuck[0], shape.stuck[1]), (Some((_, u, _)), Some((_, v, _))) if u == shapes::WHOLE && v == shapes::WHOLE);
-        if !routed && shape.points.len() > 2 {
+        let sided = |stuck: Option<(u32, f32, f32)>| stuck.is_some_and(|(_, u, v)| u == shapes::WHOLE || shapes::port_of(u, v).is_some());
+        if !(sided(shape.stuck[0]) && sided(shape.stuck[1])) && shape.points.len() > 2 {
             shape.points.truncate(2);
             shape.touch();
         }
         target
+    }
+
+    /// Where on a box an end let go at a point is tied: well inside it, to
+    /// it as a whole, at the middle of whichever side faces the other end
+    /// as they move; else at the middle of the side nearest it, where its
+    /// dot is; or, on a plain box's edge well away from those, at that
+    /// point of the edge. Across and down it, -1 to 1.
+    pub(in crate::studio) fn port_at(&self, anchor: &shapes::Anchor, at: (f32, f32)) -> (f32, f32) {
+        let (lx, ly) = shapes::turn_point(at, anchor.middle, -anchor.angle);
+        let (hw, hh) = (anchor.half.0.max(1.0), anchor.half.1.max(1.0));
+        let (dx, dy) = (lx - anchor.middle.0, ly - anchor.middle.1);
+        if dx.abs() < hw * 0.6 && dy.abs() < hh * 0.6 {
+            return (shapes::WHOLE, shapes::WHOLE);
+        }
+        if !anchor.round && !anchor.pointed {
+            let (on, clear) = (ON_EDGE / self.zoom, CLEAR / self.zoom);
+            let within = dx.abs() <= hw + on && dy.abs() <= hh + on;
+            let (across, down) = ((dx.abs() - hw).abs(), (dy.abs() - hh).abs());
+            let edge = match across <= down {
+                true => (dx.signum(), (dy / hh).clamp(-1.0, 1.0)),
+                false => ((dx / hw).clamp(-1.0, 1.0), dy.signum()),
+            };
+            let far = shapes::PORTS.iter().all(|&(u, v)| (dx - u * hw).hypot(dy - v * hh) > clear);
+            if within && across.min(down) <= on && far {
+                return edge;
+            }
+        }
+        *shapes::PORTS.iter().min_by(|a, b| (dx - a.0 * hw).hypot(dy - a.1 * hh).total_cmp(&(dx - b.0 * hw).hypot(dy - b.1 * hh))).unwrap_or(&(0.0, 0.0))
     }
 
     /// An end of a line being dragged on a board: tied as it would be let
@@ -91,8 +133,16 @@ impl Studio {
     pub(in crate::studio) fn bind_live(&mut self, index: usize, end: usize, at: (f32, f32)) {
         let target = self.bind_end(index, end, at);
         self.follow();
+        let mut ports = Vec::new();
         if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
             shape.touch();
+            if let (Some(target), Some(&point)) = (target, shape.points.get(end)) {
+                ports.push((target, point));
+            }
+        }
+        if ports != self.board.ports {
+            self.board.ports = ports;
+            self.dirty = true;
         }
         self.changed_layers(&[index]);
         if target != self.board.bind {
@@ -101,16 +151,45 @@ impl Studio {
         }
     }
 
-    /// What an end dragged would be tied to, glowing round its edge.
+    /// What an end dragged would be tied to, glowing round its edge, with
+    /// the middles of its sides an end is put at shown on it, the one it
+    /// would be put at filled.
     pub(in crate::studio) fn draw_bind(&mut self, canvas: &mut Canvas) {
-        let Some(target) = self.board.bind.filter(|&target| target < self.doc.layers.len()) else { return };
-        if !matches!(self.drag, Drag::Draw { .. } | Drag::Scale { .. } | Drag::Pull { .. }) {
+        if !matches!(self.drag, Drag::Draw { .. } | Drag::Scale { .. } | Drag::Pull { .. } | Drag::Move { moved: true, .. }) {
             return;
         }
-        let (x, y, w, h) = self.doc.layers[target].bounds(&mut self.text);
-        let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
-        canvas.round_outline(a.0 - 7, a.1 - 7, b.0 - a.0 + 14, b.1 - a.1 + 14, 9, 3, canvas::mix(ACCENT, 0xFFFFFF, 170));
-        canvas.round_outline(a.0 - 4, a.1 - 4, b.0 - a.0 + 8, b.1 - a.1 + 8, 6, 2, ACCENT);
+        let mut lit: Vec<(usize, Option<(f32, f32)>)> = self.board.ports.iter().map(|&(target, at)| (target, Some(at))).collect();
+        if let Some(target) = self.board.bind.filter(|target| !lit.iter().any(|(lit, _)| lit == target)) {
+            lit.push((target, None));
+        }
+        for (target, at) in lit {
+            if target >= self.doc.layers.len() {
+                continue;
+            }
+            let (x, y, w, h) = self.doc.layers[target].bounds(&mut self.text);
+            let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
+            canvas.round_outline(a.0 - 7, a.1 - 7, b.0 - a.0 + 14, b.1 - a.1 + 14, 9, 3, canvas::mix(ACCENT, 0xFFFFFF, 170));
+            canvas.round_outline(a.0 - 4, a.1 - 4, b.0 - a.0 + 8, b.1 - a.1 + 8, 6, 2, ACCENT);
+            if !self.is_box(target) {
+                continue;
+            }
+            let Some(anchor) = self.doc.layers[target].kind.clone().anchor_of(&mut self.text) else { continue };
+            let at = at.map(|at| self.to_window(at));
+            for side in 0..4 {
+                let spot = self.to_window(shapes::side_point(&anchor, side).0);
+                match at.is_some_and(|at| (at.0 - spot.0).abs() <= 1 && (at.1 - spot.1).abs() <= 1) {
+                    true => {
+                        canvas.disc(spot.0, spot.1, 8, canvas::mix(ACCENT, 0xFFFFFF, 140), 256);
+                        canvas.disc(spot.0, spot.1, 6, ACCENT, 256);
+                        canvas.disc(spot.0, spot.1, 2, 0xFFFFFF, 256);
+                    }
+                    false => {
+                        canvas.disc(spot.0, spot.1, 5, ACCENT, 256);
+                        canvas.disc(spot.0, spot.1, 3, 0xFFFFFF, 256);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -323,7 +402,8 @@ mod tests {
         studio.pointer_moved(to.0, to.1, Mods::default());
         assert_eq!(studio.board.bind, Some(1), "B glows as the end nears it");
         let live = shape(&studio, 2);
-        assert!(live.points[1].0 < 600.0 && live.points[1].0 > 580.0, "drawn to B's edge, {:?}", live.points[1]);
+        let left = shape(&studio, 1).frame();
+        assert_eq!(live.points[1], (left.0, left.1 + left.3 / 2.0), "drawn touching B at the middle of its left side, its dot");
         studio.released();
         let arrow = shape(&studio, 2);
         assert_eq!((arrow.stuck[0].map(|s| s.0), arrow.stuck[1].map(|s| s.0)), (Some(shape(&studio, 0).id), Some(shape(&studio, 1).id)));
@@ -374,7 +454,7 @@ mod tests {
         // tail wins, from anywhere a few pixels round it.
         let (x, y, w, h) = studio.box_frame(0);
         let side = studio.to_window_page((x + w, y + h / 2.0));
-        assert!((side.0 + OUT - tail.0).abs() <= NEAR && (side.1 - tail.1).abs() <= NEAR, "the dot by the tail, {side:?} {tail:?}");
+        assert!((side.0 + OUT - tail.0).abs() <= OUT && (side.1 - tail.1).abs() <= NEAR, "the dot by the tail, {side:?} {tail:?}");
         drag_from(&mut studio, (tail.0 + 3, tail.1 - 2), (680.0, 390.0), Mods::default(), |studio| {
             assert!(matches!(studio.drag, Drag::Scale { pull: (END, 0), .. }), "the tail held, not a new arrow: {:?}", studio.drag);
             assert_eq!(studio.board.bind, Some(2), "C glows");
@@ -530,5 +610,59 @@ mod tests {
         let free = shape(&studio, arrow);
         assert_eq!((free.stuck[1], free.points.len()), (None, 2));
         assert!((free.points[1].0 - 300.0).abs() < 1.0 && (free.points[1].1 - 600.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn an_end_dragged_near_a_box_is_put_at_the_dot_of_its_nearest_side_lit_as_it_is_dragged() {
+        let mut studio = two_boxes();
+        // A free arrow off to the left of B.
+        press_key(&mut studio, Key::Char('a'), Mods::default());
+        pull(&mut studio, (420.0, 300.0), (440.0, 320.0), Mods { ctrl: true, ..Mods::default() });
+        let arrow = studio.doc.layers.len() - 1;
+        studio.selected.clear();
+        let b = shape(&studio, 1).frame();
+        let (left, top) = ((b.0, b.1 + b.3 / 2.0), (b.0 + b.2 / 2.0, b.1));
+        // Its head dragged just above B, a little left of the middle of its
+        // top: put at the dot there, which is lit, drawn touching it.
+        let head = studio.to_window(shape(&studio, arrow).points[1]);
+        drag_from(&mut studio, head, (b.0 + b.2 / 2.0 - 15.0, b.1 - 10.0), Mods::default(), |studio| {
+            assert_eq!(studio.board.bind, Some(1));
+            assert_eq!(shape(studio, arrow).points[1], top, "drawn at the top dot");
+            assert_eq!(studio.board.ports, vec![(1, top)], "that dot lit");
+            let lit = studio.to_window(top);
+            let pixels: Vec<u32> = { let mut out = vec![0u32; (studio.width * studio.height) as usize]; studio.draw(&mut out); out.into_iter().map(|pixel| pixel & 0xFF_FFFF).collect() };
+            let at = |p: (i32, i32)| pixels[(p.1 * studio.width + p.0) as usize];
+            assert_eq!(at((lit.0 + 4, lit.1)), ACCENT, "filled in the accent");
+            let other = studio.to_window(left);
+            assert_eq!(at(other), 0xFFFFFF, "the other dots shown, hollow");
+            assert!((3..=5).any(|d| at((other.0 + d, other.1)) == ACCENT), "edged in the accent");
+        });
+        assert_eq!(shape(&studio, arrow).stuck[1], Some((shape(&studio, 1).id, 0.0, -1.0)), "tied at the middle of the top");
+        assert_eq!(shape(&studio, arrow).points[1], top);
+        // Right on B's left edge, well away from its dots: at that point.
+        let head = studio.to_window(shape(&studio, arrow).points[1]);
+        drag_from(&mut studio, head, (b.0 + 1.0, b.1 + 6.0), Mods::default(), |_| {});
+        let (_, u, v) = shape(&studio, arrow).stuck[1].unwrap();
+        assert_eq!(u, -1.0);
+        assert!(v < -0.5 && v > -1.0, "partway up the left side, {v}");
+        // Just off that edge, within reach but not on it: its dot.
+        let head = studio.to_window(shape(&studio, arrow).points[1]);
+        drag_from(&mut studio, head, (b.0 - 14.0, b.1 + 6.0), Mods::default(), |_| {});
+        assert_eq!(shape(&studio, arrow).stuck[1].map(|(_, u, v)| (u, v)), Some((-1.0, 0.0)));
+        assert_eq!(shape(&studio, arrow).points[1], left);
+    }
+
+    #[test]
+    fn an_arrow_pulled_from_a_dot_to_near_a_box_goes_into_the_dot_nearest_where_it_is_let_go() {
+        let mut studio = two_boxes();
+        let b = shape(&studio, 1).frame();
+        let bottom = (b.0 + b.2 / 2.0, b.1 + b.3);
+        pull_dot(&mut studio, 0, (bottom.0 + 10.0, bottom.1 + 12.0), Mods::default(), |studio| {
+            assert_eq!(studio.board.ports, vec![(1, bottom)], "its bottom dot lit");
+        });
+        let arrow = shape(&studio, 2);
+        assert_eq!(arrow.stuck[1], Some((shape(&studio, 1).id, 0.0, 1.0)));
+        assert_eq!(arrow.points[1], bottom, "into the bottom, touching it");
+        assert_eq!(arrow.stuck[0].map(|s| s.1), Some(shapes::WHOLE), "out of A from its side facing B");
     }
 }

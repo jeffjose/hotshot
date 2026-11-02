@@ -477,11 +477,11 @@ mod tests {
         studio.join(api, db);
         studio.changed();
         let arrow = studio.doc.layers.len() - 1;
-        assert!(shape(&studio, arrow).points[1].0 < 400.0, "into the left side of Database");
+        assert!(shape(&studio, arrow).points[1].0 <= 400.5, "into the left side of Database");
         // Database dragged under API: the arrow now goes down into its top.
         pull(&mut studio, (460.0, 126.0), (160.0, 426.0), Mods::default());
         let routed = shape(&studio, arrow);
         let top = shape(&studio, db).frame().1;
-        assert!(routed.points[1].1 < top && routed.points[1].1 > top - 12.0 && routed.points[0].1 > 152.0, "{:?}", routed.points);
+        assert!((routed.points[1].1 - top).abs() <= 0.5 && routed.points[0].1 >= 152.0, "{:?}", routed.points);
     }
 }

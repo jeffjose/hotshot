@@ -129,6 +129,9 @@ pub(super) struct Board {
     pub neaten: bool,
     /// What the end of an arrow being dragged would be tied to, glowing.
     pub bind: Option<usize>,
+    /// Where an end dragged, or each end of an arrow moved, would be put
+    /// on a box, by its layer: the middle of a side, lit.
+    pub ports: Vec<(usize, (f32, f32))>,
     /// A box typed into was moved or sized: the next letter typed is a
     /// step of its own to undo.
     pub type_step: bool,
@@ -143,7 +146,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, type_step: false, typed: None, caret: None, anchor: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None }
     }
 }
 

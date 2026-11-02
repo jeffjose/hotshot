@@ -4440,6 +4440,7 @@ impl Studio {
         self.fine_released();
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.board.bind = None;
+        self.board.ports.clear();
         self.dirty = true;
         // On a board, what was drawn or pulled out is typed into.
         if self.on_board() && self.board_released(drag) {
