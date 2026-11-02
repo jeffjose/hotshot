@@ -15,7 +15,7 @@ impl Studio {
     /// The arrows of the board joining two boxes, as what is called what:
     /// the arrow, where it is from and where it goes.
     pub(in crate::studio) fn links(&self) -> Vec<(u32, u32, u32)> {
-        let boxes: Vec<u32> = (0..self.doc.layers.len()).filter(|&index| self.is_box(index)).map(|index| self.id_of(index)).collect();
+        let boxes: Vec<u32> = (0..self.doc.layers.len()).filter(|&index| self.is_node(index)).map(|index| self.id_of(index)).collect();
         self.doc
             .layers
             .iter()
@@ -66,7 +66,7 @@ impl Studio {
 
     /// The box picked out, or being typed into, on a board.
     fn map_box(&self) -> Option<usize> {
-        self.editing.or_else(|| self.picked()).filter(|&index| self.is_box(index))
+        self.editing.or_else(|| self.picked()).filter(|&index| self.is_node(index))
     }
 
     /// Tab: a child of the box picked out, after any it has, joined to it,
@@ -79,6 +79,8 @@ impl Studio {
         let (x, y, w, h) = self.box_frame(parent);
         let size = match &self.doc.layers[parent].kind {
             Kind::Shape(shape) if shape.base.0 > 0.0 && !shape.titled => shape.base,
+            // A picture's child is a box as the box tool makes one.
+            Kind::Picture(_) => BOX,
             _ => (w, h),
         };
         let down = self.goes_down(id);
@@ -174,7 +176,7 @@ impl Studio {
     /// middle of its children; a mind map's two sides kept. Nothing else on
     /// the board moves. One step to undo.
     pub(in crate::studio) fn tidy(&mut self) {
-        let Some(index) = self.picked().or(self.board.dots_of).filter(|&index| self.is_box(index)) else {
+        let Some(index) = self.picked().or(self.board.dots_of).filter(|&index| self.is_node(index)) else {
             return self.say("Pick a box of the map to tidy it");
         };
         let root = self.map_root(self.id_of(index));

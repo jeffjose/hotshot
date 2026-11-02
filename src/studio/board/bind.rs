@@ -969,6 +969,24 @@ mod tests {
     }
 
     #[test]
+    fn tab_on_a_picture_adds_a_box_joined_to_its_right_and_mermaid_calls_the_picture_by_its_name() {
+        let mut studio = box_and_picture();
+        studio.selected = vec![1];
+        press_key(&mut studio, Key::Tab, Mods::default());
+        assert_eq!(studio.doc.layers.len(), 4, "a box and its arrow");
+        assert!(studio.is_box(2) && studio.editing == Some(2), "a box, typed into");
+        let (x, y, w, h) = studio.box_frame(2);
+        assert!(x > 850.0 && (y + h / 2.0 - 136.0).abs() < 1.0 && (w, h) == BOX, "to its right, level with it: {:?}", (x, y, w, h));
+        let id = picture(&studio, 1).id;
+        assert_eq!(shape(&studio, 3).stuck.map(|stuck| stuck.map(|s| s.0)), [Some(id), Some(shape(&studio, 2).id)]);
+        type_in(&mut studio, "Notes");
+        studio.commit_text();
+        studio.selected.clear();
+        let mermaid = studio.to_mermaid(false);
+        assert!(mermaid.contains("[\"Screenshot\"]") && mermaid.contains("[\"Notes\"]") && mermaid.contains("-->"), "{mermaid}");
+    }
+
+    #[test]
     fn an_end_taken_from_a_box_to_a_picture_and_back_is_tied_to_each_and_a_picture_deleted_leaves_it_free() {
         let mut studio = two_boxes();
         pull_dot(&mut studio, 0, (680.0, 136.0), Mods::default(), |_| {});

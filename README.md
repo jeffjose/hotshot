@@ -573,7 +573,8 @@ the file as one.
 A mind map keeps up with thinking. With a box picked out or typed
 into, `Tab` adds a child: to its right, or under it in a tree that goes
 down, after any it has, joined, in its look a shade lighter, and typed
-into. `Enter`, typing in a box of a map, ends it and begins the next one
+into; with a picture picked out, a box as the box tool makes one.
+`Enter`, typing in a box of a map, ends it and begins the next one
 under it, the same parent's; in a box of no map it just ends the
 typing. `Shift+Tab` goes back to the parent, and `Shift+Enter` begins a
 new line in a box's words. `Shift+L` lays the map or tree the box picked
@@ -658,8 +659,8 @@ dark and the paper under its words to the ground's; every box is as
 large as its words need in the board's font, so none spill out. Nothing is
 a picture: each part is a board shape. `Ctrl+K` Copy as Mermaid puts what is
 picked out, or the board, on the clipboard as a flowchart, or as a
-sequence diagram for a sequence, and writes it beside the file as an
-`.mmd`; Copy as Mermaid mind map does a map from the box picked out.
+sequence diagram for a sequence, a picture a node called by its name,
+and writes it beside the file as an `.mmd`; Copy as Mermaid mind map does a map from the box picked out.
 
 Once there is a pattern, a board offers the next step, faint and
 dashed in the accent, as Figma offers a third duplicate: two boxes the

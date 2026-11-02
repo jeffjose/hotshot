@@ -377,14 +377,14 @@ impl Studio {
         }
         let words_of = |id: u32| self.index_of(id).map_or(String::new(), |index| match &self.doc.layers[index].kind {
             Kind::Shape(shape) => shape.text.replace('\n', "<br/>").replace('"', "'"),
-            Kind::Picture(picture) => picture.name.clone(),
+            Kind::Picture(picture) => picture.name.replace('"', "'"),
         });
         // A sequence in it.
         let sequence = ids.iter().copied().find(|&id| self.index_of(id).is_some_and(|index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.region == SEQUENCE)));
         if let Some(holder) = sequence.filter(|_| !mindmap) {
             return self.sequence_mermaid(holder);
         }
-        let boxes: Vec<u32> = ids.iter().copied().filter(|&id| self.index_of(id).is_some_and(|index| self.is_box(index))).collect();
+        let boxes: Vec<u32> = ids.iter().copied().filter(|&id| self.index_of(id).is_some_and(|index| self.is_node(index))).collect();
         let links: Vec<(u32, u32, u32)> = self.links().into_iter().filter(|(_, from, to)| boxes.contains(from) && boxes.contains(to)).collect();
         if mindmap {
             let start = chosen.first().map(|&index| self.id_of(index)).or_else(|| boxes.first().copied()).unwrap_or(0);
@@ -410,8 +410,9 @@ impl Studio {
         let held: Vec<u32> = boxes.iter().copied().filter(|&id| !self.inside(id).is_empty()).collect();
         let node = |id: u32| -> String {
             let Some(index) = self.index_of(id) else { return name(id) };
-            let Kind::Shape(shape) = &self.doc.layers[index].kind else { return name(id) };
             let words = words_of(id);
+            // A picture, a box called as it is.
+            let Kind::Shape(shape) = &self.doc.layers[index].kind else { return format!("{}[\"{words}\"]", name(id)) };
             let (open, close) = match (shape.tool, shape.form) {
                 (Tool::Ellipse, shapes::FORM_DOUBLE) => ("(((", ")))"),
                 (Tool::Ellipse, _) => ("((", "))"),
