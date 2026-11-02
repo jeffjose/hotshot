@@ -6,9 +6,29 @@
 //! the next shape drawn.
 
 use super::*;
+use std::time::{Duration, Instant};
 
-/// How large the words can be: small, medium, large and huge.
-pub(in crate::studio) const WORD_SIZES: [u32; 4] = [13, 16, 22, 30];
+/// The sizes of words − and + step through, as Figma and Google Docs list
+/// them; any other from 1 to 999 can be typed.
+pub(in crate::studio) const LADDER: [u32; 22] = [8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48, 56, 64, 72, 96, 128];
+
+/// How long − or + is held before it steps again by itself, and how often
+/// it does then.
+const HOLD: Duration = Duration::from_millis(400);
+const REPEAT: Duration = Duration::from_millis(80);
+
+/// How long after the wheel last stepped the size over its number that a
+/// notch more is still the same step to undo.
+const WHEEL_RUN: Duration = Duration::from_millis(700);
+
+/// The size of words next above one on the ladder, or next below it; one
+/// past either end of it left as it is.
+pub(in crate::studio) fn step_px(px: u32, larger: bool) -> u32 {
+    match larger {
+        true => LADDER.iter().copied().find(|&size| size > px).unwrap_or(px),
+        false => LADDER.iter().copied().rev().find(|&size| size < px).unwrap_or(px),
+    }
+}
 
 /// How large a swatch of the bar is, the room round them, and the gap
 /// between groups.
@@ -16,6 +36,9 @@ const SWATCH: i32 = 22;
 const GAP: i32 = 4;
 const PAD: i32 = 6;
 const SPLIT: i32 = 11;
+/// How wide − and + are, and the number between them.
+const STEP: i32 = 20;
+const NUMBER: i32 = 34;
 
 impl Studio {
     /// The shapes picked out the bar styles.
@@ -46,7 +69,8 @@ impl Studio {
         // As wide as the font's name, in itself, and its arrow.
         let face = self.shown_font();
         parts.push((Ctl::Font, self.text.width_in(face, FACES[face], 13) + 30));
-        parts.push((Ctl::Words(0), 48));
+        // How large the words are: −, the number, and +.
+        parts.extend([(Ctl::Words(0), STEP), (Ctl::Words(1), NUMBER), (Ctl::Words(2), STEP)]);
         if boxes {
             parts.push((Ctl::Status, SWATCH + 4));
         }
@@ -111,14 +135,134 @@ impl Studio {
 
     /// What the bar shows as set: of the first shape picked out, or of the
     /// next to be drawn.
-    fn shown_style(&self) -> (u32, Option<u32>, bool, u32, u8) {
+    fn shown_style(&self) -> (u32, Option<u32>, bool, u8) {
         let first = self.bar_styled().first().and_then(|&index| match &self.doc.layers[index].kind {
             Kind::Shape(shape) => Some(shape.clone()),
             Kind::Picture(_) => None,
         });
         match first {
-            Some(shape) => (shape.color, shape.filled.then_some(shape.fill), shape.sketch, shape.font_px, shape.status),
-            None => (self.board.stroke, self.board.fill, self.board.sketch, self.board.px, 0),
+            Some(shape) => (shape.color, shape.filled.then_some(shape.fill), shape.sketch, shape.status),
+            None => (self.board.stroke, self.board.fill, self.board.sketch, 0),
+        }
+    }
+
+    /// How large the board's next words are.
+    pub(in crate::studio) fn board_px(&self) -> u32 {
+        self.pages[self.page].px
+    }
+
+    /// The shapes whose words − and + make larger or smaller: those picked
+    /// out, or the one being typed into.
+    fn sized(&self) -> Vec<usize> {
+        let styled = self.bar_styled();
+        match (styled.is_empty(), self.editing) {
+            (true, Some(index)) if matches!(self.doc.layers.get(index).map(|layer| &layer.kind), Some(Kind::Shape(_))) => vec![index],
+            _ => styled,
+        }
+    }
+
+    /// How large the words the bar shows are: of what is picked out, none
+    /// where they differ; or of the next to be drawn.
+    pub(in crate::studio) fn shown_px(&self) -> Option<u32> {
+        let mut sizes = self.sized().into_iter().filter_map(|index| match &self.doc.layers[index].kind {
+            Kind::Shape(shape) => Some(shape.font_px),
+            Kind::Picture(_) => None,
+        });
+        match sizes.next() {
+            Some(first) => sizes.all(|px| px == first).then_some(first),
+            None => Some(self.board_px()),
+        }
+    }
+
+    /// The words picked out, or being typed, each made as large as `to`
+    /// makes its own size, and a board's next words so as well; a step to
+    /// undo when `undo`, and not as it goes on held down or wheeled.
+    pub(in crate::studio) fn size_words(&mut self, to: impl Fn(u32) -> u32, undo: bool) {
+        let sized = self.sized();
+        let first = sized.first().and_then(|&index| match &self.doc.layers[index].kind {
+            Kind::Shape(shape) => Some(shape.font_px),
+            Kind::Picture(_) => None,
+        });
+        let next = to(first.unwrap_or_else(|| self.board_px())).clamp(1, MOST_PX);
+        if !sized.is_empty() {
+            if undo {
+                self.checkpoint();
+            }
+            for &index in &sized {
+                if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
+                    shape.font_px = to(shape.font_px).clamp(1, MOST_PX);
+                    shape.touch();
+                }
+            }
+            self.changed();
+        }
+        if self.on_board() {
+            self.pages[self.page].px = next;
+        } else if !sized.is_empty() {
+            self.say(format!("Text size: {next}"));
+        }
+        self.dirty = true;
+    }
+
+    /// Ctrl+Shift+> or <: the words picked out a size larger or smaller.
+    pub(in crate::studio) fn step_words(&mut self, larger: bool) {
+        self.size_words(|px| step_px(px, larger), true);
+    }
+
+    /// − or + held: a step more each so often, once held a moment.
+    pub(in crate::studio) fn step_held(&mut self, now: Instant) {
+        let Some((larger, when)) = self.board.stepping else { return };
+        if now >= when {
+            self.size_words(|px| step_px(px, larger), false);
+            self.board.stepping = Some((larger, now + REPEAT));
+        }
+    }
+
+    /// How soon − or + held steps again.
+    pub(in crate::studio) fn step_wait(&self) -> Option<Duration> {
+        self.board.stepping.map(|(_, when)| when.saturating_duration_since(Instant::now()))
+    }
+
+    /// The wheel over the number of the size of the words: a step for
+    /// each notch, up larger, a run of them one step to undo.
+    pub(in crate::studio) fn wheel_words(&mut self, down: f32) {
+        let (gone, last) = self.board.wheeled;
+        let fresh = last.is_none_or(|when| when.elapsed() > WHEEL_RUN);
+        let gone = if fresh { -down } else { gone - down };
+        let steps = gone.trunc();
+        self.board.wheeled.0 = gone - steps;
+        for at in 0..steps.abs() as usize {
+            self.size_words(|px| step_px(px, steps > 0.0), fresh && at == 0);
+        }
+        if steps != 0.0 || fresh {
+            self.board.wheeled.1 = Some(Instant::now());
+        }
+    }
+
+    /// A key while the size of the words is typed into the bar: a digit,
+    /// Backspace, Enter to set it, Esc to leave it as it was. Whether it
+    /// was taken.
+    pub(in crate::studio) fn px_typed_key(&mut self, key: Key, mods: Mods) -> bool {
+        let Some(typed) = &mut self.board.px_typed else { return false };
+        if mods.ctrl {
+            return false;
+        }
+        match key {
+            Key::Char(digit) if digit.is_ascii_digit() && typed.len() < 3 => typed.push(digit),
+            Key::Backspace => drop(typed.pop()),
+            Key::Enter => self.commit_px(),
+            Key::Escape => self.board.px_typed = None,
+            _ => {}
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// The size typed into the bar given to the words, if it is one.
+    pub(in crate::studio) fn commit_px(&mut self) {
+        let typed = self.board.px_typed.take().and_then(|typed| typed.parse::<u32>().ok());
+        if let Some(px) = typed.filter(|px| (1..=MOST_PX).contains(px)) {
+            self.size_words(|_| px, true);
         }
     }
 
@@ -132,7 +276,7 @@ impl Studio {
     }
 
     pub(in crate::studio) fn draw_style_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
-        let (stroke, fill, sketch, px, status) = self.shown_style();
+        let (stroke, fill, sketch, status) = self.shown_style();
         let (cx, cy) = rect.center();
         let ring = |canvas: &mut Canvas, on: bool| {
             if on {
@@ -198,16 +342,40 @@ impl Studio {
                 self.text.draw_in(face, canvas, rect.x + 7, cy - Text::line_height(13) / 2, 13, TEXT_COLOR, FACES[face]);
                 self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);
             }
-            Ctl::Words(_) => {
-                if hovered {
+            // − and +, a bar and a cross, dim where they would do nothing.
+            Ctl::Words(side @ (0 | 2)) => {
+                let larger = side == 2;
+                let px = self.shown_px();
+                let stuck = px.is_some_and(|px| step_px(px, larger) == px);
+                if hovered && !stuck || self.board.stepping.is_some_and(|(held, _)| held == larger) {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
                 }
-                // How large the words are: a small A and a large one, and
-                // which of the sizes.
-                let which = WORD_SIZES.iter().position(|&size| size >= px).unwrap_or(WORD_SIZES.len() - 1);
-                self.text.draw(canvas, rect.x + 6, cy - Text::line_height(10) / 2 + 2, 10, DIM_TEXT_COLOR, "A");
-                self.text.draw(canvas, rect.x + 13, cy - Text::line_height(15) / 2, 15, DIM_TEXT_COLOR, "A");
-                self.text.draw(canvas, rect.x + 28, cy - line_high / 2, 11, TEXT_COLOR, ["S", "M", "L", "XL"][which]);
+                let color = if stuck { 0x5C5C5C } else { TEXT_COLOR };
+                canvas.fill(cx - 5, cy - 1, 10, 2, color);
+                if larger {
+                    canvas.fill(cx - 1, cy - 5, 2, 10, color);
+                }
+            }
+            // The number of pixels, a field to type into once clicked, and
+            // a dash where what is picked out differs.
+            Ctl::Words(_) => {
+                let typed = self.board.px_typed.clone();
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, FIELD_COLOR, 256);
+                if typed.is_some() || hovered {
+                    canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 1, if typed.is_some() { ACCENT } else { 0x555555 });
+                }
+                // Nothing typed yet: the size it was, faintly, to type over.
+                let (says, color) = match typed.as_deref() {
+                    Some(typed) if !typed.is_empty() => (typed.to_owned(), TEXT_COLOR),
+                    shown => (self.shown_px().map_or_else(|| "\u{2013}".to_owned(), |px| px.to_string()), if shown.is_some() { DIM_TEXT_COLOR } else { TEXT_COLOR }),
+                };
+                let wide = self.text.width(&says, 12);
+                let left = cx - wide / 2;
+                self.text.draw(canvas, left, cy - Text::line_height(12) / 2, 12, color, &says);
+                if typed.is_some() {
+                    let at = if typed.as_deref() == Some("") { left - 2 } else { left + wide + 1 };
+                    canvas.fill(at, cy - 7, 1, 14, ACCENT);
+                }
             }
             Ctl::Neaten => {
                 if self.board.neaten {
@@ -278,14 +446,20 @@ impl Studio {
             Ctl::Look => self.open_bar_menu(ctl, MenuKind::Looks),
             Ctl::Font => self.open_bar_menu(ctl, MenuKind::Fonts),
             Ctl::Ground => self.open_bar_menu(ctl, MenuKind::Grounds),
+            // − or +, a step at once and then more while held; the number
+            // typed into.
+            Ctl::Words(side @ (0 | 2)) => {
+                let larger = side == 2;
+                self.step_words(larger);
+                self.board.stepping = Some((larger, Instant::now() + HOLD));
+            }
             Ctl::Words(_) => {
-                let (_, _, _, px, _) = self.shown_style();
-                let next = WORD_SIZES[(WORD_SIZES.iter().position(|&size| size >= px).unwrap_or(0) + 1) % WORD_SIZES.len()];
-                self.board.px = next;
-                self.restyle_shapes(|shape| shape.font_px = next);
+                if self.board.px_typed.is_none() {
+                    self.board.px_typed = Some(String::new());
+                }
             }
             Ctl::Status => {
-                let (_, _, _, _, status) = self.shown_style();
+                let (_, _, _, status) = self.shown_style();
                 let next = (status + 1) % 4;
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
@@ -339,5 +513,129 @@ impl Studio {
                 change(shape);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio::board::tests::*;
+
+    /// Where −, the number or + of the size of the words is.
+    fn words_at(studio: &mut Studio, side: u8) -> (i32, i32) {
+        studio.layout();
+        studio.control_rect(Control::Board(Ctl::Words(side))).expect("the size of the words").center()
+    }
+
+    fn sizes(studio: &Studio) -> Vec<u32> {
+        (0..studio.doc.layers.len()).map(|index| shape(studio, index).font_px).collect()
+    }
+
+    #[test]
+    fn the_size_of_words_steps_through_the_usual_sizes_from_its_own() {
+        // From one on the ladder or between two, to the next; past its
+        // ends, as it is.
+        assert_eq!([step_px(16, true), step_px(16, false), step_px(15, true), step_px(15, false), step_px(23, true)], [18, 14, 16, 14, 24]);
+        assert_eq!([step_px(128, true), step_px(8, false), step_px(200, false), step_px(3, true)], [128, 8, 128, 8]);
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert_eq!((sizes(&studio), studio.shown_px()), (vec![WORDS_PX], Some(WORDS_PX)));
+        // + a step larger, each click a step to undo, and the board's next
+        // words so too.
+        let undos = studio.undo.len();
+        let plus = words_at(&mut studio, 2);
+        click(&mut studio, plus);
+        click(&mut studio, plus);
+        assert_eq!((sizes(&studio), studio.pages[0].px, studio.undo.len()), (vec![20], 20, undos + 2));
+        let minus = words_at(&mut studio, 0);
+        click(&mut studio, minus);
+        assert_eq!(sizes(&studio), vec![18]);
+        studio.undo();
+        assert_eq!(sizes(&studio), vec![20]);
+        // Held, it steps again by itself, and all of it is one step to undo.
+        let undos = studio.undo.len();
+        studio.pointer_moved(plus.0, plus.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        assert!(studio.board_wait().is_some_and(|wait| wait > Duration::from_millis(300)), "a moment before it goes on");
+        for _ in 0..3 {
+            studio.board.stepping = studio.board.stepping.map(|(larger, _)| (larger, Instant::now()));
+            studio.board_tick();
+        }
+        studio.released();
+        assert_eq!((sizes(&studio), studio.undo.len(), studio.board.stepping), (vec![32], undos + 1, None));
+        studio.board_tick();
+        assert_eq!(sizes(&studio), vec![32], "let go, it stops");
+        studio.undo();
+        assert_eq!(sizes(&studio), vec![20]);
+        // Ctrl+Shift+> and < as well; and the wheel over the number, a run
+        // of it one step to undo.
+        let ctrl_shift = Mods { ctrl: true, shift: true, alt: false };
+        press_key(&mut studio, Key::Char('>'), ctrl_shift);
+        assert_eq!(sizes(&studio), vec![22]);
+        press_key(&mut studio, Key::Char('<'), ctrl_shift);
+        press_key(&mut studio, Key::Char('<'), ctrl_shift);
+        assert_eq!(sizes(&studio), vec![18]);
+        let undos = studio.undo.len();
+        let number = words_at(&mut studio, 1);
+        studio.pointer_moved(number.0, number.1, Mods::default());
+        studio.scrolled(0.0, -1.0);
+        studio.scrolled(0.0, -0.5);
+        studio.scrolled(0.0, -0.5);
+        assert_eq!((sizes(&studio), studio.undo.len()), (vec![22], undos + 1));
+        studio.scrolled(0.0, 1.0);
+        assert_eq!(sizes(&studio), vec![20]);
+    }
+
+    #[test]
+    fn the_size_of_words_is_typed_and_says_where_what_is_picked_out_differs() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        // The number clicked is typed into: Enter sets it, Esc does not,
+        // and nor does a size it cannot be.
+        let number = words_at(&mut studio, 1);
+        click(&mut studio, number);
+        type_in(&mut studio, "23");
+        press_key(&mut studio, Key::Enter, Mods::default());
+        assert_eq!((sizes(&studio), studio.pages[0].px, studio.board.px_typed.clone()), (vec![23], 23, None));
+        click(&mut studio, number);
+        type_in(&mut studio, "5");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert_eq!((sizes(&studio), studio.chosen().len()), (vec![23], 1), "Esc leaves it, and what is picked out");
+        click(&mut studio, number);
+        type_in(&mut studio, "0");
+        press_key(&mut studio, Key::Enter, Mods::default());
+        assert_eq!(sizes(&studio), vec![23]);
+        // Clicked away from, what was typed is set.
+        click(&mut studio, number);
+        type_in(&mut studio, "1234");
+        assert_eq!(studio.board.px_typed.as_deref(), Some("123"), "three digits at most");
+        tap(&mut studio, (700.0, 600.0));
+        assert_eq!((sizes(&studio), studio.board.px_typed.clone()), (vec![123], None));
+        // − and + step each of two that differ from its own size; the
+        // number a dash meanwhile.
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 300.0), (260.0, 372.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert_eq!(sizes(&studio), vec![123, 123], "the next box drawn as the last was set");
+        studio.pages[0].px = 13;
+        if let Kind::Shape(shape) = &mut studio.doc.layers[1].kind {
+            shape.font_px = 13;
+        }
+        studio.selected = vec![0, 1];
+        assert_eq!(studio.shown_px(), None);
+        let plus = words_at(&mut studio, 2);
+        click(&mut studio, plus);
+        assert_eq!(sizes(&studio), vec![128, 14]);
+        // And kept with the board in its file; a board from before it was
+        // kept, as a new one is.
+        let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        assert_eq!(back[0].px, studio.pages[0].px);
+        let then = String::from_utf8(write_pages(&studio.gathered())).unwrap().replace(&format!(" {}\n", studio.pages[0].px), "\n");
+        assert_eq!(read_pages(then.as_bytes()).unwrap()[0].px, WORDS_PX);
     }
 }

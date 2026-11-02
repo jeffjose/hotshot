@@ -42,6 +42,8 @@ pub(in crate::studio) enum Act {
     Mermaid(bool),
     /// The pen neatening what it draws, or not.
     Neaten,
+    /// The words a size larger, or smaller.
+    Words(bool),
 }
 
 impl Studio {
@@ -67,6 +69,8 @@ impl Studio {
         for (at, name) in FACES.iter().enumerate() {
             acts.push((format!("Font: {name}"), "", Act::Font(at as u8)));
         }
+        acts.push(("Larger text".to_owned(), "Ctrl+Shift+>", Act::Words(true)));
+        acts.push(("Smaller text".to_owned(), "Ctrl+Shift+<", Act::Words(false)));
         let what = if !self.on_page() { "frame" } else if self.chosen().is_empty() { "board" } else { "selection" };
         for (kind, name) in export::KINDS.iter().enumerate() {
             acts.push((format!("Export {what} as {name}"), if kind == 0 { "Ctrl+E" } else { "" }, Act::Export(kind as u8)));
@@ -115,6 +119,7 @@ impl Studio {
             Act::Look(look) => self.set_look(Some(look), None),
             Act::Mermaid(map) => self.copy_mermaid(map),
             Act::Neaten => self.press_style(Ctl::Neaten),
+            Act::Words(larger) => self.step_words(larger),
             Act::Ground(ground) => self.set_look(None, Some(ground)),
             Act::Font(font) => self.set_font(usize::from(font)),
             Act::Status(status) => {

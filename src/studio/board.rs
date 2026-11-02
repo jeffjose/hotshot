@@ -20,6 +20,8 @@ pub(super) const QUIET: u32 = 0x868E96;
 /// it is among the faces; and how large, and how wide a line is.
 pub(super) const LETTERING: usize = 2;
 pub(super) const WORDS_PX: u32 = 16;
+/// The largest words can be typed as, in pixels.
+pub(super) const MOST_PX: u32 = 999;
 pub(super) const LINE: f32 = 2.0;
 /// How far apart the dots of the paper are, on the page.
 const DOT_STEP: f32 = 18.0;
@@ -61,6 +63,8 @@ pub(super) enum Ctl {
     Font,
     /// What the board is on: light paper, dark gray or black.
     Ground,
+    /// How large the words are: smaller (0), the number of pixels, which a
+    /// click types into (1), and larger (2).
     Words(u8),
     Guess,
     Status,
@@ -77,12 +81,12 @@ pub(super) enum Ctl {
 /// What a board keeps of its own, in the window rather than the file.
 pub(super) struct Board {
     /// How the next box, oval, diamond, note, arrow or line is drawn: its
-    /// line's color, its fill, whether by hand, how large its words are
-    /// and how wide its line; carried on from the last one changed.
+    /// line's color, its fill, whether by hand and how wide its line;
+    /// carried on from the last one changed. How large its words are is
+    /// the page's own.
     pub stroke: u32,
     pub fill: Option<u32>,
     pub sketch: bool,
-    pub px: u32,
     pub width: f32,
     /// What the box tool draws: a box, a diamond or a note.
     pub making: u8,
@@ -142,11 +146,20 @@ pub(super) struct Board {
     /// and the other end of the words picked out by a drag, if any are.
     pub caret: Option<usize>,
     pub anchor: Option<usize>,
+    /// − or + of the size of the words held down: which, and when it next
+    /// steps again by itself.
+    pub stepping: Option<(bool, std::time::Instant)>,
+    /// The size of the words being typed into the bar, once its number is
+    /// clicked.
+    pub px_typed: Option<String>,
+    /// How far the wheel has gone over that number toward the next step,
+    /// and when it last stepped, for a run of it to be one step to undo.
+    pub wheeled: (f32, Option<std::time::Instant>),
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, px: WORDS_PX, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
     }
 }
 
@@ -451,7 +464,7 @@ impl Studio {
     /// kind the box tool makes; an arrow routed between what it joins.
     pub(super) fn board_dress(&self, shape: &mut Shape) {
         let board = &self.board;
-        (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width, self.board_font(), board.px);
+        (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width, self.board_font(), self.board_px());
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
                 (shape.sketch, shape.border, shape.radius) = (board.sketch, true, 6.0);

@@ -534,12 +534,20 @@ fill, the look, the ground and the font, each a list that drops down
 from it: the looks each beside a box drawn so, the grounds beside their
 paper, the fonts each in itself, the one in use checked, and the board
 drawn as a row would make it while the pointer rests on the row. The
-font is apart from how large the words are. Then a status dot for a
-box, and whether the board guesses what comes next. With nothing
+font is apart from how large the words are, which is a number of
+pixels between − and +: they step through the usual sizes, 8 to 14,
+then 16 to 24 by twos, 28 to 40 by fours, 48 to 72 by eights, 96 and
+128, each from its own size where what is picked out differs, the
+number then a dash; held down, they go on stepping. Click the number
+to type any size from 1 to 999 and Enter (Esc leaves it), or turn the
+wheel over it; `Ctrl+Shift+>` and `Ctrl+Shift+<` do the same, in Design
+too. Then a status dot for a box, and whether the board guesses what
+comes next. With nothing
 picked out and a tool in hand it sits over the tools, for the next
 shape. `C` and then `1` to `5` is a line color, `Q` `W` `E` `R` `T` a
 fill and `X` no fill. What was set last, the color, the fill, the look,
-the font and the size of the words, carries on to the next shape drawn. A box let go a few
+the font and the size of the words, carries on to the next shape drawn,
+the size kept with the board in its file. A box let go a few
 pixels off a neighbor's line or gap slides onto it, with no guides
 drawn; hold Alt as it is let go to put it exactly where it is.
 

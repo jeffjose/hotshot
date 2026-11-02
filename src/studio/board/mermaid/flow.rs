@@ -765,7 +765,7 @@ impl Studio {
     /// layer of each of its boxes, in order.
     pub(super) fn build_graph(&mut self, graph: &Graph, origin: Point, title: Option<&str>, gaps: Gaps) -> Vec<usize> {
         let start = self.doc.layers.len();
-        let px = self.board.px;
+        let px = self.board_px();
         let mut boxes: Vec<u32> = Vec::new();
         for node in &graph.nodes {
             let index = self.diagram_box(&node.words, node.form, origin);

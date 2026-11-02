@@ -361,7 +361,7 @@ impl Studio {
         if gantt.tasks.is_empty() {
             return;
         }
-        let px = self.board.px;
+        let px = self.board_px();
         let small = 16;
         let first = gantt.tasks.iter().map(|task| task.start).fold(f64::MAX, f64::min);
         let last = gantt.tasks.iter().map(|task| task.end).fold(f64::MIN, f64::max);
@@ -501,7 +501,7 @@ impl Studio {
         }
         let total: f32 = slices.iter().map(|slice| slice.1).sum::<f32>().max(1e-3);
         let radius = 170.0;
-        let px = self.board.px;
+        let px = self.board_px();
         // Each slice its share of the turn, from the top round clockwise,
         // its share written in it.
         let mut from = 0.0f32;
@@ -561,7 +561,7 @@ impl Studio {
                 _ => periods.push((plain(first), events)),
             }
         }
-        let px = self.board.px;
+        let px = self.board_px();
         let has_sections = sections.iter().any(|(name, _)| !name.is_empty());
         // Each column as wide as its widest words.
         let mut columns: Vec<(usize, &String, &Vec<String>)> = Vec::new();
@@ -650,7 +650,7 @@ impl Studio {
             }
             sections.last_mut().unwrap().1.push((plain(task), score.parse::<u8>().unwrap_or(3).clamp(1, 5), who));
         }
-        let px = self.board.px;
+        let px = self.board_px();
         let small = 16;
         let tasks: Vec<(usize, &(String, u8, Vec<String>))> = sections.iter().enumerate().flat_map(|(k, (_, tasks))| tasks.iter().map(move |task| (k, task))).collect();
         let widths: Vec<f32> = tasks.iter().map(|(_, (words, ..))| (self.words_wide(words, px) + 36.0).clamp(130.0, 240.0)).collect();
@@ -859,7 +859,7 @@ impl Studio {
         let mut order: Vec<usize> = (0..branches.len()).collect();
         order.sort_by_key(|&at| (branches[at].1, at));
         let lane_of = |branch: usize| order.iter().position(|&at| at == branch).unwrap_or(0) as f32;
-        let px = self.board.px;
+        let px = self.board_px();
         let small = 16;
         let (lane, step, dot) = (80.0, 64.0, 14.0);
         let label_room = branches.iter().map(|(name, _)| self.words_wide(name, small)).fold(0.0, f32::max) + 40.0;
@@ -1001,7 +1001,7 @@ impl Studio {
         }
         let side = 500.0;
         let (left, top) = (origin.0 - side / 2.0, origin.1 - side / 2.0);
-        let px = self.board.px;
+        let px = self.board_px();
         // Mermaid's quadrants: 1 top right, 2 top left, 3 bottom left, 4
         // bottom right; each a shade of one color, its name at its top.
         let fills = [0xD0EBFF, 0xE7F5FF, 0xF3F9FF, 0xE7F5FF];

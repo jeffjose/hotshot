@@ -317,7 +317,7 @@ impl Studio {
                         _ => None,
                     }).find(|text| {
                         let at = text.points[0];
-                        let mid = if across { at.0 + self.board.px as f32 } else { at.1 };
+                        let mid = if across { at.0 + self.board_px() as f32 } else { at.1 };
                         (mid - along).abs() < step / 2.0 && if across { (at.1 - level(*along)).abs() < 70.0 } else { (at.0 - level(*along)).abs() < 160.0 }
                     })
                 })

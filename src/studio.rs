@@ -1011,9 +1011,14 @@ pub fn write_pages(pages: &[Page]) -> Vec<u8> {
             out += "board\n";
         }
         // Its look as a board, kept while it is a page of frames too, and
-        // the font of its words.
+        // the font of its words, and how large they are when not as a new
+        // board has them.
         if page.board || page.styled {
-            out += &format!("board-look {} {} {}\n", page.look, page.ground, page.font);
+            out += &format!("board-look {} {} {}", page.look, page.ground, page.font);
+            if page.px != board::WORDS_PX {
+                out += &format!(" {}", page.px);
+            }
+            out += "\n";
         }
         if !page.board && page.frames.is_empty() {
             // A board made a page of frames again before it had any.
@@ -1091,7 +1096,10 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
             page.styled = true;
             // From before the font was its own: the face the look implied,
             // and Clean's words, lettered underneath, set in it outright.
-            match words.next() {
+            // How large its words are, after, from when it was set.
+            let (font, px) = (words.next(), words.next());
+            page.px = px.map_or(board::WORDS_PX, |px| px.clamp(1, board::MOST_PX as usize) as u32);
+            match font {
                 Some(font) => page.font = font.min(FACES.len() - 1),
                 None => {
                     page.font = board::look::implied_font(page.look);
@@ -1176,11 +1184,14 @@ pub struct Page {
     /// The font a board's next words are in, by where it is among the
     /// faces: a choice of its own, apart from the look.
     pub font: usize,
+    /// How large a board's next words are, in pixels: the size last set
+    /// in its bar of styles.
+    pub px: u32,
 }
 
 impl Page {
     pub fn new(name: impl Into<String>, frames: Vec<Doc>) -> Page {
-        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false, font: board::LETTERING }
+        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false, font: board::LETTERING, px: board::WORDS_PX }
     }
 }
 
@@ -3276,6 +3287,11 @@ impl Studio {
             return;
         }
         self.dirty = true;
+        // Over the number of a board's size of words: that, stepped.
+        if matches!(self.control_at(self.pointer), Some(Control::Board(board::Ctl::Words(_)))) {
+            self.wheel_words(down);
+            return;
+        }
         if self.shows_right() && self.pointer.0 >= self.page_right() {
             // Over the panel of properties: that, scrolled.
             self.scroll = (self.scroll + (down * 48.0).round() as i32).max(0);
@@ -3704,6 +3720,9 @@ impl Studio {
         }
         if self.typing.is_some() && self.control_at(at_window) != self.typing.as_ref().map(|(field, _)| Control::Field(*field)) {
             self.commit_typing();
+        }
+        if self.board.px_typed.is_some() && self.control_at(at_window) != Some(Control::Board(board::Ctl::Words(1))) {
+            self.commit_px();
         }
         // Another layer clicked in the list ends the typing of text first,
         // so that what is typed next goes nowhere it should not.
@@ -4449,6 +4468,7 @@ impl Studio {
         self.crop_window();
         self.fine_released();
         let drag = std::mem::replace(&mut self.drag, Drag::None);
+        self.board.stepping = None;
         self.board.bind = None;
         self.board.ports.clear();
         self.dirty = true;
@@ -5565,6 +5585,18 @@ impl Studio {
                 _ => {}
             }
             return Outcome::Continue;
+        }
+        // The size of the words typed into a board's bar.
+        if self.px_typed_key(key, mods) {
+            return Outcome::Continue;
+        }
+        // Ctrl+Shift+> and <, as Figma and Google Docs have them: the words
+        // picked out, or typed, a size larger or smaller; typing or not.
+        if mods.ctrl && mods.shift && !mods.alt {
+            if let Key::Char(mark @ ('>' | '.' | '<' | ',')) = key {
+                self.step_words(matches!(mark, '>' | '.'));
+                return Outcome::Continue;
+            }
         }
         // A box moved or sized as it was typed into: what is typed after is
         // a step of its own to undo, rather than undone with the move.
