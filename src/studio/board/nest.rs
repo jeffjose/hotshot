@@ -220,6 +220,7 @@ impl Studio {
             Drag::Move { moved: true, .. } => self.chosen().iter().map(|&index| self.id_of(index)).collect(),
             _ => Vec::new(),
         };
+        self.lift_nested(&held);
         for holder in &held {
             // A box that lays out what is in it does, before it grows.
             self.arrange_region(*holder, &dragged);
@@ -241,6 +242,55 @@ impl Studio {
                 }
             }
         }
+    }
+
+    /// What is in a box drawn over it, not hidden under its fill: each
+    /// thing under the box it is in, with what is in that and the arrows
+    /// tied to them that are under the box too, put just over the box in
+    /// the order they were, the outermost boxes first; all else keeps its
+    /// order. Not while something is dragged, whose layers are known by
+    /// where they are.
+    fn lift_nested(&mut self, held: &[u32]) {
+        if !matches!(self.drag, Drag::None) || !self.board.carried.is_empty() || held.is_empty() {
+            return;
+        }
+        let mut holders = held.to_vec();
+        holders.sort_by_key(|&holder| self.nest_depth(holder));
+        let was: Vec<u32> = self.doc.layers.iter().map(stacks::layer_id).collect();
+        let mut order = was.clone();
+        for holder in holders {
+            let Some(stack) = self.doc.stacks.iter().find(|stack| stack.holder == Some(holder)) else { continue };
+            for member in stack.members.clone() {
+                let place = |order: &[u32], id: u32| order.iter().position(|&other| other == id);
+                let (Some(at), Some(mine)) = (place(&order, holder), place(&order, member)) else { continue };
+                if mine > at {
+                    continue;
+                }
+                let mut family = self.inside(member);
+                family.push(member);
+                for layer in &self.doc.layers {
+                    if let Kind::Shape(shape) = &layer.kind {
+                        if shape.stuck.iter().flatten().any(|(id, ..)| family.contains(id)) && !family.contains(&shape.id) {
+                            family.push(shape.id);
+                        }
+                    }
+                }
+                let lifted: Vec<u32> = order[..at].iter().copied().filter(|id| family.contains(id)).collect();
+                order.retain(|id| !lifted.contains(id));
+                let at = place(&order, holder).map_or(order.len(), |at| at + 1);
+                order.splice(at..at, lifted);
+            }
+        }
+        if order == was {
+            return;
+        }
+        let mut layers: Vec<Option<Layer>> = std::mem::take(&mut self.doc.layers).into_iter().map(Some).collect();
+        let from: Vec<usize> = order.iter().map(|id| was.iter().position(|old| old == id).unwrap_or(0)).collect();
+        self.doc.layers = from.iter().filter_map(|&old| layers[old].take()).collect();
+        let to = |old: usize| from.iter().position(|&at| at == old);
+        self.selected = self.selected.iter().filter_map(|&old| to(old)).collect();
+        self.editing = self.editing.and_then(to);
+        (self.hovered, self.cropping) = (None, None);
     }
 
     /// A box grown round what is in it, keeping room round them and over
@@ -452,6 +502,53 @@ mod tests {
         assert_eq!(studio.holder_of(id), None);
         let back = shape(&studio, backend).frame();
         assert!((back.2 - was.2).abs() < 1.0 && (back.3 - was.3).abs() < 1.0, "{back:?} {was:?}");
+    }
+
+    #[test]
+    fn what_is_dropped_in_a_box_drawn_after_it_is_drawn_over_the_box() {
+        let mut studio = board();
+        let image = Arc::new(Image::new(120, 60, vec![0xFF3E_63DD; 120 * 60]));
+        studio.doc.layers.push(Layer::picture(Picture::new(image, "Screenshot".into(), (600.0, 150.0))));
+        let picture = studio.id_of(studio.doc.layers.len() - 1);
+        let auth = draw_box(&mut studio, (600.0, 400.0), (700.0, 446.0), "Auth");
+        let auth = shape(&studio, auth).id;
+        let spare = draw_box(&mut studio, (900.0, 700.0), (1000.0, 746.0), "Spare");
+        let spare = shape(&studio, spare).id;
+        let backend = draw_box(&mut studio, (100.0, 100.0), (400.0, 300.0), "Backend");
+        let backend = shape(&studio, backend).id;
+        let ids = |studio: &Studio| studio.doc.layers.iter().map(stacks::layer_id).collect::<Vec<u32>>();
+        let was = ids(&studio);
+        // The picture dropped in: in it, and drawn over it, not under its fill.
+        pull(&mut studio, (600.0, 150.0), (250.0, 200.0), Mods::default());
+        assert_eq!(studio.holder_of(picture), Some(backend));
+        let at = |studio: &Studio, id: u32| studio.index_of(id).unwrap();
+        assert!(at(&studio, picture) > at(&studio, backend), "{:?}", ids(&studio));
+        // What else there is keeps its order.
+        assert!(at(&studio, auth) < at(&studio, spare));
+        // Undone, back in the order it was, in the same step.
+        studio.undo();
+        assert_eq!(ids(&studio), was);
+        studio.redo();
+        assert!(at(&studio, picture) > at(&studio, backend));
+        // A box drawn before it dropped in too, over it as well.
+        pull(&mut studio, (650.0, 423.0), (250.0, 260.0), Mods::default());
+        assert_eq!(studio.holder_of(auth), Some(backend));
+        assert!(at(&studio, auth) > at(&studio, backend), "{:?}", ids(&studio));
+        assert!(at(&studio, picture) > at(&studio, backend));
+        // The box, with both in it, dropped in one drawn after them all:
+        // all of it over that one, in the order it was.
+        studio.selected.clear();
+        let outer = draw_box(&mut studio, (450.0, 380.0), (1350.0, 880.0), "Cloud");
+        let outer = shape(&studio, outer).id;
+        let order: Vec<u32> = ids(&studio).into_iter().filter(|id| [backend, picture, auth].contains(id)).collect();
+        let frame = studio.box_frame(at(&studio, backend));
+        let foot = (frame.0 + 20.0, frame.1 + frame.3 - 6.0);
+        pull(&mut studio, foot, (foot.0 + 500.0, foot.1 + 300.0), Mods::default());
+        assert_eq!(studio.holder_of(backend), Some(outer));
+        let now = ids(&studio);
+        let after: Vec<u32> = now.iter().copied().filter(|id| [backend, picture, auth].contains(id)).collect();
+        assert_eq!(after, order);
+        assert!(at(&studio, backend) > at(&studio, outer), "{now:?}");
     }
 
     #[test]

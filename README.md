@@ -558,7 +558,8 @@ the outer box grows to hold it with room round it, its words slide to
 its top left as a title, and dragging the box moves everything in it,
 the arrows between them too; drag one out and the outer box shrinks
 back to the size it was drawn. A picture dropped in a box is in it the
-same way. Boxes go as deep in each other as you like.
+same way. Boxes go as deep in each other as you like. What is in a box
+is drawn over it, even when the box was drawn after it.
 Type more into a box than fits and it grows, as wide as a line
 of words goes and then taller, and what is to its right or under it
 moves over to keep the gaps it had; take the words out and they close
