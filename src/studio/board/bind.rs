@@ -229,10 +229,16 @@ impl Studio {
             if target >= self.doc.layers.len() {
                 continue;
             }
-            let (x, y, w, h) = self.doc.layers[target].bounds(&mut self.text);
+            // On its outline, where an end tied to it meets it: a box by
+            // its own frame, anything else by what it covers; a soft glow
+            // just outside, touching it.
+            let (x, y, w, h) = match self.is_box(target) {
+                true => self.box_frame(target),
+                false => self.doc.layers[target].bounds(&mut self.text),
+            };
             let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
-            canvas.round_outline(a.0 - 7, a.1 - 7, b.0 - a.0 + 14, b.1 - a.1 + 14, 9, 3, canvas::mix(ACCENT, 0xFFFFFF, 170));
-            canvas.round_outline(a.0 - 4, a.1 - 4, b.0 - a.0 + 8, b.1 - a.1 + 8, 6, 2, ACCENT);
+            canvas.round_outline(a.0 - 4, a.1 - 4, b.0 - a.0 + 8, b.1 - a.1 + 8, 6, 3, canvas::mix(ACCENT, 0xFFFFFF, 170));
+            canvas.round_outline(a.0 - 1, a.1 - 1, b.0 - a.0 + 2, b.1 - a.1 + 2, 3, 2, ACCENT);
             if !self.is_box(target) {
                 continue;
             }
@@ -517,7 +523,7 @@ mod tests {
         // tail wins, from anywhere a few pixels round it.
         let (x, y, w, h) = studio.box_frame(0);
         let side = studio.to_window_page((x + w, y + h / 2.0));
-        assert!((side.0 + OUT - tail.0).abs() <= OUT && (side.1 - tail.1).abs() <= NEAR, "the dot by the tail, {side:?} {tail:?}");
+        assert!((side.0 + OUT - tail.0).abs() <= OUT.max(2) && (side.1 - tail.1).abs() <= NEAR, "the dot by the tail, {side:?} {tail:?}");
         drag_from(&mut studio, (tail.0 + 3, tail.1 - 2), (680.0, 390.0), Mods::default(), |studio| {
             assert!(matches!(studio.drag, Drag::Scale { pull: (END, 0), .. }), "the tail held, not a new arrow: {:?}", studio.drag);
             assert_eq!(studio.board.bind, Some(2), "C glows");
@@ -636,7 +642,7 @@ mod tests {
         studio.hovered = None;
         studio.selected = vec![0];
         let (x, y, _, h) = studio.box_frame(0);
-        let edge = studio.to_window((x, y + h / 2.0));
+        let edge = studio.to_window((x, y + h / 4.0));
         let across = |pixels: &[u32]| (edge.0 - 4..=edge.0 + 4).filter(|&x| pixels[(edge.1 * width + x) as usize] == ACCENT).collect::<Vec<i32>>();
         let inked = |x: i32| (bare[(edge.1 * width + x) as usize] & 0xFF) < 0x90;
         let picked = pixels(&mut studio);

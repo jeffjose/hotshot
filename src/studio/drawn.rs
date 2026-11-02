@@ -331,7 +331,7 @@ mod tests {
         // the arrow goes to dragged down past all the rest, and the box
         // round the first dragged with it in it.
         let mut partly = 0;
-        for (at, by) in [((200.0, 160.0), (30, 4)), ((780.0, 110.0), (6, 40)), ((300.0, 380.0), (-12, 15))] {
+        for (at, by) in [((185.0, 185.0), (30, 4)), ((760.0, 140.0), (6, 40)), ((250.0, 350.0), (-12, 15))] {
             let start = studio.to_window_page(at);
             studio.pointer_moved(start.0, start.1, none);
             studio.last_press.0 = 0;

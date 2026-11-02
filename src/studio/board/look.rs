@@ -475,10 +475,11 @@ pub(in crate::studio) mod tests {
             studio.selected.clear();
             studio.set_look(Some(look), None);
             assert_eq!(shape(&studio, 0).font_px, 16, "lettered at a modest size");
-            // Across its left side, half way down: a line about two pixels
+            // Across its left side, a quarter of the way down, clear of
+            // the dot at its middle: a line about two pixels
             // wide, its edges blended with the paper, never darker than
             // its ink as edges over nothing once were.
-            let row: Vec<u32> = (90..112).map(|x| shown(&mut studio, (x as f32, 136.0))).collect();
+            let row: Vec<u32> = (90..112).map(|x| shown(&mut studio, (x as f32, 118.0))).collect();
             let dark = row.iter().filter(|&&pixel| (pixel & 0xFF) < 0x80).count();
             assert!((1..=4).contains(&dark), "{}: {dark} dark pixels across its line", LOOKS[usize::from(look)]);
             assert!(row.iter().all(|&pixel| (pixel & 0xFF) >= 0x1A), "{}: an edge darker than its ink", LOOKS[usize::from(look)]);

@@ -5,10 +5,10 @@
 //! usual gap that way.
 
 use super::*;
-
-/// How far out from a side its dot is, and how near it a press takes it,
-/// in pixels of the window.
-pub(in crate::studio) const OUT: i32 = 14;
+/// How far out from a side its dot is, on the side itself, where an arrow
+/// tied there meets it; and how near it a press takes it, in pixels of the
+/// window.
+pub(in crate::studio) const OUT: i32 = 0;
 pub(in crate::studio) const NEAR: i32 = 12;
 /// How near an arrow's end a press takes hold of it, in pixels of the
 /// window: more than a handle's, as an end is small and often by a box.
@@ -21,6 +21,15 @@ pub(in crate::studio) const GAP_DOWN: f32 = 48.0;
 
 /// Which way each side faces: up, right, down, left.
 pub(in crate::studio) const SIDES: [(f32, f32); 4] = [(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
+
+/// Whether a press is on the dot of a side: near it, and on its side's
+/// line or outside it, never more than a few pixels into the box, where a
+/// press moves the box.
+fn on_dot(spot: (i32, i32), side: usize, at: (i32, i32)) -> bool {
+    let way = SIDES[side];
+    let inward = -(way.0 * (at.0 - spot.0) as f32 + way.1 * (at.1 - spot.1) as f32);
+    (spot.0 - at.0).abs() <= NEAR && (spot.1 - at.1).abs() <= NEAR && inward <= 3.0
+}
 
 impl Studio {
     /// A box's frame on the board: its left, top, width and height.
@@ -153,7 +162,7 @@ impl Studio {
             return Some(Cursor::Move);
         }
         if let Some(index) = self.dots_now(at, false) {
-            if self.dot_spots(index).iter().any(|spot| (spot.0 - at.0).abs() <= NEAR && (spot.1 - at.1).abs() <= NEAR) {
+            if self.dot_spots(index).iter().enumerate().any(|(side, &spot)| on_dot(spot, side, at)) {
                 return Some(Cursor::Crosshair);
             }
         }
@@ -182,7 +191,7 @@ impl Studio {
     pub(in crate::studio) fn press_dot(&mut self, at: (i32, i32)) -> bool {
         let Some(index) = self.dots_now(at, false) else { return false };
         let spots = self.dot_spots(index);
-        let Some(side) = spots.iter().position(|spot| (spot.0 - at.0).abs() <= NEAR && (spot.1 - at.1).abs() <= NEAR) else { return false };
+        let Some(side) = spots.iter().enumerate().position(|(side, &spot)| on_dot(spot, side, at)) else { return false };
         self.drag = Drag::Pull { from: index, side: side as u8, moved: false };
         self.held.clear();
         true
