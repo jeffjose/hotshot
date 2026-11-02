@@ -6295,7 +6295,7 @@ impl Studio {
     }
 
     /// The corners of a layer's box in the window, turned with it.
-    fn box_corners(&mut self, index: usize) -> [(i32, i32); 4] {
+    pub(in crate::studio) fn box_corners(&mut self, index: usize) -> [(i32, i32); 4] {
         let corners = match self.doc.layers[index].kind.clone() {
             Kind::Picture(picture) => picture.corners(),
             Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text | Tool::Badge | Tool::Blur | Tool::Spotlight) => {

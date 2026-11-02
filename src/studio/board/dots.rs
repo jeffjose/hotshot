@@ -42,7 +42,7 @@ impl Studio {
     }
 
     /// How far a box or a picture is turned, which its dots turn with.
-    fn turned(&self, index: usize) -> f32 {
+    pub(in crate::studio) fn turned(&self, index: usize) -> f32 {
         match &self.doc.layers[index].kind {
             Kind::Shape(shape) => shape.angle,
             Kind::Picture(picture) => picture.angle,

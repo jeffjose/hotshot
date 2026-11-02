@@ -55,9 +55,9 @@ impl Studio {
         self.doc.layers.iter().position(|layer| stacks::layer_id(layer) == id)
     }
 
-    /// Where each box is.
+    /// Where each box and picture is.
     pub(in crate::studio) fn box_frames(&self) -> Frames {
-        (0..self.doc.layers.len()).filter(|&index| self.is_box(index)).map(|index| (self.id_of(index), self.box_frame(index))).collect()
+        (0..self.doc.layers.len()).filter(|&index| self.is_node(index)).map(|index| (self.id_of(index), self.box_frame(index))).collect()
     }
 
     /// A move on a board begun: what is in what is moved goes with it,
@@ -120,7 +120,7 @@ impl Studio {
         }
         let chosen = self.chosen();
         let ids: Vec<u32> = chosen.iter().map(|&index| self.id_of(index)).collect();
-        let tops: Vec<usize> = chosen.into_iter().filter(|&index| self.is_box(index) && self.holder_of(self.id_of(index)).is_none_or(|outer| !ids.contains(&outer))).collect();
+        let tops: Vec<usize> = chosen.into_iter().filter(|&index| self.is_node(index) && self.holder_of(self.id_of(index)).is_none_or(|outer| !ids.contains(&outer))).collect();
         let before = self.box_frames();
         let mut changed = false;
         let single = tops.len() == 1;
@@ -328,7 +328,7 @@ impl Studio {
         let mut shifts: Vec<(u32, (f32, f32))> = Vec::new();
         for index in 0..self.doc.layers.len() {
             let other = self.id_of(index);
-            if !self.is_box(index) || family.contains(&other) || self.holder_of(other) != level {
+            if !self.is_node(index) || family.contains(&other) || self.holder_of(other) != level {
                 continue;
             }
             let (x, y, w, h) = self.box_frame(index);
@@ -423,6 +423,35 @@ mod tests {
         pull(&mut studio, (900.0, 700.0), (230.0, 470.0), Mods::default());
         let pages = read_pages(&write_pages(&studio.gathered())).unwrap();
         assert!(pages[0].loose.stacks.iter().any(|stack| stack.holder == Some(back.id)));
+    }
+
+    #[test]
+    fn a_picture_dropped_in_a_box_is_inside_it_moves_with_it_and_comes_out_again() {
+        let mut studio = board();
+        let backend = draw_box(&mut studio, (100.0, 100.0), (280.0, 200.0), "Backend");
+        let image = Arc::new(Image::new(120, 60, vec![0xFF3E_63DD; 120 * 60]));
+        studio.doc.layers.push(Layer::picture(Picture::new(image, "Screenshot".into(), (600.0, 150.0))));
+        let picture = studio.doc.layers.len() - 1;
+        let id = studio.id_of(picture);
+        let was = shape(&studio, backend).frame();
+        // Dropped in: inside it, the box grown round it.
+        pull(&mut studio, (600.0, 150.0), (200.0, 170.0), Mods::default());
+        assert_eq!(studio.holder_of(id), Some(shape(&studio, backend).id));
+        let grown = shape(&studio, backend).frame();
+        let inner = studio.box_frame(picture);
+        assert!(shape(&studio, backend).titled && grown.0 <= inner.0 - 19.0 && grown.0 + grown.2 >= inner.0 + inner.2 + 19.0 && grown.1 + grown.3 >= inner.1 + inner.3 + 19.0, "grown round {inner:?}: {grown:?}");
+        // The box moved, the picture goes with it.
+        let before = studio.box_frame(picture);
+        let foot = (grown.0 + 20.0, grown.1 + grown.3 - 6.0);
+        pull(&mut studio, foot, (foot.0 + 100.0, foot.1 + 300.0), Mods::default());
+        let after = studio.box_frame(picture);
+        assert!(after.1 - before.1 > 250.0, "moved down with it: {before:?} {after:?}");
+        assert_eq!(studio.holder_of(id), Some(shape(&studio, backend).id));
+        // Dragged out: the box back to the size it was drawn.
+        pull(&mut studio, (after.0 + 60.0, after.1 + 30.0), (900.0, 700.0), Mods::default());
+        assert_eq!(studio.holder_of(id), None);
+        let back = shape(&studio, backend).frame();
+        assert!((back.2 - was.2).abs() < 1.0 && (back.3 - was.3).abs() < 1.0, "{back:?} {was:?}");
     }
 
     #[test]

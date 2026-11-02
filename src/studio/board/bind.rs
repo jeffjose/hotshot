@@ -232,9 +232,24 @@ impl Studio {
                 true => self.box_frame(target),
                 false => self.doc.layers[target].bounds(&mut self.text),
             };
-            let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
-            canvas.round_outline(a.0 - 4, a.1 - 4, b.0 - a.0 + 8, b.1 - a.1 + 8, 6, 3, canvas::mix(ACCENT, 0xFFFFFF, 170));
-            canvas.round_outline(a.0 - 1, a.1 - 1, b.0 - a.0 + 2, b.1 - a.1 + 2, 3, 2, ACCENT);
+            match self.is_node(target) && self.turned(target) != 0.0 {
+                // Turned, round its turned outline.
+                true => {
+                    let corners = self.box_corners(target);
+                    let path: Vec<(f32, f32)> = corners.iter().chain(corners.first()).map(|&(x, y)| (x as f32, y as f32)).collect();
+                    halo(canvas, &path, 4.5, ACCENT, 90);
+                    for pair in path.windows(2) {
+                        for nudge in 0..2 {
+                            line(canvas, (pair[0].0 as i32 + nudge, pair[0].1 as i32), (pair[1].0 as i32 + nudge, pair[1].1 as i32), ACCENT);
+                        }
+                    }
+                }
+                false => {
+                    let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
+                    canvas.round_outline(a.0 - 4, a.1 - 4, b.0 - a.0 + 8, b.1 - a.1 + 8, 6, 3, canvas::mix(ACCENT, 0xFFFFFF, 170));
+                    canvas.round_outline(a.0 - 1, a.1 - 1, b.0 - a.0 + 2, b.1 - a.1 + 2, 3, 2, ACCENT);
+                }
+            }
             if !self.is_node(target) {
                 continue;
             }
@@ -925,6 +940,11 @@ mod tests {
         let arrow = shape(&studio, 2);
         assert_eq!(arrow.stuck[1], Some((id, -1.0, 0.0)));
         assert_eq!(arrow.points[1], left, "touching it");
+        // Kept in the file, tied to it there.
+        let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        let layers = &back[0].loose.layers;
+        assert!(matches!(&layers[1].kind, Kind::Picture(kept) if kept.id == id));
+        assert!(matches!(&layers[2].kind, Kind::Shape(kept) if kept.stuck[1] == Some((id, -1.0, 0.0))));
         // Moved: the end goes with it.
         studio.selected.clear();
         pull(&mut studio, (700.0, 136.0), (700.0, 336.0), Mods::default());
