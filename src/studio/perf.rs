@@ -185,8 +185,9 @@ pub(super) fn busy_board(width: i32, height: i32, zoom: f32) -> (Studio, usize, 
 }
 
 /// How long each step of a drag of a box on a busy board takes, the
-/// pointer moved and the window drawn, apart and together: `cargo test
-/// --release board_timings -- --ignored --nocapture`.
+/// pointer moved and the window drawn, apart and together, and with a
+/// picture pasted on it: `cargo test --release board_timings -- --ignored
+/// --nocapture`.
 #[test]
 #[ignore]
 fn board_timings() {
@@ -199,29 +200,105 @@ fn board_timings() {
         figures("first draw", timed(&mut studio, &mut out, 3, |studio, _| studio.dirty = true));
         let empty = studio.to_window_page((60.0, 950.0));
         figures("hover over the board", timed(&mut studio, &mut out, 60, |studio, at| studio.pointer_moved(empty.0 + at % 7, empty.1 + at % 5, none)));
-        for (name, layer) in [("drag a lone box", lone), ("drag a box, 3 arrows", three)] {
-            let (x, y, w, h) = studio.doc.layers[layer].bounds(&mut studio.text);
-            let start = studio.to_window_page((x + w * 0.3, y + h * 0.3));
-            studio.pointer_moved(start.0, start.1, none);
-            studio.last_press.0 = 0;
-            studio.pressed(1, 100_000);
-            let (mut moves, mut draws) = (Vec::new(), Vec::new());
-            for at in 0..80 {
-                let began = Instant::now();
-                studio.pointer_moved(start.0 + at * 3, start.1 + at * 2, none);
-                moves.push(began.elapsed());
-                let began = Instant::now();
-                if studio.take_dirty() {
-                    studio.draw(&mut out);
-                }
-                draws.push(began.elapsed());
-            }
-            studio.released();
-            figures(name, moves.iter().zip(&draws).map(|(a, b)| *a + *b).collect());
-            figures("  pointer moved", moves);
-            figures("  drawn", draws);
+        let at = into(&mut studio, lone);
+        drag_timings(&mut studio, &mut out, "drag a lone box", at);
+        let at = into(&mut studio, three);
+        drag_timings(&mut studio, &mut out, "drag a box, 3 arrows", at);
+        for source in [(1920, 1080), (3840, 2160)] {
+            println!(" with a {}x{} picture:", source.0, source.1);
+            let (mut studio, three, lone, picture, tied) = busy_board_with_picture(width, height, zoom, source);
+            studio.draw(&mut out);
+            figures("first draw", timed(&mut studio, &mut out, 3, |studio, _| studio.dirty = true));
+            figures("hover over the board", timed(&mut studio, &mut out, 60, |studio, at| studio.pointer_moved(empty.0 + at % 7, empty.1 + at % 5, none)));
+            let at = into(&mut studio, lone);
+            drag_timings(&mut studio, &mut out, "drag a lone box", at);
+            let at = into(&mut studio, three);
+            drag_timings(&mut studio, &mut out, "drag a box, 3 arrows", at);
+            let at = into(&mut studio, tied);
+            drag_timings(&mut studio, &mut out, "drag a box tied to it", at);
+            let at = into(&mut studio, picture);
+            drag_timings(&mut studio, &mut out, "drag the picture", at);
+            // A box drawn round it, under it, and it moved a little to be
+            // in that; and that box dragged by its foot.
+            let (mut studio, ..) = busy_board_with_picture(width, height, zoom, source);
+            board::tests::press_key(&mut studio, Key::Char('r'), none);
+            board::tests::pull(&mut studio, (40.0, 790.0), (780.0, 1240.0), none);
+            board::tests::press_key(&mut studio, Key::Escape, none);
+            board::tests::press_key(&mut studio, Key::Escape, none);
+            let drawn = studio.doc.layers.pop().expect("a box drawn");
+            studio.doc.layers.insert(picture, drawn);
+            studio.changed();
+            board::tests::pull(&mut studio, (400.0, 880.0), (410.0, 890.0), none);
             studio.key(Key::Escape, none, true);
             studio.selected.clear();
+            let picture = picture + 1;
+            let id = studio.id_of(picture);
+            let holder = studio.holder_of(id).and_then(|holder| studio.index_of(holder)).expect("the picture is in a box");
+            let (x, y, _, h) = studio.box_frame(holder);
+            studio.draw(&mut out);
+            drag_timings(&mut studio, &mut out, "drag a box it is in", (x + 20.0, y + h - 6.0));
         }
     }
+}
+
+/// The busy board with a picture pasted on it, `source` pixels large and
+/// shown 640 by 360 below its left boxes, and an arrow from the box
+/// above it tied to it. Gives the box with three arrows, the lone one,
+/// the picture and the box tied to it.
+fn busy_board_with_picture(width: i32, height: i32, zoom: f32, source: (i32, i32)) -> (Studio, usize, usize, usize, usize) {
+    use super::board::tests::{press_key, pull};
+    let (mut studio, three, lone) = busy_board(width, height, zoom);
+    let none = Mods::default();
+    studio.drop_picture(photo(source.0, source.1, 3), "shot", None);
+    let picture = studio.doc.layers.len() - 1;
+    let Kind::Picture(at) = &mut studio.doc.layers[picture].kind else { unreachable!() };
+    (at.cx, at.cy, at.w, at.h) = (400.0, 1000.0, 640.0, 360.0);
+    let id = at.id;
+    studio.changed();
+    press_key(&mut studio, Key::Escape, none);
+    // From the bottom of the second box of the fourth row to the top of
+    // the picture.
+    press_key(&mut studio, Key::Char('a'), none);
+    pull(&mut studio, (435.0, 674.0), (430.0, 826.0), none);
+    press_key(&mut studio, Key::Escape, none);
+    press_key(&mut studio, Key::Escape, none);
+    studio.selected.clear();
+    let tied = studio.doc.layers.iter().any(|layer| matches!(&layer.kind, Kind::Shape(arrow) if arrow.stuck.iter().flatten().any(|s| s.0 == id)));
+    assert!(tied, "no arrow tied to the picture");
+    (studio, three, lone, picture, 19)
+}
+
+/// A point of the board a third of the way into a layer.
+fn into(studio: &mut Studio, layer: usize) -> (f32, f32) {
+    let (x, y, w, h) = studio.doc.layers[layer].bounds(&mut studio.text);
+    (x + w * 0.3, y + h * 0.3)
+}
+
+/// Each step of a drag from a point of the board, the pointer moved and
+/// the window drawn, timed apart and together; and how many of the steps
+/// were drawn again only in part.
+fn drag_timings(studio: &mut Studio, out: &mut [u32], name: &str, from: (f32, f32)) {
+    let none = Mods::default();
+    let start = studio.to_window_page(from);
+    studio.pointer_moved(start.0, start.1, none);
+    studio.last_press.0 = 0;
+    studio.pressed(1, 100_000);
+    let (mut moves, mut draws, mut partly) = (Vec::new(), Vec::new(), 0);
+    for at in 0..80 {
+        let began = Instant::now();
+        studio.pointer_moved(start.0 + at * 3, start.1 - at * 2, none);
+        moves.push(began.elapsed());
+        partly += usize::from(studio.touched.is_some());
+        let began = Instant::now();
+        if studio.take_dirty() {
+            studio.draw(out);
+        }
+        draws.push(began.elapsed());
+    }
+    studio.released();
+    figures(name, moves.iter().zip(&draws).map(|(a, b)| *a + *b).collect());
+    figures("  pointer moved", moves);
+    figures(&format!("  drawn, {partly} of 80 in part"), draws);
+    studio.key(Key::Escape, none, true);
+    studio.selected.clear();
 }

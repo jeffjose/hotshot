@@ -44,6 +44,7 @@ pub use export::export_file;
 pub use board::board_preview;
 mod panel;
 mod picker;
+mod pictures;
 mod place;
 /// The smallest the canvas and the projects are drawn.
 pub const MIN_SIZE: (i32, i32) = place::MIN;
@@ -1298,6 +1299,11 @@ fn over(under: u32, color: u32, amount: f32) -> u32 {
     if amount <= 0.0 {
         return under;
     }
+    // All of it on top: nothing of what is under shows, as the sums below
+    // would say, without working them out.
+    if amount >= 1.0 {
+        return 0xFF00_0000 | color & 0xFF_FFFF;
+    }
     let (under_a, top_a) = ((under >> 24) as f32 / 255.0, amount);
     let out_a = top_a + under_a * (1.0 - top_a);
     if out_a <= 0.0 {
@@ -1310,39 +1316,65 @@ fn over(under: u32, color: u32, amount: f32) -> u32 {
     ((out_a * 255.0).round() as u32) << 24 | part(16) << 8 << 8 | part(8) << 8 | part(0)
 }
 
-/// A picture drawn onto the artboard at `times` its size: its shadow, then
-/// it, each pixel of it from the four nearest of the copy of it of about
-/// the size it is shown at, kept to its rounded corners; and the window
-/// round it, if it is in one, its bar over the top of it.
+/// A picture drawn onto the artboard at `times` its size: as it was drawn
+/// at that size last, if it is no different since but for where it is,
+/// as while it is dragged; otherwise afresh.
 fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text: &mut Text) {
-    let (wide, high) = (part.w, part.h);
+    if !pictures::draw_kept(out, part, picture, times, text) {
+        paint_picture(out, part, picture, times, text);
+    }
+}
+
+/// A picture as it is drawn at `times` its size onto what has its corner
+/// at `corner` of that: where its middle is, how large it is, how round
+/// its corners are.
+fn picture_at(picture: &Picture, times: f32, corner: (i32, i32)) -> Picture {
     let mut at = picture.clone();
-    (at.cx, at.cy, at.w, at.h, at.radius) = (picture.cx * times - part.x as f32, picture.cy * times - part.y as f32, picture.w * times, picture.h * times, picture.radius * times);
+    (at.cx, at.cy, at.w, at.h, at.radius) = (picture.cx * times - corner.0 as f32, picture.cy * times - corner.1 as f32, picture.w * times, picture.h * times, picture.radius * times);
     at.corners = picture.corners.map(|corners| corners.map(|radius| radius * times));
-    let picture = &at;
-    let custom = [picture.drop];
-    let preset = Shadow::of_preset(picture.shadow.saturating_sub(1));
+    at
+}
+
+/// The shadows under a picture drawn at `times` its size, and how many of
+/// the pixels it is drawn in each of theirs is.
+fn picture_shadows(picture: &Picture, times: f32) -> (Vec<frame::Layer>, f32) {
     // Tailwind's shadows are for a page seen at its size; an artboard is
     // most often seen at half its own, and its shadows are twice as large.
     // One set number by number is in pixels of the artboard. A window's
     // own is in pixels of the screen it was on, as large as its bar is.
-    let (layers, lift) = match picture.chrome.as_ref().map(|chrome| chrome.shadow) {
-        Some(SYSTEM_SHADOW) => (picture.system_shadow(), picture.screen_scale * picture.content_scale()),
-        Some(NO_SHADOW) => (&[][..], 1.0),
+    match picture.chrome.as_ref().map(|chrome| chrome.shadow) {
+        Some(SYSTEM_SHADOW) => (picture.system_shadow().to_vec(), picture.screen_scale * picture.content_scale()),
+        Some(NO_SHADOW) => (Vec::new(), 1.0),
         _ => match picture.shadow {
-            0 => (&[][..], 1.0),
-            CUSTOM_SHADOW => (&custom[..], times),
-            _ => (preset.layers(), times * SHADOW_SIZE),
+            0 => (Vec::new(), 1.0),
+            CUSTOM_SHADOW => (vec![picture.drop], times),
+            _ => (Shadow::of_preset(picture.shadow.saturating_sub(1)).layers().to_vec(), times * SHADOW_SIZE),
         },
-    };
+    }
+}
+
+/// Where anything of a picture as it is drawn goes, its shadows and all,
+/// and a pixel or two round that.
+fn picture_area(picture: &Picture, layers: &[frame::Layer], lift: f32) -> Rect {
     // How far out from it anything of it goes: its shadow's reach.
     let reach = layers.iter().map(|layer| (f32::from(layer.blur) * 1.5 + f32::from(layer.spread) + f32::from(layer.x.abs().max(layer.y.abs()))) * lift).fold(0.0f32, f32::max);
-    let corners = picture.corners();
     let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-    for (x, y) in corners {
+    for (x, y) in picture.corners() {
         (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x), bottom.max(y));
     }
-    let area = Rect::new((left - reach).floor() as i32, (top - reach).floor() as i32, (right - left + 2.0 * reach).ceil() as i32 + 2, (bottom - top + 2.0 * reach).ceil() as i32 + 2).intersect(Rect::new(0, 0, wide, high));
+    Rect::new((left - reach).floor() as i32, (top - reach).floor() as i32, (right - left + 2.0 * reach).ceil() as i32 + 2, (bottom - top + 2.0 * reach).ceil() as i32 + 2)
+}
+
+/// A picture drawn afresh onto the artboard at `times` its size: its
+/// shadow, then it, each pixel of it from the four nearest of the copy of
+/// it of about the size it is shown at, kept to its rounded corners; and
+/// the window round it, if it is in one, its bar over the top of it.
+fn paint_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text: &mut Text) {
+    let (wide, high) = (part.w, part.h);
+    let at = picture_at(picture, times, (part.x, part.y));
+    let picture = &at;
+    let (layers, lift) = picture_shadows(picture, times);
+    let area = picture_area(picture, &layers, lift).intersect(Rect::new(0, 0, wide, high));
     if area.is_empty() || picture.w < 0.5 || picture.h < 0.5 {
         return;
     }
@@ -1382,6 +1414,13 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
             (Rect::new(0, 0, bw, bh), fine, drawn_pixels)
         }
     });
+    // A point of the artboard from its middle, unturned, as `Picture::local`
+    // has it, its turn worked out once rather than for each pixel.
+    let (sin, cos) = (-picture.angle).sin_cos();
+    let local = |(x, y): (f32, f32)| {
+        let (dx, dy) = (x - picture.cx, y - picture.cy);
+        (dx * cos - dy * sin, dx * sin + dy * cos)
+    };
     out[(area.y * wide) as usize..(area.bottom() * wide) as usize].par_chunks_mut(wide as usize).enumerate().for_each(|(row, line)| {
         let y = area.y + row as i32;
         for x in area.x..area.right() {
@@ -1389,14 +1428,14 @@ fn draw_picture(out: &mut [u32], part: Rect, picture: &Picture, times: f32, text
             let mut pixel = line[x as usize];
             for layer in layers.iter().rev() {
                 let shifted = (point.0 - f32::from(layer.x) * lift, point.1 - f32::from(layer.y) * lift);
-                let (sx, sy) = picture.local(shifted);
+                let (sx, sy) = local(shifted);
                 let grow = f32::from(layer.spread) * lift;
                 let away = frame::round_box(sx, sy, (hw + grow).max(0.0), (hh + grow).max(0.0), (shapes::corner_of(sx, sy, radii) + grow).max(0.0));
                 let deviation = f32::from(layer.blur.max(0)) * lift / 2.0;
                 let near = if deviation < 0.5 { (0.5 - away).clamp(0.0, 1.0) } else { 0.5 * (1.0 - frame::erf(away / (deviation * std::f32::consts::SQRT_2))) };
                 pixel = over(pixel, layer.color & 0xFF_FFFF, near * (layer.color >> 24) as f32 / 255.0 * opacity);
             }
-            let (lx, ly) = picture.local(point);
+            let (lx, ly) = local(point);
             let inside = frame::round_box(lx, ly, hw, hh, shapes::corner_of(lx, ly, radii));
             let cover = (0.5 - inside).clamp(0.0, 1.0);
             if cover > 0.0 {

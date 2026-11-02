@@ -349,6 +349,83 @@ mod tests {
         assert!(partly > 20, "drawn again only in part {partly} times");
     }
 
+    /// The same, each picture on it drawn afresh rather than as it was
+    /// kept.
+    fn board_as_if_drawn_afresh(studio: &mut Studio) {
+        super::super::pictures::AFRESH.with(|afresh| afresh.set(true));
+        board_as_if_whole(studio);
+        super::super::pictures::AFRESH.with(|afresh| afresh.set(false));
+    }
+
+    #[test]
+    fn a_picture_on_a_board_moved_or_moved_past_is_drawn_again_only_where_it_and_what_goes_with_it_were_and_are() {
+        use crate::studio::board::tests::{board, press_key, pull, type_in};
+        let none = Mods::default();
+        let mut studio = board();
+        // A picture with a shadow and round corners, an arrow tied to it
+        // from a box above it, and a smaller picture in a box of its own.
+        let photo = |w: i32, h: i32| Arc::new(Image::new(w, h, (0..w * h).map(|at| 0xFF00_0000 | ((at % w) as u32 * 255 / w as u32) << 16 | ((at / w) as u32 * 255 / h as u32) << 8 | (at as u32 * 7 & 0xFF)).collect()));
+        let mut picture = Picture::new(photo(480, 300), "shot".into(), (560.0, 420.0));
+        (picture.w, picture.h, picture.shadow, picture.radius) = (240.0, 150.0, 3, 12.0);
+        let shot = picture.id;
+        studio.doc.layers.push(Layer::picture(picture));
+        let mut small = Picture::new(photo(240, 160), "small".into(), (1000.0, 650.0));
+        (small.w, small.h) = (120.0, 80.0);
+        let held = small.id;
+        studio.doc.layers.push(Layer::picture(small));
+        studio.changed();
+        press_key(&mut studio, Key::Char('r'), none);
+        pull(&mut studio, (700.0, 100.0), (860.0, 172.0), none);
+        type_in(&mut studio, "Out");
+        let above = studio.id_of(studio.doc.layers.len() - 1);
+        press_key(&mut studio, Key::Escape, none);
+        press_key(&mut studio, Key::Char('a'), none);
+        pull(&mut studio, (780.0, 180.0), (560.0, 349.0), none);
+        press_key(&mut studio, Key::Escape, none);
+        press_key(&mut studio, Key::Char('r'), none);
+        pull(&mut studio, (60.0, 560.0), (460.0, 840.0), none);
+        press_key(&mut studio, Key::Escape, none);
+        press_key(&mut studio, Key::Escape, none);
+        pull(&mut studio, (1000.0, 650.0), (260.0, 700.0), none);
+        press_key(&mut studio, Key::Escape, none);
+        studio.selected.clear();
+        assert!(studio.doc.layers.iter().any(|layer| matches!(&layer.kind, Kind::Shape(arrow) if arrow.stuck.iter().flatten().any(|end| end.0 == shot))), "no arrow tied to the picture");
+        let holder = studio.holder_of(held).expect("the small picture in a box");
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        // The picture dragged, the box above it dragged down over it, and
+        // the box with the other in it dragged; as it is shown, and back
+        // again zoomed out a little, where a pixel of the board is not one
+        // of the window's.
+        let mut partly = 0;
+        for (zoom, way) in [(1.0, 1), (0.73, -1)] {
+            studio.zoom = zoom;
+            studio.changed();
+            studio.draw(&mut out);
+            board_as_if_drawn_afresh(&mut studio);
+            for (id, foot, by) in [(shot, false, (7, 5)), (above, false, (-4, 25)), (holder, true, (9, -6))] {
+                let (x, y, w, h) = studio.index_of(id).map(|at| studio.box_frame(at)).expect("there");
+                let at = if foot { (x + 12.0, y + h - 6.0) } else { (x + w / 2.0, y + h / 2.0) };
+                let by = (by.0 * way, by.1 * way);
+                let start = studio.to_window_page(at);
+                studio.pointer_moved(start.0, start.1, none);
+                studio.last_press.0 = 0;
+                studio.pressed(1, 100_000);
+                for step in 1..10 {
+                    studio.pointer_moved(start.0 + step * by.0, start.1 + step * by.1, none);
+                    partly += usize::from(studio.touched.is_some());
+                    studio.draw(&mut out);
+                    board_as_if_drawn_afresh(&mut studio);
+                }
+                studio.released();
+                studio.draw(&mut out);
+                board_as_if_drawn_afresh(&mut studio);
+                press_key(&mut studio, Key::Escape, none);
+                studio.selected.clear();
+            }
+        }
+        assert!(partly > 40, "drawn again only in part {partly} times");
+    }
+
     #[test]
     fn a_board_zoomed_in_by_the_wheel_is_drawn_sharp_once_it_is_still() {
         use crate::studio::board::tests::{board, press_key, pull, type_in};
