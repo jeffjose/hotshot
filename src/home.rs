@@ -264,9 +264,17 @@ impl Home {
             let bytes = std::fs::read(path).ok()?;
             let (w, h, pixels) = if is_file(path) {
                 let pages = studio::read_pages(&bytes)?;
-                let frame = pages.first()?.frames.first()?;
-                let times = (wide as f32 / frame.width as f32).min(high as f32 / frame.height as f32);
-                frame.render(times, &mut self.text)
+                let page = pages.first()?;
+                // A board, all of it on its paper; a page of frames, its
+                // first frame.
+                match page.board {
+                    true => studio::board_preview(page, wide, high, &mut self.text)?,
+                    false => {
+                        let frame = page.frames.first()?;
+                        let times = (wide as f32 / frame.width as f32).min(high as f32 / frame.height as f32);
+                        frame.render(times, &mut self.text)
+                    }
+                }
             } else {
                 let (w, h, pixels) = crate::pin::read(&bytes).or_else(|| crate::frame::open(&bytes).map(|photo| (photo.width, photo.height, photo.pixels.iter().map(|pixel| pixel | 0xFF00_0000).collect())))?;
                 let times = (wide as f32 / w as f32).max(high as f32 / h as f32).min(1.0);
@@ -302,9 +310,9 @@ impl Home {
         controls.push((Rect::new(0, 0, SIDE, self.height), Control::Panel));
         if self.place != Place::Captures {
             controls.push((Rect::new(self.width - 36 - 26, 30, 26, 34), Control::NewKinds));
-            controls.push((Rect::new(self.width - 36 - 116, 30, 116, 34), Control::NewFile));
-            controls.push((Rect::new(self.width - 36 - 116 - 74, 33, 28, 28), Control::View(false)));
-            controls.push((Rect::new(self.width - 36 - 116 - 44, 33, 28, 28), Control::View(true)));
+            controls.push((Rect::new(self.width - 36 - 96, 30, 96, 34), Control::NewFile));
+            controls.push((Rect::new(self.width - 36 - 96 - 74, 33, 28, 28), Control::View(false)));
+            controls.push((Rect::new(self.width - 36 - 96 - 44, 33, 28, 28), Control::View(true)));
         }
         // Undo at the end of the line along the bottom, over the cards.
         if let (Some(note), Some(true)) = (self.note_place(), self.batch.as_ref().map(|batch| batch.undoable())) {
@@ -660,7 +668,7 @@ impl Home {
                 Control::NewFile if rect.y < 100 => {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, if hovered { 0x5472E4 } else { ACCENT }, 256);
                     self.text.draw_centered(&mut canvas, rect.x + 20, rect.y + rect.h / 2, 14, 0xFFFFFF, icons::PLUS);
-                    self.text.draw(&mut canvas, rect.x + 34, rect.y + (rect.h - line) / 2, 13, 0xFFFFFF, "New file");
+                    self.text.draw(&mut canvas, rect.x + 34, rect.y + (rect.h - line) / 2, 13, 0xFFFFFF, "New");
                     // Its arrow, for the kind of file: a board or a page of frames.
                     let split = rect.right() - 26;
                     canvas.fill(split, rect.y + 8, 1, rect.h - 16, 0x7D93EA);
@@ -673,7 +681,7 @@ impl Home {
                     let thumb = rect.h - 44;
                     canvas.round_outline(rect.x, rect.y, rect.w, thumb, 10, 1, if hovered { 0x777777 } else { 0x4A4A4A });
                     self.text.draw_centered(&mut canvas, rect.x + rect.w / 2, rect.y + thumb / 2 - 10, 20, DIM_TEXT_COLOR, icons::PLUS);
-                    self.text.draw_centered(&mut canvas, rect.x + rect.w / 2, rect.y + thumb / 2 + 16, 13, DIM_TEXT_COLOR, "New file");
+                    self.text.draw_centered(&mut canvas, rect.x + rect.w / 2, rect.y + thumb / 2 + 16, 13, DIM_TEXT_COLOR, "New");
                     lowest = lowest.max(rect.bottom());
                 }
                 Control::Open(path) if self.list => {
@@ -915,9 +923,9 @@ impl Home {
                 rows.extend([Row::Rule, entry("Show in folder", "", Act::ShowFolder), entry("Copy path", "", Act::CopyPath), Row::Rule, entry("Move to trash", "", Act::Trash)]);
                 rows
             }
-            Some(Menu::Project(_)) => vec![entry("Open", "", Act::Open), entry("Rename", "Double-click", Act::Rename), entry("New file in it", "", Act::NewFileIn), Row::Rule, entry("Show in folder", "", Act::ShowFolder), entry("Copy path", "", Act::CopyPath), Row::Rule, entry("Move to trash", "", Act::Trash)],
-            Some(Menu::Kinds) => vec![entry("Design file", "", Act::NewOf(false)), entry("Board", "", Act::NewOf(true))],
-            Some(Menu::Empty) => vec![entry("New file", "Ctrl N", Act::NewFile), entry("New design file", "", Act::NewOf(false)), entry("New board", "", Act::NewOf(true)), entry("New project", "", Act::NewProject), Row::Rule, entry("Paste a picture", "Ctrl V", Act::Paste)],
+            Some(Menu::Project(_)) => vec![entry("Open", "", Act::Open), entry("Rename", "Double-click", Act::Rename), entry("New in it", "", Act::NewFileIn), Row::Rule, entry("Show in folder", "", Act::ShowFolder), entry("Copy path", "", Act::CopyPath), Row::Rule, entry("Move to trash", "", Act::Trash)],
+            Some(Menu::Kinds) => vec![entry("Design", "", Act::NewOf(false)), entry("Board", "", Act::NewOf(true))],
+            Some(Menu::Empty) => vec![entry("New", "Ctrl N", Act::NewFile), entry("New design", "", Act::NewOf(false)), entry("New board", "", Act::NewOf(true)), entry("New project", "", Act::NewProject), Row::Rule, entry("Paste a picture", "Ctrl V", Act::Paste)],
             Some(Menu::Captures(paths)) => {
                 let mut rows = Vec::new();
                 if paths.len() == 1 {
@@ -1198,7 +1206,7 @@ mod tests {
         let mut home = Home::new(Text::load(), 1200, 800, std::env::temp_dir());
         let project = library().join("Somewhere");
         home.file_menu = Some((Menu::Project(project.clone()), (600, 300)));
-        assert_eq!(home.file_act(row(&home, "New file in it")), Outcome::New(project.clone(), None));
+        assert_eq!(home.file_act(row(&home, "New in it")), Outcome::New(project.clone(), None));
         home.file_menu = Some((Menu::Project(project.clone()), (600, 300)));
         home.file_act(row(&home, "Open"));
         assert_eq!((home.place.clone(), home.file_menu.is_none()), (Place::Project(project), true));
@@ -1215,7 +1223,7 @@ mod tests {
         home.pointer_moved(1200 - 36 - 13, 47);
         home.pressed(1, 0);
         assert!(matches!(home.file_menu, Some((Menu::Kinds, _))));
-        assert_eq!(home.file_act(row(&home, "Design file")), Outcome::NewOf(home.folder(), false));
+        assert_eq!(home.file_act(row(&home, "Design")), Outcome::NewOf(home.folder(), false));
         // A file not in Drafts can be moved there.
         home.file_menu = Some((Menu::File(std::env::temp_dir().join("Elsewhere.hotshot")), (600, 300)));
         row(&home, "Move to Drafts");
@@ -1241,7 +1249,7 @@ mod tests {
         home.pressed(3, 0);
         // Down to the first row, Down past the rule, Up round to the last.
         home.key(Key::Down, none);
-        assert_eq!(home.menu_row, Some(usize::from(row(&home, "New file"))));
+        assert_eq!(home.menu_row, Some(usize::from(row(&home, "New"))));
         home.key(Key::Up, none);
         assert_eq!(home.menu_row, Some(usize::from(row(&home, "Paste a picture"))));
         home.key(Key::Up, none);

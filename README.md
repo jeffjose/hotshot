@@ -398,9 +398,9 @@ left panel, and stays there with the panels hidden and with `Ctrl+\`;
 `Ctrl+M` flips the page shown. One file can hold both: the polished
 screenshots on a page of frames, the sketch that explains them on a
 board beside it. A new file begins as the last page was switched to,
-and a new page as the one shown is; or choose: the arrow on New file
-has Design file and Board, a right click on the projects New design
-file and New board, and the File menu, a page's right click and
+and a new page as the one shown is; or choose: the arrow on New
+has Design and Board, a right click on the projects New design
+and New board, and the File menu, a page's right click and
 `Ctrl+K` New design page and New board page. A board begins with no
 frame. Nothing is lost by switching: a board's boxes are the page's own
 layers, which Design shows and moves as any, and switched back they

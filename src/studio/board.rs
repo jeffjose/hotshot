@@ -190,6 +190,7 @@ pub(super) fn is_mermaid(text: &str) -> bool {
     mermaid::kind_of(text).is_some()
 }
 pub(super) mod look;
+pub use look::board_preview;
 mod act;
 pub(super) use act::Act;
 mod typing;

@@ -41,6 +41,7 @@ mod menu;
 mod order;
 pub use menu::parse_frame_size;
 pub use export::export_file;
+pub use board::board_preview;
 mod panel;
 mod picker;
 mod place;

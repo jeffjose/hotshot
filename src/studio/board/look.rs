@@ -511,3 +511,37 @@ mod tests {
         }
     }
 }
+
+/// A small picture of a board page for the projects: all that is on it,
+/// its own layers and what is in its frames, fitted into `wide` by `high`
+/// on its paper, drawn as it is drawn on the board.
+pub fn board_preview(page: &super::super::Page, wide: i32, high: i32, text: &mut Text) -> Option<(i32, i32, Vec<u32>)> {
+    let mut layers: Vec<Layer> = page.loose.layers.iter().filter(|layer| !layer.hidden).cloned().collect();
+    for frame in &page.frames {
+        layers.extend(frame.layers.iter().filter(|layer| !layer.hidden).map(|layer| {
+            let mut layer = layer.clone();
+            layer.translate(frame.x, frame.y);
+            layer
+        }));
+    }
+    let paper = PAPERS[usize::from(page.ground.min(2))].0;
+    let boxes: Vec<(f32, f32, f32, f32)> = layers.iter().map(|layer| layer.bounds(text)).collect();
+    // An empty board: its paper, blank.
+    let Some((x, y, w, h)) = super::super::actions::union(&boxes) else {
+        return Some((wide, high, vec![0xFF00_0000 | paper; (wide * high).max(0) as usize]));
+    };
+    let room = 24.0;
+    let (x, y, w, h) = (x - room, y - room, w + 2.0 * room, h + 2.0 * room);
+    let mut sheet = Doc::new(w.ceil().max(1.0) as i32, h.ceil().max(1.0) as i32);
+    sheet.background = Fill::Color(paper);
+    sheet.layers = layers
+        .into_iter()
+        .map(|mut layer| {
+            layer.translate(-x, -y);
+            layer
+        })
+        .collect();
+    sheet.board = Some((page.look, page.ground, true));
+    let times = (wide as f32 / w).min(high as f32 / h).min(2.0);
+    Some(sheet.render(times, text))
+}
