@@ -1523,27 +1523,43 @@ fn draw_shape_on(out: &mut [u32], wide: i32, high: i32, shape: &Shape, text: &mu
     if place.is_empty() {
         return;
     }
-    let before: Vec<u32> = (place.y..place.bottom()).flat_map(|y| out[(y * wide + place.x) as usize..(y * wide + place.right()) as usize].to_vec()).collect();
+    let (from, to) = (place.x as usize, place.right() as usize);
+    let mut before: Vec<u32> = Vec::with_capacity((place.w * place.h) as usize);
+    for line in out.chunks_exact(wide as usize).skip(place.y as usize).take(place.h as usize) {
+        before.extend_from_slice(&line[from..to]);
+    }
+    let many = before.len() >= 1 << 14;
     if let Some(paper) = under {
-        for y in place.y..place.bottom() {
-            for pixel in &mut out[(y * wide + place.x) as usize..(y * wide + place.right()) as usize] {
+        let row = |line: &mut [u32]| {
+            for pixel in &mut line[from..to] {
                 if *pixel >> 24 == 0 {
                     *pixel = paper & 0xFF_FFFF;
                 }
             }
+        };
+        let rows = &mut out[(place.y * wide) as usize..(place.bottom() * wide) as usize];
+        match many {
+            true => rows.par_chunks_exact_mut(wide as usize).for_each(row),
+            false => rows.chunks_exact_mut(wide as usize).for_each(row),
         }
     }
     shape.draw(&mut Canvas::new(out, wide, high), text);
-    for (at, &was) in before.iter().enumerate() {
-        let (x, y) = (place.x + at as i32 % place.w, place.y + at as i32 / place.w);
-        let pixel = &mut out[(y * wide + x) as usize];
-        // Drawn on, it is opaque; and over nothing, its color is the
-        // color drawn, and not that color mixed with black.
-        let laid = match under {
-            Some(paper) if was >> 24 == 0 => paper & 0xFF_FFFF,
-            _ => was & 0xFF_FFFF,
-        };
-        *pixel = if *pixel & 0xFF_FFFF != laid { 0xFF00_0000 | (*pixel & 0xFF_FFFF) } else { was };
+    // A row at a time, many at once where there are many.
+    let row = |(line, was): (&mut [u32], &[u32])| {
+        for (pixel, &was) in line[from..to].iter_mut().zip(was) {
+            // Drawn on, it is opaque; and over nothing, its color is the
+            // color drawn, and not that color mixed with black.
+            let laid = match under {
+                Some(paper) if was >> 24 == 0 => paper & 0xFF_FFFF,
+                _ => was & 0xFF_FFFF,
+            };
+            *pixel = if *pixel & 0xFF_FFFF != laid { 0xFF00_0000 | (*pixel & 0xFF_FFFF) } else { was };
+        }
+    };
+    let rows = &mut out[(place.y * wide) as usize..(place.bottom() * wide) as usize];
+    match many {
+        true => rows.par_chunks_exact_mut(wide as usize).zip(before.par_chunks_exact(place.w as usize)).for_each(row),
+        false => rows.chunks_exact_mut(wide as usize).zip(before.chunks_exact(place.w as usize)).for_each(row),
     }
 }
 

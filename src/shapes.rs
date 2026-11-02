@@ -2860,14 +2860,17 @@ pub fn smooth_through(points: &[Point], step: f32) -> Vec<Point> {
 
 /// How much of each pixel of a rectangle is inside a closed run of
 /// points, row by row: four lines across each row of pixels, each side
-/// of what is inside it shared by the pixel it falls in.
+/// of what is inside it shared by the pixel it falls in; many rows at once
+/// where there are many.
 pub fn fill_path(bounds: Rect, path: &[Point]) -> Mask {
     let width = bounds.w.max(0) as usize;
     let mut alpha = vec![0u8; width * bounds.h.max(0) as usize];
+    if width == 0 {
+        return Mask { bounds, alpha };
+    }
     const ACROSS: usize = 4;
-    let mut row = vec![0.0f32; width + 1];
-    let mut crossings: Vec<f32> = Vec::new();
-    for y in 0..bounds.h.max(0) {
+    let fill_row = |(row, crossings): &mut (Vec<f32>, Vec<f32>), (y, out): (usize, &mut [u8])| {
+        let y = y as i32;
         row.iter_mut().for_each(|cover| *cover = 0.0);
         for sub in 0..ACROSS {
             let line = (bounds.y + y) as f32 + (sub as f32 + 0.5) / ACROSS as f32;
@@ -2897,9 +2900,16 @@ pub fn fill_path(bounds: Rect, path: &[Point]) -> Mask {
                 row[last] += (to - last as f32) * share;
             }
         }
-        let out = &mut alpha[y as usize * width..][..width];
-        for (pixel, cover) in out.iter_mut().zip(&row) {
+        for (pixel, cover) in out.iter_mut().zip(row.iter()) {
             *pixel = (cover.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    };
+    let buffers = || (vec![0.0f32; width + 1], Vec::new());
+    match alpha.len() >= 1 << 14 {
+        true => alpha.par_chunks_mut(width).enumerate().for_each_init(buffers, fill_row),
+        false => {
+            let mut kept = buffers();
+            alpha.chunks_mut(width).enumerate().for_each(|row| fill_row(&mut kept, row));
         }
     }
     Mask { bounds, alpha }
