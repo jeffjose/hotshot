@@ -3589,6 +3589,10 @@ impl Studio {
                     self.carry(dx, dy);
                 }
                 let chosen = self.chosen();
+                // An arrow moved alone, its ends drawn to the dots they near.
+                if let (&[index], true) = (&chosen[..], self.on_board()) {
+                    self.magnet(index);
+                }
                 self.changed_layers(&chosen);
             }
             Drag::Scale { pull, from } => {

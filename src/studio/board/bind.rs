@@ -14,6 +14,9 @@ pub(in crate::studio) const REACH: f32 = 20.0;
 /// be: in pixels of the window.
 const ON_EDGE: f32 = 6.0;
 const CLEAR: f32 = 24.0;
+/// How near a box's dot an end of an arrow moved whole is drawn to it, in
+/// pixels of the window.
+pub(in crate::studio) const MAGNET: f32 = 16.0;
 
 /// The key held while an end is dragged that ties it to nothing.
 fn unbound(mods: Mods) -> bool {
@@ -149,6 +152,66 @@ impl Studio {
             self.board.bind = target;
             self.dirty = true;
         }
+    }
+
+    /// An arrow or a line moved whole on a board, its ends tied to nothing
+    /// as it goes, as Excalidraw lets go of them: an end that comes near a
+    /// box's dot is drawn to it, the arrow moving with it so that the end
+    /// is on the dot, and tied there, the box glowing and the dot lit; the
+    /// nearer end first, then the other if it is then near a dot of
+    /// another box. Ctrl held, neither is.
+    pub(in crate::studio) fn magnet(&mut self, index: usize) {
+        let mut ports = Vec::new();
+        let target = match self.mods.ctrl {
+            true => None,
+            false => self.magnet_ends(index, &mut ports),
+        };
+        if ports != self.board.ports || target != self.board.bind {
+            (self.board.ports, self.board.bind) = (ports, target);
+            self.dirty = true;
+        }
+    }
+
+    fn magnet_ends(&mut self, index: usize, ports: &mut Vec<(usize, (f32, f32))>) -> Option<usize> {
+        let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return None };
+        if !shape.sticks() || shape.points.len() < 2 || shape.stuck.iter().any(Option::is_some) {
+            return None;
+        }
+        let ends = [shape.points[0], shape.points[1]];
+        let reach = MAGNET / self.zoom;
+        let picked: Vec<usize> = (0..self.doc.layers.len()).filter(|&other| other != index && self.is_box(other) && !self.doc.layers[other].hidden).collect();
+        let boxes: Vec<(usize, shapes::Anchor)> = picked.into_iter().filter_map(|other| Some((other, self.doc.layers[other].kind.clone().anchor_of(&mut self.text)?))).collect();
+        // The dot nearest a point, within reach, but of a box left out.
+        let nearest = |at: (f32, f32), not: Option<usize>| {
+            boxes.iter().filter(|(other, _)| Some(*other) != not).flat_map(|(other, anchor)| (0..4).map(move |side| (*other, anchor.id, side, shapes::side_point(anchor, side).0))).map(|(other, id, side, spot)| (other, id, side, spot, (spot.0 - at.0).hypot(spot.1 - at.1))).filter(|found| found.4 <= reach).min_by(|a, b| a.4.total_cmp(&b.4))
+        };
+        let found = [nearest(ends[0], None), nearest(ends[1], None)];
+        let first = match (found[0], found[1]) {
+            (Some(a), Some(b)) => usize::from(b.4 < a.4),
+            (Some(_), None) => 0,
+            (None, Some(_)) => 1,
+            (None, None) => return None,
+        };
+        let (target, id, side, spot, _) = found[first]?;
+        let by = (spot.0 - ends[first].0, spot.1 - ends[first].1);
+        let other = 1 - first;
+        let second = nearest((ends[other].0 + by.0, ends[other].1 + by.1), Some(target));
+        let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return None };
+        for point in &mut shape.points {
+            (point.0, point.1) = (point.0 + by.0, point.1 + by.1);
+        }
+        let port = |id: u32, side: usize| (id, shapes::PORTS[side].0, shapes::PORTS[side].1);
+        shape.stuck[first] = Some(port(id, side));
+        ports.push((target, spot));
+        if let Some((target, id, side, spot, _)) = second {
+            shape.stuck[other] = Some(port(id, side));
+            shape.points[other] = spot;
+            ports.push((target, spot));
+        }
+        shape.routed = true;
+        shape.touch();
+        self.follow();
+        Some(target)
     }
 
     /// What an end dragged would be tied to, glowing round its edge, with
@@ -650,6 +713,62 @@ mod tests {
         drag_from(&mut studio, head, (b.0 - 14.0, b.1 + 6.0), Mods::default(), |_| {});
         assert_eq!(shape(&studio, arrow).stuck[1].map(|(_, u, v)| (u, v)), Some((-1.0, 0.0)));
         assert_eq!(shape(&studio, arrow).points[1], left);
+    }
+
+    #[test]
+    fn an_arrow_moved_whole_is_drawn_to_the_dots_its_ends_near_and_tied_there() {
+        let mut studio = two_boxes();
+        let a = shape(&studio, 0).frame();
+        let b = shape(&studio, 1).frame();
+        let (a_right, b_left) = ((a.0 + a.2, a.1 + a.3 / 2.0), (b.0, b.1 + b.3 / 2.0));
+        // A lone arrow on empty board, under the two.
+        press_key(&mut studio, Key::Char('a'), Mods::default());
+        pull(&mut studio, (300.0, 400.0), (420.0, 420.0), Mods { ctrl: true, ..Mods::default() });
+        let arrow = studio.doc.layers.len() - 1;
+        studio.selected.clear();
+        assert_eq!(shape(&studio, arrow).stuck, [None, None]);
+        // Its body dragged so its tail comes a few pixels from A's right dot.
+        let grab = studio.to_window((330.0, 405.0));
+        let tail = shape(&studio, arrow).points[0];
+        let to = (330.0 + a_right.0 + 7.0 - tail.0, 405.0 + a_right.1 - 5.0 - tail.1);
+        drag_from(&mut studio, grab, to, Mods::default(), |studio| {
+            assert!(matches!(studio.drag, Drag::Move { moved: true, .. }), "{:?}", studio.drag);
+            assert_eq!(shape(studio, arrow).points[0], a_right, "the tail drawn onto the dot");
+            assert_eq!((studio.board.bind, studio.board.ports.clone()), (Some(0), vec![(0, a_right)]), "A glows, its dot lit");
+        });
+        let moved = shape(&studio, arrow);
+        assert_eq!(moved.stuck, [Some((shape(&studio, 0).id, 1.0, 0.0)), None], "tied at A's right dot, the head free");
+        assert_eq!(moved.points[0], a_right);
+        assert_eq!((studio.board.bind, studio.board.ports.len()), (None, 0), "nothing lit once let go");
+        // Dragged off again, by its body: let go of A, as Excalidraw does,
+        // and free on empty board.
+        studio.selected.clear();
+        let body = studio.to_window(moved.points[1]);
+        let grab = (body.0 - 30, body.1 - 4);
+        drag_from(&mut studio, grab, (500.0, 650.0), Mods::default(), |_| {});
+        assert_eq!(shape(&studio, arrow).stuck, [None, None]);
+        // A straight arrow as long as from A to B, both ends near their
+        // dots: tied to both.
+        let both = studio.doc.layers.len();
+        studio.selected.clear();
+        press_key(&mut studio, Key::Char('a'), Mods::default());
+        pull(&mut studio, (a_right.0, 600.0), (b_left.0, 600.0), Mods { ctrl: true, ..Mods::default() });
+        studio.selected.clear();
+        let grab = studio.to_window(((a_right.0 + b_left.0) / 2.0 - 40.0, 600.0));
+        drag_from(&mut studio, grab, ((a_right.0 + b_left.0) / 2.0 - 34.0, a_right.1 + 8.0), Mods::default(), |studio| {
+            assert_eq!(studio.board.ports.len(), 2, "both dots lit: {:?} {:?}", studio.drag, shape(studio, both).points);
+        });
+        let joined = shape(&studio, both);
+        assert_eq!(joined.stuck, [Some((shape(&studio, 0).id, 1.0, 0.0)), Some((shape(&studio, 1).id, -1.0, 0.0))]);
+        assert_eq!((joined.points[0], joined.points[1]), (a_right, b_left));
+        // With Ctrl held, it is not drawn to them.
+        studio.selected.clear();
+        let grab = studio.to_window(((a_right.0 + b_left.0) / 2.0 - 40.0, a_right.1));
+        drag_from(&mut studio, grab, ((a_right.0 + b_left.0) / 2.0 - 40.0, a_right.1 + 300.0), Mods::default(), |_| {});
+        assert_eq!(shape(&studio, both).stuck, [None, None]);
+        let grab = studio.to_window(((a_right.0 + b_left.0) / 2.0 - 40.0, a_right.1 + 300.0));
+        drag_from(&mut studio, grab, ((a_right.0 + b_left.0) / 2.0 - 34.0, a_right.1 + 8.0), Mods { ctrl: true, ..Mods::default() }, |studio| assert!(studio.board.ports.is_empty()));
+        assert_eq!(shape(&studio, both).stuck, [None, None]);
     }
 
     #[test]

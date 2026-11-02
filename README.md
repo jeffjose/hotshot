@@ -517,6 +517,13 @@ end touches the box it is tied to, its head pointing into it, and an
 arrow tied at one end only bows to come into that side square rather
 than across the box.
 
+An arrow dragged by its body lets go of what it was tied to, as in
+Excalidraw, and moves freely; an end that comes within sixteen pixels
+of a box's dot is drawn onto it, the arrow moving with it, the box
+glowing and the dot filled, and let go there it is tied at that dot.
+The nearer end goes first, and the other too if it is then near a dot
+of another box. Hold Ctrl to move it without.
+
 A small bar of styles floats over what is picked out, or under it where
 that covers less of the rest, clear of its dots, rather than the
 panel: five line colors and five fills, as Excalidraw keeps them, no
