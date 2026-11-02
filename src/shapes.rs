@@ -1678,7 +1678,18 @@ impl Shape {
     /// fainter than the first, where it is not under it.
     fn sketch_mask(&self, bounds: Rect) -> Mask {
         let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
+        // Drawn small, the second pass comes within a pixel of the first
+        // and only smudges it: it fades out as it is zoomed out, gone below
+        // half its size, leaving one clean line no thinner than a pixel.
+        let fade = ((self.scale - 0.45) / 0.4).clamp(0.0, 1.0);
         for (points, thin, strength) in self.sketch_strokes() {
+            let (thin, strength) = match strength < 1.0 {
+                true => (thin, strength * fade),
+                false => (thin.max(0.6), strength),
+            };
+            if strength <= 0.0 {
+                continue;
+            }
             for pair in points.windows(2) {
                 stamp_weighted(&mut mask, pair[0], pair[1], thin, strength);
             }
