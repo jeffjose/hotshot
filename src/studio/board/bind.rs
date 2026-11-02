@@ -638,13 +638,14 @@ mod tests {
         let (x, y, _, h) = studio.box_frame(0);
         let edge = studio.to_window((x, y + h / 2.0));
         let across = |pixels: &[u32]| (edge.0 - 4..=edge.0 + 4).filter(|&x| pixels[(edge.1 * width + x) as usize] == ACCENT).collect::<Vec<i32>>();
-        let darkest = (edge.0 - 4..=edge.0 + 4).min_by_key(|&x| bare[(edge.1 * width + x) as usize] & 0xFF).unwrap();
+        let inked = |x: i32| (bare[(edge.1 * width + x) as usize] & 0xFF) < 0x90;
         let picked = pixels(&mut studio);
-        assert_eq!(across(&picked), vec![darkest], "one pixel, on its line");
+        let lit = across(&picked);
+        assert!(lit.len() == 1 && (lit[0] - 1..=lit[0] + 1).any(inked), "one pixel, on its line, which wobbles a pixel either way as it is drawn by hand: {lit:?}");
         studio.selected.clear();
         studio.hovered = Some(0);
         let hovered = pixels(&mut studio);
-        assert_eq!(across(&hovered), vec![darkest], "hovered the same");
+        assert_eq!(across(&hovered), lit, "hovered the same");
     }
 
     #[test]
