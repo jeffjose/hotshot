@@ -14,6 +14,13 @@ impl Studio {
         matches!(self.doc.layers.get(index), Some(Layer { kind: Kind::Shape(shape), .. }) if matches!(shape.tool, Tool::Rect | Tool::Ellipse))
     }
 
+    /// Whether a layer is something arrows join as they join a box: a box,
+    /// or a picture, which has dots on its sides, glows as an end nears it
+    /// and is tied to at them, as a box is.
+    pub(in crate::studio) fn is_node(&self, index: usize) -> bool {
+        self.is_box(index) || matches!(self.doc.layers.get(index), Some(Layer { kind: Kind::Picture(_), .. }))
+    }
+
     /// Whether a layer has words of its own a board types into: a box, or
     /// an arrow or a line.
     pub(in crate::studio) fn has_words(&self, index: usize) -> bool {
@@ -208,8 +215,8 @@ impl Studio {
     }
 
     /// Ends of a line on a board stuck to what they are put down on: a
-    /// box as a whole, wherever on it, for the arrow to go from side to
-    /// side as it moves; a picture at the point, to point at what is in it.
+    /// box or a picture, for the arrow to go from side to side as it
+    /// moves.
     pub(in crate::studio) fn board_stick(&mut self, index: usize, ends: &[usize]) {
         for &end in ends {
             let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return };

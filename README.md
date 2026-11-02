@@ -502,9 +502,12 @@ empty board, and a new box is made there, joined and typed into; click
 a dot and the new box goes the usual gap away that way. An arrow drawn
 with the arrow tool, begun on or near a box and let go on or near
 another, is tied to both the same way, the box glowing as it nears;
-let go on empty board, it simply ends there. It is tied to a picture at
-the point it is put down, to point at what is in it. Hold Ctrl as an
-end is let go to tie it to nothing.
+let go on empty board, it simply ends there. A picture, a screenshot
+pasted or dropped, is joined just as a box is: hovered, its dots show
+on its sides, turned with it, to pull an arrow out of; an end nearing
+it makes it glow and goes to one of its dots or a point of its edge;
+and the end follows it as it is moved, sized, cropped or turned. Hold
+Ctrl as an end is let go to tie it to nothing.
 
 An end let go near a box, from a dot, with the arrow tool or by an end
 dragged again, goes to one of its dots: while it is dragged the box's

@@ -34,7 +34,7 @@ impl Studio {
             return None;
         }
         let reach = REACH / self.zoom;
-        let anchors: Vec<(usize, shapes::Anchor)> = self.anchors().into_iter().filter(|anchor| !skip.contains(&anchor.id)).filter_map(|anchor| Some((self.index_of(anchor.id)?, anchor))).filter(|&(index, _)| !boxes || self.is_box(index)).collect();
+        let anchors: Vec<(usize, shapes::Anchor)> = self.anchors().into_iter().filter(|anchor| !skip.contains(&anchor.id)).filter_map(|anchor| Some((self.index_of(anchor.id)?, anchor))).filter(|&(index, _)| !boxes || self.is_node(index)).collect();
         let away = |anchor: &shapes::Anchor| {
             let (lx, ly) = shapes::turn_point(at, anchor.middle, -anchor.angle);
             let (dx, dy) = (((lx - anchor.middle.0).abs() - anchor.half.0).max(0.0), ((ly - anchor.middle.1).abs() - anchor.half.1).max(0.0));
@@ -60,9 +60,9 @@ impl Studio {
     }
 
     /// An end of a line on a board tied to what is at or near a point: a
-    /// box, an oval or words as a whole, to go from side to side as it
-    /// moves; a picture at the point, kept to its edge, to point at what
-    /// is in it; or to nothing. Not to the box the other end is tied to,
+    /// box, an oval or a picture at a dot of a side, a point of its edge
+    /// or as a whole, to go from side to side as it moves; words as a
+    /// whole; or to nothing. Not to the box the other end is tied to,
     /// as an arrow from a box back into it is no arrow. Gives what it is
     /// tied to.
     pub(in crate::studio) fn bind_end(&mut self, index: usize, end: usize, at: (f32, f32)) -> Option<usize> {
@@ -70,19 +70,15 @@ impl Studio {
         if !shape.sticks() {
             return None;
         }
-        // Not to what the other end is tied to, but a picture, which an
-        // arrow is drawn on.
-        let other = shape.stuck[1 - end].map(|(id, ..)| id).filter(|&id| self.index_of(id).is_some_and(|other| !matches!(self.doc.layers[other].kind, Kind::Picture(_))));
+        // Not to what the other end is tied to.
+        let other = shape.stuck[1 - end].map(|(id, ..)| id);
         let target = self.bind_target(at, &other.into_iter().collect::<Vec<_>>(), false);
         let anchor = target.and_then(|target| self.doc.layers[target].kind.clone().anchor_of(&mut self.text));
         let spot = match (target, anchor) {
             (Some(target), Some(anchor)) => Some(match &self.doc.layers[target].kind {
-                Kind::Picture(_) => {
-                    let (lx, ly) = shapes::turn_point(at, anchor.middle, -anchor.angle);
-                    let (hw, hh) = (anchor.half.0.max(1.0), anchor.half.1.max(1.0));
-                    (anchor.id, ((lx - anchor.middle.0) / hw).clamp(-1.0, 1.0), ((ly - anchor.middle.1) / hh).clamp(-1.0, 1.0))
-                }
-                _ if self.is_box(target) => {
+                // A box or a picture at a dot of a side, or a point of its
+                // edge, or as a whole.
+                _ if self.is_node(target) => {
                     let (u, v) = self.port_at(&anchor, at);
                     (anchor.id, u, v)
                 }
@@ -179,7 +175,7 @@ impl Studio {
         }
         let ends = [shape.points[0], shape.points[1]];
         let reach = MAGNET / self.zoom;
-        let picked: Vec<usize> = (0..self.doc.layers.len()).filter(|&other| other != index && self.is_box(other) && !self.doc.layers[other].hidden).collect();
+        let picked: Vec<usize> = (0..self.doc.layers.len()).filter(|&other| other != index && self.is_node(other) && !self.doc.layers[other].hidden).collect();
         let boxes: Vec<(usize, shapes::Anchor)> = picked.into_iter().filter_map(|other| Some((other, self.doc.layers[other].kind.clone().anchor_of(&mut self.text)?))).collect();
         // The dot nearest a point, within reach, but of a box left out.
         let nearest = |at: (f32, f32), not: Option<usize>| {
@@ -232,14 +228,14 @@ impl Studio {
             // On its outline, where an end tied to it meets it: a box by
             // its own frame, anything else by what it covers; a soft glow
             // just outside, touching it.
-            let (x, y, w, h) = match self.is_box(target) {
+            let (x, y, w, h) = match self.is_node(target) {
                 true => self.box_frame(target),
                 false => self.doc.layers[target].bounds(&mut self.text),
             };
             let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
             canvas.round_outline(a.0 - 4, a.1 - 4, b.0 - a.0 + 8, b.1 - a.1 + 8, 6, 3, canvas::mix(ACCENT, 0xFFFFFF, 170));
             canvas.round_outline(a.0 - 1, a.1 - 1, b.0 - a.0 + 2, b.1 - a.1 + 2, 3, 2, ACCENT);
-            if !self.is_box(target) {
+            if !self.is_node(target) {
                 continue;
             }
             let Some(anchor) = self.doc.layers[target].kind.clone().anchor_of(&mut self.text) else { continue };
@@ -851,5 +847,137 @@ mod tests {
         assert_eq!(arrow.stuck[1], Some((shape(&studio, 1).id, 0.0, 1.0)));
         assert_eq!(arrow.points[1], bottom, "into the bottom, touching it");
         assert_eq!(arrow.stuck[0].map(|s| s.1), Some(shapes::WHOLE), "out of A from its side facing B");
+    }
+
+    /// Box A at the left and a picture 300 by 150 at the right, its middle
+    /// at (700, 136), with the pointer in hand and nothing picked out.
+    fn box_and_picture() -> Studio {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let image = Arc::new(Image::new(300, 150, vec![0xFF3E_63DD; 300 * 150]));
+        studio.doc.layers.push(Layer::picture(Picture::new(image, "Screenshot".into(), (700.0, 136.0))));
+        studio.selected.clear();
+        studio.changed();
+        studio
+    }
+
+    fn picture(studio: &Studio, index: usize) -> Picture {
+        match &studio.doc.layers[index].kind {
+            Kind::Picture(picture) => picture.clone(),
+            Kind::Shape(_) => panic!("a picture"),
+        }
+    }
+
+    /// An arrow's end at a point of the board taken hold of and let go at
+    /// another, what is lit looked at before it is let go.
+    fn drag_end(studio: &mut Studio, end: (f32, f32), to: (f32, f32), looked: impl FnOnce(&mut Studio)) {
+        let (a, b) = (studio.to_window(end), studio.to_window(to));
+        studio.pointer_moved(a.0, a.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.pointer_moved((a.0 + b.0) / 2, (a.1 + b.1) / 2, Mods::default());
+        studio.pointer_moved(b.0, b.1, Mods::default());
+        looked(studio);
+        studio.released();
+    }
+
+    #[test]
+    fn a_picture_shows_dots_on_its_sides_as_a_box_does_and_an_arrow_is_pulled_out_of_one() {
+        let mut studio = box_and_picture();
+        let over = studio.to_window_page((700.0, 136.0));
+        studio.pointer_moved(over.0, over.1, Mods::default());
+        assert_eq!(studio.dots_now(over, false), Some(1), "its dots show");
+        let spots = studio.dot_spots(1);
+        assert_eq!(spots, [studio.to_window((700.0, 61.0)), studio.to_window((850.0, 136.0)), studio.to_window((700.0, 211.0)), studio.to_window((550.0, 136.0))], "on its outline");
+        assert_eq!(shown(&mut studio, (550.0, 136.0)), 0xFFFFFF, "a dot drawn there, its middle white");
+        // A press a few pixels into the picture by its dot moves it, rather
+        // than pulling an arrow out.
+        studio.pointer_moved(spots[3].0 + 6, spots[3].1, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Move);
+        studio.pointer_moved(spots[3].0 - 2, spots[3].1, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Crosshair, "on its dot, an arrow");
+        // Pulled out onto A: the two joined.
+        pull_dot(&mut studio, 1, (180.0, 136.0), Mods::default(), |studio| assert_eq!(studio.board.bind, Some(0), "A glows"));
+        assert_eq!(studio.doc.layers.len(), 3);
+        let arrow = shape(&studio, 2);
+        assert_eq!((arrow.stuck[0].map(|s| s.0), arrow.stuck[1].map(|s| s.0)), (Some(picture(&studio, 1).id), Some(shape(&studio, 0).id)));
+        // Pulled out onto empty board: a new box there, joined.
+        pull_dot(&mut studio, 1, (1100.0, 500.0), Mods::default(), |_| {});
+        studio.commit_text();
+        assert_eq!(studio.doc.layers.len(), 5);
+        assert!(studio.is_box(3), "a box made");
+        assert_eq!(shape(&studio, 4).stuck[0].map(|s| s.0), Some(picture(&studio, 1).id));
+    }
+
+    #[test]
+    fn an_arrow_pulled_from_a_box_to_a_picture_goes_into_its_dot_and_follows_it_as_it_moves_is_sized_and_turned() {
+        let mut studio = box_and_picture();
+        let left = (550.0, 136.0);
+        pull_dot(&mut studio, 0, (540.0, 140.0), Mods::default(), |studio| {
+            assert_eq!(studio.board.bind, Some(1), "the picture glows");
+            assert_eq!(studio.board.ports, vec![(1, left)], "its left dot lit");
+        });
+        assert_eq!(studio.doc.layers.len(), 3, "no box made");
+        let id = picture(&studio, 1).id;
+        let arrow = shape(&studio, 2);
+        assert_eq!(arrow.stuck[1], Some((id, -1.0, 0.0)));
+        assert_eq!(arrow.points[1], left, "touching it");
+        // Moved: the end goes with it.
+        studio.selected.clear();
+        pull(&mut studio, (700.0, 136.0), (700.0, 336.0), Mods::default());
+        // As far as it went, or a pixel or two over onto A's line.
+        let cy = picture(&studio, 1).cy;
+        assert!((cy - 336.0).abs() <= 4.0, "{cy}");
+        assert_eq!(shape(&studio, 2).points[1], (550.0, cy), "still at its left dot");
+        // Sized, and turned, still at the middle of its left side.
+        if let Kind::Picture(picture) = &mut studio.doc.layers[1].kind {
+            (picture.w, picture.h) = (200.0, 100.0);
+        }
+        studio.follow();
+        assert_eq!(shape(&studio, 2).points[1], (600.0, cy));
+        if let Kind::Picture(picture) = &mut studio.doc.layers[1].kind {
+            picture.angle = std::f32::consts::FRAC_PI_2;
+        }
+        studio.follow();
+        let end = shape(&studio, 2).points[1];
+        assert!((end.0 - 700.0).abs() < 0.01 && (end.1 - (cy - 100.0)).abs() < 0.01, "turned with it: {end:?}");
+        // Its dots turn with it too: its top now at its right.
+        assert_eq!(studio.dot_spots(1)[0], studio.to_window((750.0, cy)));
+    }
+
+    #[test]
+    fn an_end_taken_from_a_box_to_a_picture_and_back_is_tied_to_each_and_a_picture_deleted_leaves_it_free() {
+        let mut studio = two_boxes();
+        pull_dot(&mut studio, 0, (680.0, 136.0), Mods::default(), |_| {});
+        studio.commit_text();
+        let image = Arc::new(Image::new(200, 100, vec![0xFF3E_63DD; 200 * 100]));
+        studio.doc.layers.push(Layer::picture(Picture::new(image, "Screenshot".into(), (500.0, 500.0))));
+        let id = picture(&studio, 3).id;
+        studio.selected.clear();
+        // The arrow's head taken off B and let go by the picture's top.
+        let head = shape(&studio, 2).points[1];
+        drag_end(&mut studio, head, (505.0, 440.0), |studio| assert_eq!(studio.board.bind, Some(3), "the picture glows"));
+        let arrow = shape(&studio, 2);
+        assert_eq!(arrow.stuck[1], Some((id, 0.0, -1.0)), "at its top dot");
+        assert_eq!(arrow.points[1], (500.0, 450.0));
+        // And back onto B.
+        drag_end(&mut studio, arrow.points[1], (600.0, 136.0), |_| {});
+        assert_eq!(shape(&studio, 2).stuck[1].map(|s| s.0), Some(shape(&studio, 1).id), "tied to B again");
+        // Onto the picture again, then the picture deleted: the arrow stays,
+        // drawn where it was, its head tied to nothing.
+        let head = shape(&studio, 2).points[1];
+        drag_end(&mut studio, head, (505.0, 440.0), |_| {});
+        let before = shape(&studio, 2);
+        assert_eq!(before.stuck[1].map(|s| s.0), Some(id));
+        studio.selected = vec![3];
+        press_key(&mut studio, Key::Delete, Mods::default());
+        assert_eq!(studio.doc.layers.len(), 3, "only the picture gone");
+        let left = shape(&studio, 2);
+        assert_eq!((left.stuck[1], left.points.clone()), (None, before.points), "free, where it was");
+        studio.undo();
+        assert_eq!(shape(&studio, 2).stuck[1].map(|s| s.0), Some(id), "undo ties it again");
     }
 }

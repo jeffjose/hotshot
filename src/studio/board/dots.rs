@@ -25,8 +25,7 @@ pub(in crate::studio) const SIDES: [(f32, f32); 4] = [(0.0, -1.0), (1.0, 0.0), (
 /// Whether a press is on the dot of a side: near it, and on its side's
 /// line or outside it, never more than a few pixels into the box, where a
 /// press moves the box.
-fn on_dot(spot: (i32, i32), side: usize, at: (i32, i32)) -> bool {
-    let way = SIDES[side];
+fn on_dot(spot: (i32, i32), way: (f32, f32), at: (i32, i32)) -> bool {
     let inward = -(way.0 * (at.0 - spot.0) as f32 + way.1 * (at.1 - spot.1) as f32);
     (spot.0 - at.0).abs() <= NEAR && (spot.1 - at.1).abs() <= NEAR && inward <= 3.0
 }
@@ -36,8 +35,25 @@ impl Studio {
     pub(in crate::studio) fn box_frame(&self, index: usize) -> (f32, f32, f32, f32) {
         match &self.doc.layers[index].kind {
             Kind::Shape(shape) => shape.frame(),
-            Kind::Picture(_) => (0.0, 0.0, 0.0, 0.0),
+            // A picture by the part of it shown, unturned, as a box's frame
+            // is.
+            Kind::Picture(picture) => (picture.cx - picture.w / 2.0, picture.cy - picture.h / 2.0, picture.w, picture.h),
         }
+    }
+
+    /// How far a box or a picture is turned, which its dots turn with.
+    fn turned(&self, index: usize) -> f32 {
+        match &self.doc.layers[index].kind {
+            Kind::Shape(shape) => shape.angle,
+            Kind::Picture(picture) => picture.angle,
+        }
+    }
+
+    /// Which way each of a box's sides faces, turned with it: up, right,
+    /// down, left.
+    pub(in crate::studio) fn dot_ways(&self, index: usize) -> [(f32, f32); 4] {
+        let (sin, cos) = self.turned(index).sin_cos();
+        SIDES.map(|(x, y)| (x * cos - y * sin, x * sin + y * cos))
     }
 
     /// What a layer is called, which arrows are stuck to it by.
@@ -52,14 +68,24 @@ impl Studio {
     /// that side.
     pub(in crate::studio) fn dot_spots(&self, index: usize) -> [(i32, i32); 4] {
         let (x, y, w, h) = self.box_frame(index);
-        let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
-        let (cx, cy) = ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
         let ends = self.arrow_ends();
         let taken = |spot: (i32, i32)| ends.iter().any(|&(end, ..)| (end.0 - spot.0).pow(2) + (end.1 - spot.1).pow(2) <= (END_REACH + NEAR).pow(2));
-        let mut spots = [(cx, a.1 - OUT), (b.0 + OUT, cy), (cx, b.1 + OUT), (a.0 - OUT, cy)];
-        for (spot, way) in spots.iter_mut().zip(SIDES) {
+        let angle = self.turned(index);
+        let mut spots = match angle == 0.0 {
+            true => {
+                let (a, b) = (self.to_window((x, y)), self.to_window((x + w, y + h)));
+                let (cx, cy) = ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
+                [(cx, a.1 - OUT), (b.0 + OUT, cy), (cx, b.1 + OUT), (a.0 - OUT, cy)]
+            }
+            // Turned, the middles of its sides turned with it.
+            false => {
+                let middle = (x + w / 2.0, y + h / 2.0);
+                SIDES.map(|(u, v)| self.to_window(shapes::turn_point((middle.0 + u * w / 2.0, middle.1 + v * h / 2.0), middle, angle)))
+            }
+        };
+        for (spot, way) in spots.iter_mut().zip(self.dot_ways(index)) {
             if taken(*spot) {
-                *spot = (spot.0 + way.0 as i32 * AWAY, spot.1 + way.1 as i32 * AWAY);
+                *spot = (spot.0 + (way.0 * AWAY as f32).round() as i32, spot.1 + (way.1 * AWAY as f32).round() as i32);
             }
         }
         spots
@@ -128,8 +154,8 @@ impl Studio {
         // Out as far as its dots and a little more: near enough to show them.
         let near = |index: usize| {
             let spots = self.dot_spots(index);
-            let (left, right) = (spots[3].0 - NEAR, spots[1].0 + NEAR);
-            let (top, bottom) = (spots[0].1 - NEAR, spots[2].1 + NEAR);
+            let (left, right) = (spots.iter().map(|s| s.0).min().unwrap_or(0) - NEAR, spots.iter().map(|s| s.0).max().unwrap_or(0) + NEAR);
+            let (top, bottom) = (spots.iter().map(|s| s.1).min().unwrap_or(0) - NEAR, spots.iter().map(|s| s.1).max().unwrap_or(0) + NEAR);
             (left..=right).contains(&at.0) && (top..=bottom).contains(&at.1)
         };
         let kept = self.board.dots_of.filter(|&index| self.dots_show(index) && !self.doc.layers[index].hidden && near(index));
@@ -142,7 +168,7 @@ impl Studio {
     /// Whether a box's dots are to be shown: with the pointer in hand and
     /// nothing typed, or on the box being typed into, whatever is in hand.
     pub(in crate::studio) fn dots_show(&self, index: usize) -> bool {
-        self.is_box(index) && !self.space && match self.editing {
+        self.is_node(index) && !self.space && match self.editing {
             Some(editing) => editing == index,
             None => self.tool == Tool::Select,
         }
@@ -162,7 +188,7 @@ impl Studio {
             return Some(Cursor::Move);
         }
         if let Some(index) = self.dots_now(at, false) {
-            if self.dot_spots(index).iter().enumerate().any(|(side, &spot)| on_dot(spot, side, at)) {
+            if self.dot_spots(index).into_iter().zip(self.dot_ways(index)).any(|(spot, way)| on_dot(spot, way, at)) {
                 return Some(Cursor::Crosshair);
             }
         }
@@ -191,7 +217,7 @@ impl Studio {
     pub(in crate::studio) fn press_dot(&mut self, at: (i32, i32)) -> bool {
         let Some(index) = self.dots_now(at, false) else { return false };
         let spots = self.dot_spots(index);
-        let Some(side) = spots.iter().enumerate().position(|(side, &spot)| on_dot(spot, side, at)) else { return false };
+        let Some(side) = spots.into_iter().zip(self.dot_ways(index)).position(|(spot, way)| on_dot(spot, way, at)) else { return false };
         self.drag = Drag::Pull { from: index, side: side as u8, moved: false };
         self.held.clear();
         true
@@ -251,7 +277,7 @@ impl Studio {
         // How far the pointer is from a box, and how large it is, for the
         // smaller of two as near.
         let away = |f: (f32, f32, f32, f32)| ((at.0 - at.0.clamp(f.0, f.0 + f.2)).hypot(at.1 - at.1.clamp(f.1, f.1 + f.3)), f.2 * f.3);
-        (0..self.doc.layers.len()).filter(|&index| self.is_box(index) && !self.doc.layers[index].hidden && !skip.contains(&self.id_of(index))).filter(|&index| {
+        (0..self.doc.layers.len()).filter(|&index| self.is_node(index) && !self.doc.layers[index].hidden && !skip.contains(&self.id_of(index))).filter(|&index| {
             let f = self.box_frame(index);
             f.0 < made.0 + made.2 && f.0 + f.2 > made.0 && f.1 < made.1 + made.3 && f.1 + f.3 > made.1
         }).min_by(|&a, &b| {
@@ -309,7 +335,16 @@ impl Studio {
     /// A new box like another, its words none, with its middle at a point;
     /// `lighter` shades of its fill lighter, for each level down a map.
     pub(in crate::studio) fn box_like(&mut self, like: usize, center: (f32, f32), lighter: u32) -> usize {
-        let Kind::Shape(source) = &self.doc.layers[like].kind else { return like };
+        // Like a picture, a box as the box tool makes one.
+        let Kind::Shape(source) = &self.doc.layers[like].kind else {
+            let mut shape = Shape::new(Tool::Rect, INK, LINE, (center.0 - BOX.0 / 2.0, center.1 - BOX.1 / 2.0));
+            self.board_dress(&mut shape);
+            shape.points[1] = (center.0 + BOX.0 / 2.0, center.1 + BOX.1 / 2.0);
+            shape.base = BOX;
+            shape.touch();
+            self.doc.layers.push(Layer::shape(shape));
+            return self.doc.layers.len() - 1;
+        };
         let mut shape = source.copied();
         let (_, _, w, h) = source.frame();
         let (w, h) = match source.base {
@@ -356,7 +391,7 @@ impl Studio {
         if let Drag::Pull { from, side, moved: true } = self.drag {
             if from < self.doc.layers.len() {
                 let spot = self.pull_start(from, side);
-                let onto = self.board.bind.filter(|&index| self.is_box(index));
+                let onto = self.board.bind.filter(|&index| self.is_node(index));
                 let to = match onto {
                     // To the edge of the box it would be tied to, which glows.
                     Some(index) => {
