@@ -348,4 +348,50 @@ mod tests {
         }
         assert!(partly > 20, "drawn again only in part {partly} times");
     }
+
+    #[test]
+    fn a_board_zoomed_in_by_the_wheel_is_drawn_sharp_once_it_is_still() {
+        use crate::studio::board::tests::{board, press_key, pull, type_in};
+        let none = Mods::default();
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), none);
+        pull(&mut studio, (500.0, 300.0), (760.0, 472.0), none);
+        type_in(&mut studio, "Sharp");
+        press_key(&mut studio, Key::Enter, none);
+        press_key(&mut studio, Key::Escape, none);
+        press_key(&mut studio, Key::Escape, none);
+        assert!(studio.bring_mermaid("flowchart LR\n  A[Start] --> B{Ready?}\n  B -->|yes| C[Done]\n  B -->|no| A\n"));
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        // Out from one point and in at another, past what was drawn, so
+        // that some of it is drawn at half the size it is shown meanwhile.
+        let mut halved = false;
+        for (at, notches, by) in [((200.0, 200.0), 6, 1.0), ((630.0, 386.0), 16, -1.0)] {
+            let at = studio.to_window_page(at);
+            studio.wheel_at(at.0, at.1, Mods { ctrl: true, ..none });
+            for _ in 0..notches {
+                studio.scrolled(0.0, by);
+                studio.draw(&mut out);
+                halved |= studio.shown_page.iter().flatten().any(|drawn| same_zoom(drawn.zoom, studio.zoom / 2.0));
+            }
+        }
+        assert!(halved && studio.zoom > 3.0, "zoomed to {}", studio.zoom);
+        // Still: drawn sharp, given up for what comes first and drawn
+        // the next time round.
+        studio.moving = Some(std::time::Instant::now() - SETTLE);
+        studio.settle();
+        assert!(studio.take_dirty());
+        studio.draw_stopping(&mut out, &mut || true);
+        assert!(studio.take_dirty());
+        studio.draw(&mut out);
+        let zoom = studio.zoom;
+        for drawn in studio.shown_page.iter().flatten() {
+            assert!(same_zoom(drawn.zoom, zoom), "drawn at {} for {zoom}", drawn.zoom);
+        }
+        assert!(studio.shown_page.iter().any(Option::is_some));
+        // The same as drawn afresh, a band of rows at a time as it was.
+        let drawn = studio.shown_page[0].as_ref().unwrap();
+        let (part, range, kept) = (drawn.part, drawn.range, drawn.pixels.clone());
+        assert_eq!(studio.doc.render_range_stopping(range, zoom, part, &mut studio.text, &mut || false), Some(kept));
+    }
 }
