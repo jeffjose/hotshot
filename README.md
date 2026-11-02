@@ -527,9 +527,12 @@ of another box. Hold Ctrl to move it without.
 A small bar of styles floats over what is picked out, or under it where
 that covers less of the rest, clear of its dots, rather than the
 panel: five line colors and five fills, as Excalidraw keeps them, no
-fill, the look, the ground, and then the font, its name in itself, a
-list of the faces, apart from how large the words are; a status dot for
-a box, and whether the board guesses what comes next. With nothing
+fill, the look, the ground and the font, each a list that drops down
+from it: the looks each beside a box drawn so, the grounds beside their
+paper, the fonts each in itself, the one in use checked, and the board
+drawn as a row would make it while the pointer rests on the row. The
+font is apart from how large the words are. Then a status dot for a
+box, and whether the board guesses what comes next. With nothing
 picked out and a tool in hand it sits over the tools, for the next
 shape. `C` and then `1` to `5` is a line color, `Q` `W` `E` `R` `T` a
 fill and `X` no fill. What was set last, the color, the fill, the look,

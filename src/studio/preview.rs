@@ -21,6 +21,8 @@ pub(super) struct Preview {
     edited: bool,
     /// The font of a board's next words.
     font: usize,
+    /// A board's look and ground, and whether they were chosen.
+    look: (u8, u8, bool),
 }
 
 impl Studio {
@@ -28,6 +30,13 @@ impl Studio {
     /// lining up and spacing, flips and turns, colors, shadows, and the
     /// rows of the lists of how a line or a shadow looks.
     pub(super) fn previews(&mut self, control: Control) -> bool {
+        // A board's look, ground and font are its own, shown with nothing
+        // picked out too.
+        if let (Control::MenuRow(0, _), Some(menu)) = (control, self.menu) {
+            if matches!(menu.kind, MenuKind::Looks | MenuKind::Grounds) || (menu.kind == MenuKind::Fonts && self.on_board()) {
+                return true;
+            }
+        }
         if self.chosen().is_empty() {
             return false;
         }
@@ -61,7 +70,7 @@ impl Studio {
         }
         self.end_preview();
         let Some(key) = wanted else { return };
-        self.preview = Some(Preview { key, doc: self.doc.clone(), undo: self.undo.len(), redo: self.redo.clone(), color: self.color, fill: self.fill, face: self.face, border: self.border, gradient: self.gradient, edited: self.edited, font: self.pages[self.page].font });
+        self.preview = Some(Preview { key, doc: self.doc.clone(), undo: self.undo.len(), redo: self.redo.clone(), color: self.color, fill: self.fill, face: self.face, border: self.border, gradient: self.gradient, edited: self.edited, font: self.pages[self.page].font, look: (self.pages[self.page].look, self.pages[self.page].ground, self.pages[self.page].styled) });
         let (menu, palette, hsv) = (self.menu, self.palette, self.hsv);
         match key {
             Control::MenuRow(level, row) => {
@@ -91,7 +100,15 @@ impl Studio {
         let Some(preview) = self.preview.take() else { return };
         self.doc = preview.doc;
         (self.color, self.fill, self.face, self.border, self.gradient, self.edited) = (preview.color, preview.fill, preview.face, preview.border, preview.gradient, preview.edited);
-        self.pages[self.page].font = preview.font;
+        let page = &mut self.pages[self.page];
+        let looked = (page.look, page.ground, page.styled, page.font) != (preview.look.0, preview.look.1, preview.look.2, preview.font);
+        (page.look, page.ground, page.styled, page.font) = (preview.look.0, preview.look.1, preview.look.2, preview.font);
+        // The board drawn as it was again, and kept so for the next.
+        if looked && page.board {
+            board::look::keep_look(page.look, page.ground, page.font);
+            self.shown.clear();
+            self.shown_page.clear();
+        }
         self.undo.truncate(preview.undo);
         self.redo = preview.redo;
         self.version += 1;

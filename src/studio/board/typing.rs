@@ -518,11 +518,10 @@ mod tests {
         press_key(&mut studio, Key::Char('c'), Mods::default());
         press_key(&mut studio, Key::Char('2'), Mods::default());
         assert_eq!((shape(&studio, 0).color, studio.board.stroke), (STROKES[1], STROKES[1]));
-        let look = studio.control_rect(Control::Board(Ctl::Look)).unwrap().center();
-        click(&mut studio, look);
-        // The look is the board's: Rounded, then Sketchy, then Clean.
+        // The look is the board's, chosen from its list.
+        crate::studio::board::look::tests::choose(&mut studio, Ctl::Look, "Sketchy");
         assert_eq!(studio.pages[0].look, 1);
-        click(&mut studio, look);
+        crate::studio::board::look::tests::choose(&mut studio, Ctl::Look, "Clean");
         assert_eq!(studio.pages[0].look, 2);
         // R takes up the box tool again, rather than typing over its words.
         press_key(&mut studio, Key::Char('r'), Mods::default());

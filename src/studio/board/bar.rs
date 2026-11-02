@@ -28,7 +28,7 @@ impl Studio {
     pub(in crate::studio) fn layout_style_bar(&mut self, layout: &mut Layout) {
         let dragging = matches!(self.drag, Drag::Move { moved: true, .. } | Drag::Scale { .. } | Drag::Turn { .. } | Drag::Draw { .. } | Drag::Marquee { .. } | Drag::Pull { .. });
         // Kept while its own list of fonts is open from it, which says so.
-        let menu = self.menu.is_some_and(|menu| menu.kind != MenuKind::Fonts);
+        let menu = self.menu.is_some_and(|menu| !matches!(menu.kind, MenuKind::Fonts | MenuKind::Looks | MenuKind::Grounds));
         if self.zen || self.presenting() || dragging || self.search.is_some() || menu {
             return;
         }
@@ -41,7 +41,7 @@ impl Studio {
         parts.push((Ctl::NoFill, SWATCH));
         parts.push((Ctl::Guess, -SPLIT));
         parts.push((Ctl::Look, 74));
-        parts.push((Ctl::Ground, SWATCH));
+        parts.push((Ctl::Ground, SWATCH + 18));
         parts.push((Ctl::Guess, -SPLIT));
         // As wide as the font's name, in itself, and its arrow.
         let face = self.shown_font();
@@ -160,10 +160,15 @@ impl Studio {
                     self.text.draw_centered(canvas, cx, cy, 10, INK, &["Q", "W", "E", "R", "T"][usize::from(at)]);
                 }
             }
+            // The ground's paper, and the arrow of the list it opens.
             Ctl::Ground => {
-                let (paper, dots) = self.paper();
-                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 11, paper, 256);
-                canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 11, 1, if hovered { TEXT_COLOR } else { dots });
+                if hovered || self.bar_open(MenuKind::Grounds) {
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+                }
+                let (paper, _) = self.paper();
+                canvas.disc(rect.x + 11, cy, 8, 0x8F8F8F, 256);
+                canvas.disc(rect.x + 11, cy, 7, paper, 256);
+                self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);
             }
             Ctl::NoFill => {
                 canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, 0xFFFFFF, 256);
@@ -172,7 +177,7 @@ impl Studio {
                 ring(canvas, fill.is_none());
             }
             Ctl::Look => {
-                if hovered {
+                if hovered || self.bar_open(MenuKind::Looks) {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
                 }
                 // How the board draws its shapes and lines: rounded,
@@ -268,24 +273,11 @@ impl Studio {
                     }
                 });
             }
-            Ctl::Look => {
-                let next = (self.pages[self.page].look + 1) % 3;
-                self.set_look(Some(next), None);
-            }
-            // The faces, under the bar, or over it where it is low.
-            Ctl::Font => {
-                let place = self.control_rect(Control::Board(Ctl::Font)).unwrap_or_default();
-                let high = self.menu_high(MenuKind::Fonts);
-                let y = match place.bottom() + 4 + high <= self.height - 6 {
-                    true => place.bottom() + 8,
-                    false => place.y - 8 - high,
-                };
-                self.menu = Some(MenuState { kind: MenuKind::Fonts, at: (place.x - 6, y), sub: None });
-            }
-            Ctl::Ground => {
-                let next = (self.pages[self.page].ground + 1) % 3;
-                self.set_look(None, Some(next));
-            }
+            // Each a list, under the bar, or over it where it is low; a
+            // second click on it closes it.
+            Ctl::Look => self.open_bar_menu(ctl, MenuKind::Looks),
+            Ctl::Font => self.open_bar_menu(ctl, MenuKind::Fonts),
+            Ctl::Ground => self.open_bar_menu(ctl, MenuKind::Grounds),
             Ctl::Words(_) => {
                 let (_, _, _, px, _) = self.shown_style();
                 let next = WORD_SIZES[(WORD_SIZES.iter().position(|&size| size >= px).unwrap_or(0) + 1) % WORD_SIZES.len()];
@@ -315,6 +307,29 @@ impl Studio {
         if !shapes {
             self.dirty = true;
         }
+    }
+
+    /// Whether a list of the bar is open from it.
+    fn bar_open(&self, kind: MenuKind) -> bool {
+        self.menu.is_some_and(|menu| menu.kind == kind)
+    }
+
+    /// A list of the bar opened from its part, under it, or over it where
+    /// the bar is low; closed, if it was open.
+    fn open_bar_menu(&mut self, ctl: Ctl, kind: MenuKind) {
+        if self.bar_open(kind) {
+            self.menu = None;
+            return;
+        }
+        let place = self.control_rect(Control::Board(ctl)).unwrap_or_default();
+        let high = self.menu_high(kind);
+        let y = match place.bottom() + 4 + high <= self.height - 6 {
+            true => place.bottom() + 8,
+            false => place.y - 8 - high,
+        };
+        self.menu = Some(MenuState { kind, at: (place.x - 6, y), sub: None });
+        self.menu_row = None;
+        self.dirty = true;
     }
 
     /// Each shape picked out changed, as one step to undo.

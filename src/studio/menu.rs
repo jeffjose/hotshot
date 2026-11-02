@@ -9,6 +9,9 @@ use super::*;
 pub(super) enum MenuKind {
     /// The faces text can be set in.
     Fonts,
+    /// How a board draws its shapes and lines, and the ground it is on.
+    Looks,
+    Grounds,
     /// The heads an end of a line can have.
     Heads(usize),
     /// The sizes a frame can be; and one section of them.
@@ -73,6 +76,10 @@ pub(super) enum Look {
     Face(usize),
     Head(u8),
     Icon(&'static str),
+    /// A small box drawn in one of a board's looks, and a swatch of one of
+    /// its grounds.
+    Board(u8),
+    Ground(u8),
 }
 
 /// What choosing an entry does.
@@ -256,6 +263,18 @@ impl Studio {
                     let what = ["sans", "serif", "hand", "mono", "impact"][face];
                     items.push(Item::Entry { says: name.to_string(), keys: what.into(), act: MenuAct::Face(face), on: face == now, sub: None, look: Look::Face(face) });
                 }
+                items
+            }
+            MenuKind::Looks => {
+                let now = self.pages[self.page].look;
+                let mut items = vec![Item::Heading("LOOK")];
+                items.extend(super::board::look::LOOKS.iter().enumerate().map(|(look, says)| Item::entry(*says, "", MenuAct::Board(super::board::Act::Look(look as u8))).on(look as u8 == now).look(Look::Board(look as u8))));
+                items
+            }
+            MenuKind::Grounds => {
+                let now = self.pages[self.page].ground;
+                let mut items = vec![Item::Heading("GROUND")];
+                items.extend(super::board::look::GROUNDS.iter().enumerate().map(|(ground, says)| Item::entry(*says, "", MenuAct::Board(super::board::Act::Ground(ground as u8))).on(ground as u8 == now).look(Look::Ground(ground as u8))));
                 items
             }
             MenuKind::Heads(end) => {
@@ -520,7 +539,11 @@ impl Studio {
         let mut wide = 150;
         for item in items {
             if let Item::Entry { says, keys, look, sub, .. } = item {
-                let lead = if *look == Look::Plain { 0 } else { 30 };
+                let lead = match look {
+                    Look::Plain => 0,
+                    Look::Board(_) => 52,
+                    _ => 30,
+                };
                 let tail = if keys.is_empty() { 0 } else { self.text.width(keys, 11) + 18 } + if sub.is_some() { 14 } else { 0 };
                 let px = if let Look::Face(_) = look { 14 } else { 12 };
                 wide = wide.max(self.text.width(says, px) + lead + tail + 34);
@@ -605,6 +628,27 @@ impl Studio {
                             Look::Icon(icon) => {
                                 self.text.draw_centered(canvas, x + 7, mid, 14, TEXT_COLOR, icon);
                                 x += 24;
+                            }
+                            // A box as that look draws it, on the board's
+                            // ground.
+                            Look::Board(look) => {
+                                let ground = self.pages[self.page].ground;
+                                let (wide, high, pixels) = super::board::look::look_sample(*look, ground, &mut self.text);
+                                let top = mid - high / 2;
+                                canvas.round_fill(x - 2, top, wide, high, 5, super::board::look::PAPERS[usize::from(ground.min(2))].0, 256);
+                                for (at, pixel) in pixels.iter().enumerate() {
+                                    let (px, py) = (at as i32 % wide, at as i32 / wide);
+                                    if (2..wide - 2).contains(&px) && (2..high - 2).contains(&py) {
+                                        canvas.fill(x - 2 + px, top + py, 1, 1, pixel & 0xFF_FFFF);
+                                    }
+                                }
+                                x += wide + 8;
+                            }
+                            Look::Ground(ground) => {
+                                let (paper, _) = super::board::look::PAPERS[usize::from((*ground).min(2))];
+                                canvas.disc(x + 8, mid, 9, if lit { 0xFFFFFF } else { 0x5A5A5A }, 256);
+                                canvas.disc(x + 8, mid, 8, paper, 256);
+                                x += 28;
                             }
                             Look::Plain => {}
                         }

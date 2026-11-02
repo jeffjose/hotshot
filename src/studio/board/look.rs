@@ -12,6 +12,20 @@ use super::*;
 pub(in crate::studio) const LOOKS: [&str; 3] = ["Rounded", "Sketchy", "Clean"];
 pub(in crate::studio) const GROUNDS: [&str; 3] = ["Light", "Dark gray", "Black"];
 
+/// A small box drawn in a look on a ground, as its list shows it: its
+/// width, height and pixels.
+pub(in crate::studio) fn look_sample(look: u8, ground: u8, text: &mut Text) -> (i32, i32, Vec<u32>) {
+    let mut sheet = Doc::new(46, 24);
+    sheet.background = Fill::Color(PAPERS[usize::from(ground.min(2))].0);
+    let mut shape = Shape::new(Tool::Rect, INK, LINE, (6.0, 4.0));
+    shape.points[1] = (40.0, 20.0);
+    // Called the same each time, to wobble the same.
+    (shape.id, shape.sketch, shape.border, shape.radius, shape.filled, shape.fill) = (7, true, true, 6.0, true, FILLS[2]);
+    sheet.layers.push(Layer::shape(shape));
+    sheet.board = Some((look, ground, true));
+    sheet.render(1.0, text)
+}
+
 /// Each ground's paper and its dots.
 pub(in crate::studio) const PAPERS: [(u32, u32); 3] = [(shapes::PAPER, 0xD8D6CF), (0x232323, 0x3C3C3C), (0x000000, 0x2A2A2A)];
 
@@ -92,7 +106,7 @@ pub(in crate::studio) fn last_look() -> (u8, u8, usize) {
     (look, ground, words.next().map_or(implied_font(look), |font| font.min(FACES.len() - 1)))
 }
 
-fn keep_look(look: u8, ground: u8, font: usize) {
+pub(in crate::studio) fn keep_look(look: u8, ground: u8, font: usize) {
     if cfg!(test) {
         return;
     }
@@ -230,7 +244,7 @@ impl Studio {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::studio) mod tests {
     use super::*;
     use crate::studio::board::tests::*;
 
@@ -331,9 +345,59 @@ mod tests {
         let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
         click(&mut studio, rect.center());
         assert_eq!((shape(&studio, 0).face, studio.board_font(), studio.pages[0].look), (1, 1, 0));
-        // The look's part still only changes the look.
-        click(&mut studio, look.center());
+        // The look's list still only changes the look.
+        choose(&mut studio, Ctl::Look, "Sketchy");
         assert_eq!((shape(&studio, 0).face, studio.board_font(), studio.pages[0].look), (1, 1, 1));
+    }
+
+    /// A control of the bar clicked, and a row of the list it opens.
+    pub(in crate::studio) fn choose(studio: &mut Studio, ctl: Ctl, says: &str) {
+        let place = studio.control_rect(Control::Board(ctl)).unwrap();
+        click(studio, place.center());
+        let kind = studio.menu.map(|menu| menu.kind).expect("a list open");
+        let row = studio.menu_items(kind).iter().position(|item| matches!(item, menu::Item::Entry { says: row, .. } if row == says)).unwrap_or_else(|| panic!("{says} in the list"));
+        let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+        studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+        click(studio, rect.center());
+    }
+
+    #[test]
+    fn the_look_and_the_ground_are_lists_that_open_from_the_bar_rather_than_switches() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        for (ctl, kind, rows) in [(Ctl::Look, MenuKind::Looks, LOOKS), (Ctl::Ground, MenuKind::Grounds, GROUNDS)] {
+            let place = studio.control_rect(Control::Board(ctl)).unwrap();
+            let (look, ground) = (studio.pages[0].look, studio.pages[0].ground);
+            click(&mut studio, place.center());
+            assert_eq!(studio.menu.map(|menu| menu.kind), Some(kind), "a click opens its list");
+            assert_eq!((studio.pages[0].look, studio.pages[0].ground), (look, ground), "and changes nothing");
+            let items = studio.menu_items(kind);
+            let says: Vec<(String, bool)> = items.iter().filter_map(|item| match item {
+                menu::Item::Entry { says, on, .. } => Some((says.clone(), *on)),
+                _ => None,
+            }).collect();
+            assert_eq!(says.iter().map(|(says, _)| says.as_str()).collect::<Vec<_>>(), rows.to_vec());
+            assert_eq!(says.iter().filter(|(_, on)| *on).count(), 1, "the one it is checked");
+            // Hovering a row shows it on the board, and moving off puts it
+            // back; Esc closes the list.
+            let row = items.iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == rows[2])).unwrap();
+            let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+            studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+            let shown = if ctl == Ctl::Look { studio.pages[0].look } else { studio.pages[0].ground };
+            assert_eq!(shown, 2, "previewed");
+            studio.pointer_moved(rect.x - 300, rect.y - 300, Mods::default());
+            assert_eq!((studio.pages[0].look, studio.pages[0].ground), (look, ground), "put back");
+            press_key(&mut studio, Key::Escape, Mods::default());
+            assert_eq!(studio.menu, None);
+        }
+        choose(&mut studio, Ctl::Ground, "Black");
+        assert_eq!(studio.pages[0].ground, 2);
+        choose(&mut studio, Ctl::Look, "Clean");
+        assert_eq!((studio.pages[0].look, studio.pages[0].ground), (2, 2));
+        studio.undo();
+        assert_eq!((studio.pages[0].look, studio.pages[0].ground), (0, 2), "each one step");
     }
 
     #[test]
