@@ -676,7 +676,12 @@ ends there, straight. A press within a few pixels of an arrow's end,
 picked out or not, takes hold of that end, before the box it is at and
 before that box's dot, which goes farther out where an end is, so that
 one place offers one thing; an arrow picked out shows a round handle at
-each end and a knob at its middle. Drag from the middle of an arrow to branch it,
+each end and a knob at its middle, half way along it, and is lit along
+the way it goes, curve, elbow and all, in a soft band of blue, fainter
+while it is only hovered; several picked out are each lit so, inside
+the one box round them all. A box, picked out or hovered, is outlined
+as Figma outlines it, one crisp blue pixel over its line, turned with
+it, with small square handles at its corners when picked out. Drag from the middle of an arrow to branch it,
 "and it also goes there": let go on a box, and the box the arrow comes
 from is joined to it too; on empty board, to a new box there. Drop a
 box right on an arrow and it goes between its two ends, A to B becoming

@@ -3313,6 +3313,11 @@ impl Studio {
         self.to_window_page((x + self.doc.x, y + self.doc.y))
     }
 
+    /// The same, not rounded to a pixel.
+    fn to_window_f(&self, (x, y): (f32, f32)) -> (f32, f32) {
+        ((x + self.doc.x) * self.zoom + self.pan.0, (y + self.doc.y) * self.zoom + self.pan.1)
+    }
+
     /// Where a frame's name is, over its top left corner, in the window.
     fn frame_label(&mut self, index: usize) -> (Rect, String) {
         let frame = self.frame(index);
@@ -6234,19 +6239,38 @@ impl Studio {
     /// frame and not its border, text by its lines, turned with them; a
     /// line or an arrow by the line itself.
     fn outline(&mut self, canvas: &mut Canvas, index: usize, thick: i32) {
-        let corners = match &self.doc.layers[index].kind {
-            // A board's arrow picked out has its round handles instead, and
-            // hovered is traced along the way it goes, curve and all.
-            Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) && self.on_board() => match thick {
-                1 => return,
-                _ => shape.path().into_iter().map(|point| self.to_window(point)).collect(),
-            },
-            Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => shape.points.iter().map(|&point| self.to_window(point)).collect::<Vec<_>>(),
+        let kind = self.doc.layers[index].kind.clone();
+        let corners = match &kind {
+            // A board's arrow, picked out or hovered, is lit along the way
+            // it goes, curve, bends and all, in a soft band of the accent,
+            // fainter for hovered; its round handles go over that.
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) && self.on_board() => {
+                let path: Vec<(f32, f32)> = shape.path().into_iter().map(|point| self.to_window_f(point)).collect();
+                let (wide, amount) = if thick == 1 { (4.5, 80) } else { (3.5, 46) };
+                board::halo(canvas, &path, wide, ACCENT, amount);
+                return;
+            }
+            // Elsewhere it is traced along the way it goes, as drawn.
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => shape.path().into_iter().map(|point| self.to_window(point)).collect::<Vec<_>>(),
+            // A box by its frame, turned with it; on a board one crisp
+            // pixel, hovered or picked out, as Figma has it.
+            // On a board, over the middle of its line rather than a pixel
+            // beside it, as its frame is on a half pixel.
+            Kind::Shape(shape) if matches!(shape.tool, Tool::Rect | Tool::Ellipse) && self.on_board() => {
+                let (x, y, w, h) = shape.frame();
+                let corners: Vec<(i32, i32)> = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].into_iter().map(|corner| {
+                    let turned = shape.returned(corner, &mut self.text);
+                    let at = self.to_window_f(turned);
+                    ((at.0 - 0.25).round() as i32, (at.1 - 0.25).round() as i32)
+                }).collect();
+                corners.iter().chain(corners.first()).copied().collect()
+            }
             _ => {
                 let corners = self.box_corners(index);
                 corners.iter().chain(corners.first()).copied().collect()
             }
         };
+        let thick = if self.on_board() { 1 } else { thick };
         for pair in corners.windows(2) {
             for nudge in 0..thick {
                 line(canvas, (pair[0].0 + nudge, pair[0].1 + nudge), (pair[1].0 + nudge, pair[1].1 + nudge), ACCENT);

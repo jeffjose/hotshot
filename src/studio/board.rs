@@ -172,6 +172,56 @@ fn untouched(frame: &Doc) -> bool {
     frame.name == new.name && (frame.x, frame.y, frame.width, frame.height) == (new.x, new.y, new.width, new.height) && frame.background == new.background && frame.layers.is_empty() && frame.stacks.is_empty() && frame.exports == new.exports
 }
 
+/// A soft band of a color along a way through points of the window, as
+/// far out from it each side as `wide`, `amount`/256 of it, its edges
+/// smooth; each pixel laid once, however many pieces of the way pass it.
+pub(super) fn halo(canvas: &mut Canvas, path: &[(f32, f32)], wide: f32, color: u32, amount: u32) {
+    if path.is_empty() {
+        return;
+    }
+    let reach = wide + 1.0;
+    let clip = canvas.clip();
+    let left = (path.iter().map(|p| p.0).fold(f32::MAX, f32::min) - reach).floor().max(clip.x as f32) as i32;
+    let top = (path.iter().map(|p| p.1).fold(f32::MAX, f32::min) - reach).floor().max(clip.y as f32) as i32;
+    let right = (path.iter().map(|p| p.0).fold(f32::MIN, f32::max) + reach).ceil().min(clip.right() as f32) as i32;
+    let bottom = (path.iter().map(|p| p.1).fold(f32::MIN, f32::max) + reach).ceil().min(clip.bottom() as f32) as i32;
+    let (w, h) = (right - left, bottom - top);
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let mut cover = vec![0u8; (w * h) as usize];
+    let pieces: Vec<((f32, f32), (f32, f32))> = match path.len() {
+        1 => vec![(path[0], path[0])],
+        _ => path.windows(2).map(|pair| (pair[0], pair[1])).collect(),
+    };
+    for (a, b) in pieces {
+        let x0 = ((a.0.min(b.0) - reach).floor() as i32).max(left);
+        let x1 = ((a.0.max(b.0) + reach).ceil() as i32).min(right);
+        let y0 = ((a.1.min(b.1) - reach).floor() as i32).max(top);
+        let y1 = ((a.1.max(b.1) + reach).ceil() as i32).min(bottom);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let long = dx * dx + dy * dy;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let t = if long > 0.0 { (((px - a.0) * dx + (py - a.1) * dy) / long).clamp(0.0, 1.0) } else { 0.0 };
+                let away = (px - a.0 - t * dx).hypot(py - a.1 - t * dy);
+                let on = ((wide + 0.5 - away).clamp(0.0, 1.0) * 255.0) as u8;
+                let cell = &mut cover[((y - top) * w + (x - left)) as usize];
+                *cell = (*cell).max(on);
+            }
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let on = u32::from(cover[(y * w + x) as usize]);
+            if on > 0 {
+                canvas.blend(left + x, top + y, color, ((on * amount) / 256).min(255) as u8);
+            }
+        }
+    }
+}
+
 /// A rectangle's edge in dashes a pixel wide, as a frame of a board is
 /// drawn: 6 pixels on and 5 off, from each corner.
 pub(super) fn dashed_rect(canvas: &mut Canvas, rect: Rect, color: u32) {

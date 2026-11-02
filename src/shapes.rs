@@ -976,6 +976,21 @@ impl Shape {
 
     pub fn middle(&self) -> Point {
         let (a, b) = (self.points[0], self.points[1]);
+        // An elbow's is half way along it, on its corner or by it, rather
+        // than off it in the open.
+        if self.elbow {
+            let path = self.path();
+            let long: f32 = path.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1)).sum();
+            let mut left = long / 2.0;
+            for pair in path.windows(2) {
+                let piece = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+                if piece >= left && piece > 0.0 {
+                    let t = left / piece;
+                    return (pair[0].0 + (pair[1].0 - pair[0].0) * t, pair[0].1 + (pair[1].1 - pair[0].1) * t);
+                }
+                left -= piece;
+            }
+        }
         self.bend().unwrap_or(((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0))
     }
 

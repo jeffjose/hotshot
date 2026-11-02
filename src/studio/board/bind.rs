@@ -587,6 +587,67 @@ mod tests {
     }
 
     #[test]
+    fn an_arrow_picked_out_is_lit_along_its_curve_not_along_a_straight_line_and_a_box_by_one_crisp_pixel() {
+        let (mut studio, arrow) = joined();
+        // Bent, as B is moved down from A.
+        studio.selected = vec![1];
+        let middle = studio.to_window_page((680.0, 136.0));
+        studio.pointer_moved(middle.0, middle.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.pointer_moved(middle.0, middle.1 + 100, Mods::default());
+        studio.pointer_moved(middle.0, middle.1 + 200, Mods::default());
+        studio.released();
+        let path = shape(&studio, arrow).path();
+        assert!(path.len() > 4, "curved");
+        let pixels = |studio: &mut Studio| -> Vec<u32> {
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            out.into_iter().map(|pixel| pixel & 0xFF_FFFF).collect()
+        };
+        let blue = |pixel: u32| (pixel & 0xFF) as i32 - ((pixel >> 16) & 0xFF) as i32;
+        studio.pointer = (5, 5);
+        studio.selected.clear();
+        let bare = pixels(&mut studio);
+        studio.selected = vec![arrow];
+        let picked = pixels(&mut studio);
+        let width = studio.width;
+        let (zoom, pan, origin) = (studio.zoom, studio.pan, (studio.doc.x, studio.doc.y));
+        let window = move |p: (f32, f32)| (((p.0 + origin.0) * zoom + pan.0).round() as i32, ((p.1 + origin.1) * zoom + pan.1).round() as i32);
+        let at = |pixels: &[u32], p: (f32, f32), dy: i32| pixels[((window(p).1 + dy) * width + window(p).0) as usize];
+        // Beside the curve, a little off its ink: tinted blue, as it was not.
+        let along = path[path.len() / 3];
+        assert!(blue(at(&picked, along, 4)) > blue(at(&bare, along, 4)) + 20, "lit beside the curve");
+        // On the straight line from its tail to its head, off the curve:
+        // nothing.
+        let (a, b) = (path[0], path[path.len() - 1]);
+        let chord = ((a.0 * 2.0 + b.0) / 3.0, (a.1 * 2.0 + b.1) / 3.0);
+        let off = path.iter().map(|p| (p.0 - chord.0).hypot(p.1 - chord.1)).fold(f32::MAX, f32::min);
+        assert!(off > 12.0, "the chord well off the curve, {off}");
+        assert_eq!(at(&picked, chord, 0), at(&bare, chord, 0), "no straight outline");
+        // Hovered, not picked out: lit too, but fainter.
+        studio.selected.clear();
+        studio.hovered = Some(arrow);
+        let hovered = pixels(&mut studio);
+        let (lit, faint) = (blue(at(&picked, along, 4)), blue(at(&hovered, along, 4)));
+        assert!(faint > blue(at(&bare, along, 4)) && faint < lit, "fainter: {faint} against {lit}");
+        // A box picked out, or hovered: one pixel of the accent across its
+        // left side, over its line rather than beside it.
+        studio.hovered = None;
+        studio.selected = vec![0];
+        let (x, y, _, h) = studio.box_frame(0);
+        let edge = studio.to_window((x, y + h / 2.0));
+        let across = |pixels: &[u32]| (edge.0 - 4..=edge.0 + 4).filter(|&x| pixels[(edge.1 * width + x) as usize] == ACCENT).collect::<Vec<i32>>();
+        let darkest = (edge.0 - 4..=edge.0 + 4).min_by_key(|&x| bare[(edge.1 * width + x) as usize] & 0xFF).unwrap();
+        let picked = pixels(&mut studio);
+        assert_eq!(across(&picked), vec![darkest], "one pixel, on its line");
+        studio.selected.clear();
+        studio.hovered = Some(0);
+        let hovered = pixels(&mut studio);
+        assert_eq!(across(&hovered), vec![darkest], "hovered the same");
+    }
+
+    #[test]
     fn an_arrow_picked_out_shows_round_handles_at_its_ends_and_its_middle_and_no_straight_outline_while_an_end_is_dragged() {
         let (mut studio, arrow) = joined();
         // Bent, as it goes from A down to C.
