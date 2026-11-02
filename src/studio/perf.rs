@@ -66,6 +66,7 @@ fn write_full_canvas() {
     let mut studio = full(1400, 900);
     studio.path = Some(PathBuf::from(path));
     studio.save(false);
+    studio.wait_saved();
 }
 
 /// How long drawing the frame of the full canvas takes at the size of a
@@ -301,4 +302,52 @@ fn drag_timings(studio: &mut Studio, out: &mut [u32], name: &str, from: (f32, f3
     figures(&format!("  drawn, {partly} of 80 in part"), draws);
     studio.key(Key::Escape, none, true);
     studio.selected.clear();
+}
+
+/// How long keeping a board with a large picture on it in its file holds
+/// up the window, and how long writing it takes:
+/// `cargo test --release save_timings -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn save_timings() {
+    for source in [(1920, 1080), (3840, 2160)] {
+        let (mut studio, _, _, picture, _) = busy_board_with_picture(1600, 1000, 1.0, source);
+        // Grain all over, as a photograph has, for a PNG as large as one's.
+        let mut seed = 0x9E37_79B9u32;
+        let grainy = photo(source.0, source.1, 3).levels[0].2.iter().map(|&pixel| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            pixel ^ (seed & 0x0F0F0F)
+        }).collect();
+        if let Kind::Picture(at) = &mut studio.doc.layers[picture].kind {
+            at.image = Arc::new(Image::new(source.0, source.1, grainy));
+        }
+        let path = std::env::temp_dir().join(format!("hotshot-save-timings-{}.hotshot", std::process::id()));
+        studio.path = Some(path.clone());
+        println!("with a {}x{} picture:", source.0, source.1);
+        figures("gathered", (0..5).map(|_| {
+            let began = Instant::now();
+            std::hint::black_box(studio.gathered());
+            began.elapsed()
+        }).collect());
+        let pages = studio.gathered();
+        figures("written out", (0..5).map(|_| {
+            let began = Instant::now();
+            std::hint::black_box(write_pages(&pages));
+            began.elapsed()
+        }).collect());
+        let mut waits = Vec::new();
+        figures("saved, the window held", (0..5).map(|_| {
+            let began = Instant::now();
+            studio.save(false);
+            let held = began.elapsed();
+            let began = Instant::now();
+            studio.wait_saved();
+            waits.push(began.elapsed());
+            held
+        }).collect());
+        figures("  then written meanwhile", waits);
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -124,7 +124,9 @@ center.
 `~/Pictures/hotshot`, with Recent, Drafts, and every capture taken in
 capture mode, any of which starts a new file. `hotshot --edit FILE`
 (or `--canvas`) opens a `.hotshot` file, or starts a file in Drafts with
-the pictures given. Files are saved as you work, as Figma saves them.
+the pictures given. Files are saved as you work, as Figma saves them,
+written out alongside the window so that even one holding large
+pictures never makes it wait; closing it waits for the last to be written.
 
 In Captures, Ctrl or Shift click picks several (`Ctrl+A` all, Esc none),
 and a right click converts them: Convert to ▸ lists the kinds, each

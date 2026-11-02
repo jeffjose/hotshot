@@ -50,6 +50,7 @@ mod place;
 pub const MIN_SIZE: (i32, i32) = place::MIN;
 mod preview;
 mod recent;
+mod saving;
 mod rulers;
 mod snap;
 mod stacks;
@@ -1004,6 +1005,19 @@ fn one_line(name: &str) -> String {
 /// by frame; and then each picture on it as the PNG it is, after its own
 /// line saying how long it is, once however many times it is used.
 pub fn write_pages(pages: &[Page]) -> Vec<u8> {
+    let (lines, images) = file_lines(pages);
+    let mut bytes = lines.into_bytes();
+    for image in images {
+        bytes.extend_from_slice(format!("image {}\n", image.png.len()).as_bytes());
+        bytes.extend_from_slice(&image.png);
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
+/// The lines of a file of the canvas, and the pictures to follow them,
+/// each once.
+fn file_lines(pages: &[Page]) -> (String, Vec<Arc<Image>>) {
     let mut out = format!("{MAGIC}\n");
     let mut images: Vec<Arc<Image>> = Vec::new();
     for page in pages {
@@ -1041,13 +1055,7 @@ pub fn write_pages(pages: &[Page]) -> Vec<u8> {
             page.loose.write_layers(&mut out, &mut images);
         }
     }
-    let mut bytes = out.into_bytes();
-    for image in images {
-        bytes.extend_from_slice(format!("image {}\n", image.png.len()).as_bytes());
-        bytes.extend_from_slice(&image.png);
-        bytes.push(b'\n');
-    }
-    bytes
+    (out, images)
 }
 
 /// The pages of a file `write_pages` made, or of one from before pages,
@@ -2357,6 +2365,8 @@ pub struct Studio {
     /// Where it is kept, if it is; and whether it has changed since.
     pub path: Option<PathBuf>,
     edited: bool,
+    /// The save being written on a thread of its own, if one is.
+    saving: saving::Saving,
     /// Where pictures go, and what they are called.
     dir: PathBuf,
     filename: String,
@@ -2520,6 +2530,7 @@ impl Studio {
             eyedropping: false,
             path: None,
             edited: false,
+            saving: saving::Saving::default(),
             dir,
             filename,
             convert: crate::convert::Settings::default(),
@@ -5517,31 +5528,10 @@ impl Studio {
         self.commit_text();
     }
 
-    /// The canvas kept in its file, or a new one among the pictures.
-    /// The file kept where it is kept, or as a new one in Drafts: written
-    /// beside it first and put in its place, so that a file half written
-    /// is never what is there. Said, when `loud`.
-    pub fn save(&mut self, loud: bool) {
-        self.end_preview();
-        let path = self.path.clone().unwrap_or_else(|| crate::home::fresh_file(&crate::home::drafts(), "Untitled"));
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let beside = path.with_extension("hotshot~");
-        match std::fs::write(&beside, write_pages(&self.gathered())).and_then(|()| std::fs::rename(&beside, &path)) {
-            Ok(()) => {
-                if loud {
-                    self.say(format!("Saved {}", shortened(&path)));
-                }
-                debug!("canvas saved {}", path.display());
-                (self.path, self.edited) = (Some(path), false);
-            }
-            Err(error) => self.say(format!("Could not save: {error}")),
-        }
-    }
-
-    /// The text it draws with, handed back for the projects to draw with.
-    pub fn into_text(self) -> Text {
+    /// The text it draws with, handed back for the projects to draw with,
+    /// once the file is all written.
+    pub fn into_text(mut self) -> Text {
+        self.wait_saved();
         self.text
     }
 
@@ -7337,7 +7327,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         // page zoomed or moved has been still a moment, a look then, to
         // draw it sharp. Otherwise nothing until something happens.
         let wait = match &mut screen {
-            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in(), studio.sizes_wait(), studio.fine_wait(), studio.board_wait()].into_iter().flatten().min(),
+            Shown::Studio(studio) => [studio.note_left().map(|left| left.min(std::time::Duration::from_millis(50))), studio.settle_in(), studio.sizes_wait(), studio.fine_wait(), studio.board_wait(), studio.save_wait()].into_iter().flatten().min(),
             Shown::Home(home) => home.wait(),
         };
         let mut events: Vec<Event> = match (held.is_empty(), wait) {
@@ -7351,6 +7341,7 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             studio.board_tick();
             studio.take_sizes();
             studio.take_fine();
+            studio.take_saved();
         }
         if let Shown::Home(home) = &mut screen {
             home.take_batch();
@@ -7358,6 +7349,8 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         while let Some(event) = conn.poll_for_event()? {
             events.push(event);
         }
+        // How long a button let go takes to be seen to, told with --debug.
+        let let_go = events.iter().any(|event| matches!(event, Event::ButtonRelease(_) | Event::XinputButtonRelease(_))).then(std::time::Instant::now);
         let (mut outcome, mut homeward) = (Outcome::Continue, crate::home::Outcome::Continue);
         let mut motion = None;
         let moved = |screen: &mut Shown, (x, y, mods): (i32, i32, Mods)| match screen {
@@ -7589,17 +7582,13 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             }
             (Shown::Home(_), crate::home::Outcome::Quit) => break,
             (Shown::Studio(mut studio), _) if outcome == Outcome::Open && studio.open_next.is_some() => {
-                studio.finish();
-                studio.keep_view();
-                studio.save(false);
+                studio.close();
                 let path = studio.open_next.take().unwrap_or_default();
                 let pages = std::fs::read(&path).ok().and_then(|bytes| read_pages(&bytes));
                 Shown::Studio(Box::new(opened(pages, Vec::new(), path, studio.into_text(), size, options)))
             }
             (Shown::Studio(mut studio), _) if outcome == Outcome::Home => {
-                studio.finish();
-                studio.keep_view();
-                studio.save(false);
+                studio.close();
                 let place = studio.path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf);
                 let mut home = crate::home::Home::new(studio.into_text(), size.0, size.1, options.dir.clone());
                 home.convert = options.convert;
@@ -7614,10 +7603,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
         };
         if let Shown::Studio(studio) = &mut screen {
             match outcome {
+                // Kept, and all of it written, before it goes.
                 Outcome::Quit => {
-                    studio.finish();
-                    studio.keep_view();
-                    studio.save(false);
+                    studio.close();
                     break;
                 }
                 Outcome::Paste => {
@@ -7695,6 +7683,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             crate::x11::put_shared(conn, window, gc, size.0, size.1, &frame)?;
         }
         conn.flush()?;
+        if let Some(let_go) = let_go {
+            debug!("canvas let go and shown in {:.1?}", let_go.elapsed());
+        }
     }
     // Kept for the next time, as it is now.
     place::keep(conn, window, display.root);
