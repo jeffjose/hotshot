@@ -184,15 +184,35 @@ mod tests {
     }
 
     #[test]
-    fn a_box_deleted_takes_its_arrows_with_it_in_one_step() {
+    fn a_box_deleted_leaves_its_arrows_where_they_were_tied_to_nothing_and_undo_ties_them_again() {
         let mut studio = two_boxes();
         pull_dot(&mut studio, 0, (680.0, 136.0), Mods::default(), |_| {});
         assert_eq!(studio.doc.layers.len(), 3);
+        studio.commit_text();
+        let before = shape(&studio, 2);
+        let (a, b) = (shape(&studio, 0).id, shape(&studio, 1).id);
         studio.selected = vec![1];
         press_key(&mut studio, Key::Delete, Mods::default());
-        assert_eq!(studio.doc.layers.len(), 1, "B and the arrow to it gone");
+        assert_eq!(studio.doc.layers.len(), 2, "only B gone");
+        let left = shape(&studio, 1);
+        assert_eq!((left.id, left.stuck[0].map(|s| s.0), left.stuck[1]), (before.id, Some(a), None), "its head tied to nothing, its tail still to A");
+        assert_eq!(left.points, before.points, "drawn where it was");
+        // Moving A still takes the tail along, and the head stays.
+        studio.selected = vec![0];
+        let middle = studio.to_window_page((180.0, 136.0));
+        studio.pointer_moved(middle.0, middle.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        studio.pointer_moved(middle.0, middle.1 + 40, Mods::default());
+        studio.pointer_moved(middle.0, middle.1 + 80, Mods::default());
+        studio.released();
+        let moved = shape(&studio, 1);
+        assert_eq!(moved.points[1], before.points[1], "the free head stays put");
+        assert_ne!(moved.points[0], before.points[0], "the tail goes with A");
         studio.undo();
-        assert_eq!(studio.doc.layers.len(), 3, "both back in one step");
+        studio.undo();
+        assert_eq!(studio.doc.layers.len(), 3, "B back");
+        assert_eq!((shape(&studio, 2).stuck[0].map(|s| s.0), shape(&studio, 2).stuck[1].map(|s| s.0)), (Some(a), Some(b)), "tied to both again in the same step");
     }
 
     #[test]

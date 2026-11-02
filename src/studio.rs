@@ -5187,14 +5187,15 @@ impl Studio {
             return;
         }
         self.checkpoint();
-        // On a board, the arrows tied to what goes go with it, rather than
-        // being left pointing at nothing.
-        if self.on_board() {
-            let gone: Vec<u32> = chosen.iter().map(|&index| stacks::layer_id(&self.doc.layers[index])).collect();
-            for (index, layer) in self.doc.layers.iter().enumerate() {
-                if let Kind::Shape(shape) = &layer.kind {
-                    if shape.sticks() && shape.stuck.iter().flatten().any(|(id, ..)| gone.contains(id)) && !chosen.contains(&index) {
-                        chosen.push(index);
+        // The arrows tied to what goes stay, drawn where they were, each
+        // end tied to it let go, as Excalidraw leaves them; undo ties them
+        // again, in the same step that brings it back.
+        let gone: Vec<u32> = chosen.iter().map(|&index| stacks::layer_id(&self.doc.layers[index])).collect();
+        for layer in &mut self.doc.layers {
+            if let Kind::Shape(shape) = &mut layer.kind {
+                for end in &mut shape.stuck {
+                    if end.is_some_and(|(id, ..)| gone.contains(&id)) {
+                        *end = None;
                     }
                 }
             }

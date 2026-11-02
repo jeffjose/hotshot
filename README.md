@@ -480,7 +480,9 @@ board for a label. Over the board the pointer says what a press will
 do: the four arrows of a move over a shape, or over an arrow's end, the
 I-beam over the words being typed, a two-headed arrow over a
 handle or a side, a cross over a dot or the middle of an arrow, which
-pull an arrow out. Delete a box and the arrows tied to it go with it.
+pull an arrow out. Delete a box and the arrows tied to it stay, drawn
+where they were, the ends that were tied to it now tied to nothing;
+undo brings the box back with them tied to it again.
 
 With the box tool in hand, the pointer over a box of the board, or over
 a part of a screenshot the edge finder sees as a box (a window, a pane,
