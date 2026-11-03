@@ -908,7 +908,7 @@ impl Shape {
         // No longer than most of the line; or with a head at each end,
         // than a little under half of it, so that they do not meet.
         let most = if self.heads == [true, true] { 0.45 } else { 0.7 };
-        let length = (self.stroke * 4.0 + 11.0).min((a.0 - b.0).hypot(a.1 - b.1) * most).max(1.0);
+        let length = (self.stroke * 3.2 + 9.0).min((a.0 - b.0).hypot(a.1 - b.1) * most).max(1.0);
         (length, length * 0.46)
     }
 
