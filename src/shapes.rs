@@ -1984,7 +1984,10 @@ impl Shape {
                     // The way it comes in to the tip: from a point a head's
                     // length back along it.
                     let chevron = matches!(style, FILLED_HEAD | OPEN_HEAD);
-                    let long = if chevron { (self.stroke * 6.5).min(along * 0.4).max(1.0) } else { self.head().0 };
+                    // Three line widths and a few pixels more, at its own size, so
+                    // that it is as large to the eye at any zoom; no more than a
+                    // little of a short line.
+                    let long = if chevron { (self.stroke * 3.0 + 8.0 * scale).min((along * 0.4).max(self.stroke)).max(1.0) } else { self.head().0 };
                     let tip = if end == 1 { path[path.len() - 1] } else { path[0] };
                     let mut from = tip;
                     let mut gone = 0.0;
@@ -2002,10 +2005,10 @@ impl Shape {
                     if style == FILLED_HEAD {
                         // A filled head, notched a little at its back, as
                         // heavy as the line, which stops inside it.
-                        let long = long * 0.85;
+                        let long = long * 0.9;
                         let base = (tip.0 - dx * long, tip.1 - dy * long);
                         let notch = (tip.0 - dx * long * 0.78, tip.1 - dy * long * 0.78);
-                        let spread = long * 0.42;
+                        let spread = long * 0.5;
                         let wing = |side: f32| (base.0 - dy * spread * side, base.1 + dx * spread * side);
                         let corners = vec![tip, wing(1.0), notch, wing(-1.0)];
                         strokes.push(Ink::even(round_corners(&corners, half * 0.6), (half * 0.55).max(0.5), true));
