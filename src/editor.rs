@@ -101,6 +101,8 @@ pub enum Key {
     End,
     /// Tab, and Shift+Tab, which a board makes a map with.
     Tab,
+    /// F12, which shows how the canvas is drawn.
+    F12,
     Other,
 }
 

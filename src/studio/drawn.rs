@@ -194,7 +194,9 @@ impl Studio {
             (drawn.pixels, drawn.part) = (pixels, grown);
         }
         for area in damage {
+            let started = std::time::Instant::now();
             let fresh = self.doc.render_part(zoom, area, &mut self.text);
+            self.draw_debug.piece(super::drawdebug::Way::Damage, index, band, area, zoom, started);
             let Some(drawn) = self.drawn_slot(index, band).as_mut() else { return false };
             for row in 0..area.h {
                 let into = ((area.y - grown.y + row) * grown.w + area.x - grown.x) as usize;

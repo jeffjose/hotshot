@@ -66,10 +66,40 @@ pub fn debugging() -> bool {
     DEBUGGING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A line of what hotshot is doing, timed from when it started.
+/// A line of what hotshot is doing, timed from when it started; written
+/// down too in the log of drawing.
 pub fn debug_line(what: std::fmt::Arguments) {
     let since = STARTED.get_or_init(Instant::now).elapsed();
     eprintln!("hotshot: {since:>9.1?} {what}");
+    log_line(what);
+}
+
+/// The log the canvas's drawing debug writes, opened when first written
+/// to, begun afresh each time hotshot starts.
+static LOG: std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>> = std::sync::Mutex::new(None);
+
+/// A line at the end of `hotshot-draw.log` in the folder for passing
+/// files, timed from when hotshot started; written out at once, for it to
+/// be read as it goes.
+pub fn log_line(what: std::fmt::Arguments) {
+    use std::io::Write;
+    // Tests draw too, and leave the log of a hotshot running alone.
+    if cfg!(test) {
+        return;
+    }
+    let since = STARTED.get_or_init(Instant::now).elapsed();
+    let Ok(mut log) = LOG.lock() else { return };
+    if log.is_none() {
+        let path = std::env::temp_dir().join("hotshot-draw.log");
+        let Ok(file) = std::fs::File::create(&path) else { return };
+        let mut file = std::io::BufWriter::new(file);
+        let _ = writeln!(file, "hotshot {} drawing log, pid {}", env!("CARGO_PKG_VERSION"), std::process::id());
+        *log = Some(file);
+    }
+    if let Some(file) = log.as_mut() {
+        let _ = writeln!(file, "{:>9.3} {what}", since.as_secs_f64());
+        let _ = file.flush();
+    }
 }
 
 /// A panic said as ever, and also written down with where it happened

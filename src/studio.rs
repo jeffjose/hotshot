@@ -32,6 +32,7 @@ mod edges;
 mod fills;
 mod turning;
 mod drawn;
+mod drawdebug;
 mod duplicate;
 mod effects;
 mod export;
@@ -2457,6 +2458,8 @@ pub struct Studio {
     /// What a board has of its own: how the next box is drawn, what it
     /// guesses comes next, what is lit, and the rest.
     board: board::Board,
+    /// What drawing the canvas did, shown and written down with F12.
+    draw_debug: drawdebug::DrawDebug,
 }
 
 impl Studio {
@@ -2573,6 +2576,7 @@ impl Studio {
             commands_file: None,
             dirty: true,
             board: board::Board::new(false),
+            draw_debug: drawdebug::DrawDebug::default(),
         };
         // A board with no frames is worked in on its page.
         studio.active = if studio.pages[0].frames.is_empty() { LOOSE } else { 0 };
@@ -3742,6 +3746,9 @@ impl Studio {
 
     pub fn pressed(&mut self, button: u8, time: u32) -> Outcome {
         self.crop_window();
+        if self.draw_debug.logging() {
+            crate::log_line(format_args!("press {button} at {},{} tool {:?} zoom {:.3}", self.pointer.0, self.pointer.1, self.tool, self.zoom));
+        }
         self.end_preview();
         self.menu_row = None;
         // Fine-tune open takes a click, and closes with one off it.
@@ -4544,6 +4551,9 @@ impl Studio {
 
     pub fn released(&mut self) {
         self.crop_window();
+        if self.draw_debug.logging() {
+            crate::log_line(format_args!("release at {},{} drag {:?}", self.pointer.0, self.pointer.1, std::mem::discriminant(&self.drag)));
+        }
         self.fine_released();
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.board.stepping = None;
@@ -5551,6 +5561,15 @@ impl Studio {
 
     pub fn key(&mut self, key: Key, mods: Mods, down: bool) -> Outcome {
         self.crop_window();
+        if key == Key::F12 {
+            if down {
+                self.step_draw_debug();
+            }
+            return Outcome::Continue;
+        }
+        if down && self.draw_debug.logging() {
+            crate::log_line(format_args!("key {key:?} {mods:?}"));
+        }
         if down {
             self.end_preview();
         }
@@ -5946,6 +5965,12 @@ impl Studio {
                     index => &self.pages[self.page].frames[index],
                 },
             };
+            let started = std::time::Instant::now();
+            let way = match (quick, only_view) {
+                (true, _) => drawdebug::Way::Preview,
+                (_, true) => drawdebug::Way::Sharp,
+                _ => drawdebug::Way::Whole,
+            };
             let pixels = match only_view {
                 true => match doc.render_range_stopping(range, times, part, &mut self.text, stop) {
                     Some(pixels) => pixels,
@@ -5957,12 +5982,14 @@ impl Studio {
                 },
                 false => doc.render_range(range, times, part, &mut self.text),
             };
+            self.draw_debug.piece(way, index, band, part, times, started);
             let reaches = if index == self.active { self.reaches(times) } else { Vec::new() };
             *self.drawn_slot(index, band) = Some(drawn::Drawn { stamp, zoom: times, part, pixels, reaches, range });
             if index == self.active {
                 self.touched = None;
             }
         }
+        self.draw_debug.place(index, band, origin, self.zoom);
         (origin, whole)
     }
 
@@ -6034,6 +6061,8 @@ impl Studio {
     /// The window drawn, a frame drawn sharp given up whenever `stop` says
     /// something has come that it should be given up for.
     pub fn draw_stopping(&mut self, out: &mut [u32], stop: &mut dyn FnMut() -> bool) {
+        let frame_started = std::time::Instant::now();
+        self.draw_debug.begin(frame_started);
         self.crop_window();
         // A board drawn as its page says from the first, on its paper, as
         // it is once anything is changed: a file just opened, or a page
@@ -6047,7 +6076,10 @@ impl Studio {
         // The page: dots on its ground, the frames on that, each over light
         // squares where it is see-through. A board is on its paper.
         if self.on_board() {
+            let paper = std::time::Instant::now();
             self.draw_paper(out, view);
+            self.draw_debug.paper_ms = paper.elapsed().as_secs_f32() * 1000.0;
+            self.draw_debug.mark("paper");
         } else {
             out.par_chunks_mut(1 << 16).for_each(|part| part.fill(VIEW_COLOR));
             let dots = 24;
@@ -6121,6 +6153,7 @@ impl Studio {
                 }
             });
         }
+        self.draw_debug.mark("layers");
         // Each frame's name over its corner; the one worked in, and the one
         // picked out, lit.
         let mut canvas = Canvas::new(out, width, height);
@@ -6293,15 +6326,20 @@ impl Studio {
         }
         // Fine-tune open: the frame split, the original against the
         // converted picture.
+        self.draw_debug.mark("handles");
         // What a board shows over everything on it.
         if self.on_board() {
             self.draw_board(&mut canvas, view);
         }
+        self.draw_debug.mark("board");
         self.draw_split(&mut canvas, view);
         canvas.reset_clip();
         self.draw_rulers(&mut canvas);
         self.draw_panels(&mut canvas, &layout);
+        self.draw_debug.mark("panels");
         self.draw_fine(&mut canvas);
+        self.draw_debug.mark("rest");
+        self.end_draw_debug(&mut canvas, frame_started);
     }
 
     /// Zoomed far in, a faint grid between the pixels of the page over

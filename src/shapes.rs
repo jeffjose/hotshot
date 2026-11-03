@@ -1726,6 +1726,7 @@ impl Shape {
             _ => self.extent(),
         };
         let (bounds, cut) = seen_part(bounds);
+        let started = std::time::Instant::now();
         let mask = match self.tool {
             _ if self.has_form() => self.form_mask(bounds),
             _ if self.sketched() => self.sketch_mask(bounds),
@@ -1752,6 +1753,7 @@ impl Shape {
                 covered(bounds, move |x, y| outline.distance(x, y))
             }
         };
+        made(started, &MASKS_MADE, bounds);
         let mask = Rc::new(mask);
         if !cut {
             *self.mask.borrow_mut() = Some(mask.clone());
@@ -2120,6 +2122,7 @@ impl Shape {
             angle => turned_around(self.extent(), self.centre_of_frame(), angle),
         };
         let (bounds, cut) = seen_part(bounds);
+        let started = std::time::Instant::now();
         let mask = match (self.has_form(), self.sketch_fill()) {
             (true, _) => Rc::new(self.form_inside(bounds)),
             (false, Some(path)) => Rc::new(fill_path(bounds, &path)),
@@ -2128,6 +2131,7 @@ impl Shape {
                 Rc::new(covered(bounds, move |x, y| outline.distance(x, y)))
             }
         };
+        made(started, &FILLS_MADE, bounds);
         if !cut {
             *self.inside.borrow_mut() = Some(mask.clone());
         }
@@ -2877,6 +2881,36 @@ fn covered(bounds: Rect, distance: impl Fn(f32, f32) -> f32 + Sync) -> Mask {
         false => alpha.chunks_mut(width).enumerate().for_each(row),
     }
     Mask { bounds, alpha }
+}
+
+/// How many times what a shape's line covers, and what its fill covers,
+/// has been worked out afresh rather than taken from what was kept; how
+/// long that took in all, in microseconds; and how many pixels it covered:
+/// what the canvas's drawing debug says of each frame, and then sets back.
+pub struct Made {
+    pub count: std::sync::atomic::AtomicU32,
+    pub micros: std::sync::atomic::AtomicU64,
+    pub pixels: std::sync::atomic::AtomicU64,
+}
+
+pub static MASKS_MADE: Made = Made { count: std::sync::atomic::AtomicU32::new(0), micros: std::sync::atomic::AtomicU64::new(0), pixels: std::sync::atomic::AtomicU64::new(0) };
+pub static FILLS_MADE: Made = Made { count: std::sync::atomic::AtomicU32::new(0), micros: std::sync::atomic::AtomicU64::new(0), pixels: std::sync::atomic::AtomicU64::new(0) };
+
+impl Made {
+    /// What has been counted since it was last asked, set back to none:
+    /// how many, how long in milliseconds, how many pixels.
+    pub fn take(&self) -> (u32, f32, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.count.swap(0, Relaxed), self.micros.swap(0, Relaxed) as f32 / 1000.0, self.pixels.swap(0, Relaxed))
+    }
+}
+
+/// One more worked out afresh, begun at `started`, over so much.
+fn made(started: std::time::Instant, into: &Made, bounds: Rect) {
+    use std::sync::atomic::Ordering::Relaxed;
+    into.count.fetch_add(1, Relaxed);
+    into.micros.fetch_add(started.elapsed().as_micros() as u64, Relaxed);
+    into.pixels.fetch_add((bounds.w.max(0) as u64) * (bounds.h.max(0) as u64), Relaxed);
 }
 
 /// What is inside a shape crossed by fine lines on a slant, up to the
