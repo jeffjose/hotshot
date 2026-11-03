@@ -197,6 +197,11 @@ impl Studio {
                     shape.touch();
                 }
             }
+            if self.on_board() {
+                for &index in &sized {
+                    self.grow_for_words(index);
+                }
+            }
             self.changed();
         }
         if self.on_board() {
@@ -546,6 +551,9 @@ impl Studio {
                 });
                 if self.on_board() {
                     self.pages[self.page].px = px;
+                }
+                for index in self.bar_styled() {
+                    self.grow_for_words(index);
                 }
                 self.say(format!("Size: {}", ["S", "M", "L", "XL"][usize::from(at)]));
             }

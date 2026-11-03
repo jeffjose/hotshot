@@ -579,6 +579,10 @@ impl Shape {
     fn draw_words(&self, canvas: &mut Canvas, text: &mut Text) {
         let ink = match self.tool {
             _ if self.placeholder() => GRAY,
+            // A box drawn by hand filled with a tint of its line: its words
+            // a deep shade of that line, keeping its hue, so that a yellow
+            // or a light blue reads on its tint as black would.
+            Tool::Rect | Tool::Ellipse if self.border && self.sketch && self.filled && self.fill != 0xFFFFFF && self.form != FORM_STICKY => crate::canvas::mix(0x1E1E1E, self.color, 110),
             Tool::Rect | Tool::Ellipse if self.border && self.form != FORM_STICKY => self.color,
             Tool::Rect | Tool::Ellipse if self.filled => ink_on(self.fill),
             _ => self.color,
