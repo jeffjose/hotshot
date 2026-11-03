@@ -597,7 +597,8 @@ mod tests {
         studio.pointer_moved(bottom.0, bottom.1, Mods::default());
         studio.last_press.0 = 0;
         studio.pressed(1, 100_000);
-        let onto = studio.to_window_page((680.0, 436.0));
+        // Inside it, out of its middle half, which would aim it at its middle.
+        let onto = studio.to_window_page((724.0, 436.0));
         studio.pointer_moved(onto.0 - 30, onto.1 - 30, Mods::default());
         studio.pointer_moved(onto.0, onto.1, Mods::default());
         studio.released();

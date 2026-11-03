@@ -1099,6 +1099,10 @@ pub fn seen_id(id: u32) {
 
 /// Where on what it is stuck to an end stuck as a whole is.
 pub const WHOLE: f32 = 9.0;
+/// Down it, for an end stuck as a whole, when it is aimed at its middle,
+/// meeting its outline on the way there, rather than at the middle of the
+/// side facing the other end.
+pub const AIMED: f32 = 8.0;
 
 fn stuck_word(stuck: Option<(u32, f32, f32)>) -> String {
     stuck.map_or("-".to_owned(), |(id, u, v)| format!("{id}:{u}:{v}"))
@@ -1131,6 +1135,12 @@ impl Anchor {
     /// Where a line from its middle to a point leaves it, a little out
     /// from its edge.
     pub fn edge_towards(&self, to: Point) -> Point {
+        self.out_towards(to, STUCK_GAP)
+    }
+
+    /// Where a line from its middle to a point crosses its outline, or
+    /// so far beyond it, unless the point is inside it.
+    fn out_towards(&self, to: Point, gap: f32) -> Point {
         let (lx, ly) = turn_point(to, self.middle, -self.angle);
         let (dx, dy) = (lx - self.middle.0, ly - self.middle.1);
         let long = (dx * dx + dy * dy).sqrt();
@@ -1144,7 +1154,7 @@ impl Anchor {
             _ => (hw / dx.abs().max(1e-6)).min(hh / dy.abs().max(1e-6)),
         };
         // Beyond its edge by a gap, unless the point is inside it.
-        let out = (reach + STUCK_GAP / long).min(1.0);
+        let out = (reach + gap / long).min(1.0);
         turn_point((self.middle.0 + dx * out, self.middle.1 + dy * out), self.middle, self.angle)
     }
 }
@@ -1244,15 +1254,20 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                     // Towards the other end, or what that is stuck to as a
                     // whole; or towards a bend, where there is one.
                     true => {
+                        // One aimed at its middle comes from where the
+                        // other end is, unless that is aimed too.
+                        let aimed = v == AIMED;
                         let other = match (shape.stuck[1 - end], shape.points.len()) {
-                            (Some((other, whole, _)), 2) if whole == WHOLE => find(other).map_or(shape.points[near], |anchor| anchor.middle),
+                            (Some((other, whole, far)), 2) if whole == WHOLE && (!aimed || far == AIMED) => find(other).map_or(shape.points[near], |anchor| anchor.middle),
                             _ => shape.points[near],
                         };
                         // A board's arrow meets it at the middle of the
-                        // side facing that, as its dots are.
-                        match shape.routed {
-                            true => side_towards(anchor, other).0,
-                            false => anchor.edge_towards(other),
+                        // side facing that, as its dots are; or, aimed,
+                        // on its outline on the way to its middle.
+                        match (shape.routed, aimed) {
+                            (_, true) => anchor.out_towards(other, 0.0),
+                            (true, false) => side_towards(anchor, other).0,
+                            (false, false) => anchor.edge_towards(other),
                         }
                     }
                     false => anchor.at(u, v),
@@ -1265,10 +1280,12 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
         }
         // A board's arrow, both ends stuck to things as a whole or at the
         // middle of a side, goes from the side of one, the nearest the
-        // other where it is stuck as a whole, curving into the other's.
+        // other where it is stuck as a whole, curving into the other's;
+        // one aimed at the middle of either goes straight.
         if shape.routed {
             if let (Some((first, fu, fv)), Some((last, lu, lv))) = (shape.stuck[0], shape.stuck[1]) {
                 let side = |u: f32, v: f32| match u == WHOLE {
+                    true if v == AIMED => None,
                     true => Some(None),
                     false => port_of(u, v).map(Some),
                 };

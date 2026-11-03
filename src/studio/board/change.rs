@@ -449,10 +449,11 @@ mod tests {
         let c = put(&mut studio, (400.0, 400.0, 120.0, 60.0), "Cache");
         let arrow = studio.join(a, b);
         studio.changed();
-        // Its head dragged onto another box: tied there, routed to it.
+        // Its head dragged onto another box, out of its middle half: tied
+        // there, routed to it.
         studio.selected = vec![arrow];
         let head = studio.to_window(shape(&studio, arrow).points[1]);
-        let onto = studio.to_window_page((460.0, 430.0));
+        let onto = studio.to_window_page((493.0, 430.0));
         drag_window(&mut studio, head, onto);
         assert_eq!(shape(&studio, arrow).stuck[1], Some((shape(&studio, c).id, shapes::WHOLE, shapes::WHOLE)));
         assert_eq!(studio.parent_box(shape(&studio, c).id), Some(shape(&studio, a).id));
