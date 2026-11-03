@@ -4516,8 +4516,9 @@ impl Studio {
     fn set_tool(&mut self, tool: Tool) {
         self.commit_text();
         self.cropping = None;
-        let changed = (self.tool, self.framing) != (tool, false);
+        let changed = (self.tool, self.framing) != (tool, false) || self.board.laser_tool;
         (self.tool, self.framing) = (tool, false);
+        self.board.laser_tool = false;
         if tool != Tool::Select {
             self.frame_picked = false;
         }
@@ -7120,6 +7121,7 @@ impl Studio {
             Some(Control::Tool(tool)) => TOOLS.iter().find(|(known, ..)| *known == tool).map(|(_, name, key)| format!("{name}  {key}")),
             Some(Control::FrameTool) => Some("Frame  F".to_owned()),
             Some(Control::Group(MORE)) => Some("More tools".to_owned()),
+            Some(Control::Board(board::Ctl::Tool(which))) => board::TOOLS.get(usize::from(which)).map(|(name, key)| format!("{name}  {}", key.to_ascii_uppercase())),
             Some(Control::Action(Action::Capture)) if self.pointer.1 >= layout.dock.y => Some("Capture the screen  Ctrl+G".to_owned()),
             _ => None,
         };

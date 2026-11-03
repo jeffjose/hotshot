@@ -52,6 +52,10 @@ impl Studio {
         if self.laser_press(at) {
             return true;
         }
+        // The laser in hand, or presenting: a trail drawn, nothing changed.
+        if self.beam_press(at_window) {
+            return true;
+        }
         // While the history is gone through, the board is only looked at.
         if self.board.history.is_some() {
             return true;
@@ -108,6 +112,9 @@ impl Studio {
     /// What a drag on a board let go of did, where it is a board's own: a
     /// shape drawn, typed into at once; an arrow pulled out of a side.
     pub(in crate::studio) fn board_released(&mut self, drag: Drag) -> bool {
+        if self.beam_released() {
+            return true;
+        }
         match drag {
             Drag::Draw { from } => {
                 self.board_drawn(from);
@@ -341,6 +348,10 @@ impl Studio {
         if key == Key::Escape && self.board.focus.take().is_some() {
             self.dirty = true;
             return Some(Outcome::Continue);
+        }
+        // Esc puts the laser down, the pointer back in hand.
+        if key == Key::Escape && self.board.laser_tool {
+            return Some(self.take_board_tool(SELECT));
         }
         if mods.ctrl || mods.alt {
             return None;

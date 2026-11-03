@@ -32,8 +32,8 @@ pub(super) const STICKY: (f32, f32) = (150.0, 150.0);
 
 /// The tools along the bottom of a board, each with its key: the pointer,
 /// the hand, a box, an oval, a diamond, an arrow, a line, the pen, text, a
-/// sticky note, and a picture.
-pub(super) const TOOLS: [(&str, char); 11] = [("Select", 'v'), ("Hand", 'h'), ("Box", 'r'), ("Oval", 'o'), ("Diamond", 'd'), ("Arrow", 'a'), ("Line", 'l'), ("Pen", 'p'), ("Text", 't'), ("Sticky note", 's'), ("Picture", 'i')];
+/// sticky note, a picture, and the laser.
+pub(super) const TOOLS: [(&str, char); 12] = [("Select", 'v'), ("Hand", 'h'), ("Box", 'r'), ("Oval", 'o'), ("Diamond", 'd'), ("Arrow", 'a'), ("Line", 'l'), ("Pen", 'p'), ("Text", 't'), ("Sticky note", 's'), ("Picture", 'i'), ("Laser", 'k')];
 pub(super) const SELECT: u8 = 0;
 pub(super) const HAND: u8 = 1;
 pub(super) const BOX_TOOL: u8 = 2;
@@ -45,6 +45,7 @@ pub(super) const PEN: u8 = 7;
 pub(super) const TEXT: u8 = 8;
 pub(super) const STICKY_TOOL: u8 = 9;
 pub(super) const PICTURE: u8 = 10;
+pub(super) const LASER_TOOL: u8 = 11;
 
 /// What on a board is clicked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -119,8 +120,16 @@ pub(super) struct Board {
     pub focus: Option<Vec<u32>>,
     pub present: Option<explain::Present>,
     pub laser: Option<explain::Laser>,
-    pub trail: Vec<((i32, i32), std::time::Instant)>,
+    /// The trail, each point with when it was laid down and the stroke it
+    /// is of, a stroke being one press of the button or of L; and how
+    /// many strokes there have been.
+    pub trail: Vec<((i32, i32), std::time::Instant, u32)>,
+    pub strokes: u32,
     pub glow: Option<(u32, std::time::Instant)>,
+    /// The laser is the tool in hand; and its button is held down, the
+    /// pointer drawing its trail.
+    pub laser_tool: bool,
+    pub beam: bool,
     /// What the box tool would draw round, outlined.
     pub pick: Option<pick::Pick>,
     /// What letting go of the box being moved would do to an arrow.
@@ -159,7 +168,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
     }
 }
 
@@ -401,6 +410,7 @@ impl Studio {
             Tool::Line => LINE_TOOL,
             Tool::Pen | Tool::Marker => PEN,
             Tool::Text => TEXT,
+            Tool::Select if self.board.laser_tool => LASER_TOOL,
             _ => SELECT,
         }
     }
@@ -417,6 +427,14 @@ impl Studio {
             PICTURE => {
                 self.say("A picture from the clipboard; or drop one on the board");
                 return Outcome::Paste;
+            }
+            // The laser: a drag draws a trail that fades, and nothing is
+            // picked out or moved while it is in hand.
+            LASER_TOOL => {
+                self.set_tool(Tool::Select);
+                self.selected.clear();
+                self.board.laser_tool = true;
+                return Outcome::Continue;
             }
             BOX_TOOL => (Tool::Rect, shapes::FORM_BOX),
             DIAMOND => (Tool::Rect, shapes::FORM_DIAMOND),
@@ -570,6 +588,8 @@ impl Studio {
                     TEXT => icons::TEXT,
                     STICKY_TOOL => icons::STICKY,
                     PICTURE => icons::PICTURE,
+                    // A beam of light: the font has no laser of its own.
+                    LASER_TOOL => icons::SPOTLIGHT,
                     _ => icons::SELECT,
                 };
                 self.text.draw_centered(canvas, cx, cy, 17, color, icon);
