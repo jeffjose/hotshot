@@ -1,8 +1,9 @@
 //! Explaining on a board, to a room or on a call, and what each of an
 //! engineer, a PM, someone in sales and a designer reaches for: F lights a
 //! box and what it is joined to, or with two picked out only the paths
-//! between them; a laser held on L that fades; Present walks the board's
-//! frames or numbered parts one at a time; G gathers notes into a box
+//! between them; a laser held on L that fades, or taken up as a tool on
+//! K and dragged, as any drag is while presenting; Present walks the
+//! board's frames or numbered parts one at a time; G gathers notes into a box
 //! titled with what they share; D votes on a note; a 2x2, Now / Next /
 //! Later lanes and Before / After come ready; and a box can lay out what
 //! is put in it, in a row or as a tree.
@@ -17,8 +18,11 @@ use std::time::{Duration, Instant};
 const TRAIL: f32 = 1.0;
 const GLOW: f32 = 0.8;
 const REPEAT: Duration = Duration::from_millis(90);
-/// The laser's red.
-const LASER: u32 = 0xFF2D2D;
+/// The laser's red; how wide its line is, half each side of its middle,
+/// as it is laid down; and how far its glow reaches past that.
+const LASER: u32 = 0xFF3B30;
+const LASER_HALF: f32 = 2.0;
+const LASER_GLOW: f32 = 7.0;
 
 /// The laser: while L is held, when it was pressed, when it was let go if
 /// it has been, and whether the pointer has drawn with it.
@@ -247,7 +251,10 @@ impl Studio {
         let now = Instant::now();
         match (&mut self.board.laser, down) {
             (Some(laser), true) => laser.let_go = None,
-            (None, true) => self.board.laser = Some(Laser { since: now, let_go: None, drawn: false }),
+            (None, true) => {
+                self.board.laser = Some(Laser { since: now, let_go: None, drawn: false });
+                self.board.strokes += 1;
+            }
             (Some(laser), false) => laser.let_go = Some(now),
             (None, false) => {}
         }
@@ -268,7 +275,7 @@ impl Studio {
             }
         }
         let trail = self.board.trail.len();
-        self.board.trail.retain(|(_, when)| now.duration_since(*when).as_secs_f32() < TRAIL);
+        self.board.trail.retain(|(_, when, _)| now.duration_since(*when).as_secs_f32() < TRAIL);
         let glowing = self.board.glow.is_some_and(|(_, when)| now.duration_since(when).as_secs_f32() < GLOW);
         if !glowing {
             self.board.glow = None;
@@ -285,13 +292,36 @@ impl Studio {
         fading.into_iter().chain(self.step_wait()).min()
     }
 
-    /// The pointer moved with the laser held: its trail.
+    /// The pointer moved with L held, or with the laser's button down: its
+    /// trail.
     pub(in crate::studio) fn laser_moved(&mut self, at: (i32, i32)) -> bool {
-        let Some(laser) = &mut self.board.laser else { return false };
-        laser.drawn = true;
-        self.board.trail.push((at, Instant::now()));
+        match &mut self.board.laser {
+            Some(laser) => laser.drawn = true,
+            None if self.board.beam => {}
+            None => return false,
+        }
+        self.board.trail.push((at, Instant::now(), self.board.strokes));
         self.dirty = true;
         true
+    }
+
+    /// A press with the laser in hand, or anywhere while presenting, which
+    /// changes nothing on the board: a stroke of the trail begun, drawn
+    /// for as long as the button is held. Whether it was taken.
+    pub(in crate::studio) fn beam_press(&mut self, at: (i32, i32)) -> bool {
+        if !self.presenting() && self.board_tool() != LASER_TOOL {
+            return false;
+        }
+        self.board.beam = true;
+        self.board.strokes += 1;
+        self.board.trail.push((at, Instant::now(), self.board.strokes));
+        self.dirty = true;
+        true
+    }
+
+    /// The laser's button let go: the trail fades from where it is.
+    pub(in crate::studio) fn beam_released(&mut self) -> bool {
+        std::mem::take(&mut self.board.beam)
     }
 
     /// A press with the laser held: the box under it glows a moment.
@@ -323,20 +353,9 @@ impl Studio {
                 }
             }
         }
-        for pair in self.board.trail.windows(2) {
-            let ((a, _), (b, when)) = (pair[0], pair[1]);
-            let fade = 1.0 - now.duration_since(when).as_secs_f32() / TRAIL;
-            if fade <= 0.0 {
-                continue;
-            }
-            let wide = (5.0 * fade).max(1.0);
-            let mut stroke = Mask { bounds: Rect::spanning(a, b).inflate(wide as i32 + 6), alpha: Vec::new() };
-            stroke.alpha = vec![0; (stroke.bounds.w * stroke.bounds.h) as usize];
-            shapes::stamp_line(&mut stroke, (a.0 as f32, a.1 as f32), (b.0 as f32, b.1 as f32), wide + 3.0);
-            canvas.mask(&stroke, LASER, (60.0 * fade) as u32);
-            let mut core = Mask { bounds: stroke.bounds, alpha: vec![0; stroke.alpha.len()] };
-            shapes::stamp_line(&mut core, (a.0 as f32, a.1 as f32), (b.0 as f32, b.1 as f32), wide * 0.5);
-            canvas.mask(&core, LASER, (255.0 * fade) as u32);
+        if let Some((core, glow)) = trail_masks(&self.board.trail, now, canvas.clip()) {
+            canvas.mask(&glow, LASER, 110);
+            canvas.mask(&core, LASER, 256);
         }
     }
 
@@ -525,6 +544,60 @@ impl Studio {
     }
 }
 
+/// The laser's trail as two masks over the part of the window it is in:
+/// its line, round at its ends and joins, and the soft glow round that,
+/// each piece of it as faded as the later of its two points is old, and
+/// thinner as it fades. A stroke of a single point is a dot. Each pixel
+/// is laid once, at the most any piece over it has, so that the joins of
+/// the pieces show no knots.
+fn trail_masks(trail: &[((i32, i32), Instant, u32)], now: Instant, clip: Rect) -> Option<(Mask, Mask)> {
+    let mut pieces: Vec<((f32, f32), (f32, f32), f32)> = Vec::new();
+    for (at, &(point, when, stroke)) in trail.iter().enumerate() {
+        let fade = |when: Instant| 1.0 - now.duration_since(when).as_secs_f32() / TRAIL;
+        let to_f = |(x, y): (i32, i32)| (x as f32 + 0.5, y as f32 + 0.5);
+        match trail.get(at + 1) {
+            Some(&(next, later, same)) if same == stroke => pieces.push((to_f(point), to_f(next), fade(later))),
+            _ if at > 0 && trail[at - 1].2 == stroke => {}
+            _ => pieces.push((to_f(point), to_f(point), fade(when))),
+        }
+    }
+    pieces.retain(|piece| piece.2 > 0.0);
+    let reach = LASER_HALF + LASER_GLOW + 1.0;
+    let left = pieces.iter().map(|p| p.0 .0.min(p.1 .0)).fold(f32::MAX, f32::min) - reach;
+    let top = pieces.iter().map(|p| p.0 .1.min(p.1 .1)).fold(f32::MAX, f32::min) - reach;
+    let right = pieces.iter().map(|p| p.0 .0.max(p.1 .0)).fold(f32::MIN, f32::max) + reach;
+    let bottom = pieces.iter().map(|p| p.0 .1.max(p.1 .1)).fold(f32::MIN, f32::max) + reach;
+    if pieces.is_empty() {
+        return None;
+    }
+    let bounds = Rect::new(left.floor() as i32, top.floor() as i32, (right - left).ceil() as i32, (bottom - top).ceil() as i32).intersect(clip);
+    if bounds.is_empty() {
+        return None;
+    }
+    let size = (bounds.w * bounds.h) as usize;
+    let (mut core, mut glow) = (vec![0u8; size], vec![0u8; size]);
+    for (a, b, fade) in pieces {
+        let half = LASER_HALF * (0.5 + 0.5 * fade);
+        let reach = half + LASER_GLOW + 1.0;
+        let part = Rect::new((a.0.min(b.0) - reach).floor() as i32, (a.1.min(b.1) - reach).floor() as i32, ((a.0 - b.0).abs() + 2.0 * reach).ceil() as i32 + 1, ((a.1 - b.1).abs() + 2.0 * reach).ceil() as i32 + 1).intersect(bounds);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let long = dx * dx + dy * dy;
+        for y in part.y..part.bottom() {
+            for x in part.x..part.right() {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let t = if long > 0.0 { (((px - a.0) * dx + (py - a.1) * dy) / long).clamp(0.0, 1.0) } else { 0.0 };
+                let away = (px - a.0 - t * dx).hypot(py - a.1 - t * dy);
+                let cell = ((y - bounds.y) * bounds.w + (x - bounds.x)) as usize;
+                let on = (half + 0.5 - away).clamp(0.0, 1.0) * fade;
+                core[cell] = core[cell].max((on * 255.0) as u8);
+                let soft = (1.0 - (away - half).max(0.0) / LASER_GLOW).clamp(0.0, 1.0);
+                glow[cell] = glow[cell].max((soft * soft * fade * 255.0) as u8);
+            }
+        }
+    }
+    Some((Mask { bounds, alpha: core }, Mask { bounds, alpha: glow }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,6 +700,94 @@ mod tests {
         }
         studio.board_tick();
         assert_eq!(studio.board_tool(), LINE_TOOL);
+    }
+
+    /// A drag in the window, by its points, held down along the way.
+    fn drag(studio: &mut Studio, points: &[(i32, i32)]) {
+        studio.pointer_moved(points[0].0, points[0].1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        for &(x, y) in &points[1..] {
+            studio.pointer_moved(x, y, Mods::default());
+        }
+        studio.released();
+    }
+
+    #[test]
+    fn the_laser_tool_on_k_draws_a_red_trail_while_held_that_fades_and_changes_nothing() {
+        let mut studio = board();
+        let note = put(&mut studio, (100.0, 100.0, 200.0, 100.0), "Cache", 0);
+        let (undo, version) = (studio.undo.len(), studio.version);
+        press_key(&mut studio, Key::Char('k'), Mods::default());
+        assert_eq!(studio.board_tool(), LASER_TOOL);
+        // On the bar, last, with its key in its tooltip.
+        let button = studio.control_rect(Control::Board(Ctl::Tool(LASER_TOOL))).unwrap();
+        assert_eq!(TOOLS[usize::from(LASER_TOOL)], ("Laser", 'k'));
+        assert!(button.y > studio.height - 80);
+        // Moved over the board without the button, nothing.
+        studio.pointer_moved(500, 400, Mods::default());
+        studio.pointer_moved(520, 410, Mods::default());
+        assert!(studio.board.trail.is_empty());
+        // Dragged across the box: a trail, the box neither picked out nor moved.
+        let from = studio.to_window_page((150.0, 150.0));
+        drag(&mut studio, &[from, (from.0 + 60, from.1), (from.0 + 120, from.1 + 10), (from.0 + 180, from.1 + 30)]);
+        assert_eq!(studio.board.trail.len(), 4);
+        assert!(!studio.board.beam && studio.selected.is_empty());
+        assert_eq!(shape(&studio, note).frame(), (100.0, 100.0, 200.0, 100.0));
+        assert_eq!((studio.undo.len(), studio.version, studio.doc.layers.len()), (undo, version, 1), "nothing to undo, nothing saved, nothing added");
+        // Drawn in its red, over the box, and frames asked for while it shows.
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let at = (from.0 + 30, from.1);
+        let red = out[(at.1 * studio.width + at.0) as usize] & 0xFF_FFFF;
+        assert!((red >> 16) > 0xE0 && (red >> 8 & 0xFF) < 0x80 && (red & 0xFF) < 0x80, "{red:06X}");
+        assert!(studio.board_wait().is_some_and(|wait| wait <= Duration::from_millis(16)));
+        // A second later each point has faded and gone, and no more frames.
+        for point in &mut studio.board.trail {
+            point.1 -= Duration::from_millis(1100);
+        }
+        studio.board_tick();
+        assert!(studio.board.trail.is_empty() && studio.board_wait().is_none());
+        // Esc puts it down.
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert_eq!(studio.board_tool(), SELECT);
+    }
+
+    #[test]
+    fn two_strokes_of_the_laser_are_not_joined_and_a_click_is_a_dot() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('k'), Mods::default());
+        drag(&mut studio, &[(200, 200), (260, 200)]);
+        drag(&mut studio, &[(200, 400), (260, 400)]);
+        drag(&mut studio, &[(600, 600)]);
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let red = |x: i32, y: i32| {
+            let pixel = out[(y * studio.width + x) as usize];
+            (pixel >> 16 & 0xFF) > 0xE0 && (pixel >> 8 & 0xFF) < 0x90
+        };
+        assert!(red(230, 200) && red(230, 400));
+        assert!(!red(230, 300), "the end of one and the start of the next are not joined");
+        assert!(red(600, 600), "a click is a dot");
+    }
+
+    #[test]
+    fn presenting_a_drag_is_the_laser_and_moves_nothing() {
+        let mut studio = board();
+        let box_at = put(&mut studio, (100.0, 100.0, 200.0, 100.0), "1 \u{b7} Today", 0);
+        put(&mut studio, (500.0, 100.0, 200.0, 100.0), "2 \u{b7} Then", 0);
+        studio.present();
+        assert!(studio.presenting());
+        let undo = studio.undo.len();
+        let from = studio.to_window_page((200.0, 150.0));
+        drag(&mut studio, &[from, (from.0 + 80, from.1 + 40), (from.0 + 160, from.1 + 60)]);
+        assert_eq!(shape(&studio, box_at).frame(), (100.0, 100.0, 200.0, 100.0), "not moved");
+        assert!(studio.selected.is_empty() && studio.undo.len() == undo);
+        assert_eq!(studio.board.trail.len(), 3);
+        assert!(studio.board_wait().is_some());
+        // The tool in hand is as it was, once out.
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert!(!studio.presenting() && studio.board_tool() == SELECT);
     }
 
     #[test]

@@ -3174,11 +3174,6 @@ pub fn fill_path(bounds: Rect, path: &[Point]) -> Mask {
     Mask { bounds, alpha }
 }
 
-/// A line with round ends added to a mask, for what is drawn over a board.
-pub fn stamp_line(mask: &mut Mask, a: Point, b: Point, half: f32) {
-    stamp(mask, a, b, half);
-}
-
 /// How far a point is from a line between two others.
 fn segment(p: Point, a: Point, b: Point) -> f32 {
     let (px, py, bx, by) = (p.0 - a.0, p.1 - a.1, b.0 - a.0, b.1 - a.1);
