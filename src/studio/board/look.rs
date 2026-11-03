@@ -31,7 +31,7 @@ pub(in crate::studio) const PAPERS: [(u32, u32); 3] = [(shapes::PAPER, 0xD8D6CF)
 
 /// A board's colors and their shades on the dark: its line colors, its
 /// fills, a note's edge, white and the paper.
-const DARK: [(u32, u32); 33] = [
+const DARK: [(u32, u32); 34] = [
     (0x1E1E1E, 0xE6E6E6),
     (0xE03131, 0xFF8787),
     (0x2F9E44, 0x8CE99A),
@@ -67,6 +67,7 @@ const DARK: [(u32, u32); 33] = [
     (0x0C8599, 0x66D9E8),
     (0xE8590C, 0xFFA94D),
     (0xC2255C, 0xF783AC),
+    (0xF59F00, 0xFFD43B),
 ];
 
 /// A color as a ground shows it: on the dark, its shade there if it is one

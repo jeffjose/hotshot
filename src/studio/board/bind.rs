@@ -398,18 +398,17 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_of_styles_goes_where_it_covers_no_other_shape() {
+    fn the_panel_of_styles_stays_docked_at_the_right_whatever_is_picked_out() {
         let mut studio = two_boxes();
-        // A box just under A: the bar goes over A, clear of it.
+        // A box just under A: the panel is at the right, clear of both.
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 230.0), (260.0, 290.0), Mods::default());
         let layout = studio.layout();
         let bar = layout.board_bar.unwrap();
-        let (top, bottom) = (studio.to_window_page((0.0, 230.0)).1, studio.to_window_page((0.0, 290.0)).1);
-        let a = studio.to_window_page((0.0, 172.0)).1;
-        assert!(bar.y >= bottom || (bar.bottom() <= top && bar.y >= a), "{bar:?} between {a} and {top}, or under {bottom}");
-        // A box inside another: the bar goes outside the one round it,
-        // where a click on that box is not taken by the bar.
+        let a = Rect::spanning(studio.to_window_page((100.0, 100.0)), studio.to_window_page((260.0, 290.0)));
+        assert!(!bar.intersects(a) && bar.right() > studio.width - 220, "{bar:?} docked, clear of {a:?}");
+        // A box inside another: the panel is in the same place, clear of
+        // the one round it, where a click on that box is not taken by it.
         let mut studio = board();
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (500.0, 300.0), (560.0, 340.0), Mods::default());

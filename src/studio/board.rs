@@ -12,6 +12,26 @@ use super::*;
 /// Excalidraw keeps them; and the gray of its dots and of a note's edge.
 pub(super) const INK: u32 = 0x1E1E1E;
 pub(super) const STROKES: [u32; 5] = [0x1E1E1E, 0xE03131, 0x2F9E44, 0x1971C2, 0xF08C00];
+/// The colors a board picks by name, each a line and the pale tint of it
+/// a shape is filled with, so that one choice colors both: black, gray,
+/// red, orange, yellow, green, teal, blue, violet and pink. On a dark
+/// ground each is shown as its dark pair.
+pub(super) const SWATCHES: [(u32, u32); 10] = [
+    (0x1E1E1E, 0xF1F3F5),
+    (0x868E96, 0xE9ECEF),
+    (0xE03131, 0xFFE3E3),
+    (0xF08C00, 0xFFE8CC),
+    (0xF59F00, 0xFFF3BF),
+    (0x2F9E44, 0xD3F9D8),
+    (0x0C8599, 0xC5F6FA),
+    (0x1971C2, 0xD0EBFF),
+    (0x7048E8, 0xE5DBFF),
+    (0xC2255C, 0xFFDEEB),
+];
+/// The names of the colors, as the panel says them.
+pub(super) const SWATCH_NAMES: [&str; 10] = ["Black", "Gray", "Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Violet", "Pink"];
+/// The four sizes, S M L XL: how wide a line is and how large its words.
+pub(super) const SIZES: [(f32, u32); 4] = [(1.5, 13), (2.0, 16), (3.5, 22), (6.0, 32)];
 pub(super) const FILLS: [u32; 5] = [0xFFF3BF, 0xD3F9D8, 0xD0EBFF, 0xFFE3E3, 0xE5DBFF];
 #[cfg(test)]
 const DOTS: u32 = 0xD8D6CF;
@@ -53,11 +73,14 @@ pub(super) enum Ctl {
     Mode(bool),
     /// A tool of the board's bar.
     Tool(u8),
-    /// The style bar: a line color, a fill or none, the look, the size of
-    /// the words, guessing on or off, and the status dot.
-    Stroke(u8),
-    Fill(u8),
-    NoFill,
+    /// The style panel: a color by name, which colors a line and its fill;
+    /// what a fill is (none, paper, a tint or hatched); a line whole,
+    /// dashed or dotted; a size, S M L XL; the look, the size of the
+    /// words, guessing on or off, and the status dot.
+    Color(u8),
+    FillKind(u8),
+    Dash(u8),
+    Size(u8),
     Look,
     /// The font its words are in, a list of the faces, apart from the look.
     Font,
@@ -103,6 +126,10 @@ pub(super) struct Board {
     pub dots_of: Option<usize>,
     /// C pressed: the next key a color of the style bar.
     pub coloring: bool,
+    /// How the next shape's fill and line are drawn: hatched, and whole,
+    /// dashed or dotted.
+    pub hatch: bool,
+    pub dash: u8,
     /// What is in what is being moved, carried along with it, each with
     /// how it was when the move began.
     pub carried: Vec<(usize, Layer)>,
@@ -159,7 +186,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, hatch: false, dash: 0, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), glow: None, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
     }
 }
 
@@ -465,10 +492,14 @@ impl Studio {
     pub(super) fn board_dress(&self, shape: &mut Shape) {
         let board = &self.board;
         (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width, self.board_font(), self.board_px());
+        if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Arrow | Tool::Line) {
+            (shape.dashed, shape.dotted) = (board.dash == 1, board.dash == 2);
+        }
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
                 (shape.sketch, shape.border, shape.radius) = (board.sketch, true, 6.0);
                 (shape.filled, shape.fill) = (board.fill.is_some(), board.fill.unwrap_or(0xFFFFFF));
+                shape.hatch = board.hatch && shape.filled;
                 if shape.tool == Tool::Rect {
                     shape.form = board.making;
                 }

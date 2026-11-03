@@ -412,7 +412,7 @@ impl Studio {
         }
         if letter == 'c' {
             self.board.coloring = true;
-            self.say("Color: 1\u{2013}5 a line, Q W E R T a fill, X no fill");
+            self.say("Color: 1\u{2013}0 a color, Q no fill, W paper, E tint, R hatched");
             return Some(Outcome::Continue);
         }
         let which = TOOLS.iter().position(|(_, key)| *key == letter)?;
@@ -429,16 +429,17 @@ impl Studio {
     }
 }
 
-/// What C and a key colors with: 1 to 5 a line, Q W E R T a fill, X none.
+/// What C and a key colors with: 1 to 9 and 0 a color by name, its line
+/// and its tint; Q no fill, W the paper, E a tint, R hatched; X no fill.
 fn color_key(key: Key) -> Option<Ctl> {
     let Key::Char(letter) = key else { return None };
-    if let Some(at) = "12345".find(letter) {
-        return Some(Ctl::Stroke(at as u8));
+    if let Some(at) = "1234567890".find(letter) {
+        return Some(Ctl::Color(at as u8));
     }
-    if let Some(at) = "qwert".find(letter) {
-        return Some(Ctl::Fill(at as u8));
+    if let Some(kind) = "qwer".find(letter) {
+        return Some(Ctl::FillKind(kind as u8));
     }
-    (letter == 'x').then_some(Ctl::NoFill)
+    (letter == 'x').then_some(Ctl::FillKind(0))
 }
 
 #[cfg(test)]
@@ -505,26 +506,39 @@ mod tests {
     }
 
     #[test]
-    fn what_the_bar_set_last_carries_on_to_the_next_box() {
+    fn what_the_panel_set_last_carries_on_to_the_next_box() {
         let mut studio = board();
         press_key(&mut studio, Key::Char('r'), Mods::default());
-        // With nothing picked out, the bar sits over the tools.
+        // With nothing picked out and the box tool in hand, the panel is
+        // docked at the right, for the next shape.
         studio.selected.clear();
         let layout = studio.layout();
-        let bar = layout.board_bar.expect("the bar");
-        assert!(bar.bottom() <= layout.dock.y);
-        let fill = studio.control_rect(Control::Board(Ctl::Fill(1))).unwrap().center();
-        click(&mut studio, fill);
+        let panel = layout.board_bar.expect("the panel");
+        assert!(panel.x > studio.width / 2 && panel.right() <= studio.width);
+        // Green by name: its line, and its tint for the fill.
+        let green = studio.control_rect(Control::Board(Ctl::Color(5))).unwrap().center();
+        click(&mut studio, green);
         pull(&mut studio, (100.0, 300.0), (260.0, 372.0), Mods::default());
-        assert_eq!(shape(&studio, 0).fill, FILLS[1]);
-        // Picked out, by it; C and a key colors it, and the next.
+        assert_eq!((shape(&studio, 0).color, shape(&studio, 0).fill), SWATCHES[5]);
+        // Picked out, the panel is where it was, clear of the box; C and a
+        // key colors it, line and fill, and the next.
         press_key(&mut studio, Key::Escape, Mods::default());
         let layout = studio.layout();
-        let (_, top, ..) = shape(&studio, 0).frame();
-        assert!(layout.board_bar.unwrap().bottom() <= studio.to_window_page((0.0, top)).1);
+        assert_eq!(layout.board_bar.map(|bar| (bar.x, bar.y)), Some((panel.x, panel.y)));
+        let (x, y, w, h) = shape(&studio, 0).frame();
+        let drawn = Rect::spanning(studio.to_window_page((x, y)), studio.to_window_page((x + w, y + h)));
+        assert!(!layout.board_bar.unwrap().intersects(drawn));
         press_key(&mut studio, Key::Char('c'), Mods::default());
-        press_key(&mut studio, Key::Char('2'), Mods::default());
-        assert_eq!((shape(&studio, 0).color, studio.board.stroke), (STROKES[1], STROKES[1]));
+        press_key(&mut studio, Key::Char('3'), Mods::default());
+        assert_eq!((shape(&studio, 0).color, shape(&studio, 0).fill, studio.board.stroke), (SWATCHES[2].0, SWATCHES[2].1, SWATCHES[2].0));
+        // Hatched, dashed and large, from the panel's rows.
+        for ctl in [Ctl::FillKind(3), Ctl::Dash(1), Ctl::Size(3)] {
+            let at = studio.control_rect(Control::Board(ctl)).unwrap().center();
+            click(&mut studio, at);
+        }
+        let box_ = shape(&studio, 0);
+        assert!(box_.hatch && box_.dashed && !box_.dotted);
+        assert_eq!((box_.stroke, box_.font_px), SIZES[3]);
         // The look is the board's, chosen from its list.
         crate::studio::board::look::tests::choose(&mut studio, Ctl::Look, "Sketchy");
         assert_eq!(studio.pages[0].look, 1);
@@ -535,7 +549,7 @@ mod tests {
         assert_eq!((studio.board_tool(), shape(&studio, 0).text.as_str()), (BOX_TOOL, ""));
         pull(&mut studio, (400.0, 100.0), (500.0, 200.0), Mods::default());
         let next = shape(&studio, 1);
-        assert_eq!((next.color, next.fill), (STROKES[1], FILLS[1]));
+        assert_eq!((next.color, next.fill, next.hatch, next.dashed, next.stroke), (SWATCHES[2].0, SWATCHES[2].1, true, true, SIZES[3].0));
     }
 
     #[test]

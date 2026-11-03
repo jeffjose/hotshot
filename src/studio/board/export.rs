@@ -182,7 +182,7 @@ impl Studio {
                 let filled = shape.filled && !shape.placeholder();
                 if filled {
                     let fill = hex(shape.fill);
-                    out += &match (forms, shape.tool) {
+                    let body = match (forms, shape.tool) {
                         (true, _) => shape.form_paths().0.iter().map(|path| format!("  <path d=\"{}\" fill=\"{fill}\" opacity=\"{opacity:.2}\"/>\n", path_of(path, true))).collect::<String>(),
                         (false, Tool::Ellipse) => format!("  <ellipse cx=\"{:.1}\" cy=\"{:.1}\" rx=\"{:.1}\" ry=\"{:.1}\" fill=\"{fill}\" opacity=\"{opacity:.2}\"/>\n", x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0),
                         _ => match shape.sketch_fill() {
@@ -190,6 +190,20 @@ impl Studio {
                             None => format!("  <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"{:.1}\" fill=\"{fill}\" opacity=\"{opacity:.2}\"/>\n", if shape.sketch { 0.0 } else { shape.radius }),
                         },
                     };
+                    out += &body;
+                    // Hatched: fine lines up to the right in its line's
+                    // color, kept to its fill.
+                    if shape.hatch {
+                        let clip = format!("hatch{}", shape.id);
+                        out += &format!("  <clipPath id=\"{clip}\">\n  {}  </clipPath>\n  <g clip-path=\"url(#{clip})\" stroke=\"{ink}\" stroke-width=\"1.6\" opacity=\"{:.2}\">\n", body.trim_start(), opacity * 150.0 / 256.0);
+                        let every = 8.0 * std::f32::consts::SQRT_2;
+                        let mut along = x + y;
+                        while along <= x + w + y + h {
+                            out += &format!("    <line x1=\"{:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{:.1}\"/>\n", along - y, along - (y + h), y + h);
+                            along += every;
+                        }
+                        out += "  </g>\n";
+                    }
                 }
                 if shape.border || shape.placeholder() {
                     if shape.sketch && !shape.placeholder() {

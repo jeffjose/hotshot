@@ -1,9 +1,10 @@
-//! A board's bar of styles, floating by what is picked out rather than in
-//! a panel: five line colors and five fills as Excalidraw keeps them, no
-//! fill, by hand or not, how large the words are, a status dot, and
-//! guessing on or off. With nothing picked out and a tool in hand, it sits
-//! over the tools, for the next shape; and what it last set carries on to
-//! the next shape drawn.
+//! A board's panel of styles, docked at its right under Present, where it
+//! covers nothing picked out: ten colors by name, each a line and its tint
+//! at once; a fill of none, the paper, a tint or hatched; a line whole,
+//! dashed or dotted; S M L XL; the look, the font, how large the words
+//! are, the ground, a status dot and guessing. With nothing picked out and
+//! a tool in hand it sets the next shape; and what it last set carries on
+//! to the next shape drawn.
 
 use super::*;
 use std::time::{Duration, Instant};
@@ -30,15 +31,16 @@ pub(in crate::studio) fn step_px(px: u32, larger: bool) -> u32 {
     }
 }
 
-/// How large a swatch of the bar is, the room round them, and the gap
-/// between groups.
-const SWATCH: i32 = 22;
+/// How wide the panel is and the room inside its edge; how high a swatch
+/// and a row of the panel are, the gap between parts and between rows.
+const PANEL_W: i32 = 184;
+const PANEL_PAD: i32 = 12;
+const SWATCH: i32 = 26;
+const ROW: i32 = 28;
 const GAP: i32 = 4;
-const PAD: i32 = 6;
-const SPLIT: i32 = 11;
-/// How wide − and + are, and the number between them.
-const STEP: i32 = 20;
-const NUMBER: i32 = 34;
+const SPLIT: i32 = 12;
+/// How wide − and + are.
+const STEP: i32 = 28;
 
 impl Studio {
     /// The shapes picked out the bar styles.
@@ -46,8 +48,13 @@ impl Studio {
         self.chosen().into_iter().filter(|&index| matches!(self.doc.layers[index].kind, Kind::Shape(_))).collect()
     }
 
-    /// The bar's place and its parts, over what is picked out, or under it
-    /// near the top of the window; or over the tools for the next shape.
+    /// The panel's place and its parts: docked at the right of the board,
+    /// under Present, always in the one place, so that it covers nothing
+    /// that is picked out and is where the hand expects it; shown with
+    /// something picked out, being typed into, or a tool in hand for the
+    /// next shape. Rows by what they set: the color, the fill, the line,
+    /// the size; then the look, the font, the size of the words, and the
+    /// ground, the status and guessing.
     pub(in crate::studio) fn layout_style_bar(&mut self, layout: &mut Layout) {
         let dragging = matches!(self.drag, Drag::Move { moved: true, .. } | Drag::Scale { .. } | Drag::Turn { .. } | Drag::Draw { .. } | Drag::Marquee { .. } | Drag::Pull { .. });
         // Kept while its own list of fonts is open from it, which says so.
@@ -56,93 +63,89 @@ impl Studio {
             return;
         }
         let styled = self.bar_styled();
-        let boxes = styled.iter().any(|&index| self.is_box(index));
-        let mut parts: Vec<(Ctl, i32)> = Vec::new();
-        parts.extend((0..5).map(|at| (Ctl::Stroke(at), SWATCH)));
-        parts.push((Ctl::Guess, -SPLIT));
-        parts.extend((0..5).map(|at| (Ctl::Fill(at), SWATCH)));
-        parts.push((Ctl::NoFill, SWATCH));
-        parts.push((Ctl::Guess, -SPLIT));
-        parts.push((Ctl::Look, 74));
-        parts.push((Ctl::Ground, SWATCH + 18));
-        parts.push((Ctl::Guess, -SPLIT));
-        // As wide as the font's name, in itself, and its arrow.
-        let face = self.shown_font();
-        parts.push((Ctl::Font, self.text.width_in(face, FACES[face], 13) + 30));
-        // How large the words are: −, the number, and +.
-        parts.extend([(Ctl::Words(0), STEP), (Ctl::Words(1), NUMBER), (Ctl::Words(2), STEP)]);
-        if boxes {
-            parts.push((Ctl::Status, SWATCH + 4));
+        if styled.is_empty() && self.tool == Tool::Select && self.editing.is_none() {
+            return;
         }
-        if self.tool == Tool::Pen {
-            parts.push((Ctl::Neaten, 64));
-        }
-        parts.push((Ctl::Guess, SWATCH + 4));
-        let wide = parts.iter().map(|(_, w)| w.abs() + GAP).sum::<i32>() - GAP + 2 * PAD;
-        let high = SWATCH + 2 * PAD;
+        let boxes = styled.iter().any(|&index| self.is_box(index)) || (styled.is_empty() && matches!(self.tool, Tool::Rect | Tool::Ellipse));
         let view = self.open_area();
-        let (cx, top) = match styled.is_empty() {
-            true if self.tool != Tool::Select && layout.dock.w > 0 => (layout.dock.center().0, layout.dock.y - 10 - high),
-            true => return,
-            false => {
-                let corners: Vec<(i32, i32)> = styled.iter().flat_map(|&index| self.box_corners(index)).collect();
-                let (left, right) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.0).max().unwrap_or(0));
-                let (above, below) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
-                // Clear of the dots of its sides, which are pulled from;
-                // over it, or under it where that covers less of the rest,
-                // so that the bar takes no click meant for another shape.
-                let x = ((left + right) / 2 - wide / 2).clamp(view.x + 4, (view.right() - wide - 4).max(view.x + 4));
-                let (over, under) = (above - 30 - high, below + 30);
-                let rest: Vec<usize> = (0..self.doc.layers.len()).filter(|index| !styled.contains(index) && !self.doc.layers[*index].hidden).collect();
-                let others: Vec<Rect> = rest.into_iter().map(|index| {
-                    let (bx, by, bw, bh) = self.doc.layers[index].bounds(&mut self.text);
-                    Rect::spanning(self.to_window((bx, by)), self.to_window((bx + bw, by + bh)))
-                }).collect();
-                let covers = |top: i32| {
-                    let bar = Rect::new(x, top, wide, high);
-                    others.iter().map(|other| {
-                        let both = bar.intersect(*other);
-                        if both.w > 0 && both.h > 0 { both.w * both.h } else { 0 }
-                    }).sum::<i32>()
-                };
-                let fits = |top: i32| top >= view.y + 40 && top + high <= view.bottom() - 4;
-                // Then over or under each box round it, from the nearest out,
-                // as both of its own would be over the box it is in.
-                let mut holders: Vec<(f32, f32, f32, f32)> = styled.first().map(|&index| self.round(index)).unwrap_or_default().into_iter().filter_map(|id| self.index_of(id)).map(|index| self.box_frame(index)).collect();
-                holders.sort_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)));
-                let mut places = vec![over, under];
-                for (_, y, _, h) in holders {
-                    places.push(self.to_window((0.0, y)).1 - 30 - high);
-                    places.push(self.to_window((0.0, y + h)).1 + 30);
-                }
-                let top = places.iter().copied().filter(|&top| fits(top)).min_by_key(|&top| covers(top)).unwrap_or(under);
-                ((left + right) / 2, top)
-            }
+        let inner = PANEL_W - 2 * PANEL_PAD;
+        let x = view.right() - PANEL_W - 12;
+        let top = match self.shows_right() {
+            true => view.y + 12,
+            false => self.side_button(1).bottom() + 14,
         };
-        let x = (cx - wide / 2).clamp(view.x + 4, (view.right() - wide - 4).max(view.x + 4));
-        let bar = Rect::new(x, top.clamp(view.y + 40, (self.height - high - 4).max(view.y)), wide, high);
-        let mut along = bar.x + PAD;
-        for (ctl, w) in parts {
-            // A gap between groups, the rest each a part of it.
-            if w > 0 {
-                layout.controls.push((Rect::new(along, bar.y + PAD, w, SWATCH), Control::Board(ctl)));
+        let left = x + PANEL_PAD;
+        let mut y = top + PANEL_PAD;
+        let heading = |layout: &mut Layout, y: &mut i32, says: &str| {
+            layout.words.push(((left, *y), says.to_owned(), DIM_TEXT_COLOR, 11));
+            *y += Text::line_height(11) + 6;
+        };
+        // A row of so many parts, each as wide, across the panel.
+        let row = |layout: &mut Layout, y: &mut i32, ctls: &[Ctl], high: i32| {
+            let count = ctls.len() as i32;
+            let each = (inner - (count - 1) * GAP) / count;
+            for (at, &ctl) in ctls.iter().enumerate() {
+                let along = left + at as i32 * (each + GAP);
+                let w = if at as i32 == count - 1 { left + inner - along } else { each };
+                layout.controls.push((Rect::new(along, *y, w, high), Control::Board(ctl)));
             }
-            along += w.abs() + GAP;
+            *y += high;
+        };
+        heading(layout, &mut y, "Color");
+        for line in 0..2u8 {
+            row(layout, &mut y, &(0..5).map(|at| Ctl::Color(line * 5 + at)).collect::<Vec<_>>(), SWATCH);
+            y += GAP + 2;
         }
-        layout.controls.push((bar, Control::Panel));
-        layout.board_bar = Some(bar);
+        y += SPLIT - GAP - 2;
+        if boxes {
+            heading(layout, &mut y, "Fill");
+            row(layout, &mut y, &[Ctl::FillKind(0), Ctl::FillKind(1), Ctl::FillKind(2), Ctl::FillKind(3)], ROW);
+            y += SPLIT;
+        }
+        heading(layout, &mut y, "Line");
+        row(layout, &mut y, &[Ctl::Dash(0), Ctl::Dash(1), Ctl::Dash(2)], ROW);
+        y += SPLIT;
+        heading(layout, &mut y, "Size");
+        row(layout, &mut y, &[Ctl::Size(0), Ctl::Size(1), Ctl::Size(2), Ctl::Size(3)], ROW);
+        y += SPLIT;
+        layout.rules.push(Rect::new(x, y - SPLIT / 2, PANEL_W, 1));
+        y += SPLIT / 2;
+        row(layout, &mut y, &[Ctl::Look], ROW);
+        y += GAP;
+        row(layout, &mut y, &[Ctl::Font], ROW);
+        y += GAP;
+        // How large the words are: −, the number, and +.
+        layout.controls.push((Rect::new(left, y, STEP, ROW), Control::Board(Ctl::Words(0))));
+        layout.controls.push((Rect::new(left + STEP + GAP, y, inner - 2 * (STEP + GAP), ROW), Control::Board(Ctl::Words(1))));
+        layout.controls.push((Rect::new(left + inner - STEP, y, STEP, ROW), Control::Board(Ctl::Words(2))));
+        y += ROW + GAP;
+        let mut last = vec![Ctl::Ground];
+        if boxes {
+            last.push(Ctl::Status);
+        }
+        last.push(Ctl::Guess);
+        if self.tool == Tool::Pen {
+            last.push(Ctl::Neaten);
+        }
+        row(layout, &mut y, &last, ROW);
+        y += PANEL_PAD;
+        let panel = Rect::new(x, top, PANEL_W, y - top);
+        layout.controls.push((panel, Control::Panel));
+        layout.board_bar = Some(panel);
     }
 
-    /// What the bar shows as set: of the first shape picked out, or of the
-    /// next to be drawn.
-    fn shown_style(&self) -> (u32, Option<u32>, bool, u8) {
+    /// What the panel shows as set: of the first shape picked out, or of
+    /// the next to be drawn: its line, its fill if it has one, whether it
+    /// is drawn by hand, its status, whether its fill is hatched, how its
+    /// line is broken, and how wide its line is.
+    fn shown_style(&self) -> (u32, Option<u32>, bool, u8, bool, u8, f32) {
         let first = self.bar_styled().first().and_then(|&index| match &self.doc.layers[index].kind {
             Kind::Shape(shape) => Some(shape.clone()),
             Kind::Picture(_) => None,
         });
         match first {
-            Some(shape) => (shape.color, shape.filled.then_some(shape.fill), shape.sketch, shape.status),
-            None => (self.board.stroke, self.board.fill, self.board.sketch, 0),
+            Some(shape) => (shape.color, shape.filled.then_some(shape.fill), shape.sketch, shape.status, shape.hatch, if shape.dotted { 2 } else { u8::from(shape.dashed) }, shape.stroke),
+            None => (self.board.stroke, self.board.fill, self.board.sketch, 0, self.board.hatch, self.board.dash, self.board.width),
         }
     }
 
@@ -276,7 +279,7 @@ impl Studio {
     }
 
     pub(in crate::studio) fn draw_style_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
-        let (stroke, fill, sketch, status) = self.shown_style();
+        let (stroke, fill, sketch, status, hatch, dash, width) = self.shown_style();
         let (cx, cy) = rect.center();
         let ring = |canvas: &mut Canvas, on: bool| {
             if on {
@@ -285,24 +288,87 @@ impl Studio {
                 canvas.round_outline(rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4, 8, 1, DIM_TEXT_COLOR);
             }
         };
+        // A part of a row of choices: lit when it is the one set.
+        let choice = |canvas: &mut Canvas, on: bool| {
+            if on {
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, ROW_ON, 256);
+            } else if hovered {
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+            }
+        };
+        let ground = self.pages[self.page].ground;
         let line_high = Text::line_height(11);
         match ctl {
-            Ctl::Stroke(at) => {
-                let color = STROKES[usize::from(at)];
-                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, color, 256);
-                canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 6, 1, 0x555555);
-                ring(canvas, stroke == color);
+            // A color by name: its tint, with a disc of its line in it, as
+            // the ground shows them.
+            Ctl::Color(at) => {
+                let (line, tint) = SWATCHES[usize::from(at)];
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, look::shade(tint, ground), 256);
+                canvas.disc(cx, cy, 6, look::shade(line, ground), 256);
+                ring(canvas, stroke == line);
                 if self.board.coloring {
-                    self.text.draw_centered(canvas, cx, cy, 10, 0xFFFFFF, &(at + 1).to_string());
+                    let key = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"][usize::from(at)];
+                    self.text.draw_centered(canvas, rect.right() - 6, rect.y + 7, 9, TEXT_COLOR, key);
                 }
             }
-            Ctl::Fill(at) => {
-                let color = FILLS[usize::from(at)];
-                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, color, 256);
-                ring(canvas, fill == Some(color));
-                if self.board.coloring {
-                    self.text.draw_centered(canvas, cx, cy, 10, INK, &["Q", "W", "E", "R", "T"][usize::from(at)]);
+            // What a fill is, each a small box as it is filled: none, the
+            // paper, a tint, hatched.
+            Ctl::FillKind(kind) => {
+                let now = match (fill, hatch) {
+                    (None, _) => 0,
+                    (Some(0xFFFFFF), false) => 1,
+                    (Some(_), true) => 3,
+                    _ => 2,
+                };
+                choice(canvas, now == kind);
+                // Its own tint where it has one, else that of its line.
+                let pen = stroke;
+                let tint = fill.filter(|&fill| fill != 0xFFFFFF).or_else(|| SWATCHES.iter().find(|(of, _)| *of == stroke).map(|(_, tint)| *tint)).unwrap_or(SWATCHES[7].1);
+                let swatch = Rect::new(cx - 8, cy - 8, 16, 16);
+                match kind {
+                    0 => {}
+                    1 => canvas.round_fill(swatch.x, swatch.y, swatch.w, swatch.h, 4, look::shade(0xFFFFFF, ground), 256),
+                    _ => canvas.round_fill(swatch.x, swatch.y, swatch.w, swatch.h, 4, look::shade(tint, ground), 256),
                 }
+                if kind == 3 {
+                    // Lines up to the right, across the swatch.
+                    let pen = look::shade(pen, ground);
+                    for py in swatch.y + 1..swatch.bottom() - 1 {
+                        for px in swatch.x + 1..swatch.right() - 1 {
+                            if (px - swatch.x + py - swatch.y) % 5 == 0 {
+                                canvas.fill(px, py, 1, 1, pen);
+                            }
+                        }
+                    }
+                }
+                canvas.round_outline(swatch.x, swatch.y, swatch.w, swatch.h, 4, 1, if kind == 0 { DIM_TEXT_COLOR } else { look::shade(pen, ground) });
+                if kind == 0 {
+                    line(canvas, (swatch.x + 3, swatch.bottom() - 4), (swatch.right() - 4, swatch.y + 3), 0xE03131);
+                }
+            }
+            // A line whole, dashed or dotted, drawn so.
+            Ctl::Dash(kind) => {
+                choice(canvas, dash == kind);
+                let (from, to) = (rect.x + 10, rect.right() - 10);
+                let mut x = from;
+                while x < to {
+                    match kind {
+                        0 => canvas.fill(x, cy - 1, (to - x).min(4), 2, TEXT_COLOR),
+                        1 => canvas.fill(x, cy - 1, 6.min(to - x), 2, TEXT_COLOR),
+                        _ => canvas.disc(x + 1, cy, 1, TEXT_COLOR, 256),
+                    }
+                    x += match kind {
+                        0 => 4,
+                        1 => 10,
+                        _ => 5,
+                    };
+                }
+            }
+            // S M L XL, lit as the line is as wide as that size's.
+            Ctl::Size(at) => {
+                choice(canvas, (SIZES[usize::from(at)].0 - width).abs() < 0.01);
+                let says = ["S", "M", "L", "XL"][usize::from(at)];
+                self.text.draw_centered(canvas, cx, cy, 12, TEXT_COLOR, says);
             }
             // The ground's paper, and the arrow of the list it opens.
             Ctl::Ground => {
@@ -313,12 +379,6 @@ impl Studio {
                 canvas.disc(rect.x + 11, cy, 8, 0x8F8F8F, 256);
                 canvas.disc(rect.x + 11, cy, 7, paper, 256);
                 self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);
-            }
-            Ctl::NoFill => {
-                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, 0xFFFFFF, 256);
-                line(canvas, (rect.x + 4, rect.bottom() - 5), (rect.right() - 5, rect.y + 4), 0xE03131);
-                line(canvas, (rect.x + 5, rect.bottom() - 5), (rect.right() - 5, rect.y + 5), 0xE03131);
-                ring(canvas, fill.is_none());
             }
             Ctl::Look => {
                 if hovered || self.bar_open(MenuKind::Looks) {
@@ -419,27 +479,75 @@ impl Studio {
     pub(in crate::studio) fn press_style(&mut self, ctl: Ctl) {
         let shapes = !self.bar_styled().is_empty();
         match ctl {
-            Ctl::Stroke(at) => {
-                let color = STROKES[usize::from(at)];
-                self.board.stroke = color;
-                self.restyle_shapes(|shape| shape.color = color);
-            }
-            Ctl::Fill(at) => {
-                let color = FILLS[usize::from(at)];
-                self.board.fill = Some(color);
+            // A color by name: a line in it, and a fill that is a tint the
+            // tint of it; a note, which keeps its quiet edge, its tint.
+            Ctl::Color(at) => {
+                let (line, tint) = SWATCHES[usize::from(at)];
+                self.board.stroke = line;
+                if self.board.fill.is_some_and(|fill| fill != 0xFFFFFF) {
+                    self.board.fill = Some(tint);
+                }
                 self.restyle_shapes(|shape| {
-                    if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
-                        (shape.filled, shape.fill) = (true, color);
+                    let tinted = shape.filled && shape.fill != 0xFFFFFF && matches!(shape.tool, Tool::Rect | Tool::Ellipse);
+                    if shape.form == shapes::FORM_STICKY && shape.tool == Tool::Rect {
+                        shape.fill = tint;
+                        return;
+                    }
+                    shape.color = line;
+                    if tinted {
+                        shape.fill = tint;
                     }
                 });
+                self.say(format!("Color: {}", SWATCH_NAMES[usize::from(at)]));
             }
-            Ctl::NoFill => {
-                self.board.fill = None;
+            // What a fill is: none, the paper, a tint of its line, or that
+            // tint hatched in its line.
+            Ctl::FillKind(kind) => {
+                let tint_of = |line: u32, now: Option<u32>| SWATCHES.iter().find(|(of, _)| *of == line).map(|(_, tint)| *tint).or(now.filter(|&fill| fill != 0xFFFFFF)).unwrap_or(SWATCHES[7].1);
+                self.board.fill = match kind {
+                    0 => None,
+                    1 => Some(0xFFFFFF),
+                    _ => Some(tint_of(self.board.stroke, self.board.fill)),
+                };
+                self.board.hatch = kind == 3;
                 self.restyle_shapes(|shape| {
-                    if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
-                        (shape.filled, shape.border) = (false, true);
+                    if !matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
+                        return;
+                    }
+                    let tint = tint_of(shape.color, shape.filled.then_some(shape.fill));
+                    match kind {
+                        0 => (shape.filled, shape.border, shape.hatch) = (false, true, false),
+                        1 => (shape.filled, shape.fill, shape.hatch) = (true, 0xFFFFFF, false),
+                        _ => (shape.filled, shape.fill, shape.hatch) = (true, tint, kind == 3),
                     }
                 });
+                self.say(["No fill", "Filled with the paper", "Filled with a tint", "Hatched"][usize::from(kind)]);
+            }
+            // A line whole, dashed or dotted.
+            Ctl::Dash(kind) => {
+                self.board.dash = kind;
+                self.restyle_shapes(|shape| {
+                    if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Arrow | Tool::Line) {
+                        (shape.dashed, shape.dotted) = (kind == 1, kind == 2);
+                    }
+                });
+                self.say(["A whole line", "A dashed line", "A dotted line"][usize::from(kind)]);
+            }
+            // S M L XL: how wide the line is and how large the words, the
+            // two together.
+            Ctl::Size(at) => {
+                let (width, px) = SIZES[usize::from(at)];
+                self.board.width = width;
+                self.restyle_shapes(|shape| {
+                    if !matches!(shape.tool, Tool::Text) {
+                        shape.stroke = width;
+                    }
+                    shape.font_px = px;
+                });
+                if self.on_board() {
+                    self.pages[self.page].px = px;
+                }
+                self.say(format!("Size: {}", ["S", "M", "L", "XL"][usize::from(at)]));
             }
             // Each a list, under the bar, or over it where it is low; a
             // second click on it closes it.
@@ -459,7 +567,7 @@ impl Studio {
                 }
             }
             Ctl::Status => {
-                let (_, _, _, status) = self.shown_style();
+                let (_, _, _, status, ..) = self.shown_style();
                 let next = (status + 1) % 4;
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {

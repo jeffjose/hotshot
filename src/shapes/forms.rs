@@ -291,7 +291,7 @@ impl Shape {
                 false => path.clone(),
             };
             if path.len() > 8 {
-                strokes.push(self.ink(&path, shut, half, salt));
+                strokes.extend(self.broken(self.ink(&path, shut, half, salt)));
                 continue;
             }
             let corners: Vec<Point> = path.into_iter().map(|(px, py)| (px + wobble(nudge), py + wobble(nudge))).collect();
@@ -299,7 +299,7 @@ impl Shape {
                 true => round_corners(&corners, if self.rounded { (5.0 * scale).min(w.min(h) * 0.2) } else { 0.0 }),
                 false => corners,
             };
-            strokes.push(self.ink(&run, shut, half, salt));
+            strokes.extend(self.broken(self.ink(&run, shut, half, salt)));
         }
         strokes
     }

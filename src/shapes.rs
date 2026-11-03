@@ -115,11 +115,14 @@ pub struct Shape {
     pub halo: bool,
     pub elbow: bool,
     /// Whether a box, an oval, a line or an arrow is drawn by hand: a
-    /// little uneven, its line gone over twice.
+    /// little uneven, in one stroke that breathes.
     pub sketch: bool,
     /// What a rectangle or an oval is filled with, when it is `filled`;
     /// its `color` is then that of its border, if it has one.
     pub fill: u32,
+    /// Whether its fill is crossed by fine lines on a slant in its line's
+    /// color, as a sketch marks a part planned or outside.
+    pub hatch: bool,
     /// Whether a rectangle or an oval has a border. One that has none is
     /// filled, or there would be nothing of it.
     pub border: bool,
@@ -416,7 +419,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -436,7 +439,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -464,7 +467,8 @@ impl Shape {
                 self.base.0,
                 self.base.1,
                 u8::from(self.heading),
-                self.region
+                self.region,
+                u8::from(self.hatch)
             ),
             self.fill,
             self.number,
@@ -538,6 +542,8 @@ impl Shape {
         shape.base = more.next().and_then(|word| word.split_once(':')).and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))).filter(|(w, h)| w.is_finite() && h.is_finite()).unwrap_or((0.0, 0.0));
         shape.heading = more.next() == Some("1");
         shape.region = more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(15);
+        // And whether its fill is hatched, which a file from before has not.
+        shape.hatch = more.next() == Some("1");
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -1913,7 +1919,7 @@ impl Shape {
         let mut strokes: Vec<Ink> = Vec::new();
         let (left, top, width, height) = self.frame();
         match self.tool {
-            Tool::Rect => strokes.push(self.ink(&self.box_path(), true, half, BOX_SALT)),
+            Tool::Rect => strokes.extend(self.broken(self.ink(&self.box_path(), true, half, BOX_SALT))),
             Tool::Ellipse => {
                 let (cx, cy, rx, ry) = (left + width / 2.0, top + height / 2.0, width / 2.0, height / 2.0);
                 let count = pieces(std::f32::consts::TAU * rx.max(ry)).max(48);
@@ -1929,7 +1935,7 @@ impl Shape {
                         (cx + x * cos - y * sin, cy + x * sin + y * cos)
                     })
                     .collect();
-                strokes.push(self.ink(&ring, true, half, BOX_SALT));
+                strokes.extend(self.broken(self.ink(&ring, true, half, BOX_SALT)));
             }
             _ => {
                 let (a, b) = (self.points[0], self.points[self.far()]);
@@ -2009,45 +2015,52 @@ impl Shape {
                         path = cut_end(path, end, cut);
                     }
                 }
-                let ink = self.ink(&path, false, half, 0x51ED_270B);
-                if self.dotted {
-                    // A dot every so far along it, the first at its start.
-                    let every = self.stroke * 2.0 + 4.0 * scale;
-                    let mut next = 0.0f32;
-                    let mut gone = 0.0f32;
-                    for at in 0..ink.points.len() {
-                        if at > 0 {
-                            gone += distance(ink.points[at - 1], ink.points[at]);
-                        }
-                        if gone >= next {
-                            let p = ink.points[at];
-                            strokes.push(Ink::even(vec![p, p], (half * 1.15).max(0.9), false));
-                            next = gone + every;
-                        }
-                    }
-                } else if self.dashed {
-                    // Its one stroke cut into even dashes.
-                    let (dash, gap) = (self.stroke * 2.0 + 6.0 * scale, self.stroke * 1.5 + 5.0 * scale);
-                    let mut run = Ink::default();
-                    let mut gone = 0.0f32;
-                    for at in 0..ink.points.len() {
-                        if at > 0 {
-                            gone += distance(ink.points[at - 1], ink.points[at]);
-                        }
-                        if gone.rem_euclid(dash + gap) < dash {
-                            run.points.push(ink.points[at]);
-                            run.halves.push(ink.halves[at]);
-                        } else if !run.points.is_empty() {
-                            strokes.push(std::mem::take(&mut run));
-                        }
-                    }
-                    if !run.points.is_empty() {
-                        strokes.push(run);
-                    }
-                } else {
-                    strokes.push(ink);
+                strokes.extend(self.broken(self.ink(&path, false, half, 0x51ED_270B)));
+            }
+        }
+        strokes
+    }
+
+    /// A stroke drawn by hand as its line is: whole; cut into even dashes;
+    /// or a dot every so far along it, the first at its start.
+    fn broken(&self, ink: Ink) -> Vec<Ink> {
+        let scale = self.scale.max(1e-3);
+        let half = self.stroke / 2.0;
+        let mut strokes = Vec::new();
+        if self.dotted {
+            let every = self.stroke * 2.0 + 4.0 * scale;
+            let mut next = 0.0f32;
+            let mut gone = 0.0f32;
+            for at in 0..ink.points.len() {
+                if at > 0 {
+                    gone += distance(ink.points[at - 1], ink.points[at]);
+                }
+                if gone >= next {
+                    let p = ink.points[at];
+                    strokes.push(Ink::even(vec![p, p], (half * 1.15).max(0.9), false));
+                    next = gone + every;
                 }
             }
+        } else if self.dashed {
+            let (dash, gap) = (self.stroke * 2.0 + 6.0 * scale, self.stroke * 1.5 + 5.0 * scale);
+            let mut run = Ink::default();
+            let mut gone = 0.0f32;
+            for at in 0..ink.points.len() {
+                if at > 0 {
+                    gone += distance(ink.points[at - 1], ink.points[at]);
+                }
+                if gone.rem_euclid(dash + gap) < dash {
+                    run.points.push(ink.points[at]);
+                    run.halves.push(ink.halves[at]);
+                } else if !run.points.is_empty() {
+                    strokes.push(std::mem::take(&mut run));
+                }
+            }
+            if !run.points.is_empty() {
+                strokes.push(run);
+            }
+        } else {
+            strokes.push(ink);
         }
         strokes
     }
@@ -2224,7 +2237,12 @@ impl Shape {
             // Its fill, and its border over that; or the one it has.
             Tool::Rect | Tool::Ellipse => {
                 if self.fill_apart() {
-                    self.lay_fill(canvas, &self.inside_mask());
+                    let inside = self.inside_mask();
+                    self.lay_fill(canvas, &inside);
+                    if self.hatch {
+                        let (x, y, _, _) = self.frame();
+                        canvas.mask(&hatched(&inside, self.scale, (x, y)), self.color, self.opacity * 150 / 256);
+                    }
                 }
                 match self.border || self.placeholder() {
                     true => canvas.mask(&self.mask(), self.color, self.opacity),
@@ -2841,6 +2859,31 @@ fn covered(bounds: Rect, distance: impl Fn(f32, f32) -> f32 + Sync) -> Mask {
     Mask { bounds, alpha }
 }
 
+/// What is inside a shape crossed by fine lines on a slant, up to the
+/// right, so far apart and so wide at a shape's own size, from its corner
+/// so that they go with it as it moves: what a hatched fill lays in its
+/// line's color.
+pub(super) fn hatched(inside: &Mask, scale: f32, from: Point) -> Mask {
+    let scale = scale.max(1e-3);
+    let (every, half) = (8.0 * scale, (0.8 * scale).max(0.5));
+    let bounds = inside.bounds;
+    let mut alpha = inside.alpha.clone();
+    for (row, y) in alpha.chunks_mut(bounds.w.max(1) as usize).zip(bounds.y..) {
+        for (cover, x) in row.iter_mut().zip(bounds.x..) {
+            if *cover == 0 {
+                continue;
+            }
+            // Across the lines x + y = k, from the pixel's middle: how far
+            // to the nearest of them.
+            let across = (x as f32 + 0.5 - from.0 + y as f32 + 0.5 - from.1) / std::f32::consts::SQRT_2;
+            let off = across.rem_euclid(every);
+            let far = off.min(every - off) - half;
+            *cover = (f32::from(*cover) * (0.5 - far).clamp(0.0, 1.0)) as u8;
+        }
+    }
+    Mask { bounds, alpha }
+}
+
 /// What a hand-drawn line's wobble is worked out from, for a box or an
 /// oval: the same each time, so that its fill follows its line.
 const BOX_SALT: u32 = 0x2C1B_3C6D;
@@ -3362,9 +3405,12 @@ mod tests {
         (boxed.edge, boxed.shadow) = (OUTSIDE, Some(crate::frame::Layer { x: 2, y: 8, blur: 20, spread: -3, color: 0x4011_2233 }));
         let back = Shape::read(&boxed.write()).unwrap();
         assert_eq!((back.edge, back.shadow, back.align), (OUTSIDE, boxed.shadow, boxed.align));
+        // A hatched fill is kept too.
+        boxed.hatch = true;
+        assert!(Shape::read(&boxed.write()).unwrap().hatch);
         // And one from before either has neither.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
         assert_eq!((back.edge, back.shadow), (CENTER, None));
