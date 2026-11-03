@@ -908,7 +908,7 @@ impl Shape {
         // No longer than most of the line; or with a head at each end,
         // than a little under half of it, so that they do not meet.
         let most = if self.heads == [true, true] { 0.45 } else { 0.7 };
-        let length = (self.stroke * 3.2 + 9.0).min((a.0 - b.0).hypot(a.1 - b.1) * most).max(1.0);
+        let length = (self.stroke * 4.0 + 11.0).min((a.0 - b.0).hypot(a.1 - b.1) * most).max(1.0);
         (length, length * 0.46)
     }
 
@@ -1986,10 +1986,10 @@ impl Shape {
                     // The way it comes in to the tip: from a point a head's
                     // length back along it.
                     let chevron = matches!(style, FILLED_HEAD | OPEN_HEAD);
-                    // Three line widths and a few pixels more, at its own size, so
+                    // Four line widths and some pixels more, at its own size, so
                     // that it is as large to the eye at any zoom; no more than a
                     // little of a short line.
-                    let long = if chevron { (self.stroke * 3.0 + 8.0 * scale).min((along * 0.4).max(self.stroke)).max(1.0) } else { self.head().0 };
+                    let long = if chevron { (self.stroke * 4.0 + 11.0 * scale).min((along * 0.4).max(self.stroke)).max(1.0) } else { self.head().0 };
                     let tip = if end == 1 { path[path.len() - 1] } else { path[0] };
                     let mut from = tip;
                     let mut gone = 0.0;
@@ -2007,7 +2007,7 @@ impl Shape {
                     if style == FILLED_HEAD {
                         // A filled head, notched a little at its back, as
                         // heavy as the line, which stops inside it.
-                        let long = long * 0.9;
+                        let long = long * 0.95;
                         let base = (tip.0 - dx * long, tip.1 - dy * long);
                         let notch = (tip.0 - dx * long * 0.78, tip.1 - dy * long * 0.78);
                         let spread = long * 0.5;
