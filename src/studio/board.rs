@@ -77,6 +77,17 @@ pub(super) enum Ctl {
     Present,
     /// Neaten, by the pen.
     Neaten,
+    /// The zoom at the bottom left: smaller, how large, which a click
+    /// makes 100%, larger, all of the board fitted, and its keys.
+    ZoomOut,
+    ZoomShown,
+    ZoomIn,
+    Fit,
+    Keys,
+    /// The sheet of the board's keys, while it is open, and all round it,
+    /// which a click closes it on.
+    Sheet,
+    Scrim,
 }
 
 /// What a board keeps of its own, in the window rather than the file.
@@ -130,6 +141,8 @@ pub(super) struct Board {
     /// pointer drawing its trail.
     pub laser_tool: bool,
     pub beam: bool,
+    /// The sheet of its keys is open.
+    pub keys: bool,
     /// What the box tool would draw round, outlined.
     pub pick: Option<pick::Pick>,
     /// What letting go of the box being moved would do to an arrow.
@@ -168,7 +181,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
     }
 }
 
@@ -186,6 +199,8 @@ pub(super) mod svg;
 mod export;
 mod mermaid;
 mod neaten;
+mod zoom;
+mod keys;
 /// Whether a frame is the one a new page of frames begins with, as it
 /// began: called Frame 1, where it was put, its size, white, empty, and
 /// exported as it was.
@@ -394,6 +409,7 @@ impl Studio {
         }
         layout.controls.push((dock, Control::Panel));
         layout.dock = dock;
+        self.layout_zoom(layout);
     }
 
     /// Which of the board's tools is in hand.
@@ -466,6 +482,7 @@ impl Studio {
             }
             Ctl::Branch => self.branch_here(),
             Ctl::Now => self.history_now(),
+            Ctl::ZoomOut | Ctl::ZoomShown | Ctl::ZoomIn | Ctl::Fit | Ctl::Keys | Ctl::Sheet | Ctl::Scrim => self.press_zoom(ctl),
             other => self.press_style(other),
         }
         Outcome::Continue
@@ -611,6 +628,9 @@ impl Studio {
                 }
                 self.text.draw(canvas, rect.x + 30, cy - Text::line_height(12) / 2, 12, TEXT_COLOR, "Present");
             }
+            Ctl::ZoomOut | Ctl::ZoomShown | Ctl::ZoomIn | Ctl::Fit | Ctl::Keys => self.draw_zoom_control(canvas, rect, ctl, hovered),
+            // Drawn over everything, once the rest is.
+            Ctl::Sheet | Ctl::Scrim => {}
             other => self.draw_style_control(canvas, rect, other, hovered),
         }
     }

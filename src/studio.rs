@@ -2189,6 +2189,8 @@ struct Layout {
     menus: Vec<(Rect, MenuKind)>,
     /// A board's bar of styles, by what is picked out.
     board_bar: Option<Rect>,
+    /// A board's zoom, at its bottom left.
+    board_zoom: Option<Rect>,
 }
 
 /// The whole file as it was, to come back to with undo: its pages, the
@@ -2987,6 +2989,7 @@ impl Studio {
         if self.on_board() {
             self.layout_style_bar(&mut layout);
             self.layout_history(&mut layout);
+            self.layout_keys(&mut layout);
         }
         self.layout_menus(&mut layout);
         layout
@@ -3319,14 +3322,20 @@ impl Studio {
         let (x, y, w, h) = match self.on_page() {
             true => {
                 let layers = self.doc.layers.clone();
-                let boxes: Vec<(f32, f32, f32, f32)> = layers.iter().map(|layer| layer.bounds(&mut self.text)).collect();
+                let mut boxes: Vec<(f32, f32, f32, f32)> = layers.iter().map(|layer| layer.bounds(&mut self.text)).collect();
+                // On a board, its export areas too.
+                if self.on_board() {
+                    boxes.extend((0..self.frame_count()).map(|index| self.frame(index)).map(|frame| (frame.x, frame.y, frame.width as f32, frame.height as f32)));
+                }
                 let Some(all) = actions::union(&boxes) else { return };
                 all
             }
             false => (self.doc.x, self.doc.y, self.doc.width as f32, self.doc.height as f32),
         };
         let (w, h) = (w.max(1.0), h.max(1.0));
-        self.zoom = (open.w as f32 * 0.86 / w).min(open.h as f32 * 0.86 / h).clamp(MIN_ZOOM, MAX_ZOOM);
+        // A board is never blown up past its size to fit, as Excalidraw's.
+        let most = if self.on_board() { 1.0 } else { MAX_ZOOM };
+        self.zoom = (open.w as f32 * 0.86 / w).min(open.h as f32 * 0.86 / h).clamp(MIN_ZOOM, most);
         let middle = (open.x as f32 + open.w as f32 / 2.0, open.y as f32 + open.h as f32 / 2.0);
         self.pan = (middle.0 - (x + w / 2.0) * self.zoom, middle.1 - (y + h / 2.0) * self.zoom);
         self.dirty = true;
@@ -3349,7 +3358,7 @@ impl Studio {
     pub fn scrolled(&mut self, right: f32, down: f32) {
         self.end_preview();
         // With the search open, the wheel waits.
-        if self.search.is_some() || (right == 0.0 && down == 0.0) {
+        if self.search.is_some() || self.board.keys || (right == 0.0 && down == 0.0) {
             return;
         }
         self.dirty = true;
@@ -3777,6 +3786,8 @@ impl Studio {
                 self.drag = Drag::Pan { from: at_window, origin: self.pan };
                 return Outcome::Continue;
             }
+            // The board's keys open, only a click, to close them.
+            _ if self.board.keys && button != 1 => return Outcome::Continue,
             3 => return self.right_click(at_window),
             1 => {}
             _ => return Outcome::Continue,
@@ -5557,6 +5568,10 @@ impl Studio {
         if down && self.on_board() && self.present_key(key) {
             return Outcome::Continue;
         }
+        // ? opens the sheet of a board's keys, which takes them while open.
+        if down && self.on_board() && self.keys_key(key, mods) {
+            return Outcome::Continue;
+        }
         // L held on a board is a laser.
         if self.on_board() && self.laser_wants(key, mods) {
             self.laser_key(down);
@@ -6515,7 +6530,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.board_zoom].into_iter().flatten() {
             soft_shadow(canvas, place, 12);
             canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);
@@ -7121,7 +7136,7 @@ impl Studio {
             Some(Control::Tool(tool)) => TOOLS.iter().find(|(known, ..)| *known == tool).map(|(_, name, key)| format!("{name}  {key}")),
             Some(Control::FrameTool) => Some("Frame  F".to_owned()),
             Some(Control::Group(MORE)) => Some("More tools".to_owned()),
-            Some(Control::Board(board::Ctl::Tool(which))) => board::TOOLS.get(usize::from(which)).map(|(name, key)| format!("{name}  {}", key.to_ascii_uppercase())),
+            Some(Control::Board(ctl)) => self.board_tip(ctl),
             Some(Control::Action(Action::Capture)) if self.pointer.1 >= layout.dock.y => Some("Capture the screen  Ctrl+G".to_owned()),
             _ => None,
         };
@@ -7132,6 +7147,7 @@ impl Studio {
             self.text.draw(canvas, x.max(4) + 8, y + 4, px, TEXT_COLOR, &says);
         }
         self.draw_menus(canvas, layout, hover);
+        self.draw_keys(canvas, layout);
     }
 }
 
