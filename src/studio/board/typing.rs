@@ -611,15 +611,17 @@ mod tests {
         studio.pointer_moved(bottom.0, bottom.1, Mods::default());
         studio.last_press.0 = 0;
         studio.pressed(1, 100_000);
-        // Inside it, out of its middle half, which would aim it at its middle.
-        let onto = studio.to_window_page((724.0, 436.0));
+        // Just off its left dot, which it goes into.
+        let onto = studio.to_window_page((592.0, 436.0));
         studio.pointer_moved(onto.0 - 30, onto.1 - 30, Mods::default());
         studio.pointer_moved(onto.0, onto.1, Mods::default());
         studio.released();
         let joined = shape(&studio, 4);
         assert_eq!((joined.stuck[0].unwrap().0, joined.stuck[1].unwrap().0), (shape(&studio, 0).id, shape(&studio, 1).id));
-        // Its ends at the sides of each nearest the other, curving.
-        assert!(joined.points[0].0 >= 260.0 && joined.points[1].0 <= 600.5 && joined.points.len() == 3, "from {:?} to {:?}", joined.points[0], joined.points[1]);
+        // Out of the side of the first facing that dot, into the dot,
+        // curving.
+        assert_eq!(joined.stuck[1].map(|(_, u, v)| (u, v)), Some((-1.0, 0.0)));
+        assert!(joined.points[0].1 >= 172.0 && joined.points[1].0 <= 600.5 && joined.points.len() == 3, "from {:?} to {:?}", joined.points[0], joined.points[1]);
         // Dragged out onto empty board: a new box there.
         studio.pointer_moved(over.0, over.1, Mods::default());
         let left = studio.dot_spots(0)[3];

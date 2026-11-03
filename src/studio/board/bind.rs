@@ -101,8 +101,7 @@ impl Studio {
 
     /// Where on a box an end let go at a point is tied: in the middle half
     /// of it, aimed at its middle, on its outline on the way there from
-    /// the other end; well inside it, to it as a whole, at the middle of
-    /// whichever side faces the other end as they move; else at the middle of the side nearest it, where its
+    /// the other end; else at the middle of the side nearest it, where its
     /// dot is; or, on a plain box's edge well away from those, at that
     /// point of the edge. Across and down it, -1 to 1.
     pub(in crate::studio) fn port_at(&self, anchor: &shapes::Anchor, at: (f32, f32)) -> (f32, f32) {
@@ -112,9 +111,6 @@ impl Studio {
         // In the middle half of it each way, aimed at its middle.
         if dx.abs() < hw * 0.5 && dy.abs() < hh * 0.5 {
             return (shapes::WHOLE, shapes::AIMED);
-        }
-        if dx.abs() < hw * 0.6 && dy.abs() < hh * 0.6 {
-            return (shapes::WHOLE, shapes::WHOLE);
         }
         if !anchor.round && !anchor.pointed {
             let (on, clear) = (ON_EDGE / self.zoom, CLEAR / self.zoom);
@@ -522,8 +518,8 @@ mod tests {
         pull(&mut studio, (600.0, 400.0), (760.0, 472.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
-        // Into B out of its middle half, to the middle of its side facing A.
-        pull_dot(&mut studio, 0, (724.0, 136.0), Mods::default(), |_| {});
+        // Into B by its left dot, let go just off it.
+        pull_dot(&mut studio, 0, (592.0, 136.0), Mods::default(), |_| {});
         studio.commit_text();
         studio.selected.clear();
         let arrow = studio.doc.layers.len() - 1;
@@ -840,13 +836,13 @@ mod tests {
         assert!(shape(&studio, 1).frame().1 > 250.0, "B moved down");
         assert_eq!(shape(&studio, arrow).stuck[1], Some((id, shapes::WHOLE, shapes::AIMED)));
         aimed_at(&studio);
-        // Inside it but out of its middle half: as before, to the middle
-        // of the side facing the tail.
+        // Inside it but out of its middle half: as before, at the dot of
+        // the side nearest, its right.
         studio.selected.clear();
         let (x, y, w, h) = shape(&studio, 1).frame();
         let head = studio.to_window(shape(&studio, arrow).points[1]);
         drag_from(&mut studio, head, (x + w / 2.0 + w * 0.28, y + h / 2.0), Mods::default(), |_| {});
-        assert_eq!(shape(&studio, arrow).stuck[1], Some((id, shapes::WHOLE, shapes::WHOLE)));
+        assert_eq!(shape(&studio, arrow).stuck[1], Some((id, 1.0, 0.0)));
         // Ctrl held: tied to nothing, where it is let go.
         let head = studio.to_window(shape(&studio, arrow).points[1]);
         drag_from(&mut studio, head, (x + w / 2.0 + 5.0, y + h / 2.0), Mods { ctrl: true, ..Mods::default() }, |_| {});
