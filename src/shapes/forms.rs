@@ -260,13 +260,7 @@ impl Shape {
         let (closed, open) = self.form_paths();
         let half = self.stroke / 2.0;
         if self.sketched() {
-            let mut mask = Mask { bounds, alpha: vec![0; bounds.w.max(0) as usize * bounds.h.max(0) as usize] };
-            for (points, thin, strength) in self.form_strokes() {
-                for pair in points.windows(2) {
-                    stamp_weighted(&mut mask, pair[0], pair[1], thin, strength);
-                }
-            }
-            return mask;
+            return lay_inks(bounds, &self.form_strokes());
         }
         if self.filled && !self.border {
             return covered(bounds, move |px, py| {
@@ -279,44 +273,33 @@ impl Shape {
         covered(bounds, move |px, py| nearest((px, py), &lines) - half)
     }
 
-    /// The strokes a hand draws its outline with, each run of points with
-    /// half its width and how strongly it is laid down: twice round, the
-    /// corners of each a little off where they are, the second time
-    /// thinner and fainter; its corners rounded off in the Rounded look.
-    pub fn form_strokes(&self) -> Vec<(Vec<Point>, f32, f32)> {
+    /// The strokes a hand draws its outline with: each path once round in
+    /// one stroke that breathes, the corners of a few straight sides each
+    /// a little off where they are, rounded off in the Rounded look.
+    pub fn form_strokes(&self) -> Vec<Ink> {
         let (closed, open) = self.form_paths();
         let half = self.stroke / 2.0;
         let scale = self.scale.max(1e-3);
         let mut wobble = self.wobbler(0x68E3_1DA4);
-        let nudge = self.nudge(if self.rounded { 1.4 } else { 2.0 });
-        let (x, y, w, h) = self.frame();
-        let middle = (x + w / 2.0, y + h / 2.0);
+        let nudge = self.nudge(if self.rounded { 1.2 } else { 1.8 });
+        let (_, _, w, h) = self.frame();
         let mut strokes = Vec::new();
-        for pass in 0..2 {
-            let (thin, strength) = if pass == 0 { (half, 1.0) } else { ((half * 0.65).max(0.5 * scale.min(1.0)), 0.6) };
-            // A curve gone round again a little off as a whole; the
-            // corners of a few straight sides each on their own.
-            let (shift, grow) = match pass {
-                0 => ((0.0, 0.0), 1.0),
-                _ => ((wobble(nudge * 0.6), wobble(nudge * 0.6)), 1.0 + wobble(0.012)),
+        for (at, (path, shut)) in closed.iter().map(|path| (path, true)).chain(open.iter().map(|path| (path, false))).enumerate() {
+            let salt = 0x68E3_1DA4 ^ (at as u32).wrapping_mul(0x9E37_79B9);
+            let path: Vec<Point> = match shut && path.len() > 2 && path.first() == path.last() {
+                true => path[..path.len() - 1].to_vec(),
+                false => path.clone(),
             };
-            for (path, shut) in closed.iter().map(|path| (path, true)).chain(open.iter().map(|path| (path, false))) {
-                let moved: Vec<Point> = path.iter().map(|&(px, py)| (middle.0 + (px - middle.0) * grow + shift.0, middle.1 + (py - middle.1) * grow + shift.1)).collect();
-                if moved.len() > 8 {
-                    strokes.push((moved, thin, strength));
-                    continue;
-                }
-                let corners: Vec<Point> = match shut && moved.len() > 2 && moved.first() == moved.last() {
-                    true => moved[..moved.len() - 1].to_vec(),
-                    false => moved,
-                };
-                let corners: Vec<Point> = corners.into_iter().map(|(px, py)| (px + wobble(nudge), py + wobble(nudge))).collect();
-                let run = match shut && corners.len() > 2 {
-                    true => round_corners(&corners, if self.rounded { (5.0 * scale).min(w.min(h) * 0.2) } else { 0.0 }),
-                    false => corners,
-                };
-                strokes.push((run, thin, strength));
+            if path.len() > 8 {
+                strokes.push(self.ink(&path, shut, half, salt));
+                continue;
             }
+            let corners: Vec<Point> = path.into_iter().map(|(px, py)| (px + wobble(nudge), py + wobble(nudge))).collect();
+            let run = match shut && corners.len() > 2 {
+                true => round_corners(&corners, if self.rounded { (5.0 * scale).min(w.min(h) * 0.2) } else { 0.0 }),
+                false => corners,
+            };
+            strokes.push(self.ink(&run, shut, half, salt));
         }
         strokes
     }

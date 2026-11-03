@@ -7158,10 +7158,10 @@ fn soft_shadow(canvas: &mut Canvas, place: Rect, radius: i32) {
     }
 }
 fn line(canvas: &mut Canvas, from: (i32, i32), to: (i32, i32), color: u32) {
-    let steps = (to.0 - from.0).abs().max((to.1 - from.1).abs()).max(1);
+    let steps = (to.0 as i64 - from.0 as i64).abs().max((to.1 as i64 - from.1 as i64).abs()).clamp(1, 1 << 16);
     for step in 0..=steps {
-        let x = from.0 + (to.0 - from.0) * step / steps;
-        let y = from.1 + (to.1 - from.1) * step / steps;
+        let x = (from.0 as i64 + (to.0 as i64 - from.0 as i64) * step / steps) as i32;
+        let y = (from.1 as i64 + (to.1 as i64 - from.1 as i64) * step / steps) as i32;
         canvas.fill(x, y, 1, 1, color);
     }
 }

@@ -487,7 +487,7 @@ pub(in crate::studio) mod tests {
     }
 
     #[test]
-    fn a_hand_drawn_box_is_gone_round_twice_the_second_time_fainter_with_no_ticks_past_its_corners() {
+    fn a_hand_drawn_box_is_gone_round_once_in_a_stroke_that_breathes_and_overlaps_where_it_began() {
         let mut studio = board();
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
@@ -496,15 +496,46 @@ pub(in crate::studio) mod tests {
             let mut box_ = shape(&studio, 0);
             box_.rounded = rounded;
             let strokes = box_.sketch_strokes();
-            assert_eq!(strokes.len(), 2, "two passes, each one closed run");
-            assert!(strokes[0].2 > strokes[1].2 && strokes[0].1 > strokes[1].1, "the second thinner and fainter");
+            assert_eq!(strokes.len(), 1, "one stroke, round once");
+            let ink = &strokes[0];
             // Nowhere more than a few pixels off the box: no tick marks
             // past its corners.
-            for (points, ..) in &strokes {
-                assert!(points.iter().all(|&(x, y)| (97.0..=263.0).contains(&x) && (97.0..=175.0).contains(&y)));
-                assert_eq!(points.first(), points.last(), "closed");
-            }
+            assert!(ink.points.iter().all(|&(x, y)| (96.0..=264.0).contains(&x) && (96.0..=176.0).contains(&y)));
+            // Its width swells and thins, and it eases on and off the paper
+            // where it begins and ends, which are near each other.
+            let (thin, thick) = ink.halves.iter().fold((f32::MAX, 0.0f32), |(a, b), &h| (a.min(h), b.max(h)));
+            let middle = ink.halves[ink.halves.len() / 2];
+            assert!(thick > thin * 1.2, "{thin}..{thick}");
+            assert!(ink.halves[0] < middle * 0.8 && ink.halves[ink.halves.len() - 1] < middle * 0.8, "eased at the join");
+            let (first, last) = (ink.points[0], ink.points[ink.points.len() - 1]);
+            // Near the end it comes back by where it began, and goes on
+            // a little past it.
+            let far = |p: (f32, f32)| (p.0 - first.0).hypot(p.1 - first.1);
+            let back = (ink.points.len() * 4 / 5..ink.points.len()).find(|&at| far(ink.points[at]) < 4.0);
+            assert!(back.is_some_and(|at| at < ink.points.len() - 2), "on a little past where it began");
+            assert!((2.0..20.0).contains(&far(last)));
         }
+    }
+
+    #[test]
+    fn a_dotted_line_drawn_by_hand_is_a_row_of_dots_all_along_it() {
+        let mut studio = board();
+        // A dotted edge of a Mermaid flowchart, as "A -.-> B" brings.
+        assert!(studio.bring_mermaid("flowchart LR\n  A -.-> B"));
+        let line = (0..studio.doc.layers.len()).filter_map(|at| match &studio.doc.layers[at].kind {
+            Kind::Shape(shape) if shape.dotted || shape.dashed => Some(shape.clone()),
+            _ => None,
+        }).next().expect("a dotted edge");
+        assert!(line.sketch);
+        let along = (line.points[line.points.len() - 1].0 - line.points[0].0).hypot(line.points[line.points.len() - 1].1 - line.points[0].1);
+        let dots = line.sketch_strokes().into_iter().filter(|ink| ink.points.len() == 2 && ink.points[0] == ink.points[1]).count();
+        let every = line.stroke * 2.0 + 4.0 * line.scale;
+        if line.dotted {
+            assert!(dots as f32 >= along / every * 0.7, "{dots} dots over {along} px");
+        }
+        // However it is drawn, there is ink all along it, not only its head.
+        let inked: f32 = line.sketch_strokes().iter().map(|ink| ink.points.len() as f32).sum();
+        assert!(inked >= along / every * 0.7, "{inked} points of ink over {along} px");
     }
 
     /// A board of every kind of shape, with a Mermaid flowchart, written

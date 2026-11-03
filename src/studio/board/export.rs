@@ -162,6 +162,19 @@ impl Studio {
         // A stroke, laid down as strongly as it is drawn.
         let stroke = |points: &[(f32, f32)], width: f32, strength: f32| format!("  <path d=\"{}\" fill=\"none\" stroke=\"{ink}\" stroke-width=\"{width:.2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" opacity=\"{:.2}\"/>\n", path_of(points, false), opacity * strength);
         let line = |points: &[(f32, f32)], width: f32| stroke(points, width, 1.0);
+        // Strokes drawn by hand: each the edge of its ink, filled, in one
+        // group seen through as one, so that where they cross they are no
+        // darker.
+        let inks = |inks: Vec<shapes::Ink>| -> String {
+            let mut group = format!("  <g fill=\"{ink}\" opacity=\"{opacity:.2}\">\n");
+            for one in &inks {
+                group += &format!("    <path d=\"{}\"/>\n", path_of(&one.outline(), true));
+                if one.filled && one.points.len() > 2 {
+                    group += &format!("    <path d=\"{}\"/>\n", path_of(&one.points, true));
+                }
+            }
+            group + "  </g>\n"
+        };
         let (x, y, w, h) = shape.frame();
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
@@ -181,9 +194,7 @@ impl Studio {
                 if shape.border || shape.placeholder() {
                     if shape.sketch && !shape.placeholder() {
                         let strokes = if forms { shape.form_strokes() } else { shape.sketch_strokes() };
-                        for (points, half, strength) in strokes {
-                            out += &stroke(&points, half * 2.0, strength);
-                        }
+                        out += &inks(strokes);
                     } else {
                         let dash = if shape.placeholder() || shape.dashed { " stroke-dasharray=\"8 6\"" } else { "" };
                         let common = format!("fill=\"none\" stroke=\"{ink}\" stroke-width=\"{:.2}\"{dash} opacity=\"{opacity:.2}\"", shape.stroke);
@@ -207,9 +218,7 @@ impl Studio {
             }
             Tool::Line | Tool::Arrow => {
                 if shape.sketch {
-                    for (points, half, strength) in shape.sketch_strokes() {
-                        out += &stroke(&points, half * 2.0, strength);
-                    }
+                    out += &inks(shape.sketch_strokes());
                 } else {
                     // Its way, dashed as it is, and its heads.
                     let dash = if shape.dashed { " stroke-dasharray=\"8 6\"" } else if shape.dotted { " stroke-dasharray=\"1 5\"" } else { "" };
@@ -274,7 +283,7 @@ mod tests {
         let svg = studio.board_svg(&layers, part);
         assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
         assert!(svg.contains("Cache &amp; DB") && svg.contains("Disk") && svg.contains("Architects Daughter"));
-        assert!(svg.matches("<path").count() > 8, "drawn by hand, stroke by stroke");
+        assert!(svg.contains("<g fill=") && svg.matches("<path").count() > 4, "drawn by hand, stroke by stroke");
         // Read back by the same parser a dropped SVG is.
         assert!(roxmltree::Document::parse(&svg).is_ok());
         // What is picked out alone.

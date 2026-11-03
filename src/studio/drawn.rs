@@ -296,6 +296,7 @@ mod tests {
             alpha => canvas::mix(paper, color & 0xFF_FFFF, alpha + (alpha >> 7)),
         };
         let off: Vec<(i32, i32, u32, u32)> = kept.iter().zip(&whole).enumerate().filter(|(_, (a, b))| [0, 8, 16].iter().any(|shift| ((shown(**a) >> shift & 0xFF) as i32 - (shown(**b) >> shift & 0xFF) as i32).abs() > 2)).map(|(at, (a, b))| (part.x + at as i32 % part.w, part.y + at as i32 / part.w, *a, *b)).collect();
+        if let Some(first) = off.first() { for (i, layer) in studio.doc.layers.iter().enumerate() { if let Kind::Shape(s) = &layer.kind { let r = reach(layer, zoom, &mut studio.text); eprintln!("L{i} {:?} id{} zoom{zoom} scale{} pts{:?} reach{:?} hit{}", s.tool, s.id, s.scale, s.points, r, r.contains(first.0, first.1)); } } }
         assert!(off.is_empty(), "{} pixels differ in {part:?}: {:x?}", off.len(), &off[..off.len().min(8)]);
     }
 
