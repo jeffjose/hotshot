@@ -89,8 +89,9 @@ impl Studio {
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return None };
         shape.stuck[end] = spot;
         shape.routed = true;
-        // A bend is the route's between two boxes, and goes with it.
-        let sided = |stuck: Option<(u32, f32, f32)>| stuck.is_some_and(|(_, u, v)| u == shapes::WHOLE || shapes::port_of(u, v).is_some());
+        // A bend is the route's between two boxes, and goes with it; an
+        // end aimed at a middle goes straight.
+        let sided = |stuck: Option<(u32, f32, f32)>| stuck.is_some_and(|(_, u, v)| (u == shapes::WHOLE && v != shapes::AIMED) || shapes::port_of(u, v).is_some());
         if !(sided(shape.stuck[0]) && sided(shape.stuck[1])) && shape.points.len() > 2 {
             shape.points.truncate(2);
             shape.touch();
@@ -98,15 +99,20 @@ impl Studio {
         target
     }
 
-    /// Where on a box an end let go at a point is tied: well inside it, to
-    /// it as a whole, at the middle of whichever side faces the other end
-    /// as they move; else at the middle of the side nearest it, where its
+    /// Where on a box an end let go at a point is tied: in the middle half
+    /// of it, aimed at its middle, on its outline on the way there from
+    /// the other end; well inside it, to it as a whole, at the middle of
+    /// whichever side faces the other end as they move; else at the middle of the side nearest it, where its
     /// dot is; or, on a plain box's edge well away from those, at that
     /// point of the edge. Across and down it, -1 to 1.
     pub(in crate::studio) fn port_at(&self, anchor: &shapes::Anchor, at: (f32, f32)) -> (f32, f32) {
         let (lx, ly) = shapes::turn_point(at, anchor.middle, -anchor.angle);
         let (hw, hh) = (anchor.half.0.max(1.0), anchor.half.1.max(1.0));
         let (dx, dy) = (lx - anchor.middle.0, ly - anchor.middle.1);
+        // In the middle half of it each way, aimed at its middle.
+        if dx.abs() < hw * 0.5 && dy.abs() < hh * 0.5 {
+            return (shapes::WHOLE, shapes::AIMED);
+        }
         if dx.abs() < hw * 0.6 && dy.abs() < hh * 0.6 {
             return (shapes::WHOLE, shapes::WHOLE);
         }
@@ -516,7 +522,8 @@ mod tests {
         pull(&mut studio, (600.0, 400.0), (760.0, 472.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
-        pull_dot(&mut studio, 0, (680.0, 136.0), Mods::default(), |_| {});
+        // Into B out of its middle half, to the middle of its side facing A.
+        pull_dot(&mut studio, 0, (724.0, 136.0), Mods::default(), |_| {});
         studio.commit_text();
         studio.selected.clear();
         let arrow = studio.doc.layers.len() - 1;
@@ -791,6 +798,59 @@ mod tests {
         drag_from(&mut studio, head, (b.0 - 14.0, b.1 + 6.0), Mods::default(), |_| {});
         assert_eq!(shape(&studio, arrow).stuck[1].map(|(_, u, v)| (u, v)), Some((-1.0, 0.0)));
         assert_eq!(shape(&studio, arrow).points[1], left);
+    }
+
+    #[test]
+    fn an_end_let_go_near_a_boxs_middle_is_aimed_at_it_on_its_outline_and_follows_it() {
+        let mut studio = two_boxes();
+        press_key(&mut studio, Key::Char('a'), Mods::default());
+        pull(&mut studio, (420.0, 300.0), (440.0, 320.0), Mods { ctrl: true, ..Mods::default() });
+        let arrow = studio.doc.layers.len() - 1;
+        studio.selected.clear();
+        let id = shape(&studio, 1).id;
+        // On the outline, on the way from the tail to the box's middle.
+        let aimed_at = |studio: &Studio| {
+            let (x, y, w, h) = shape(studio, 1).frame();
+            let (tail, head) = (shape(studio, arrow).points[0], shape(studio, arrow).points[1]);
+            let middle = (x + w / 2.0, y + h / 2.0);
+            let off_line = ((head.0 - tail.0) * (middle.1 - tail.1) - (head.1 - tail.1) * (middle.0 - tail.0)).abs() / (middle.0 - tail.0).hypot(middle.1 - tail.1);
+            let on_outline = ((head.0 - x).abs().min((head.0 - x - w).abs()) < 0.5 && (y..=y + h).contains(&head.1)) || ((head.1 - y).abs().min((head.1 - y - h).abs()) < 0.5 && (x..=x + w).contains(&head.0));
+            assert!(off_line < 0.5, "on the way to its middle, {off_line} off");
+            assert!(on_outline, "on its outline, at {head:?}");
+            assert_eq!(shape(studio, arrow).points.len(), 2, "straight");
+        };
+        // Let go a little off B's middle, within the middle half of it.
+        let head = studio.to_window(shape(&studio, arrow).points[1]);
+        drag_from(&mut studio, head, (660.0, 145.0), Mods::default(), |studio| assert_eq!(studio.board.bind, Some(1)));
+        assert_eq!(shape(&studio, arrow).stuck[1], Some((id, shapes::WHOLE, shapes::AIMED)));
+        aimed_at(&studio);
+        let (b, head) = (shape(&studio, 1).frame(), shape(&studio, arrow).points[1]);
+        assert!((head.1 - b.1 - b.3).abs() < 0.5 && head.0 > b.0 + 10.0, "into its bottom, short of its left side: {head:?}");
+        // Kept so in a file.
+        let kept = Shape::read(&shape(&studio, arrow).write()).unwrap();
+        assert_eq!(kept.stuck[1], Some((id, shapes::WHOLE, shapes::AIMED)));
+        // B moved: the end goes with it, still aimed at its middle.
+        let middle = studio.to_window_page((740.0, 120.0));
+        studio.selected = vec![1];
+        studio.pointer_moved(middle.0, middle.1, Mods::default());
+        studio.pressed(1, 300_000);
+        studio.pointer_moved(middle.0 + 40, middle.1 + 100, Mods::default());
+        studio.pointer_moved(middle.0 + 80, middle.1 + 200, Mods::default());
+        studio.released();
+        assert!(shape(&studio, 1).frame().1 > 250.0, "B moved down");
+        assert_eq!(shape(&studio, arrow).stuck[1], Some((id, shapes::WHOLE, shapes::AIMED)));
+        aimed_at(&studio);
+        // Inside it but out of its middle half: as before, to the middle
+        // of the side facing the tail.
+        studio.selected.clear();
+        let (x, y, w, h) = shape(&studio, 1).frame();
+        let head = studio.to_window(shape(&studio, arrow).points[1]);
+        drag_from(&mut studio, head, (x + w / 2.0 + w * 0.28, y + h / 2.0), Mods::default(), |_| {});
+        assert_eq!(shape(&studio, arrow).stuck[1], Some((id, shapes::WHOLE, shapes::WHOLE)));
+        // Ctrl held: tied to nothing, where it is let go.
+        let head = studio.to_window(shape(&studio, arrow).points[1]);
+        drag_from(&mut studio, head, (x + w / 2.0 + 5.0, y + h / 2.0), Mods { ctrl: true, ..Mods::default() }, |_| {});
+        assert_eq!(shape(&studio, arrow).stuck[1], None);
     }
 
     #[test]

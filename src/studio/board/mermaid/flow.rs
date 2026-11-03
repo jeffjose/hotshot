@@ -47,13 +47,15 @@ pub(in crate::studio) struct Edge {
 }
 
 /// A box of boxes: what it is called, its title, what is in it by name,
-/// boxes and boxes of boxes, and the way it goes if its own.
+/// boxes and boxes of boxes, the way it goes if its own, and the color
+/// of its edge if it is given one.
 #[derive(Clone, Debug, Default)]
 pub(in crate::studio) struct Group {
     pub name: String,
     pub title: String,
     pub members: Vec<String>,
     pub dir: Option<Dir>,
+    pub stroke: Option<u32>,
 }
 
 /// A diagram of boxes and arrows, read: its boxes in order, its arrows,
@@ -217,6 +219,7 @@ fn named_shape(name: &str) -> Form {
         "trap-t" | "inv-trapezoid" | "manual" | "trapezoid-top" => Form::TrapezoidDown,
         "odd" | "flag" | "paper-tape" => Form::Flag,
         "doc" | "document" | "notch-rect" | "card" => Form::Note,
+        "text" => Form::Text,
         _ => Form::Box,
     }
 }
@@ -751,9 +754,53 @@ fn way_out(from: Point, to: Point, group: (f32, f32, f32, f32), dir: Dir, frames
 /// side, and between ranks.
 pub(super) const GAPS: Gaps = Gaps { node: 44.0, rank: 64.0 };
 
+/// The colors a flowchart's boxes are told apart by, each a pale fill and
+/// a line of the same hue, the board's own: purple, blue, green, red and
+/// orange.
+const APART: [(u32, u32); 5] = [SERIES[4], SERIES[0], SERIES[2], SERIES[3], SERIES[1]];
+
+/// Each box of a flowchart given a color, a pale fill and a line of the
+/// same hue, unless a class or a style gave it one of its own, or it is
+/// words alone, which keep the board's ink. With subgraphs, all in one
+/// the same color, a color for each, its edge in it, and those in none
+/// one more; with none, one color after another down the boxes as they
+/// are written, passing over one a box it is joined to already has.
+fn color_apart(graph: &mut Graph) {
+    let own = |node: &Node| node.fill.is_some() || node.stroke.is_some() || node.form == Form::Text;
+    let mut picked: Vec<Option<usize>> = vec![None; graph.nodes.len()];
+    if graph.groups.is_empty() {
+        let mut next = 0;
+        for at in 0..graph.nodes.len() {
+            if own(&graph.nodes[at]) {
+                continue;
+            }
+            let name = &graph.nodes[at].name;
+            let taken: Vec<usize> = graph.edges.iter().filter_map(|edge| if &edge.from == name { Some(&edge.to) } else if &edge.to == name { Some(&edge.from) } else { None }).filter_map(|other| graph.nodes.iter().position(|node| &node.name == other)).filter_map(|other| picked[other]).collect();
+            let color = (0..APART.len()).map(|step| (next + step) % APART.len()).find(|color| !taken.contains(color)).unwrap_or(next % APART.len());
+            picked[at] = Some(color);
+            next = color + 1;
+        }
+    } else {
+        for (at, group) in graph.groups.iter_mut().enumerate() {
+            group.stroke = Some(APART[at % APART.len()].1);
+        }
+        for (node, color) in graph.nodes.iter().zip(&mut picked) {
+            if !own(node) {
+                *color = Some(graph.group_of(&node.name).unwrap_or(graph.groups.len()) % APART.len());
+            }
+        }
+    }
+    for (node, color) in graph.nodes.iter_mut().zip(picked) {
+        if let Some(color) = color {
+            (node.fill, node.stroke) = (Some(APART[color].0), Some(APART[color].1));
+        }
+    }
+}
+
 impl Studio {
     pub(super) fn build_flow(&mut self, text: &str, origin: Point) {
-        let graph = read_flow(text);
+        let mut graph = read_flow(text);
+        color_apart(&mut graph);
         let title = front_title(text);
         self.build_graph(&graph, origin, title.as_deref(), GAPS);
     }
@@ -820,6 +867,9 @@ impl Studio {
             self.frame_to(index, (x, y, w, h));
             if let Some(shape) = self.shape_mut(index) {
                 (shape.titled, shape.heading, shape.filled) = (true, true, false);
+                if let Some(stroke) = graph.groups[group].stroke {
+                    shape.color = stroke;
+                }
             }
             let layer = self.doc.layers.remove(index);
             self.doc.layers.insert(start + made, layer);
@@ -1040,5 +1090,34 @@ mod tests {
         assert_words_fit(&mut studio);
         assert_labels_clear(&mut studio);
         assert_hugs(&mut studio, 60.0);
+    }
+
+    #[test]
+    fn a_flowchart_s_boxes_are_colored_apart_by_subgraph_or_one_after_another() {
+        let color_of = |studio: &Studio, words: &str| shapes_of(studio).into_iter().find(|shape| shape.text == words).map(|shape| (shape.fill, shape.color)).unwrap();
+        // No subgraphs: one after another, none the color of a box it is
+        // joined to, each fill and line one of the board's pairs; words
+        // alone in ink, and a style's own fill kept.
+        let mut studio = board();
+        assert!(studio.bring_mermaid("flowchart LR\n  A[Pen] --> B[Editor] --> C[Display list] --> D[Metal]\n  A --> C\n  N@{ shape: text, label: \"Just words\" }\n  S[Styled] --> A\n  style S fill:#f96\n"));
+        let colors: Vec<(u32, u32)> = ["Pen", "Editor", "Display list", "Metal"].iter().map(|words| color_of(&studio, words)).collect();
+        assert_eq!(colors, APART[..4]);
+        let words = shapes_of(&studio).into_iter().find(|shape| shape.text == "Just words").unwrap();
+        assert_eq!((words.color, words.filled, words.border), (INK, false, false));
+        assert_eq!(color_of(&studio, "Styled"), (board_fill(0xFF9966), INK));
+        // A box joined to the two before it passes over both their colors.
+        let mut graph = read_flow("flowchart LR\n  A --> B\n  C --> D\n  E --> A\n  E --> B\n");
+        color_apart(&mut graph);
+        let fill = |name: &str| graph.nodes.iter().find(|node| node.name == name).unwrap().fill;
+        assert!(fill("E") != fill("A") && fill("E") != fill("B"));
+        // Subgraphs: a color each, their edges in it, those in none another.
+        let mut studio = board();
+        assert!(studio.bring_mermaid("flowchart LR\n  subgraph one [One]\n    A[a1] --> B[b1]\n  end\n  subgraph two [Two]\n    C[c2]\n  end\n  B --> C --> D[loose]\n"));
+        assert_eq!(color_of(&studio, "a1"), color_of(&studio, "b1"));
+        assert_eq!(color_of(&studio, "a1"), APART[0]);
+        assert_eq!(color_of(&studio, "c2"), APART[1]);
+        assert_eq!(color_of(&studio, "loose"), APART[2]);
+        assert_eq!(color_of(&studio, "One").1, APART[0].1);
+        assert_eq!(color_of(&studio, "Two").1, APART[1].1);
     }
 }

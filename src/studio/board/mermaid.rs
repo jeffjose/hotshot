@@ -42,6 +42,8 @@ pub(in crate::studio) enum Form {
     Note,
     Actor,
     Table,
+    /// Words alone, with no edge and nothing behind them.
+    Text,
     /// A state diagram's start, a dot; its end, a dot in a ring; and the
     /// bar a fork or a join is.
     Start,
@@ -221,6 +223,7 @@ impl Studio {
             Form::Round => shape.radius = 16.0,
             Form::Double => shape.form = shapes::FORM_DOUBLE,
             Form::Actor => shape.filled = false,
+            Form::Text => (shape.filled, shape.border) = (false, false),
             Form::Start | Form::Bar => (shape.filled, shape.fill, shape.border) = (true, INK, false),
             Form::End => (shape.form, shape.filled, shape.fill) = (shapes::FORM_DOUBLE, true, INK),
             _ => {}
