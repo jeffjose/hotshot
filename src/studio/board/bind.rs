@@ -1235,4 +1235,95 @@ mod tests {
         studio.undo();
         assert_eq!(shape(&studio, 2).stuck[1].map(|s| s.0), Some(id), "undo ties it again");
     }
+
+    /// A box drawn on a board from one corner to another, the pointer in
+    /// hand again after it.
+    fn draw_box(studio: &mut Studio, from: (f32, f32), to: (f32, f32)) -> usize {
+        press_key(studio, Key::Char('r'), Mods::default());
+        pull(studio, from, to, Mods::default());
+        press_key(studio, Key::Escape, Mods::default());
+        press_key(studio, Key::Escape, Mods::default());
+        studio.doc.layers.len() - 1
+    }
+
+    /// The arrows picked out made to go round corners, from the panel.
+    fn elbowed(studio: &mut Studio, arrows: Vec<usize>) {
+        studio.selected = arrows;
+        studio.layout();
+        let at = studio.control_rect(Control::Board(Ctl::Route(2))).expect("offered").center();
+        click(studio, at);
+        studio.selected.clear();
+    }
+
+    /// The points an arrow goes by, from its first end to its last.
+    fn stops(arrow: &Shape) -> Vec<(f32, f32)> {
+        let mut stops = vec![arrow.points[0]];
+        stops.extend_from_slice(&arrow.points[2..]);
+        stops.push(arrow.points[1]);
+        stops
+    }
+
+    /// Whether any stretch of a way goes inside a box.
+    fn goes_into(stops: &[(f32, f32)], (x, y, w, h): (f32, f32, f32, f32)) -> bool {
+        stops.windows(2).any(|pair| {
+            let (a, b) = (pair[0], pair[1]);
+            a.0.max(b.0) > x && a.0.min(b.0) < x + w && a.1.max(b.1) > y && a.1.min(b.1) < y + h
+        })
+    }
+
+    /// Whether a point is on the edge of a box.
+    fn on_edge((px, py): (f32, f32), (x, y, w, h): (f32, f32, f32, f32)) -> bool {
+        let inside = px >= x - 0.5 && px <= x + w + 0.5 && py >= y - 0.5 && py <= y + h + 0.5;
+        inside && ((px - x).abs() < 0.5 || (px - x - w).abs() < 0.5 || (py - y).abs() < 0.5 || (py - y - h).abs() < 0.5)
+    }
+
+    /// An elbow from one box to another, as a diagram's connector goes:
+    /// each stretch level or upright, each turn square, from an edge of
+    /// the one to an edge of the other, round every other box.
+    fn assert_routed(studio: &Studio, arrow: usize, from: usize, to: usize) -> Vec<(f32, f32)> {
+        let shape = shape(studio, arrow);
+        let stops = stops(&shape);
+        assert!(shape.elbow, "an elbow");
+        for (index, pair) in stops.windows(2).enumerate() {
+            let (level, upright) = ((pair[0].1 - pair[1].1).abs() < 0.01, (pair[0].0 - pair[1].0).abs() < 0.01);
+            assert!(level != upright, "stretch {index} level or upright, and some length: {stops:?}");
+        }
+        for (index, three) in stops.windows(3).enumerate() {
+            let (a, b) = ((three[1].0 - three[0].0, three[1].1 - three[0].1), (three[2].0 - three[1].0, three[2].1 - three[1].1));
+            assert!((a.0 * b.0 + a.1 * b.1).abs() < 0.01, "turn {index} square: {stops:?}");
+        }
+        assert!(on_edge(stops[0], studio.box_frame(from)) && on_edge(stops[stops.len() - 1], studio.box_frame(to)), "from edge to edge: {stops:?}");
+        for index in (0..studio.doc.layers.len()).filter(|&index| studio.is_node(index)) {
+            assert!(!goes_into(&stops, studio.box_frame(index)), "clear of box {index} {:?}: {stops:?}", studio.box_frame(index));
+        }
+        stops
+    }
+
+    /// CUJ: two boxes with a taller one between them, an arrow pulled from
+    /// the first into the last and made to go round corners: it goes
+    /// round the one between, turning only square; and goes round it again
+    /// as the boxes move.
+    #[test]
+    fn an_elbow_between_two_boxes_goes_round_one_between_them_and_again_as_they_move() {
+        let mut studio = two_boxes();
+        draw_box(&mut studio, (380.0, 60.0), (480.0, 212.0));
+        pull_dot(&mut studio, 0, (680.0, 136.0), Mods::default(), |_| {});
+        studio.commit_text();
+        let arrow = studio.doc.layers.len() - 1;
+        elbowed(&mut studio, vec![arrow]);
+        let first = assert_routed(&studio, arrow, 0, 1);
+        assert!(first.len() >= 4, "round the box between, not through it: {first:?}");
+        // B taken well below: a way of its own to B where it is now.
+        pull(&mut studio, (700.0, 110.0), (700.0, 410.0), Mods::default());
+        let lower = assert_routed(&studio, arrow, 0, 1);
+        assert_ne!(lower, first, "routed again");
+        // A box drawn in that way, and A moved a little: round that too.
+        studio.selected.clear();
+        let (x, y) = lower[1];
+        draw_box(&mut studio, (x - 50.0, y - 120.0), (x + 50.0, y - 60.0));
+        studio.selected.clear();
+        pull(&mut studio, (200.0, 150.0), (200.0, 160.0), Mods::default());
+        let round = assert_routed(&studio, arrow, 0, 1);
+        assert_ne!(round[1..round.len() - 1], lower[1..lower.len() - 1], "out of the way of the box drawn: {round:?}");
+    }
 }

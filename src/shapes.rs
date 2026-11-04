@@ -359,6 +359,7 @@ pub const FORM_WEDGE: u8 = 17;
 pub const FORM_FACE: u8 = 18;
 const FORM_LAST: u8 = FORM_FACE;
 
+mod elbows;
 mod forms;
 pub use forms::PAPER;
 
@@ -957,6 +958,9 @@ impl Shape {
             last.unwrap_or(a)
         };
         let backs = curve.map_or([b, a], |curve| [back(&mut curve.into_iter()), back(&mut curve.into_iter().rev())]);
+        // An elbow routed round things points its heads along the stretch
+        // into each end, however short, not round the turn before it.
+        let backs = self.elbow_ways().map_or(backs, |[first, last]| [(a.0 - first.0 * head.0, a.1 - first.1 * head.0), (b.0 - last.0 * head.0, b.1 - last.1 * head.0)]);
         let (x, y, w, h) = self.frame();
         let angle = if matches!(self.tool, Tool::Rect | Tool::Ellipse) { self.angle } else { 0.0 };
         // With a border as well as a fill, the outline is the border's:
@@ -1009,6 +1013,73 @@ impl Shape {
         points
     }
 
+    /// The points an elbow routed round what is in its way turns at, from
+    /// its first end to its last, those ends with them: where it has any,
+    /// and each stretch between them is level or upright. None for an
+    /// elbow that turns once, at the corner its two ends make.
+    fn elbow_stops(&self) -> Option<Vec<Point>> {
+        if !self.elbow || self.points.len() <= 2 {
+            return None;
+        }
+        let mut stops = vec![self.points[0]];
+        stops.extend_from_slice(&self.points[2..]);
+        stops.push(self.points[1]);
+        let square = stops.windows(2).all(|pair| (pair[0].0 - pair[1].0).abs() < 0.05 || (pair[0].1 - pair[1].1).abs() < 0.05);
+        square.then_some(stops)
+    }
+
+    /// The way into each end of an elbow routed round things: along its
+    /// first stretch and its last, square to the side it meets, which its
+    /// heads point.
+    fn elbow_ways(&self) -> Option<[(f32, f32); 2]> {
+        let stops = self.elbow_stops()?;
+        let way = |tip: Point, from: Point| {
+            let long = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
+            ((tip.0 - from.0) / long, (tip.1 - from.1) / long)
+        };
+        Some([way(stops[0], stops[1]), way(stops[stops.len() - 1], stops[stops.len() - 2])])
+    }
+
+    /// An elbow through the points it turns at, as the short straight
+    /// lines it is drawn as: straight between them and round each turn,
+    /// as round as fifteen pixels at its own size, or half the shorter
+    /// stretch either side where that is less. None with too many turns to
+    /// draw each round.
+    fn elbow_curve(&self, stops: &[Point]) -> Option<[Point; BENDS + 1]> {
+        let turns = stops.len().saturating_sub(2);
+        // As many points round each turn as there is room for, up to eight.
+        let round = (BENDS - 1).checked_div(turns).map_or(0, |each| each.saturating_sub(1));
+        if turns > 0 && round < 2 {
+            return None;
+        }
+        let round = round.min(8);
+        let radius = 15.0 * self.scale.max(1e-3);
+        let mut points = vec![stops[0]];
+        for at in 1..stops.len() - 1 {
+            let (before, corner, after) = (stops[at - 1], stops[at], stops[at + 1]);
+            let (back, on) = (distance(before, corner), distance(corner, after));
+            let r = radius.min(back / 2.0).min(on / 2.0);
+            let unit = |to: Point, long: f32| ((to.0 - corner.0) / long.max(1e-3), (to.1 - corner.1) / long.max(1e-3));
+            let (u, w) = (unit(before, back), unit(after, on));
+            // A quarter circle from a radius back along the way in to a
+            // radius on along the way out, about the point a radius from
+            // each.
+            let middle = (corner.0 + (u.0 + w.0) * r, corner.1 + (u.1 + w.1) * r);
+            for step in 0..=round {
+                let (sin, cos) = (std::f32::consts::FRAC_PI_2 * step as f32 / round as f32).sin_cos();
+                points.push((middle.0 - w.0 * r * cos - u.0 * r * sin, middle.1 - w.1 * r * cos - u.1 * r * sin));
+            }
+        }
+        points.push(stops[stops.len() - 1]);
+        // The rest of the points it is drawn by halving its longest pieces.
+        while points.len() < BENDS + 1 {
+            let longest = (0..points.len() - 1).max_by(|&i, &j| distance(points[i], points[i + 1]).total_cmp(&distance(points[j], points[j + 1])))?;
+            let (a, b) = (points[longest], points[longest + 1]);
+            points.insert(longest + 1, ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0));
+        }
+        points.try_into().ok()
+    }
+
     pub fn middle(&self) -> Point {
         let (a, b) = (self.points[0], self.points[1]);
         // An elbow's is half way along it, on its corner or by it, rather
@@ -1046,7 +1117,7 @@ impl Shape {
     /// more points to go by than one, smoothly through each in turn.
     fn curve(&self) -> Option<[Point; BENDS + 1]> {
         if self.elbow && matches!(self.tool, Tool::Line | Tool::Arrow) && self.points.len() >= 2 {
-            return Some(self.elbow_path());
+            return Some(self.elbow_stops().and_then(|stops| self.elbow_curve(&stops)).unwrap_or_else(|| self.elbow_path()));
         }
         // Asked of every shape, which may have but one point: a pen's
         // as it is begun. Only a line or an arrow that bends has one.
@@ -1356,12 +1427,97 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                 this |= shape.points != before;
             }
         }
+        // An elbow between two things goes square out of a side of one,
+        // round what is in its way, and square into a side of the other.
+        if shape.elbow && !shape.routed {
+            let before = shape.points.clone();
+            route_elbow(shape, anchors, None);
+            this |= shape.points != before;
+        }
         if this {
             moved = true;
             shape.touch();
         }
     }
     moved
+}
+
+/// How far an elbow goes straight out of a side before it turns, and how
+/// far it keeps from what it goes round, at its own size.
+const ELBOW_STUB: f32 = 16.0;
+
+/// The left, top, right and bottom of what holds a thing, turned or not.
+fn block_of(anchor: &Anchor) -> elbows::Block {
+    let (sin, cos) = anchor.angle.sin_cos();
+    let (hw, hh) = (anchor.half.0 * cos.abs() + anchor.half.1 * sin.abs(), anchor.half.0 * sin.abs() + anchor.half.1 * cos.abs());
+    [anchor.middle.0 - hw, anchor.middle.1 - hh, anchor.middle.0 + hw, anchor.middle.1 + hh]
+}
+
+/// An elbow with both ends stuck to two things, each as a whole, aimed at
+/// its middle, or at the middle of a side, routed from a side of one to a side of the other, a
+/// stretch at a time level or upright, round the rest of the things it
+/// could be stuck to: out of and into the sides given, with where on each,
+/// or else whichever make the fewest turns. Its turns kept as the points
+/// after its ends. Gives the sides it goes from and into; none where it
+/// cannot be routed so, which with no sides given turns it once again, at
+/// the corner its ends make.
+fn route_elbow(shape: &mut Shape, anchors: &[Anchor], given: Option<[(usize, Point); 2]>) -> Option<[usize; 2]> {
+    let find = |id: u32| anchors.iter().find(|anchor| anchor.id == id);
+    let way = (|| {
+        let (first, last) = (shape.stuck[0]?, shape.stuck[1]?);
+        let (from, to) = (find(first.0)?, find(last.0)?);
+        // Square to sides that are themselves square to the board.
+        if first.0 == last.0 || from.angle != 0.0 || to.angle != 0.0 {
+            return None;
+        }
+        // One aimed at the middle of a thing comes into whichever side
+        // suits, as one stuck to it as a whole does.
+        let sides = |(_, u, v): (u32, f32, f32), anchor: &Anchor| -> Option<Vec<(Point, usize)>> {
+            let sides = match u == WHOLE {
+                true => vec![0, 1, 2, 3],
+                false => vec![port_of(u, v)?],
+            };
+            Some(sides.into_iter().map(|side| (side_point(anchor, side).0, side)).collect())
+        };
+        let (starts, goals) = match given {
+            Some([(a, at), (b, to)]) => (vec![(at, a)], vec![(to, b)]),
+            None => (sides(first, from)?, sides(last, to)?),
+        };
+        // Round everything else, but what overlaps either end's own thing,
+        // as a lane they are both in does.
+        let (a, b) = (block_of(from), block_of(to));
+        let overlaps = |r: &elbows::Block, o: &elbows::Block| r[0] < o[2] && r[2] > o[0] && r[1] < o[3] && r[3] > o[1];
+        let mut blocks = vec![a, b];
+        blocks.extend(anchors.iter().filter(|anchor| anchor.id != first.0 && anchor.id != last.0).map(block_of).filter(|r| !overlaps(r, &a) && !overlaps(r, &b)));
+        let stub = ELBOW_STUB * shape.scale.max(1e-3);
+        // Round what is near the two first, which is quick and most often
+        // enough; then, where that way runs into something farther off,
+        // round everything; and where nothing gets past the rest, through
+        // them, round only the two.
+        let grow = 5.0 * stub;
+        let room = [a[0].min(b[0]) - grow, a[1].min(b[1]) - grow, a[2].max(b[2]) + grow, a[3].max(b[3]) + grow];
+        let near: Vec<elbows::Block> = blocks.iter().enumerate().filter(|&(index, r)| index < 2 || overlaps(r, &room)).map(|(_, &r)| r).collect();
+        let clear = |path: &[Point]| path.windows(2).all(|pair| elbows::clear(pair[0], pair[1], &blocks[2..]));
+        let (start, goal, path) = elbows::orthogonal(&starts, &goals, &near, stub)
+            .filter(|(.., path)| near.len() == blocks.len() || clear(path))
+            .or_else(|| elbows::orthogonal(&starts, &goals, &blocks, stub).filter(|_| near.len() < blocks.len()))
+            .or_else(|| elbows::orthogonal(&starts, &goals, &blocks[..2], stub))?;
+        Some(([starts[start].1, goals[goal].1], path))
+    })();
+    match way {
+        Some((sides, path)) => {
+            let last = path.len() - 1;
+            shape.points = vec![path[0], path[last]];
+            shape.points.extend_from_slice(&path[1..last]);
+            Some(sides)
+        }
+        None => {
+            if given.is_none() {
+                shape.points.truncate(2);
+            }
+            None
+        }
+    }
 }
 
 /// Where on a thing an arrow to or from another meets it: the middle of
@@ -2060,7 +2216,7 @@ impl Shape {
                         }
                     }
                     let length = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
-                    let way = ((tip.0 - from.0) / length, (tip.1 - from.1) / length);
+                    let way = self.elbow_ways().map_or(((tip.0 - from.0) / length, (tip.1 - from.1) / length), |ways| ways[end]);
                     let (dx, dy) = way;
                     if style == FILLED_HEAD {
                         // A filled head, notched a little at its back, as
@@ -2520,7 +2676,8 @@ impl Shape {
                 continue;
             }
             let length = (tip.0 - from.0).hypot(tip.1 - from.1).max(1e-3);
-            let (lines, cut) = head_strokes(self.ends[end], tip, ((tip.0 - from.0) / length, (tip.1 - from.1) / length), head, wide);
+            let way = self.elbow_ways().map_or(((tip.0 - from.0) / length, (tip.1 - from.1) / length), |ways| ways[end]);
+            let (lines, cut) = head_strokes(self.ends[end], tip, way, head, wide);
             heads.extend(lines);
             if cut > 0.0 {
                 path = cut_end(path, end, cut);
@@ -3425,6 +3582,45 @@ mod tests {
         arrow.touch();
         let pixels = drawn(&arrow, 200, 80);
         assert!(pixels[40 * 200 + 20] != 0 && pixels[40 * 200 + 28] == 0, "a ring is hollow");
+    }
+
+    #[test]
+    fn an_elbow_routed_round_things_is_drawn_through_each_turn_rounded_its_head_along_its_last_stretch() {
+        // Across, down, across and back up a little into its end.
+        let mut arrow = Shape::new(Tool::Arrow, 0xFFFFFF, 4.0, (20.0, 40.0));
+        arrow.points[1] = (200.0, 120.0);
+        arrow.points.extend([(120.0, 40.0), (120.0, 160.0), (200.0, 160.0)]);
+        arrow.elbow = true;
+        let stops = [(20.0, 40.0), (120.0, 40.0), (120.0, 160.0), (200.0, 160.0), (200.0, 120.0)];
+        let off = |p: Point| stops.windows(2).map(|pair| segment(p, pair[0], pair[1])).fold(f32::MAX, f32::min);
+        let pixels = drawn(&arrow, 240, 200);
+        // Along each stretch, and not the way a single turn would go.
+        for (x, y) in [(70, 40), (120, 100), (160, 160)] {
+            assert!(pixels[y * 240 + x] != 0, "on its way at {x}, {y}");
+        }
+        assert!(pixels[40 * 240 + 170] == 0 && pixels[80 * 240 + 200] == 0, "not across and down once");
+        // Each turn rounded: off the very corner, on the curve in from it.
+        assert!(pixels[40 * 240 + 120] == 0 && pixels[160 * 240 + 120] == 0, "corners rounded");
+        let curve = arrow.path();
+        assert!(curve.iter().all(|&p| off(p) < 4.5), "close by its stretches");
+        assert!(curve.iter().any(|&p| (p.0 - 120.0).abs() > 1.0 && (p.1 - 40.0).abs() > 1.0 && off(p) > 2.0 && distance(p, (120.0, 40.0)) < 15.0), "round the turn");
+        // The head points up its last stretch, short as it is: square about it.
+        let head: Vec<Point> = arrow.line_strokes()[1..].concat();
+        let (left, right) = head.iter().fold((f32::MAX, f32::MIN), |(l, r), p| (l.min(p.0), r.max(p.0)));
+        assert!(head.iter().all(|p| p.1 >= 119.5) && ((right - 200.0) - (200.0 - left)).abs() < 0.5, "head along the last stretch: {head:?}");
+        // Drawn by hand, the same way.
+        arrow.sketch = true;
+        arrow.touch();
+        let inks = arrow.sketch_strokes();
+        let (left, right) = inks[0].points.iter().fold((f32::MAX, f32::MIN), |(l, r), p| (l.min(p.0), r.max(p.0)));
+        assert!(inks[0].points.iter().all(|p| p.1 >= 119.0) && ((right - 200.0) - (200.0 - left)).abs() < 0.5, "a hand's head up the last stretch: {:?}", inks[0].points);
+        let line = inks.last().unwrap();
+        // As near as the round of a turn is, and a hand wanders off it.
+        assert!(line.points.iter().all(|&p| off(p) < 7.0), "ink along its stretches");
+        assert!(line.points.iter().any(|&p| (p.1 - 160.0).abs() < 3.0 && (p.0 - 160.0).abs() < 3.0), "ink along the bottom");
+        // What it covers holds all of it.
+        let extent = arrow.extent();
+        assert!(stops.iter().all(|&(x, y)| extent.contains(x as i32, y as i32)), "{extent:?}");
     }
 
     #[test]
