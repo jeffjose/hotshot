@@ -552,14 +552,30 @@ impl Studio {
 /// the pieces show no knots.
 fn trail_masks(trail: &[((i32, i32), Instant, u32)], now: Instant, clip: Rect) -> Option<(Mask, Mask)> {
     let mut pieces: Vec<((f32, f32), (f32, f32), f32)> = Vec::new();
-    for (at, &(point, when, stroke)) in trail.iter().enumerate() {
-        let fade = |when: Instant| 1.0 - now.duration_since(when).as_secs_f32() / TRAIL;
-        let to_f = |(x, y): (i32, i32)| (x as f32 + 0.5, y as f32 + 0.5);
-        match trail.get(at + 1) {
-            Some(&(next, later, same)) if same == stroke => pieces.push((to_f(point), to_f(next), fade(later))),
-            _ if at > 0 && trail[at - 1].2 == stroke => {}
-            _ => pieces.push((to_f(point), to_f(point), fade(when))),
+    let fade = |when: Instant| 1.0 - now.duration_since(when).as_secs_f32() / TRAIL;
+    let to_f = |(x, y): (i32, i32)| (x as f32 + 0.5, y as f32 + 0.5);
+    // Each stroke smooth through the points the pointer went by, as a pen
+    // draws it, rather than straight from one to the next, which shows
+    // corners where it was moved fast; each bit of it faded as the point
+    // nearest it.
+    let mut start = 0;
+    while start < trail.len() {
+        let stroke = trail[start].2;
+        let end = trail[start..].iter().position(|piece| piece.2 != stroke).map_or(trail.len(), |far| start + far);
+        let points: Vec<(f32, f32)> = trail[start..end].iter().map(|piece| to_f(piece.0)).collect();
+        let fades: Vec<f32> = trail[start..end].iter().map(|piece| fade(piece.1)).collect();
+        match points.len() {
+            1 => pieces.push((points[0], points[0], fades[0])),
+            _ => {
+                let smooth = shapes::smooth_through(&points, 1.5);
+                let last = smooth.len().saturating_sub(1).max(1) as f32;
+                for (at, pair) in smooth.windows(2).enumerate() {
+                    let near = ((at as f32 + 1.0) / last * (fades.len() - 1) as f32).round() as usize;
+                    pieces.push((pair[0], pair[1], fades[near.min(fades.len() - 1)]));
+                }
+            }
         }
+        start = end;
     }
     pieces.retain(|piece| piece.2 > 0.0);
     let reach = LASER_HALF + LASER_GLOW + 1.0;
@@ -753,6 +769,25 @@ mod tests {
         assert_eq!(studio.board_tool(), SELECT);
     }
 
+
+    #[test]
+    fn a_laser_trail_curves_through_the_points_the_pointer_went_by_rather_than_cornering() {
+        let now = Instant::now();
+        // Eight points round a circle: the trail goes round it, not along
+        // the straight lines between them.
+        let (cx, cy, r) = (200.0f32, 200.0f32, 60.0f32);
+        let trail: Vec<((i32, i32), Instant, u32)> = (0..=8).map(|at| {
+            let angle = std::f32::consts::TAU * at as f32 / 8.0;
+            (((cx + r * angle.cos()).round() as i32, (cy + r * angle.sin()).round() as i32), now, 1)
+        }).collect();
+        let (core, _) = trail_masks(&trail, now, Rect::new(0, 0, 400, 400)).expect("a trail");
+        let at = |x: f32, y: f32| core.alpha[((y as i32 - core.bounds.y) * core.bounds.w + (x as i32 - core.bounds.x)) as usize];
+        for step in 1..7 {
+            let angle = std::f32::consts::TAU * (step as f32 + 0.5) / 8.0;
+            let on_arc = at(cx + r * angle.cos(), cy + r * angle.sin());
+            assert!(on_arc > 100, "between points {step} and {}: {on_arc}", step + 1);
+        }
+    }
     #[test]
     fn two_strokes_of_the_laser_are_not_joined_and_a_click_is_a_dot() {
         let mut studio = board();

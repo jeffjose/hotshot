@@ -124,6 +124,18 @@ impl Studio {
         heading(layout, &mut y, "Line");
         row(layout, &mut y, &[Ctl::Dash(0), Ctl::Dash(1), Ctl::Dash(2)], ROW);
         y += SPLIT;
+        // An arrow picked out: its heads, and the way it goes.
+        let arrows = styled.iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow)));
+        if arrows {
+            for (end, says) in [(0u8, "Start"), (1, "End")] {
+                heading(layout, &mut y, says);
+                row(layout, &mut y, &(0..HEAD_CHOICES.len() as u8).map(|at| Ctl::Head(end, at)).collect::<Vec<_>>(), ROW);
+                y += SPLIT;
+            }
+            heading(layout, &mut y, "Route");
+            row(layout, &mut y, &[Ctl::Route(0), Ctl::Route(1), Ctl::Route(2)], ROW);
+            y += SPLIT;
+        }
         heading(layout, &mut y, "Size");
         row(layout, &mut y, &[Ctl::Size(0), Ctl::Size(1), Ctl::Size(2), Ctl::Size(3)], ROW);
         y += SPLIT;
@@ -390,6 +402,43 @@ impl Studio {
                     };
                 }
             }
+            // A head, drawn on the end of a short arrow, lit as the first
+            // arrow picked out has it.
+            Ctl::Head(end, at) => {
+                let first = self.bar_styled().into_iter().find_map(|index| match &self.doc.layers[index].kind {
+                    Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => Some(shape.clone()),
+                    _ => None,
+                });
+                let now = first.map(|shape| if shape.heads[usize::from(end)] { Some(shape.ends[usize::from(end)]) } else { None });
+                choice(canvas, now == Some(HEAD_CHOICES[usize::from(at)]));
+                let (left, right) = ((rect.x + 6) as f32, (rect.right() - 6) as f32);
+                let mut sample = Shape::new(Tool::Arrow, TEXT_COLOR, 1.5, if end == 0 { (right, cy as f32) } else { (left, cy as f32) });
+                sample.points[1] = if end == 0 { (left, cy as f32) } else { (right, cy as f32) };
+                sample.heads = [false, HEAD_CHOICES[usize::from(at)].is_some()];
+                sample.ends = [shapes::FILLED_HEAD, HEAD_CHOICES[usize::from(at)].unwrap_or(shapes::FILLED_HEAD)];
+                sample.draw(canvas, &mut self.text);
+            }
+            // The way it goes: curved, straight, round a corner.
+            Ctl::Route(kind) => {
+                let first = self.bar_styled().into_iter().find_map(|index| match &self.doc.layers[index].kind {
+                    Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => Some(shape.clone()),
+                    _ => None,
+                });
+                let now = first.map(|shape| if shape.elbow { 2 } else if shape.routed || shape.points.len() > 2 { 0 } else { 1 });
+                choice(canvas, now == Some(kind));
+                let (a, b) = (((rect.x + 8) as f32, (rect.bottom() - 7) as f32), ((rect.right() - 8) as f32, (rect.y + 7) as f32));
+                let path: Vec<(f32, f32)> = match kind {
+                    0 => (0..=12).map(|step| {
+                        let t = step as f32 / 12.0;
+                        let pull = (a.0, b.1);
+                        let s = 1.0 - t;
+                        (s * s * a.0 + 2.0 * s * t * pull.0 + t * t * b.0, s * s * a.1 + 2.0 * s * t * pull.1 + t * t * b.1)
+                    }).collect(),
+                    1 => vec![a, b],
+                    _ => vec![a, (a.0, b.1), b],
+                };
+                board::halo(canvas, &path, 0.9, TEXT_COLOR, 256);
+            }
             // S M L XL.
             Ctl::Size(at) => {
                 // Lit when its line and its words are in the proportion of
@@ -551,6 +600,36 @@ impl Studio {
                     }
                 });
                 self.say(["No fill", "Filled with the paper", "Filled with a tint", "Hatched"][usize::from(kind)]);
+            }
+            // A head at an end of the arrows picked out, or none.
+            Ctl::Head(end, at) => {
+                let choice = HEAD_CHOICES[usize::from(at)];
+                self.restyle_shapes(|shape| {
+                    if matches!(shape.tool, Tool::Line | Tool::Arrow) {
+                        shape.heads[usize::from(end)] = choice.is_some();
+                        if let Some(kind) = choice {
+                            shape.ends[usize::from(end)] = kind;
+                        }
+                        shape.touch();
+                    }
+                });
+                self.say(match choice {
+                    None => "No head".to_owned(),
+                    Some(kind) => format!("{} head", shapes::HEADS[usize::from(kind)]),
+                });
+            }
+            // The way the arrows picked out go: curved between what they
+            // join, as a board routes them; straight; or round a corner.
+            Ctl::Route(kind) => {
+                self.restyle_shapes(|shape| {
+                    if matches!(shape.tool, Tool::Line | Tool::Arrow) {
+                        shape.points.truncate(2);
+                        (shape.routed, shape.elbow) = (kind == 0, kind == 2);
+                        shape.touch();
+                    }
+                });
+                self.follow();
+                self.say(["Curved", "Straight", "Round a corner"][usize::from(kind)]);
             }
             // A line whole, dashed or dotted.
             Ctl::Dash(kind) => {

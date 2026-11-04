@@ -32,6 +32,9 @@ pub(super) const SWATCHES: [(u32, u32); 10] = [
 pub(super) const SWATCH_NAMES: [&str; 10] = ["Black", "Gray", "Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Violet", "Pink"];
 /// The four sizes, S M L XL: how wide a line is and how large its words.
 pub(super) const SIZES: [(f32, u32); 4] = [(1.5, 13), (2.0, 16), (3.5, 22), (6.0, 32)];
+/// The heads an arrow on a board can have at either end, as its panel
+/// offers them: none, open, filled, a dot, a diamond, a bar.
+pub(super) const HEAD_CHOICES: [Option<u8>; 6] = [None, Some(shapes::OPEN_HEAD), Some(shapes::FILLED_HEAD), Some(shapes::DOT_HEAD), Some(shapes::DIAMOND_HEAD), Some(shapes::BAR_HEAD)];
 pub(super) const FILLS: [u32; 5] = [0xFFF3BF, 0xD3F9D8, 0xD0EBFF, 0xFFE3E3, 0xE5DBFF];
 #[cfg(test)]
 const DOTS: u32 = 0xD8D6CF;
@@ -82,6 +85,10 @@ pub(super) enum Ctl {
     FillKind(u8),
     Dash(u8),
     Size(u8),
+    /// A selected arrow's head at its start (0) or its end (1), one of
+    /// `HEAD_CHOICES`; and the way it goes: curved, straight or elbowed.
+    Head(u8, u8),
+    Route(u8),
     Look,
     /// The font its words are in, a list of the faces, apart from the look.
     Font,

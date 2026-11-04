@@ -426,6 +426,38 @@ mod tests {
             assert!(arrow.points[1].0 > arrow.points[0].0, "{down}: pointing right: {:?}", arrow.points);
         }
     }
+
+    #[test]
+    fn an_arrow_picked_out_has_its_heads_and_its_way_set_from_the_panel() {
+        let (mut studio, arrow) = joined();
+        // Only with an arrow picked out are its heads offered.
+        studio.selected = vec![0];
+        studio.layout();
+        assert!(studio.control_rect(Control::Board(Ctl::Head(1, 0))).is_none());
+        studio.selected = vec![arrow];
+        studio.layout();
+        let press = |studio: &mut Studio, ctl: Ctl| {
+            let at = studio.control_rect(Control::Board(ctl)).expect("offered").center();
+            click(studio, at);
+        };
+        // No head at its end, a dot at its start.
+        press(&mut studio, Ctl::Head(1, 0));
+        press(&mut studio, Ctl::Head(0, 3));
+        let headed = shape(&studio, arrow);
+        assert_eq!((headed.heads, headed.ends[0]), ([true, false], shapes::DOT_HEAD));
+        // Round a corner; straight; curved again.
+        press(&mut studio, Ctl::Route(2));
+        assert!(shape(&studio, arrow).elbow);
+        press(&mut studio, Ctl::Route(1));
+        let straight = shape(&studio, arrow);
+        assert!(!straight.elbow && !straight.routed && straight.points.len() == 2);
+        press(&mut studio, Ctl::Route(0));
+        assert!(shape(&studio, arrow).routed);
+        // Each a step to undo.
+        studio.undo();
+        assert!(!shape(&studio, arrow).routed);
+    }
+
     #[test]
     fn an_arrow_pulled_from_a_dot_back_into_its_own_box_loops_round_to_another_side() {
         let mut studio = two_boxes();
