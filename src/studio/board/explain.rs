@@ -166,9 +166,10 @@ impl Studio {
             numbered.sort_by_key(|(number, ..)| *number);
             steps = numbered.into_iter().map(|(_, says, frame)| (says, frame)).collect();
         }
-        if steps.is_empty() {
-            return self.say("Number some parts of the board, or frame them, to present them");
-        }
+        // All of the board first, then its parts, if it has any.
+        let boxes: Vec<(f32, f32, f32, f32)> = self.doc.layers.iter().filter(|layer| !layer.hidden).map(|layer| layer.bounds(&mut self.text)).collect();
+        let Some(whole) = actions::union(&boxes) else { return self.say("Nothing on the board to present") };
+        steps.insert(0, ("The board".to_owned(), whole));
         self.commit_text();
         self.board.ghost = None;
         self.selected.clear();
@@ -192,6 +193,13 @@ impl Studio {
         self.pan = (wide / 2.0 - (x + w / 2.0) * self.zoom, high / 2.0 - (y + h / 2.0) * self.zoom);
         self.shown_page.clear();
         self.dirty = true;
+    }
+
+    /// The part presented fitted to the window again, as it is resized.
+    pub(in crate::studio) fn refit_present(&mut self) {
+        if let Some(at) = self.board.present.as_ref().map(|present| present.at) {
+            self.present_step(at);
+        }
     }
 
     /// A key while presenting: the next part, the one before, or out.
@@ -674,19 +682,36 @@ mod tests {
         let present = studio.control_rect(Control::Board(Ctl::Present)).unwrap().center();
         click(&mut studio, present);
         let steps: Vec<String> = studio.board.present.as_ref().unwrap().steps.iter().map(|(says, _)| says.clone()).collect();
-        assert_eq!(steps, ["1 \u{b7} Today", "2 \u{b7} With Acme", "3 \u{b7} Pricing"]);
+        assert_eq!(steps, ["The board", "1 \u{b7} Today", "2 \u{b7} With Acme", "3 \u{b7} Pricing"]);
+        // All of the board first; then the first part, zoomed to, the rest dimmed.
+        press_key(&mut studio, Key::Char(' '), Mods::default());
         assert!(studio.layout().controls.is_empty() && !studio.shows_left(), "nothing but the board");
-        // Zoomed to the first, the rest dimmed.
         let middle = studio.to_window_page((200.0, 150.0));
         assert!((middle.0 - studio.width / 2).abs() <= 2 && studio.zoom > 2.0);
         press_key(&mut studio, Key::Char(' '), Mods::default());
-        assert_eq!(studio.board.present.as_ref().unwrap().at, 1);
+        assert_eq!(studio.board.present.as_ref().unwrap().at, 2);
         press_key(&mut studio, Key::Left, Mods::default());
-        assert_eq!(studio.board.present.as_ref().unwrap().at, 0);
+        assert_eq!(studio.board.present.as_ref().unwrap().at, 1);
         press_key(&mut studio, Key::Escape, Mods::default());
         assert!(studio.board.present.is_none() && (studio.zoom, studio.pan) == view);
     }
 
+
+    #[test]
+    fn present_on_a_board_of_no_parts_shows_all_of_it_at_once() {
+        let mut studio = board();
+        put(&mut studio, (100.0, 100.0, 200.0, 100.0), "API", 0);
+        put(&mut studio, (900.0, 600.0, 200.0, 100.0), "Database", 0);
+        let present = studio.control_rect(Control::Board(Ctl::Present)).unwrap().center();
+        click(&mut studio, present);
+        let present = studio.board.present.as_ref().expect("presenting, not waiting to be told the parts");
+        assert_eq!(present.steps.len(), 1);
+        // Both boxes in the window.
+        for at in [(100.0, 100.0), (1100.0, 700.0)] {
+            let seen = studio.to_window_page(at);
+            assert!(seen.0 >= 0 && seen.0 <= studio.width && seen.1 >= 0 && seen.1 <= studio.height, "{at:?} at {seen:?}");
+        }
+    }
     #[test]
     fn l_held_is_a_laser_that_fades_and_a_tap_of_it_the_line_tool() {
         let mut studio = board();

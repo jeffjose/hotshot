@@ -2603,6 +2603,9 @@ impl Studio {
             let after = self.layout().view;
             self.pan = (self.pan.0 + (after.w - before.w) as f32 / 2.0, self.pan.1 + (after.h - before.h) as f32 / 2.0);
             self.dirty = true;
+            // Presented: the part shown fitted to the window again, as it
+            // goes to all of the screen.
+            self.refit_present();
         }
     }
 
@@ -7407,6 +7410,8 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
     let (mut size, mut title, mut cursor) = ((width, height), String::new(), None::<crate::editor::Cursor>);
     let mut time = 0u32;
     let mut saved = std::time::Instant::now();
+    // Whether the window was last asked to be all of the screen.
+    let mut fullscreen = false;
     // What came while a frame was being drawn sharp, still to be heard.
     let mut held: Vec<Event> = Vec::new();
     loop {
@@ -7741,6 +7746,16 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
             studio.keep_view_when_still();
         } else if outcome == Outcome::Quit {
             break;
+        }
+        // All of the screen while a board is presented, and back after:
+        // asked of whoever manages the windows.
+        let full = matches!(&screen, Shown::Studio(studio) if studio.presenting());
+        if full != fullscreen {
+            fullscreen = full;
+            let (state, wanted) = (atom("_NET_WM_STATE")?, atom("_NET_WM_STATE_FULLSCREEN")?);
+            let asked = ClientMessageEvent::new(32, window, state, [u32::from(full), wanted, 0, 1, 0]);
+            conn.send_event(false, display.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, asked)?;
+            conn.flush()?;
         }
         let (now, wanted, dirty) = match &mut screen {
             Shown::Home(home) => (home.title(), home.cursor(), home.take_dirty()),
