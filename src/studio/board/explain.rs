@@ -228,7 +228,9 @@ impl Studio {
         let (says, (x, y, w, h)) = present.steps[present.at].clone();
         let (a, b) = (self.to_window_page((x - 16.0, y - 16.0)), self.to_window_page((x + w + 16.0, y + h + 16.0)));
         let lit = Rect::new(a.0, a.1, b.0 - a.0, b.1 - a.1);
-        for band in [Rect::new(view.x, view.y, view.w, (lit.y - view.y).max(0)), Rect::new(view.x, lit.bottom(), view.w, (view.bottom() - lit.bottom()).max(0)), Rect::new(view.x, lit.y, (lit.x - view.x).max(0), lit.h), Rect::new(lit.right(), lit.y, (view.right() - lit.right()).max(0), lit.h)] {
+        // Around a part, the rest dimmed; all of the board, nothing.
+        let bands = if present.at == 0 { Vec::new() } else { vec![Rect::new(view.x, view.y, view.w, (lit.y - view.y).max(0)), Rect::new(view.x, lit.bottom(), view.w, (view.bottom() - lit.bottom()).max(0)), Rect::new(view.x, lit.y, (lit.x - view.x).max(0), lit.h), Rect::new(lit.right(), lit.y, (view.right() - lit.right()).max(0), lit.h)] };
+        for band in bands {
             let band = band.intersect(view);
             if !band.is_empty() {
                 canvas.round_fill(band.x, band.y, band.w, band.h, 0, 0x1E1E1E, 150);
@@ -711,6 +713,11 @@ mod tests {
             let seen = studio.to_window_page(at);
             assert!(seen.0 >= 0 && seen.0 <= studio.width && seen.1 >= 0 && seen.1 <= studio.height, "{at:?} at {seen:?}");
         }
+        // Nothing dimmed: the paper right to the window's corners.
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let paper = studio.paper().0;
+        assert_eq!(out[(20 * studio.width + 20) as usize] & 0xFF_FFFF, paper);
     }
     #[test]
     fn l_held_is_a_laser_that_fades_and_a_tap_of_it_the_line_tool() {
