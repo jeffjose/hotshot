@@ -869,7 +869,7 @@ impl Shape {
     /// The rectangle its outline is worked out over.
     fn extent(&self) -> Rect {
         let margin = match self.tool {
-            Tool::Arrow | Tool::Line if self.heads != [false, false] => self.head().0 + self.stroke + self.halo_width() + if self.sketch { 6.0 * self.scale.max(1e-3) } else { 0.0 },
+            Tool::Arrow | Tool::Line if self.heads != [false, false] => (if self.sketch { self.head().0.max(self.sketch_head(f32::MAX)) } else { self.head().0 }) + self.stroke + self.halo_width() + if self.sketch { 6.0 * self.scale.max(1e-3) } else { 0.0 },
             Tool::Arrow | Tool::Line => self.stroke / 2.0 + self.halo_width() + if self.sketch { 6.0 * self.scale.max(1e-3) } else { 0.0 },
             Tool::Rect | Tool::Ellipse if self.sketch => self.stroke + 6.0 * self.scale.max(1e-3) + 2.0,
             Tool::Rect | Tool::Ellipse if self.edge == OUTSIDE => self.stroke,
@@ -903,6 +903,15 @@ impl Shape {
     }
 
     /// The length of an arrow's head and half its width.
+    /// How long a hand-drawn arrow's head is along a line so long: five of
+    /// its line's widths and twelve pixels more at its own size, and never
+    /// less than fourteen pixels as it is drawn, so that zoomed far out it
+    /// still reads; no more than a little of a short line.
+    fn sketch_head(&self, along: f32) -> f32 {
+        let scale = self.scale.max(1e-3);
+        (self.stroke * 5.0 + 12.0 * scale).max(14.0).min((along * 0.45).max(self.stroke)).max(1.0)
+    }
+
     fn head(&self) -> (f32, f32) {
         let (a, b) = (self.points[0], self.points[1]);
         // No longer than most of the line; or with a head at each end,
@@ -1986,10 +1995,8 @@ impl Shape {
                     // The way it comes in to the tip: from a point a head's
                     // length back along it.
                     let chevron = matches!(style, FILLED_HEAD | OPEN_HEAD);
-                    // Four line widths and some pixels more, at its own size, so
-                    // that it is as large to the eye at any zoom; no more than a
-                    // little of a short line.
-                    let long = if chevron { (self.stroke * 4.0 + 11.0 * scale).min((along * 0.4).max(self.stroke)).max(1.0) } else { self.head().0 };
+                    // As long as `sketch_head` says, larger with a heavier line.
+                    let long = if chevron { self.sketch_head(along) } else { self.head().0 };
                     let tip = if end == 1 { path[path.len() - 1] } else { path[0] };
                     let mut from = tip;
                     let mut gone = 0.0;
