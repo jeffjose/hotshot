@@ -341,8 +341,11 @@ impl Studio {
             // the ground shows them.
             Ctl::Color(at) => {
                 let (line, tint) = SWATCHES[usize::from(at)];
-                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, look::shade(tint, ground), 256);
-                canvas.disc(cx, cy, 6, look::shade(line, ground), 256);
+                // As the board draws them: FigJam's in the Diagram look.
+                let diagram = self.pages[self.page].look == look::DIAGRAM;
+                let seen = |color: u32| if diagram { look::figjam(color) } else { color };
+                canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, look::shade(seen(tint), ground), 256);
+                canvas.disc(cx, cy, 6, look::shade(seen(line), ground), 256);
                 ring(canvas, stroke == line);
                 if self.board.coloring {
                     let key = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"][usize::from(at)];
@@ -465,7 +468,7 @@ impl Studio {
                 // How the board draws its shapes and lines: rounded,
                 // sketchy or clean, said plainly, as it has nothing to do
                 // with the font.
-                let says = look::LOOKS[usize::from(self.pages[self.page].look.min(2))];
+                let says = look::LOOKS[usize::from(self.pages[self.page].look.min(look::DIAGRAM))];
                 let _ = sketch;
                 self.text.draw(canvas, rect.x + 7, cy - Text::line_height(12) / 2, 12, TEXT_COLOR, says);
                 self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);

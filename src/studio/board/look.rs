@@ -9,14 +9,90 @@
 use super::*;
 
 /// The looks, and the grounds, by what each is called.
-pub(in crate::studio) const LOOKS: [&str; 3] = ["Rounded", "Sketchy", "Clean"];
+pub(in crate::studio) const LOOKS: [&str; 4] = ["Rounded", "Sketchy", "Clean", "Diagram"];
+/// The look drawn as a diagram tool draws, FigJam's way: by where it is
+/// among `LOOKS`.
+pub(in crate::studio) const DIAGRAM: u8 = 3;
+/// The light ground under the Diagram look: flat gray, no dots.
+pub(in crate::studio) const DIAGRAM_PAPER: u32 = 0xF5F5F5;
+
+/// Which of some layers are sections in the Diagram look: boxes with
+/// another box, an oval, a picture or words wholly inside them. By where
+/// each is among the layers.
+pub(in crate::studio) fn sections(layers: &[Layer]) -> Vec<bool> {
+    let frames: Vec<Option<(f32, f32, f32, f32)>> = layers.iter().map(|layer| match &layer.kind {
+        Kind::Shape(shape) if !layer.hidden && matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Text) => Some(shape.frame()),
+        Kind::Picture(picture) if !layer.hidden => {
+            let corners = picture.corners();
+            let (left, top) = (corners.iter().map(|c| c.0).fold(f32::MAX, f32::min), corners.iter().map(|c| c.1).fold(f32::MAX, f32::min));
+            let (right, bottom) = (corners.iter().map(|c| c.0).fold(f32::MIN, f32::max), corners.iter().map(|c| c.1).fold(f32::MIN, f32::max));
+            Some((left, top, right - left, bottom - top))
+        }
+        _ => None,
+    }).collect();
+    layers.iter().enumerate().map(|(index, layer)| {
+        let Kind::Shape(shape) = &layer.kind else { return false };
+        if shape.tool != Tool::Rect || shape.form != shapes::FORM_BOX || layer.hidden {
+            return false;
+        }
+        let (x, y, w, h) = shape.frame();
+        frames.iter().enumerate().any(|(other, frame)| {
+            other != index && frame.is_some_and(|(fx, fy, fw, fh)| fx >= x && fy >= y && fx + fw <= x + w && fy + fh <= y + h && fw * fh < w * h)
+        })
+    }).collect()
+}
+
+/// The board's colors as the Diagram look has them, FigJam's: each line
+/// color and each tint the board picks by name, and Mermaid's, given the
+/// one FigJam draws in its place; any other as it is.
+pub(in crate::studio) fn figjam(color: u32) -> u32 {
+    const AS: [(u32, u32); 24] = [
+        // Lines.
+        (0xE03131, 0xCA3A31),
+        (0xF08C00, 0xD9622B),
+        (0xE8590C, 0xD9622B),
+        (0xF59F00, 0xCC7C2E),
+        (0x2F9E44, 0x4CA154),
+        (0x0C8599, 0x0E9F9F),
+        (0x1971C2, 0x3662E3),
+        (0x7048E8, 0x743EE4),
+        (0xC2255C, 0xC7317A),
+        (0x868E96, 0x757575),
+        // Tints.
+        (0xFFE3E3, 0xFCF2F2),
+        (0xFFE8CC, 0xFEF7EE),
+        (0xFFF3BF, 0xFCF3CC),
+        (0xD3F9D8, 0xEFFDF6),
+        (0xC5F6FA, 0xEDFBFB),
+        (0xD0EBFF, 0xEBF2FE),
+        (0xE5DBFF, 0xF5F3FE),
+        (0xFFDEEB, 0xFDF0F6),
+        (0xF1F3F5, 0xF5F5F5),
+        (0xE9ECEF, 0xF0F0F0),
+        // Mermaid's own.
+        (0x74C0FC, 0x3662E3),
+        (0xB197FC, 0x743EE4),
+        (0x8CE99A, 0x4CA154),
+        (0xFFA8A8, 0xCA3A31),
+    ];
+    AS.iter().find(|(from, _)| *from == color & 0xFF_FFFF).map_or(color, |(_, to)| *to)
+}
+
+/// A board's paper and its dots, by its look and its ground: the Diagram
+/// look's light ground a flat gray with no dots, as FigJam's canvas is.
+pub(in crate::studio) fn paper_of(look: u8, ground: u8) -> (u32, u32) {
+    match (look, ground) {
+        (DIAGRAM, 0) => (DIAGRAM_PAPER, DIAGRAM_PAPER),
+        _ => PAPERS[usize::from(ground.min(2))],
+    }
+}
 pub(in crate::studio) const GROUNDS: [&str; 3] = ["Light", "Dark gray", "Black"];
 
 /// A small box drawn in a look on a ground, as its list shows it: its
 /// width, height and pixels.
 pub(in crate::studio) fn look_sample(look: u8, ground: u8, text: &mut Text) -> (i32, i32, Vec<u32>) {
     let mut sheet = Doc::new(46, 24);
-    sheet.background = Fill::Color(PAPERS[usize::from(ground.min(2))].0);
+    sheet.background = Fill::Color(paper_of(look, ground).0);
     let mut shape = Shape::new(Tool::Rect, INK, LINE, (6.0, 4.0));
     shape.points[1] = (40.0, 20.0);
     // Called the same each time, to wobble the same.
@@ -103,7 +179,7 @@ pub(in crate::studio) fn last_look() -> (u8, u8, usize) {
     }
     let kept = crate::output::state_file("board-look").and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
     let mut words = kept.split_whitespace().filter_map(|word| word.parse::<usize>().ok());
-    let (look, ground) = (words.next().unwrap_or(0).min(2) as u8, words.next().unwrap_or(0).min(2) as u8);
+    let (look, ground) = (words.next().unwrap_or(0).min(usize::from(DIAGRAM)) as u8, words.next().unwrap_or(0).min(2) as u8);
     (look, ground, words.next().map_or(implied_font(look), |font| font.min(FACES.len() - 1)))
 }
 
@@ -151,13 +227,47 @@ pub(in crate::studio) fn dress(shape: &mut Shape, look: u8, ground: u8, times: f
                 }
             }
         }
+        // Diagram: as FigJam draws, a strong edge 2.5 pixels wide round a
+        // pale tint of it, corners rounded a little, words near black in
+        // the board's font; its lines gray with open heads; the board's
+        // colors FigJam's own.
+        DIAGRAM => {
+            let by = shape.scale.max(1e-3);
+            shape.sketch = false;
+            shape.rounded = false;
+            shape.stroke = (shape.stroke * 1.25).max(1.0);
+            shape.color = figjam(shape.color);
+            shape.fill = figjam(shape.fill);
+            if boxy {
+                shape.radius = 6.0 * by * (shape.stroke / (2.5 * by)).clamp(0.5, 2.0);
+                shape.corners = None;
+                shape.words = 0x1E1E1E;
+            }
+            // A box holding others: a section, white with a faint edge, square.
+            if shape.section && shape.tool == Tool::Rect {
+                (shape.filled, shape.fill, shape.border, shape.hatch) = (true, 0xFFFFFF, true, false);
+                (shape.color, shape.stroke, shape.radius, shape.dashed, shape.dotted) = (0xE4E4E4, by, 0.0, false, false);
+                shape.words = 0x1A1A1A;
+            }
+            if matches!(shape.tool, Tool::Arrow | Tool::Line) {
+                if shape.color == INK {
+                    shape.color = 0x757575;
+                }
+                for end in 0..2 {
+                    if shape.ends[end] == shapes::FILLED_HEAD {
+                        shape.ends[end] = shapes::OPEN_HEAD;
+                    }
+                }
+                shape.words = 0x1E1E1E;
+            }
+        }
         _ => {}
     }
     if ground > 0 {
         shape.color = shade(shape.color, ground);
         shape.fill = shade(shape.fill, ground);
         // Black kept a hair off nought, which says the light paper.
-        shape.paper = PAPERS[usize::from(ground.min(2))].0.max(1);
+        shape.paper = paper_of(look, ground).0.max(1);
     }
     shape.touch();
 }
@@ -175,7 +285,7 @@ impl Studio {
             (false, false) => None,
         };
         // The frames of a board only what of it is exported, on its paper.
-        let area = page.board.then(|| PAPERS[usize::from(page.ground.min(2))].0);
+        let area = page.board.then(|| paper_of(page.look, page.ground).0);
         let active = self.active;
         match active {
             LOOSE => self.doc.board = style,
@@ -196,12 +306,26 @@ impl Studio {
         self.checkpoint();
         let page = &mut self.pages[self.page];
         if let Some(look) = look {
-            page.look = look.min(2);
+            page.look = look.min(DIAGRAM);
         }
         if let Some(ground) = ground {
             page.ground = ground.min(2);
         }
         page.styled = true;
+        // A diagram is not hand lettered: words in the lettering are set in
+        // Geist, the board's next words too; another font chosen is kept.
+        if page.look == DIAGRAM && page.font == board::LETTERING {
+            page.font = 0;
+            for layer in &mut self.doc.layers {
+                if let Kind::Shape(shape) = &mut layer.kind {
+                    if shape.face == board::LETTERING {
+                        shape.face = 0;
+                        shape.touch();
+                    }
+                }
+            }
+        }
+        let page = &self.pages[self.page];
         let (look, ground, font) = (page.look, page.ground, page.font);
         keep_look(look, ground, font);
         self.shown.clear();
@@ -240,7 +364,7 @@ impl Studio {
 
     /// The paper of the board shown, and its dots.
     pub(in crate::studio) fn paper(&self) -> (u32, u32) {
-        PAPERS[usize::from(self.pages[self.page].ground.min(2))]
+        paper_of(self.pages[self.page].look, self.pages[self.page].ground)
     }
 }
 
@@ -283,6 +407,60 @@ pub(in crate::studio) mod tests {
         assert_eq!(studio.board_ground(), 0x000000);
         studio.undo();
         assert_eq!(studio.pages[0].ground, 1);
+    }
+
+    #[test]
+    fn a_diagram_board_is_on_plain_gray_in_geist_its_box_round_others_a_section_named_above_it() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 120.0), (600.0, 420.0), Mods::default());
+        type_in(&mut studio, "Gateway");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected.clear();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (380.0, 300.0), (540.0, 380.0), Mods::default());
+        type_in(&mut studio, "Auth");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected.clear();
+        assert_eq!(LOOKS[DIAGRAM as usize], "Diagram");
+        studio.set_look(Some(DIAGRAM), None);
+        // Its font is Geist, for what is there and what comes next.
+        assert_eq!(studio.board_font(), 0);
+        let faces: Vec<usize> = studio.doc.layers.iter().filter_map(|layer| match &layer.kind {
+            Kind::Shape(shape) => Some(shape.face),
+            _ => None,
+        }).collect();
+        assert!(faces.iter().all(|&face| face == 0), "{faces:?}");
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let at = |studio: &Studio, (x, y): (f32, f32)| {
+            let (x, y) = studio.to_window_page((x, y));
+            out[(y * studio.width + x) as usize] & 0xFF_FFFF
+        };
+        // Plain gray paper: not a dot on it.
+        let paper: Vec<u32> = (700..900).step_by(3).flat_map(|x| (100..400).step_by(3).map(move |y| (x as f32, y as f32))).map(|p| at(&studio, p)).filter(|&c| c != DIAGRAM_PAPER).collect();
+        assert!(paper.is_empty(), "{:06X?}", &paper[..paper.len().min(5)]);
+        // The box round another is a white section, its name in a gray tag
+        // above its top left corner.
+        assert_eq!(at(&studio, (150.0, 380.0)), 0xFFFFFF, "a section is white");
+        let tag = (100..260).flat_map(|x| (80..118).map(move |y| (x as f32, y as f32))).filter(|&p| at(&studio, p) == 0xE6E6E6).count();
+        assert!(tag > 200, "its tag above it: {tag}");
+        // The box in it is not a section: no tag above it.
+        let inner = (380..460).flat_map(|x| (270..298).map(move |y| (x as f32, y as f32))).filter(|&p| at(&studio, p) == 0xE6E6E6).count();
+        assert_eq!(inner, 0);
+        // And its tag is in what it covers.
+        let section = shape(&studio, 0).clone();
+        let (frame, bounds) = (section.frame(), section.local_bounds(&mut studio.text));
+        assert!(bounds.y < frame.1 as i32 - 10, "its tag in its bounds: {bounds:?} {frame:?}");
+    }
+
+    #[test]
+    fn diagram_colors_are_figjam_s() {
+        assert_eq!(figjam(0x1971C2), 0x3662E3);
+        assert_eq!(figjam(0xD0EBFF), 0xEBF2FE);
+        assert_eq!(figjam(0xE03131), 0xCA3A31);
+        assert_eq!(figjam(0x123456), 0x123456, "anything else as it is");
+        assert_eq!(paper_of(DIAGRAM, 0), (DIAGRAM_PAPER, DIAGRAM_PAPER));
     }
 
     #[test]
@@ -368,7 +546,7 @@ pub(in crate::studio) mod tests {
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
-        for (ctl, kind, rows) in [(Ctl::Look, MenuKind::Looks, LOOKS), (Ctl::Ground, MenuKind::Grounds, GROUNDS)] {
+        for (ctl, kind, rows) in [(Ctl::Look, MenuKind::Looks, &LOOKS[..]), (Ctl::Ground, MenuKind::Grounds, &GROUNDS[..])] {
             let place = studio.control_rect(Control::Board(ctl)).unwrap();
             let (look, ground) = (studio.pages[0].look, studio.pages[0].ground);
             click(&mut studio, place.center());
@@ -691,7 +869,7 @@ pub fn board_preview(page: &super::super::Page, wide: i32, high: i32, text: &mut
             layer
         }));
     }
-    let paper = PAPERS[usize::from(page.ground.min(2))].0;
+    let paper = paper_of(page.look, page.ground).0;
     let boxes: Vec<(f32, f32, f32, f32)> = layers.iter().map(|layer| layer.bounds(text)).collect();
     // An empty board: its paper, blank.
     let Some((x, y, w, h)) = super::super::actions::union(&boxes) else {

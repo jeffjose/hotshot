@@ -792,6 +792,11 @@ impl Doc {
         }
         // A stack's fill under the first of what is in it.
         let firsts = stacks::fill_firsts(self);
+        // In the Diagram look, which boxes are sections, holding others.
+        let sections = match self.board {
+            Some((board::look::DIAGRAM, ..)) => board::look::sections(&self.layers),
+            _ => Vec::new(),
+        };
         let count = count.min(self.layers.len());
         for (index, layer) in self.layers.iter().enumerate().take(count).skip(from.min(count)).filter(|(_, layer)| !layer.hidden) {
             if !firsts.is_empty() {
@@ -802,6 +807,7 @@ impl Doc {
                 Kind::Shape(shape) if effects::changes_beneath(shape.tool) => self.change_beneath_at_most(index, &mut out, part, times, text),
                 Kind::Shape(shape) => {
                     let mut shape = if times == 1.0 { shape.clone() } else { scaled(shape, times) };
+                    shape.section = sections.get(index).copied().unwrap_or(false);
                     if let Some((look, ground, _)) = self.board {
                         board::look::dress(&mut shape, look, ground, times);
                     }
@@ -810,7 +816,7 @@ impl Doc {
                     }
                     // On a board's paper, which is under what is drawn.
                     let paper = match (self.board, self.background) {
-                        (Some((_, ground, true)), Fill::None) => Some(board::look::PAPERS[usize::from(ground.min(2))].0),
+                        (Some((look, ground, true)), Fill::None) => Some(board::look::paper_of(look, ground).0),
                         _ => self.area,
                     };
                     draw_shape_on(&mut out, part.w, part.h, &shape, text, paper);
@@ -1126,7 +1132,7 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
         }
         if let Some(rest) = line.strip_prefix("board-look ").filter(|_| page.frames.is_empty() && !own) {
             let mut words = rest.split(' ').filter_map(|word| word.parse::<usize>().ok());
-            (page.look, page.ground) = (words.next().unwrap_or(0).min(2) as u8, words.next().unwrap_or(0).min(2) as u8);
+            (page.look, page.ground) = (words.next().unwrap_or(0).min(board::look::DIAGRAM as usize) as u8, words.next().unwrap_or(0).min(2) as u8);
             page.styled = true;
             // From before the font was its own: the face the look implied,
             // and Clean's words, lettered underneath, set in it outright.

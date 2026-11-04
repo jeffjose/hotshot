@@ -103,6 +103,13 @@ pub struct Shape {
     /// smaller than to keep inside its box where they would not fit; none,
     /// where the user set the size of them, which the box grows to hold.
     pub nominal: u32,
+    /// The color its words are drawn in, where a look sets one rather than
+    /// as its line has them: none, as its line. Not kept in the file.
+    pub words: u32,
+    /// Whether a box is drawn as a section, as the Diagram look draws one
+    /// holding others: white, a faint edge, its name a tag over its top
+    /// left. Not kept in the file.
+    pub section: bool,
     /// Which of the faces its text is in, counted from 0.
     pub face: usize,
     /// Whether a line has an arrow's head at its first end and at its
@@ -423,7 +430,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -874,7 +881,21 @@ impl Shape {
             // so that all of them are drawn again with it, as a picture of
             // the whole board has them.
             Tool::Rect | Tool::Ellipse if !self.text.is_empty() => {
+                // And where its name would be as a section's tag, over its
+                // top left, which the Diagram look draws a box holding
+                // others with.
+                let tag = match self.tool {
+                    Tool::Rect => {
+                        let (_, _, _, (x, y, w, h)) = self.section_tag(text);
+                        Rect::new(x.floor() as i32 - 1, y.floor() as i32 - 1, w.ceil() as i32 + 3, h.ceil() as i32 + 3)
+                    }
+                    _ => self.extent(),
+                };
                 let place = self.extent();
+                let place = {
+                    let (x, y) = (place.x.min(tag.x), place.y.min(tag.y));
+                    Rect::new(x, y, place.right().max(tag.right()) - x, place.bottom().max(tag.bottom()) - y)
+                };
                 let (lines, high) = self.label_lines(text);
                 lines.iter().fold(place, |place, (_, left, top, wide)| {
                     let line = Rect::new(left.floor() as i32 - 1, top.floor() as i32 - 1, wide + 3, high + 2);

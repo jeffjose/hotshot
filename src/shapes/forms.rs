@@ -504,12 +504,43 @@ impl Shape {
         (wide, (least.1 + (tall - first_h).max(0.0) / by_h).max(least.1))
     }
 
+    /// Its name as a section's tag: over its top left, a little above it,
+    /// larger than its words and heavy, on a gray patch: each line where it
+    /// is, the height of a line, the size of the words, and the patch as
+    /// its left, top, width and height.
+    pub fn section_tag(&self, text: &mut Text) -> (Vec<(String, f32, f32, i32)>, i32, u32, (f32, f32, f32, f32)) {
+        let px = ((self.font_px as f32 * 1.3).round() as u32).max(8);
+        let high = Text::line_height(px);
+        let (pad, gap) = (px as f32 * 0.5, px as f32 * 0.45);
+        let heavy = (px as i32 / 14).max(1);
+        let words: Vec<&str> = self.text.lines().collect();
+        let wide = words.iter().map(|line| text.width_in(self.face, line, px) + heavy * line.chars().count() as i32).max().unwrap_or(0) as f32;
+        let (x, y, _, _) = self.frame();
+        let (w, h) = (wide + 2.0 * pad, words.len() as f32 * high as f32 + pad * 0.8);
+        let top = y - h - gap;
+        let lines = words.iter().enumerate().map(|(at, line)| (line.to_string(), x + pad, top + pad * 0.4 + (at as i32 * high) as f32, text.width_in(self.face, line, px))).collect();
+        (lines, high, px, (x, top, w, h))
+    }
+
     /// Its words, and on a board's box what it stands for and the dots it
     /// carries: a rough piece of a screen in place of the words that name
     /// it, a status dot at its top right, and its votes along its top.
     pub(super) fn draw_label(&self, canvas: &mut Canvas, text: &mut Text) {
         let boxed = matches!(self.tool, Tool::Rect | Tool::Ellipse);
         let paper = if self.paper == 0 { PAPER } else { self.paper };
+        // A section: its name on a gray tag over its top left, heavy.
+        if self.section && !self.text.is_empty() {
+            let (lines, _, px, (x, y, w, h)) = self.section_tag(text);
+            let round = (px as f32 * 0.4).round() as i32;
+            canvas.round_fill(x.round() as i32, y.round() as i32, w.round() as i32, h.round() as i32, round, 0xD9D9D9, self.opacity);
+            canvas.round_fill(x.round() as i32 + 1, y.round() as i32 + 1, w.round() as i32 - 2, h.round() as i32 - 2, (round - 1).max(0), 0xE6E6E6, self.opacity);
+            text.look = Look { opacity: self.opacity, heavy: (px as i32 / 14).max(1), ..Look::default() };
+            for (line, left, top, _) in lines {
+                text.draw_in(self.face, canvas, left.round() as i32, top.round() as i32, px, if self.words != 0 { self.words } else { 0x1A1A1A }, &line);
+            }
+            text.look = Look::default();
+            return;
+        }
         if boxed {
             // A hollow box's title on a patch of the paper, over what
             // runs under it; a table's rules across it.
@@ -579,6 +610,7 @@ impl Shape {
     fn draw_words(&self, canvas: &mut Canvas, text: &mut Text) {
         let ink = match self.tool {
             _ if self.placeholder() => GRAY,
+            _ if self.words != 0 => self.words,
             // A box drawn by hand filled with a tint of its line: its words
             // a deep shade of that line, keeping its hue, so that a yellow
             // or a light blue reads on its tint as black would.
