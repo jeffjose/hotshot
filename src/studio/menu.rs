@@ -273,13 +273,13 @@ impl Studio {
             }
             MenuKind::Looks => {
                 let now = self.pages[self.page].look;
-                let mut items = vec![Item::Heading("LOOK")];
+                let mut items = vec![Item::Heading("THEME")];
                 items.extend(super::board::look::LOOKS.iter().enumerate().map(|(look, says)| Item::entry(*says, "", MenuAct::Board(super::board::Act::Look(look as u8))).on(look as u8 == now).look(Look::Board(look as u8))));
                 items
             }
             MenuKind::Grounds => {
                 let now = self.pages[self.page].ground;
-                let mut items = vec![Item::Heading("GROUND")];
+                let mut items = vec![Item::Heading("PAPER")];
                 items.extend(super::board::look::GROUNDS.iter().enumerate().map(|(ground, says)| Item::entry(*says, "", MenuAct::Board(super::board::Act::Ground(ground as u8))).on(ground as u8 == now).look(Look::Ground(ground as u8))));
                 items
             }

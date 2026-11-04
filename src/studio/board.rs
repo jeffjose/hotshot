@@ -446,6 +446,7 @@ impl Studio {
         layout.controls.push((dock, Control::Panel));
         layout.dock = dock;
         self.layout_zoom(layout);
+        self.layout_theme(layout);
     }
 
     /// Which of the board's tools is in hand.

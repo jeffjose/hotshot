@@ -1,8 +1,9 @@
 //! A board's panel of styles, docked at its right under Present, where it
 //! covers nothing picked out: ten colors by name, each a line and its tint
 //! at once; a fill of none, the paper, a tint or hatched; a line whole,
-//! dashed or dotted; S M L XL; the look, the font, how large the words
-//! are, the ground, a status dot and guessing. With nothing picked out and
+//! dashed or dotted; S M L XL; the font, how large the words are, and a
+//! status dot. The board's theme, paper and guessing are at its bottom
+//! right, being the whole board's. With nothing picked out and
 //! a tool in hand it sets the next shape; and what it last set carries on
 //! to the next shape drawn.
 
@@ -141,28 +142,57 @@ impl Studio {
         y += SPLIT;
         layout.rules.push(Rect::new(x, y - SPLIT / 2, PANEL_W, 1));
         y += SPLIT / 2;
-        row(layout, &mut y, &[Ctl::Look], ROW);
-        y += GAP;
         row(layout, &mut y, &[Ctl::Font], ROW);
         y += GAP;
         // How large the words are: −, the number, and +.
         layout.controls.push((Rect::new(left, y, STEP, ROW), Control::Board(Ctl::Words(0))));
         layout.controls.push((Rect::new(left + STEP + GAP, y, inner - 2 * (STEP + GAP), ROW), Control::Board(Ctl::Words(1))));
         layout.controls.push((Rect::new(left + inner - STEP, y, STEP, ROW), Control::Board(Ctl::Words(2))));
-        y += ROW + GAP;
-        let mut last = vec![Ctl::Ground];
+        y += ROW;
+        // What is the shape's own besides: its status, and a line drawn by
+        // hand neatened. The board's theme, paper and guessing are the
+        // board's, at its bottom right.
+        let mut last = vec![];
         if boxes {
             last.push(Ctl::Status);
         }
-        last.push(Ctl::Guess);
         if self.tool == Tool::Pen {
             last.push(Ctl::Neaten);
         }
-        row(layout, &mut y, &last, ROW);
+        if !last.is_empty() {
+            y += GAP;
+            row(layout, &mut y, &last, ROW);
+        }
         y += PANEL_PAD;
         let panel = Rect::new(x, top, PANEL_W, y - top);
         layout.controls.push((panel, Control::Panel));
         layout.board_bar = Some(panel);
+    }
+
+    /// The board's own settings, at its bottom right as the zoom is at its
+    /// left, level with the bar of tools: its theme, its paper, and
+    /// guessing what comes next. Always there, as they are of the whole
+    /// board and not of what is picked out; not where it would reach the
+    /// bar, as in a narrow window.
+    pub(in crate::studio) fn layout_theme(&mut self, layout: &mut Layout) {
+        const SIDE: i32 = 28;
+        const PAD: i32 = 4;
+        let widest = look::LOOKS.iter().map(|says| self.text.width(says, 12)).max().unwrap_or(0);
+        let parts = [(Ctl::Look, widest + 30), (Ctl::Ground, 38), (Ctl::Guess, SIDE + 6)];
+        let wide = parts.iter().map(|(_, w)| w + GAP).sum::<i32>() - GAP + 2 * PAD;
+        let high = SIDE + 2 * PAD;
+        let dock = layout.dock;
+        let place = Rect::new(self.open_area().right() - 12 - wide, dock.y + (dock.h - high) / 2, wide, high);
+        if place.x < dock.right() + 12 {
+            return;
+        }
+        let mut x = place.x + PAD;
+        for (ctl, w) in parts {
+            layout.controls.push((Rect::new(x, place.y + PAD, w, SIDE), Control::Board(ctl)));
+            x += w + GAP;
+        }
+        layout.controls.push((place, Control::Panel));
+        layout.board_theme = Some(place);
     }
 
     /// What the panel shows as set: of the first shape picked out, or of

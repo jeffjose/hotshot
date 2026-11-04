@@ -2224,6 +2224,8 @@ struct Layout {
     board_bar: Option<Rect>,
     /// A board's zoom, at its bottom left.
     board_zoom: Option<Rect>,
+    /// The board's own settings, at its bottom right: its theme, paper and guessing.
+    board_theme: Option<Rect>,
 }
 
 /// The whole file as it was, to come back to with undo: its pages, the
@@ -6638,7 +6640,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.board_zoom].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.board_zoom, layout.board_theme].into_iter().flatten() {
             soft_shadow(canvas, place, 12);
             canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);

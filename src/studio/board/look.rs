@@ -350,7 +350,7 @@ impl Studio {
         self.shown.clear();
         self.shown_page.clear();
         self.changed();
-        self.say(format!("{} on {}", LOOKS[usize::from(look)], GROUNDS[usize::from(ground)].to_lowercase()));
+        self.say(format!("Theme: {}, on {}", LOOKS[usize::from(look)], GROUNDS[usize::from(ground)].to_lowercase()));
     }
 
     /// The font a board's words are in: what is picked out set in it, and
@@ -583,6 +583,32 @@ pub(in crate::studio) mod tests {
         // The look's list still only changes the look.
         choose(&mut studio, Ctl::Look, "Sketchy");
         assert_eq!((shape(&studio, 0).face, studio.board_font(), studio.pages[0].look), (1, 1, 1));
+    }
+
+    #[test]
+    fn the_theme_paper_and_guessing_are_the_board_s_at_its_bottom_right_not_in_the_panel_of_styles() {
+        let mut studio = board();
+        // With nothing picked out, there all the same.
+        let layout = studio.layout();
+        let theme = layout.board_theme.expect("the board's settings");
+        assert!(layout.board_bar.is_none());
+        assert!(theme.right() > studio.width - 40 && theme.y > layout.dock.y - 10, "at the bottom right: {theme:?}");
+        for ctl in [Ctl::Look, Ctl::Ground, Ctl::Guess] {
+            assert!(theme.contains(studio.control_rect(Control::Board(ctl)).unwrap().center().0, studio.control_rect(Control::Board(ctl)).unwrap().center().1), "{ctl:?} in it");
+        }
+        // A box picked out: its panel has none of them.
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let layout = studio.layout();
+        let panel = layout.board_bar.expect("its panel");
+        for ctl in [Ctl::Look, Ctl::Ground, Ctl::Guess] {
+            let place = studio.control_rect(Control::Board(ctl)).unwrap();
+            assert!(!panel.intersects(place) && layout.board_theme.unwrap().contains(place.center().0, place.center().1), "{ctl:?} not in the panel");
+        }
+        assert!(panel.contains(studio.control_rect(Control::Board(Ctl::Font)).unwrap().center().0, studio.control_rect(Control::Board(Ctl::Font)).unwrap().center().1), "the font is the shape's");
+        choose(&mut studio, Ctl::Look, "Diagram");
+        assert_eq!(studio.pages[0].look, DIAGRAM);
     }
 
     /// A control of the bar clicked, and a row of the list it opens.
@@ -890,6 +916,25 @@ pub(in crate::studio) mod tests {
         let sheet = studio.part_sheet(&layers, (0.0, 0.0, 1200.0, 560.0));
         let (pw, ph, pixels) = sheet.render(2.0, &mut studio.text);
         std::fs::write(to.join("diagram.png"), crate::output::encode(pw as u32, ph as u32, &pixels, false).unwrap()).unwrap();
+    }
+
+    /// A board's window with a box picked out, its panel and its bars:
+    ///
+    ///     HOTSHOT_SNAPSHOTS=shots cargo test window_snapshot -- --ignored
+    #[test]
+    #[ignore]
+    fn window_snapshot() {
+        let Some(to) = std::env::var_os("HOTSHOT_SNAPSHOTS") else { return };
+        let to = std::path::PathBuf::from(to);
+        std::fs::create_dir_all(&to).unwrap();
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
+        type_in(&mut studio, "Proxy");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        std::fs::write(to.join("window.png"), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
     }
 
     #[test]
