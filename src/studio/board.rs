@@ -134,10 +134,9 @@ pub(super) struct Board {
     pub making: u8,
     /// The sizes of the last two boxes drawn, the latest last.
     pub sizes: Vec<(f32, f32)>,
-    /// Whether the left panel and the right are shown on a board: neither,
-    /// until asked for.
+    /// Whether the left panel is shown on a board: not until asked for.
+    /// There is no right one: a board's styles are in its own panel.
     pub left: bool,
-    pub right: bool,
     /// Whether it guesses what comes next.
     pub guessing: bool,
     /// The box whose sides show a dot each to pull an arrow out of, by its
@@ -218,7 +217,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
     }
 }
 
@@ -429,7 +428,7 @@ impl Studio {
         let place = self.switch_place();
         if self.on_board() && !self.zen && !self.shows_right() {
             let beside = self.side_button(1);
-            layout.controls.push((Rect::new(beside.x - 14 - 96, beside.y - 1, 96, 30), Control::Board(Ctl::Present)));
+            layout.controls.push((Rect::new(beside.right() - 96, beside.y - 1, 96, 30), Control::Board(Ctl::Present)));
         }
         layout.controls.push((Rect::new(place.x, place.y, place.w / 2, place.h), Control::Board(Ctl::Mode(false))));
         layout.controls.push((Rect::new(place.x + place.w / 2, place.y, place.w - place.w / 2, place.h), Control::Board(Ctl::Mode(true))));
@@ -829,9 +828,14 @@ pub(super) mod tests {
         assert_ne!(shown(&mut studio, (300.0, 300.0)), shapes::PAPER, "Design is on the dark");
         press_key(&mut studio, Key::Char('m'), Mods { ctrl: true, ..Mods::default() });
         assert!(studio.on_board());
-        // The panels, hidden, are one key away, as in Design.
+        // The left panel, hidden, is one key away, as in Design; there is no
+        // right one, nor its button, the board's styles in its own panel.
+        press_key(&mut studio, Key::Char('\\'), Mods { ctrl: true, shift: true, ..Mods::default() });
+        assert!(studio.shows_left());
         press_key(&mut studio, Key::Char('\\'), Mods { ctrl: true, alt: true, ..Mods::default() });
-        assert!(studio.shows_right());
+        assert!(!studio.shows_right());
+        studio.layout();
+        assert!(studio.control_rect(Control::SidePanel(1)).is_none(), "no button for it");
         // A new page is a board too; the file keeps which is which.
         studio.new_page();
         studio.commit_name();

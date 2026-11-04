@@ -3197,7 +3197,7 @@ impl Studio {
     /// frame, a section at a time, scrolled if it is long.
     fn right_panel(&mut self, layout: &mut Layout) {
         // With everything hidden, the left one's button is all there is.
-        if !self.zen {
+        if !self.zen && !self.on_board() {
             layout.controls.push((self.side_button(1), Control::SidePanel(1)));
         }
         if !self.shows_right() {
@@ -3249,7 +3249,8 @@ impl Studio {
     }
 
     fn shows_right(&self) -> bool {
-        !self.zen && !self.presenting() && if self.on_board() { self.board.right } else { self.right_open }
+        // A board has none: its styles are in the panel docked on it.
+        !self.zen && !self.presenting() && !self.on_board() && self.right_open
     }
 
     /// Where the page begins and ends across the window: past the panels
@@ -3284,7 +3285,8 @@ impl Studio {
         if self.on_board() && !self.zen {
             match side {
                 0 => self.board.left = !self.board.left,
-                _ => self.board.right = !self.board.right,
+                // No right panel on a board: its styles are docked on it.
+                _ => {}
             }
             self.dirty = true;
             return;
