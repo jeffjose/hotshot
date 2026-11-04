@@ -404,15 +404,71 @@ impl Studio {
     /// A box's words changed on a board: it grown to hold them, as wide as
     /// they are up to a limit and then as tall as they wrap to, never
     /// smaller than it was drawn; what is beside it making room.
+    /// A box's words fitted to it, their size the board's own: as large as
+    /// they are meant to be, smaller down to half that to stay inside, and
+    /// only then the box taller. Typed into (`grow`), the box first grows
+    /// as wide as a box grows and to twice as tall as it was drawn; sized
+    /// by hand, it stays the size it was made, the words fitted to it.
+    pub(in crate::studio) fn fit_words(&mut self, index: usize, grow: bool) {
+        let before = self.box_frames();
+        let Kind::Shape(shape) = &self.doc.layers[index].kind else { return };
+        let (x, y, w, h) = shape.frame();
+        let base = if shape.base.0 > 0.0 && shape.base.1 > 0.0 { shape.base } else { (w, h) };
+        let (least, most, tallest) = match grow {
+            true => (base, (MOST_WIDE * bar::drawn_larger(shape)).max(base.0), base.1 * 2.0),
+            false => ((w, h), w, h),
+        };
+        let nominal = shape.nominal.max(1);
+        let smallest = (nominal / 2).max(8).min(nominal);
+        let mut probe = shape.clone();
+        // The largest it can be with every line, and every word, inside.
+        let mut fitted = None;
+        for px in (smallest..=nominal).rev() {
+            probe.font_px = px;
+            let (nw, nh) = probe.label_needs(&mut self.text, least, most);
+            let mut sized = probe.clone();
+            sized.points = vec![(x, y), (x + nw, y + nh)];
+            let room = sized.label_area().2;
+            let widest = probe.text.split_whitespace().map(|word| self.text.width_in(probe.face, word, px)).max().unwrap_or(0) as f32;
+            if nh <= tallest + 0.5 && widest <= room + 0.5 {
+                fitted = Some((px, nw, nh));
+                break;
+            }
+        }
+        // Too much even at the smallest: that, and the box as tall as it
+        // needs to be.
+        let (px, nw, nh) = fitted.unwrap_or_else(|| {
+            probe.font_px = smallest;
+            let (nw, nh) = probe.label_needs(&mut self.text, least, most);
+            (smallest, nw, nh)
+        });
+        if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
+            shape.base = if grow { base } else { (w, h) };
+            shape.font_px = px;
+            let (nw, nh) = if grow { (nw, nh) } else { (w, nh.max(h)) };
+            if (nw - w).abs() > 0.5 || (nh - h).abs() > 0.5 {
+                shape.points = vec![(x, y), (x + nw, y + nh)];
+            }
+            shape.touch();
+        }
+        self.changed();
+        self.make_room_after(&before);
+    }
+
     pub(in crate::studio) fn grow_for_words(&mut self, index: usize) {
         if !self.is_box(index) {
             return;
+        }
+        // Words whose size is the board's own: fitted, as large as they are
+        // meant to be or smaller to stay inside.
+        if matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.nominal > 0) {
+            return self.fit_words(index, true);
         }
         let before = self.box_frames();
         let Kind::Shape(shape) = &self.doc.layers[index].kind else { return };
         let (x, y, w, h) = shape.frame();
         let base = if shape.base.0 > 0.0 && shape.base.1 > 0.0 { shape.base } else { (w, h) };
-        let (nw, nh) = shape.label_needs(&mut self.text, base, MOST_WIDE.max(base.0));
+        let (nw, nh) = shape.label_needs(&mut self.text, base, (MOST_WIDE * bar::drawn_larger(shape)).max(base.0));
         if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
             shape.base = base;
             if (nw - w).abs() > 0.5 || (nh - h).abs() > 0.5 {
@@ -567,6 +623,44 @@ mod tests {
         studio.released();
         assert_eq!(studio.holder_of(shape(&studio, inner).id), None, "nothing nests with Alt");
         let _ = outer;
+    }
+
+    #[test]
+    fn words_past_what_a_box_grows_to_get_smaller_to_stay_inside_and_larger_again_given_room() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        let nominal = shape(&studio, 0).nominal;
+        assert!(nominal > 0, "a board's box fits its words");
+        type_in(&mut studio, &"words that go on and on ".repeat(16));
+        let box_ = shape(&studio, 0);
+        let (_, _, w, h) = box_.frame();
+        assert!(box_.font_px < nominal, "smaller: {} of {nominal}", box_.font_px);
+        assert!(w <= MOST_WIDE + 1.0 && h <= 72.0 * 2.0 + 1.0, "grown no more than so far: {w}x{h}");
+        // Every line inside it.
+        let lines = box_.label_lines(&mut studio.text).0;
+        let area = box_.label_area();
+        assert!(lines.iter().all(|(_, left, top, wide)| *left >= area.0 - 1.0 && left + *wide as f32 <= area.0 + area.2 + 1.0 && top + Text::line_height(box_.font_px) as f32 <= area.1 + area.3 + 1.0), "{lines:?} in {area:?}");
+        // Made much larger by hand: back to the size they are meant to be.
+        press_key(&mut studio, Key::Escape, Mods::default());
+        if let Kind::Shape(shape) = &mut studio.doc.layers[0].kind {
+            shape.points = vec![(100.0, 100.0), (900.0, 500.0)];
+        }
+        studio.fit_words(0, false);
+        assert_eq!(shape(&studio, 0).font_px, nominal);
+        assert_eq!(shape(&studio, 0).frame(), (100.0, 100.0, 800.0, 400.0), "the size it was made");
+        // A size set by hand is kept, and the box grows to hold it.
+        studio.selected = vec![0];
+        studio.step_words(true);
+        let set = shape(&studio, 0);
+        assert_eq!(set.nominal, 0);
+        if let Kind::Shape(shape) = &mut studio.doc.layers[0].kind {
+            shape.points = vec![(100.0, 100.0), (260.0, 172.0)];
+            shape.base = (160.0, 72.0);
+        }
+        studio.grow_for_words(0);
+        let grown = shape(&studio, 0);
+        assert!(grown.font_px == set.font_px && grown.frame().3 > 72.0 * 2.0, "{} {:?}", grown.font_px, grown.frame());
     }
 
     #[test]

@@ -620,6 +620,15 @@ impl Studio {
             Drag::Scale { from, .. } => (now.0 - from.0).hypot(now.1 - from.1) * self.zoom >= 3.0,
             _ => false,
         };
+        // A box sized by hand: its words fitted to it again, larger where
+        // there is room now, smaller where there is less.
+        if let (Drag::Scale { .. }, true) = (drag, changed) {
+            for index in self.chosen() {
+                if matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.nominal > 0 && matches!(shape.tool, Tool::Rect | Tool::Ellipse)) {
+                    self.fit_words(index, false);
+                }
+            }
+        }
         if self.editing.is_some() && changed {
             self.board.type_step = true;
         }

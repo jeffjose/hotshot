@@ -213,6 +213,8 @@ impl Studio {
             for &index in &sized {
                 if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
                     shape.font_px = to(shape.font_px).clamp(1, MOST_PX);
+                    // A size set by hand is kept: the box grows to hold it.
+                    shape.nominal = 0;
                     shape.touch();
                 }
             }
@@ -572,7 +574,8 @@ impl Studio {
                     if !matches!(shape.tool, Tool::Text) {
                         shape.stroke = width;
                     }
-                    shape.font_px = px;
+                    // The size its words are meant to be, fitted to its box.
+                    (shape.font_px, shape.nominal) = (px, if shape.nominal > 0 || matches!(shape.tool, Tool::Rect | Tool::Ellipse) { px } else { 0 });
                 });
                 if self.on_board() {
                     self.pages[self.page].px = px;

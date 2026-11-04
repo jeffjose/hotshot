@@ -99,6 +99,10 @@ pub struct Shape {
     pub points: Vec<Point>,
     pub text: String,
     pub font_px: u32,
+    /// On a board, the size its words are meant to be, which they are drawn
+    /// smaller than to keep inside its box where they would not fit; none,
+    /// where the user set the size of them, which the box grows to hold.
+    pub nominal: u32,
     /// Which of the faces its text is in, counted from 0.
     pub face: usize,
     /// Whether a line has an arrow's head at its first end and at its
@@ -419,7 +423,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -439,7 +443,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -468,7 +472,8 @@ impl Shape {
                 self.base.1,
                 u8::from(self.heading),
                 self.region,
-                u8::from(self.hatch)
+                u8::from(self.hatch),
+                self.nominal
             ),
             self.fill,
             self.number,
@@ -544,6 +549,9 @@ impl Shape {
         shape.region = more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(0).min(15);
         // And whether its fill is hatched, which a file from before has not.
         shape.hatch = more.next() == Some("1");
+        // And the size its words are meant to be, fitted to its box, which a
+        // file from before has not: they are as large as they are.
+        shape.nominal = more.next().and_then(|word| word.parse::<u32>().ok()).unwrap_or(0).min(999);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -3495,9 +3503,12 @@ mod tests {
         // A hatched fill is kept too.
         boxed.hatch = true;
         assert!(Shape::read(&boxed.write()).unwrap().hatch);
+        // And the size its words are meant to be, fitted to it.
+        boxed.nominal = 22;
+        assert_eq!(Shape::read(&boxed.write()).unwrap().nominal, 22);
         // And one from before either has neither.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
         assert_eq!((back.edge, back.shadow), (CENTER, None));

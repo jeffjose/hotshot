@@ -549,6 +549,8 @@ impl Studio {
                 (shape.sketch, shape.border, shape.radius) = (board.sketch, true, 6.0);
                 (shape.filled, shape.fill) = (board.fill.is_some(), board.fill.unwrap_or(0xFFFFFF));
                 shape.hatch = board.hatch && shape.filled;
+                // Its words fitted to it, at the board's size or smaller.
+                shape.nominal = shape.font_px;
                 if shape.tool == Tool::Rect {
                     shape.form = board.making;
                 }
