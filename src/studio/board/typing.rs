@@ -210,6 +210,16 @@ impl Studio {
     /// A box drawn: the size it was drawn kept, typed into, and what comes
     /// next guessed.
     fn board_drawn_box(&mut self, index: usize) {
+        // The last box's words only the key of the tool, pressed for this
+        // one: it is left empty, as it was meant to be.
+        if let Some((id, letter)) = self.board.tool_letter.take() {
+            if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.index_of(id).filter(|&last| last != index).and_then(|last| self.doc.layers.get_mut(last)) {
+                if shape.text == letter.to_string() {
+                    shape.text.clear();
+                    shape.touch();
+                }
+            }
+        }
         let (_, _, w, h) = self.box_frame(index);
         if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
             shape.base = (w, h);
@@ -293,6 +303,15 @@ impl Studio {
         if !worded || (mods.ctrl && key != Key::Backspace) {
             return None;
         }
+        // The key of the tool in hand, first in a box drawn with it: maybe
+        // a word begun, maybe another box wanted. It is typed, and noted;
+        // if the next thing done is another box drawn, it was the tool, and
+        // is taken out again.
+        let tool_key = TOOLS.get(usize::from(self.board_tool())).map(|(_, key)| *key);
+        self.board.tool_letter = match key {
+            Key::Char(letter) if matches!(shape.tool, Tool::Rect | Tool::Ellipse) && shape.text.is_empty() && self.tool != Tool::Select && tool_key == Some(letter) => Some((self.id_of(index), letter)),
+            _ => None,
+        };
         // Tab, a child joined to it; Shift+Tab, back to its parent.
         let boxy = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
         match key {
@@ -495,6 +514,24 @@ mod tests {
         assert!(fresh.doc.layers.is_empty() && fresh.board_tool() == SELECT);
     }
 
+
+    #[test]
+    fn r_again_in_a_box_just_drawn_then_another_drawn_leaves_it_empty() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        assert_eq!(studio.editing, Some(0));
+        // R again, for another box: typed for now, as a word may begin so…
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        assert_eq!(shape(&studio, 0).text, "r");
+        // …but the next thing is another box: so it was the tool, taken out.
+        pull(&mut studio, (400.0, 100.0), (560.0, 172.0), Mods::default());
+        assert_eq!((shape(&studio, 0).text.as_str(), studio.doc.layers.len(), studio.editing), ("", 2, Some(1)));
+        // Words that begin with it stay as typed.
+        type_in(&mut studio, "red");
+        pull(&mut studio, (100.0, 300.0), (260.0, 372.0), Mods::default());
+        assert_eq!(shape(&studio, 1).text, "red");
+    }
     #[test]
     fn a_box_picked_out_is_typed_over_and_enter_types_into_it() {
         let mut studio = board();

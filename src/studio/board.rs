@@ -141,6 +141,9 @@ pub(super) struct Board {
     /// How the next shape's fill and line are drawn: hatched, and whole,
     /// dashed or dotted.
     pub hatch: bool,
+    /// The key of the tool in hand typed first into the box it drew, by
+    /// that box's name: taken out if the next thing done is another box.
+    pub tool_letter: Option<(u32, char)>,
     pub dash: u8,
     /// What is in what is being moved, carried along with it, each with
     /// how it was when the move began.
@@ -208,7 +211,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, hatch: false, dash: 0, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, right: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
     }
 }
 
