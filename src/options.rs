@@ -758,6 +758,33 @@ const FACE_NAMES: [[&str; 2]; 5] = [["geist", "sans"], ["instrument-serif", "ser
 
 /// Keeps what is in hand, to begin with next time: written the way the
 /// config file is, so that it is read the same way.
+/// How many folders saved to lately are kept to pick from.
+const RECENT_FOLDERS: usize = 5;
+
+/// The folders saved to lately, other than those named, the latest
+/// first: from `recent-folders` among hotshot's state.
+pub fn recent_folders() -> Vec<std::path::PathBuf> {
+    crate::output::state_file("recent-folders")
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .map(|text| text.lines().filter(|line| !line.trim().is_empty()).map(std::path::PathBuf::from).take(RECENT_FOLDERS).collect())
+        .unwrap_or_default()
+}
+
+/// A folder saved to, other than those named, kept first among those
+/// saved to lately.
+pub fn remember_folder(folder: &std::path::Path) {
+    let Some(file) = crate::output::state_file("recent-folders") else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut folders = recent_folders();
+    folders.retain(|known| known != folder);
+    folders.insert(0, folder.to_path_buf());
+    folders.truncate(RECENT_FOLDERS);
+    let text: String = folders.iter().map(|folder| format!("{}\n", folder.display())).collect();
+    let _ = std::fs::write(file, text);
+}
+
 pub fn remember_tools(settings: &Settings, save_to: Option<&std::path::Path>) {
     let Some(file) = crate::output::state_file("tools") else { return };
     if let Some(dir) = file.parent() {
@@ -981,6 +1008,16 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     options.places.dedup();
     options.settings.places = options.places.iter().map(|place| place.file_name().map_or_else(|| place.display().to_string(), |name| name.to_string_lossy().into_owned())).collect();
     options.settings.place = options.save_to.as_ref().and_then(|wanted| options.places.iter().position(|place| place == wanted)).unwrap_or(0);
+    // After them, the folders saved to lately that none of them are, by
+    // where they are, from ~: there to pick, never what Save begins at.
+    options.settings.named = options.places.len();
+    for folder in recent_folders() {
+        if !options.places.contains(&folder) && folder.is_dir() {
+            options.settings.places.push(crate::editor::folder_label(&folder));
+            options.places.push(folder);
+        }
+    }
+    options.settings.folders = options.places.clone();
     // --edit with nothing named to take, or with files, is the canvas:
     // a picture to be made, not one to be taken.
     if options.edit && !options.record && (options.take == Take::Pick || !options.files.is_empty()) {

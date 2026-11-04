@@ -473,7 +473,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             // What the canvas is to know of a window, kept in a plain
             // picture of it: with a window round it, it knows nothing.
             let notes = if frame.is_plain() { chrome::Notes { insets, title, scale } } else { chrome::Notes::default() };
-            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, format: options.format, keep: None, recipe, photo, canvas_notes: notes.clone(), notes }
+            Taken { area, width, height, pixels, alpha, how, place: options.settings.place, folder: None, format: options.format, keep: None, recipe, photo, canvas_notes: notes.clone(), notes }
         }
         (named, _) => match pick(&mut display, named, reopened, again_photo, arrow, &options, font, &trace)? {
             Some(taken) => taken,
@@ -511,7 +511,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
     // to a window of its own to try each kind on, which converts it into
     // the folder Save saves to and does away with the PNG.
     if how.tune {
-        let dir = options.places.get(taken.place).unwrap_or(&options.dir);
+        let dir = taken.folder.as_ref().or(options.places.get(taken.place)).unwrap_or(&options.dir);
         let file = output::state_file("pins").ok_or("there is nowhere to keep the picture")?.join(format!("{}-tune.png", std::process::id()));
         if let Some(parent) = file.parent() {
             std::fs::create_dir_all(parent)?;
@@ -540,7 +540,7 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         let other = if format == output::Format::Png { None } else { Some(pack(format)?) };
         let file = other.as_ref().unwrap_or(&png);
         // Into the folder Save was last pointed at, of those there are.
-        let dir = options.places.get(taken.place).unwrap_or(&options.dir);
+        let dir = taken.folder.as_ref().or(options.places.get(taken.place)).unwrap_or(&options.dir);
         match &options.output {
             Some(path) => {
                 output::save_as(path, file)?;
@@ -549,6 +549,11 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
             None => {
                 let saved = output::save(dir, &options.filename, format.ending(), file)?;
                 debug!("saved {}", saved.display());
+                // Into a folder used lately or typed in: kept first among
+                // those, to pick again.
+                if let Some(folder) = &taken.folder {
+                    options::remember_folder(folder);
+                }
                 println!("{}", saved.display());
             }
         }
@@ -608,6 +613,9 @@ struct Taken {
     alpha: bool,
     how: Finish,
     place: usize,
+    /// The folder Save saves to, when it is one picked from those used
+    /// lately or typed in, rather than one named.
+    folder: Option<std::path::PathBuf>,
     /// What kind of file Save writes, as it was left in the list.
     format: output::Format,
     /// What it takes to come back to it: the area, what was there
@@ -823,13 +831,17 @@ fn pick(display: &mut Display, named: Option<Rect>, reopened: Option<(Rect, fram
         strips.read(display, &mut editor, &mut frame)?;
     }
     if options.remember {
-        options::remember_tools(&editor.in_hand(), options.places.get(editor.place()).map(|place| place.as_path()));
+        // The folder it was last pointed at, if it is one named: one used
+        // lately or typed in is never what Save begins at.
+        let named = (editor.place() < options.settings.named).then(|| editor.folders().get(editor.place())).flatten();
+        options::remember_tools(&editor.in_hand(), named.map(|place| place.as_path()));
     }
     let (place, format, keep) = (editor.place(), editor.format(), editor.keepsake());
+    let folder = (place >= options.settings.named).then(|| editor.folders().get(place).cloned()).flatten();
     let (recipe, photo) = (editor.recipe(), editor.photo().cloned());
     // What the canvas is to know of the window taken, if it is one; and
     // what a file of it is, of a plain picture of it.
     let canvas_notes = editor.notes();
     let notes = if editor.is_plain() { canvas_notes.clone() } else { chrome::Notes::default() };
-    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, format, keep, recipe: history::Recipe { area, ..recipe }, photo, notes, canvas_notes })))
+    Ok(how.and_then(|how| editor.framed().map(|(area, width, height, pixels, alpha)| Taken { area, width, height, pixels, alpha, how, place, folder, format, keep, recipe: history::Recipe { area, ..recipe }, photo, notes, canvas_notes })))
 }

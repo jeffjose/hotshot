@@ -212,6 +212,11 @@ pub struct Settings {
     /// What the folders Save can save to are called, and which of them
     /// it saves to to begin with.
     pub places: Vec<String>,
+    /// The folders themselves, in the same order; and how many of them
+    /// the config file and the command line name, before those used
+    /// lately and any typed in.
+    pub folders: Vec<std::path::PathBuf>,
+    pub named: usize,
     pub place: usize,
     /// What Enter, and a double click, do.
     pub enter: Finish,
@@ -243,7 +248,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, fill: None, border: None, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false, keep_bar: false, format: crate::output::Format::Png, convert: crate::convert::Settings::default() }
+        Settings { accent: 0x3E63DD, color: RED, size: 1, magnifier: false, windows: Windows::Outline, dim: 50, radius: 6.0, corners: 0.0, filled: false, fill: None, border: None, face: 0, frame: Frame::default(), photo: None, places: Vec::new(), folders: Vec::new(), named: 0, place: 0, enter: Finish { copy: true, ..Finish::NONE }, aspect: None, fixed: None, recording: false, fetch: false, opacity: 256, dashed: false, tool: Tool::Select, heads: [false, true], square: false, keep_bar: false, format: crate::output::Format::Png, convert: crate::convert::Settings::default() }
     }
 }
 
@@ -429,6 +434,8 @@ enum Cell {
     Shade(usize),
     /// One of the folders Save can save to.
     Place(usize),
+    /// Another folder…: one typed in, which Save then saves to.
+    Folder,
     /// A kind of file Save can write, by where it is in `Format::ALL`;
     /// and Fine-tune…, which tries them in a window of its own.
     Format(usize),
@@ -466,6 +473,69 @@ const GROUPS: [&[Button]; 5] = [
 /// The bar as it is when an area is being chosen to be recorded: there
 /// is nothing to draw, and one thing to do.
 const RECORDING: [&[Button]; 1] = [&[Button::Cancel, Button::Record]];
+
+/// A folder as it is said: under the home folder, from ~.
+pub(crate) fn tilde(folder: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    match home.as_ref().and_then(|home| folder.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => folder.display().to_string(),
+    }
+}
+
+/// A folder as the list of where Save saves says it: from ~, and a long
+/// one by its last two folders, so that the list stays narrow.
+pub(crate) fn folder_label(folder: &std::path::Path) -> String {
+    let said = tilde(folder);
+    if said.chars().count() <= 30 {
+        return said;
+    }
+    let parts: Vec<&str> = said.split('/').filter(|part| !part.is_empty()).collect();
+    format!("\u{2026}/{}", parts[parts.len().saturating_sub(2)..].join("/"))
+}
+
+/// A folder typed: ~ the home folder, and no / at its end.
+pub(crate) fn untilde(typed: &str) -> std::path::PathBuf {
+    let typed = typed.trim();
+    let path = match typed.strip_prefix('~') {
+        Some(rest) => std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join(rest.trim_start_matches('/')),
+        None => std::path::PathBuf::from(typed),
+    };
+    match path.to_str() {
+        Some(text) if text.len() > 1 && text.ends_with('/') => std::path::PathBuf::from(text.trim_end_matches('/')),
+        _ => path,
+    }
+}
+
+/// Tab in a folder being typed: its last part finished as far as the
+/// folders in the one before it agree, and a / after one that is whole.
+pub(crate) fn complete_folder(typed: &str) -> String {
+    let (parent, part) = match typed.rfind('/') {
+        Some(at) => (&typed[..=at], &typed[at + 1..]),
+        None => ("", typed),
+    };
+    let Ok(entries) = std::fs::read_dir(untilde(if parent.is_empty() { "." } else { parent })) else { return typed.to_owned() };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(part) && (!name.starts_with('.') || part.starts_with('.')))
+        .collect();
+    names.sort();
+    let Some(first) = names.first() else { return typed.to_owned() };
+    // As much as all of them begin with.
+    let mut common = first.clone();
+    for name in &names[1..] {
+        while !name.starts_with(&common) {
+            common.pop();
+        }
+    }
+    match names.len() {
+        1 => format!("{parent}{common}/"),
+        _ => format!("{parent}{common}"),
+    }
+}
 
 impl Button {
     /// What it is called, and the key that does the same.
@@ -846,6 +916,10 @@ pub struct Editor {
     /// What has been typed to look for emoji by, and how many rows
     /// down them the box is.
     query: String,
+    /// A folder being typed into Another folder…, and whether what was
+    /// last taken of it was no folder.
+    folder_typed: Option<String>,
+    folder_wrong: bool,
     scroll: i32,
     /// Where the edges of the windows and the monitors are, across and
     /// down: what an edge of the selection goes to when it is near.
@@ -1123,6 +1197,8 @@ impl Editor {
             repeat: None,
             lines: Vec::new(),
             query: String::new(),
+            folder_typed: None,
+            folder_wrong: false,
             scroll: 0,
             size: settings.size.min(STROKES.len() - 1),
             settings,
@@ -1554,17 +1630,18 @@ impl Editor {
                 Button::Places => {
                     let widest = self.settings.places.iter().map(|place| self.text.width(place, px)).max().unwrap_or(0);
                     let kinds = crate::output::Format::ALL.iter().map(|format| self.text.width(format.title(), px) + self.text.width(&self.size_words(*format), px * 7 / 8) + 3 * pad).max().unwrap_or(0);
-                    let across = (widest + side + 2 * pad).max(kinds + side);
+                    // Wide enough for a folder to be typed in, too.
+                    let across = (widest + side + 2 * pad).max(kinds + side).max(self.text.width("~/Pictures/hotshot/somewhere", px) + 2 * pad);
                     let line = Text::line_height(px) + pad / 2;
                     let mut down = 0;
-                    if self.settings.places.len() > 1 {
-                        layout.captions.push(((pad / 2, down + pad / 4), "SAVE TO"));
-                        down += line;
-                    }
+                    layout.captions.push(((pad / 2, down + pad / 4), "SAVE TO"));
+                    down += line;
                     for index in 0..self.settings.places.len() {
                         cells.push((Rect::new(0, down, across, side), Cell::Place(index)));
                         down += side;
                     }
+                    cells.push((Rect::new(0, down, across, side), Cell::Folder));
+                    down += side;
                     layout.captions.push(((pad / 2, down + pad / 4), "SAVE AS"));
                     down += line;
                     for index in 0..crate::output::Format::ALL.len() {
@@ -2785,6 +2862,23 @@ impl Editor {
             }
             return Outcome::Continue;
         }
+        // A folder being typed into Another folder…: Tab finishes the
+        // name, Enter takes it, Esc leaves it.
+        if self.flyout == Some(Button::Places) && self.folder_typed.is_some() && !mods.ctrl {
+            let typed = self.folder_typed.get_or_insert_with(String::new);
+            match key {
+                Key::Char(letter) => typed.push(letter),
+                Key::Backspace => _ = typed.pop(),
+                Key::Tab => *typed = complete_folder(typed),
+                Key::Enter => self.take_folder(),
+                Key::Escape => self.folder_typed = None,
+                _ => {}
+            }
+            if !matches!(key, Key::Enter) {
+                self.folder_wrong = false;
+            }
+            return Outcome::Continue;
+        }
         // With the colors open, # or a click on the hex begins a color
         // typed: three or six of its digits, and Enter takes it.
         if self.popup.is_none() {
@@ -3688,7 +3782,16 @@ impl Editor {
                 let read = self.settings.photo.as_ref().and_then(|file| std::fs::read(file).ok()).and_then(|bytes| frame::open(&bytes));
                 self.photo_arrived(read);
             }
-            Cell::Place(place) => (self.place, self.flyout) = (place, None),
+            Cell::Place(place) => (self.place, self.flyout, self.folder_typed) = (place, None, None),
+            // Another folder…: a line to type one in, begun at the last
+            // one typed, or at /tmp.
+            Cell::Folder => {
+                if self.folder_typed.is_none() {
+                    let last = self.settings.folders.get(self.settings.named..).and_then(|added| added.last()).map(|folder| format!("{}/", tilde(folder)));
+                    self.folder_typed = Some(last.unwrap_or_else(|| "/tmp/".to_owned()));
+                    self.folder_wrong = false;
+                }
+            }
             Cell::Format(index) => (self.format, self.flyout) = (crate::output::Format::ALL[index.min(6)], None),
             Cell::Tune => {}
             Cell::Width(size) => {
@@ -3828,6 +3931,33 @@ impl Editor {
     /// Which of the folders Save saves to.
     pub fn place(&self) -> usize {
         self.place
+    }
+
+    /// The folders Save can save to, those typed in at the end.
+    pub fn folders(&self) -> &[std::path::PathBuf] {
+        &self.settings.folders
+    }
+
+    /// The folder typed into Another folder… taken: made if the folder it
+    /// is in is there, then what Save saves to, among the others from now
+    /// on; or red where it is no folder.
+    fn take_folder(&mut self) {
+        let Some(typed) = self.folder_typed.clone() else { return };
+        let folder = untilde(&typed);
+        let made = folder.is_dir() || (folder.parent().is_some_and(|parent| parent.is_dir()) && std::fs::create_dir(&folder).is_ok());
+        if !made || !folder.is_absolute() {
+            self.folder_wrong = true;
+            return;
+        }
+        let at = match self.settings.folders.iter().position(|known| *known == folder) {
+            Some(at) => at,
+            None => {
+                self.settings.places.push(folder_label(&folder));
+                self.settings.folders.push(folder);
+                self.settings.folders.len() - 1
+            }
+        };
+        (self.place, self.folder_typed, self.flyout) = (at, None, None);
     }
 
     /// What kind of file Save writes.
@@ -4416,6 +4546,28 @@ impl Editor {
                     Cell::Shade(which) => {
                         let ink = if self.frame.shadow == Shadow::of_preset(which) { TEXT_COLOR } else { DIM_TEXT_COLOR };
                         self.text.draw_centered(&mut canvas, cx, cy, px * 7 / 8, ink, frame::SHADOWS[which].0);
+                    }
+                    // Another folder…: what to click, or the line it is
+                    // being typed in, with a caret, red where what was
+                    // taken of it is no folder.
+                    Cell::Folder => {
+                        let line = cy - Text::line_height(px) / 2;
+                        match self.folder_typed.clone() {
+                            None => self.text.draw(&mut canvas, rect.x + rect.h, line, px, DIM_TEXT_COLOR, "Another folder\u{2026}"),
+                            Some(typed) => {
+                                let inner = rect.inflate(-(px as i32 / 6).max(2));
+                                canvas.round_fill(inner.x, inner.y, inner.w, inner.h, pad / 2, 0x111111, 256);
+                                let ink = if self.folder_wrong { 0xFF6B6B } else { TEXT_COLOR };
+                                // The end of it where it is longer than the line.
+                                let mut shown = typed.as_str();
+                                while self.text.width(shown, px) > inner.w - 2 * pad && shown.chars().count() > 1 {
+                                    shown = &shown[shown.char_indices().nth(1).map_or(shown.len(), |(at, _)| at)..];
+                                }
+                                self.text.draw(&mut canvas, inner.x + pad, line, px, ink, shown);
+                                let after = self.text.width(shown, px);
+                                canvas.fill(inner.x + pad + after + 1, line + 2, 2, Text::line_height(px) - 4, accent);
+                            }
+                        }
                     }
                     Cell::Place(place) => {
                         let line = cy - Text::line_height(px) / 2;
@@ -5286,6 +5438,42 @@ mod tests {
         // The windows are listed topmost first.
         let windows = windows.into_iter().rev().collect();
         Editor::new(shot, dim, vec![Rect::new(0, 0, width, height)], windows, Settings::default(), Text::load())
+    }
+
+    #[test]
+    fn another_folder_is_typed_finished_by_tab_and_taken_as_where_save_saves() {
+        let root = std::env::temp_dir().join(format!("hotshot-folders-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("shots-alpha")).unwrap();
+        // Tab finishes the name of the one folder that begins so.
+        let typed = format!("{}/shots-a", root.display());
+        assert_eq!(complete_folder(&typed), format!("{}/shots-alpha/", root.display()));
+        assert_eq!(untilde("~/x/"), std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("x"));
+        assert_eq!(folder_label(std::path::Path::new("/tmp")), "/tmp");
+        assert_eq!(folder_label(std::path::Path::new("/a/very/long/way/down/to/the/shots/folder")), "\u{2026}/shots/folder");
+        let mut editor = editor(1600, 1000);
+        editor.settings.places = vec!["hotshot".into()];
+        editor.settings.folders = vec![root.join("default")];
+        editor.settings.named = 1;
+        editor.selection = Some(Rect::new(100, 100, 400, 300));
+        editor.flyout = Some(Button::Places);
+        editor.choose(Cell::Folder);
+        assert_eq!(editor.folder_typed.as_deref(), Some("/tmp/"), "begun at /tmp");
+        // Typed over: a folder not there, in one that is, is made.
+        editor.folder_typed = Some(String::new());
+        for letter in format!("{}/new", root.display()).chars() {
+            editor.key(Key::Char(letter), PLAIN);
+        }
+        editor.key(Key::Enter, PLAIN);
+        assert!(root.join("new").is_dir());
+        assert_eq!((editor.place(), editor.flyout), (1, None));
+        assert_eq!(editor.folders()[1], root.join("new"));
+        // One that cannot be is red, and stays to be typed over.
+        editor.flyout = Some(Button::Places);
+        editor.choose(Cell::Folder);
+        editor.folder_typed = Some("/no/such/place/at/all".into());
+        editor.key(Key::Enter, PLAIN);
+        assert!(editor.folder_wrong && editor.folder_typed.is_some() && editor.place() == 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn drag(editor: &mut Editor, from: (i32, i32), to: (i32, i32)) {
