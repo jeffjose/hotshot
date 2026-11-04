@@ -180,6 +180,27 @@ mod tests {
     use super::*;
     use crate::studio::board::tests::*;
 
+
+    #[test]
+    fn enter_with_the_caret_among_the_words_is_a_new_line_and_at_their_end_done() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 300.0), (400.0, 372.0), Mods::default());
+        type_in(&mut studio, "red fox");
+        // The caret before fox: Enter breaks the line there, still typing.
+        let shape = shape(&studio, 0);
+        let (x, y, high) = studio.words_spot(&shape, 4).unwrap();
+        tap(&mut studio, (x + 1.0, y + high as f32 / 2.0));
+        assert_eq!(studio.board.caret, Some(4));
+        press_key(&mut studio, Key::Enter, Mods::default());
+        assert_eq!(crate::studio::board::tests::shape(&studio, 0).text, "red \nfox");
+        assert_eq!(studio.editing, Some(0), "still typing");
+        // At the end, Enter is done with them.
+        studio.board.caret = None;
+        press_key(&mut studio, Key::Enter, Mods::default());
+        assert_eq!(studio.editing, None);
+        assert_eq!(crate::studio::board::tests::shape(&studio, 0).text, "red \nfox");
+    }
     #[test]
     fn a_click_in_the_words_puts_the_caret_there_a_drag_picks_out_and_typing_goes_in_at_it() {
         let mut studio = board();

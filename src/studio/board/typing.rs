@@ -328,6 +328,7 @@ impl Studio {
         };
         // Tab, a child joined to it; Shift+Tab, back to its parent.
         let boxy = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
+        let length = shape.text.chars().count();
         match key {
             // What is guessed comes first: Tab keeps it.
             Key::Tab if self.board.ghost.is_some() => {
@@ -342,6 +343,12 @@ impl Studio {
                     self.commit_text();
                 }
                 return Some(Outcome::Continue);
+            }
+            // Enter with the caret among the words, not at their end: a new
+            // line there, as Shift+Enter is; at the end it is done with them.
+            Key::Enter if !mods.shift && self.board.caret.is_some_and(|at| at < length) => {
+                let over = std::mem::take(&mut self.words_picked);
+                return Some(Outcome::Continue).filter(|_| self.caret_key(Key::Enter, Mods { shift: true, ..mods }, over));
             }
             // Enter in a box of a map, the next one under it.
             Key::Enter if boxy && !mods.shift && self.add_sibling() => return Some(Outcome::Continue),
