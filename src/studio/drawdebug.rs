@@ -171,6 +171,27 @@ impl Studio {
             mask_px as f32 / 1000.0,
             fill_px as f32 / 1000.0,
         ));
+        // An arrow being pulled out of a box: from where, onto what, the box
+        // that would be made, and the arrow as it would be.
+        let pulling = match self.drag {
+            Drag::Pull { from, side, moved: true } if from < self.doc.layers.len() => {
+                let onto = self.board.bind;
+                let ghost = self.pulled_box(from, side);
+                let arrow = self.pulled_arrow(from, onto.filter(|&index| self.is_node(index)));
+                let points = arrow.as_ref().map_or_else(String::new, |arrow| arrow.points.iter().map(|p| format!("({:.0},{:.0})", p.0, p.1)).collect::<Vec<_>>().join(" "));
+                let says = format!(
+                    "pull from #{from} side {} pointer {:?} onto {} ghost box ({:.0},{:.0} {:.0}x{:.0}) arrow {points}",
+                    ["top", "right", "bottom", "left"].get(usize::from(side)).unwrap_or(&"branch"),
+                    self.to_doc(self.pointer),
+                    onto.map_or_else(|| "nothing (a new box)".to_owned(), |index| format!("#{index}")),
+                    ghost.0, ghost.1, ghost.2, ghost.3,
+                );
+                crate::log_line(format_args!("{says}"));
+                Some(says)
+            }
+            _ => None,
+        };
+        let debug = &mut self.draw_debug;
         let fps = debug.frames.len();
         let worst = debug.frames.iter().map(|(_, ms)| *ms).fold(0.0, f32::max);
         debug.said = vec![
@@ -182,6 +203,7 @@ impl Studio {
             format!("fills worked out {fills} · {fill_ms:.1} ms · {:.0}k px", fill_px as f32 / 1000.0),
             format!("F12 · {}", ["", "times", "+ parts", "+ shapes"][usize::from(debug.level)]),
         ];
+        debug.said.extend(pulling);
         debug.last.retain(|(_, when)| now.duration_since(*when).as_millis() < 600);
         debug.last.extend(pieces.into_iter().map(|piece| (piece, now)));
         if debug.level == 0 {

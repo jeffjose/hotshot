@@ -382,6 +382,31 @@ mod tests {
         assert!((after.points[1].1 - bent.points[1].1 - 60.0).abs() < 2.0, "{:?} {:?}", after.points[1], bent.points[1]);
     }
 
+
+    /// CUJ: a box drawn, an arrow pulled a little out of its right side:
+    /// the new box it would make, and the arrow into it, go on right, the
+    /// arrow never turning back left round a box made over the first.
+    #[test]
+    fn an_arrow_pulled_a_little_right_of_a_box_goes_right_into_the_box_it_makes() {
+        for by in [12.0, 30.0, 60.0] {
+            let mut studio = board();
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            let (x, y, w, h) = studio.box_frame(0);
+            pull_dot(&mut studio, 0, (x + w + by, y + h / 2.0), Mods::default(), |studio| {
+                let ghost = studio.pulled_box(0, 1);
+                assert!(ghost.0 >= x + w - 0.5, "{by}: the box that would be made right of the first: {ghost:?}");
+                let arrow = studio.pulled_arrow(0, None).expect("the arrow shown");
+                assert!(arrow.points[1].0 > arrow.points[0].0, "{by}: shown pointing right: {:?}", arrow.points);
+            });
+            let made = studio.box_frame(1);
+            assert!(made.0 >= x + w - 0.5, "{by}: made right of the first: {made:?}");
+            let arrow = shape(&studio, 2);
+            assert!(arrow.points[1].0 > arrow.points[0].0, "{by}: pointing right: {:?}", arrow.points);
+        }
+    }
     #[test]
     fn an_arrow_pulled_from_a_dot_back_into_its_own_box_loops_round_to_another_side() {
         let mut studio = two_boxes();

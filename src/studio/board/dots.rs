@@ -255,6 +255,33 @@ impl Studio {
         Some((arrow.points[1], (u, v)))
     }
 
+    /// Where the box an arrow pulled out onto empty board would be made: as
+    /// large as the one it comes from, hung off the pointer the way the
+    /// arrow is pulled, its near side at the pointer, so that the arrow
+    /// goes on that way into it rather than turning back round it.
+    pub(in crate::studio) fn pulled_box(&self, from: usize, side: u8) -> (f32, f32, f32, f32) {
+        let (_, _, w, h) = self.box_frame(from);
+        let at = self.to_doc(self.pointer);
+        let start = self.to_doc(self.pull_start(from, side));
+        let (dx, dy) = (at.0 - start.0, at.1 - start.1);
+        // The way it is pulled: across or down, whichever it has gone more;
+        // barely moved, the way the side it comes out of faces.
+        let across = match dx.abs().max(dy.abs()) * self.zoom < 6.0 {
+            true => SIDES.get(usize::from(side)).is_none_or(|way| way.0 != 0.0),
+            false => dx.abs() >= dy.abs(),
+        };
+        let forward = match across {
+            true => if dx.abs() * self.zoom < 6.0 { SIDES.get(usize::from(side)).map_or(1.0, |way| way.0) >= 0.0 } else { dx >= 0.0 },
+            false => if dy.abs() * self.zoom < 6.0 { SIDES.get(usize::from(side)).map_or(1.0, |way| way.1) >= 0.0 } else { dy >= 0.0 },
+        };
+        match (across, forward) {
+            (true, true) => (at.0, at.1 - h / 2.0, w, h),
+            (true, false) => (at.0 - w, at.1 - h / 2.0, w, h),
+            (false, true) => (at.0 - w / 2.0, at.1, w, h),
+            (false, false) => (at.0 - w / 2.0, at.1 - h, w, h),
+        }
+    }
+
     /// The arrow being pulled out of a box as it will be when let go: tied
     /// to the box it is over, at the port the pointer is nearest, or to the
     /// box that will be made under the pointer; routed between them as
@@ -281,8 +308,10 @@ impl Studio {
                 shapes::follow(std::iter::once(&mut arrow), &self.anchors());
             }
             None => {
-                // A box the size of this one, its middle at the pointer.
-                let middle = self.to_doc(self.pointer);
+                // The box that would be made, hung off the pointer.
+                let side = if let Drag::Pull { side, .. } = self.drag { side } else { 1 };
+                let (bx, by, bw, bh) = self.pulled_box(from, side);
+                let middle = (bx + bw / 2.0, by + bh / 2.0);
                 let made = shapes::Anchor { id: u32::MAX, middle, half: (a.2 / 2.0, a.3 / 2.0), angle: 0.0, round: false, pointed: false };
                 arrow.points[1] = middle;
                 arrow.stuck = [Some((start.id, shapes::WHOLE, shapes::WHOLE)), Some((made.id, shapes::WHOLE, shapes::WHOLE))];
@@ -323,8 +352,7 @@ impl Studio {
         if self.mods.ctrl {
             return None;
         }
-        let (_, _, w, h) = self.box_frame(from);
-        let made = (at.0 - w / 2.0, at.1 - h / 2.0, w, h);
+        let made = self.pulled_box(from, side);
         // How far the pointer is from a box, and how large it is, for the
         // smaller of two as near.
         let away = |f: (f32, f32, f32, f32)| ((at.0 - at.0.clamp(f.0, f.0 + f.2)).hypot(at.1 - at.1.clamp(f.1, f.1 + f.3)), f.2 * f.3);
@@ -379,7 +407,11 @@ impl Studio {
             }
         }
         let center = match moved {
-            true => self.to_doc(self.pointer),
+            // Hung off the pointer the way it was pulled, as it was shown.
+            true => {
+                let (bx, by, bw, bh) = self.pulled_box(from, side);
+                (bx + bw / 2.0, by + bh / 2.0)
+            }
             // As far beside it as at its own size, drawn zoomed out or in.
             false => {
                 let by = match &self.doc.layers[from].kind {
@@ -473,9 +505,9 @@ impl Studio {
                     // The box it would be tied to glows.
                     Some(_) => self.draw_bind(canvas),
                     None => {
-                        let (_, _, w, h) = self.box_frame(from);
-                        let (hw, hh) = ((w * self.zoom / 2.0) as i32, (h * self.zoom / 2.0) as i32);
-                        dashed_box(canvas, Rect::new(self.pointer.0 - hw, self.pointer.1 - hh, hw * 2, hh * 2), ACCENT);
+                        let (bx, by, bw, bh) = self.pulled_box(from, side);
+                        let (a, b) = (self.to_window((bx, by)), self.to_window((bx + bw, by + bh)));
+                        dashed_box(canvas, Rect::new(a.0, a.1, b.0 - a.0, b.1 - a.1), ACCENT);
                     }
                 }
                 // The arrow as it will be once let go: routed and curved as

@@ -686,7 +686,8 @@ mod tests {
         // curving.
         assert_eq!(joined.stuck[1].map(|(_, u, v)| (u, v)), Some((-1.0, 0.0)));
         assert!(joined.points[0].1 >= 172.0 && joined.points[1].0 <= 600.5 && joined.points.len() == 3, "from {:?} to {:?}", joined.points[0], joined.points[1]);
-        // Dragged out onto empty board: a new box there.
+        // Dragged out onto empty board: a new box there, hung off the pointer
+        // the way it was pulled, down, its top at it.
         studio.pointer_moved(over.0, over.1, Mods::default());
         let left = studio.dot_spots(0)[3];
         studio.pointer_moved(left.0, left.1, Mods::default());
@@ -697,7 +698,7 @@ mod tests {
         studio.released();
         assert_eq!(studio.doc.layers.len(), 7);
         let (x, y, w, h) = shape(&studio, 5).frame();
-        assert!(((x + w / 2.0) - 100.0).abs() < 1.0 && ((y + h / 2.0) - 500.0).abs() < 1.0);
+        assert!(((x + w / 2.0) - 100.0).abs() < 1.0 && (y - 500.0).abs() < 1.0, "{:?}", (x, y, w, h));
     }
 
     #[test]
