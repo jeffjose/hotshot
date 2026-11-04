@@ -322,6 +322,33 @@ mod tests {
         studio.released();
     }
 
+
+    #[test]
+    fn an_arrow_pulled_from_a_dot_back_into_its_own_box_loops_round_to_another_side() {
+        let mut studio = two_boxes();
+        let (x, y, w, h) = studio.box_frame(0);
+        // Out of A's right side and back in near its bottom: A glows, and
+        // its preview is the loop as it will be.
+        pull_dot(&mut studio, 0, (x + w / 2.0, y + h - 4.0), Mods::default(), |studio| {
+            assert_eq!(studio.board.bind, Some(0), "A glows");
+            let preview = studio.pulled_arrow(0, Some(0)).expect("a preview");
+            assert_eq!(preview.points.len(), 5, "round a corner");
+        });
+        assert_eq!(studio.doc.layers.len(), 3, "an arrow, no third box");
+        let arrow = shape(&studio, 2);
+        let id = shape(&studio, 0).id;
+        assert_eq!((arrow.stuck[0], arrow.stuck[1]), (Some((id, 1.0, 0.0)), Some((id, 0.0, 1.0))));
+        assert_eq!(arrow.points[0], (x + w, y + h / 2.0));
+        assert_eq!(arrow.points[1], (x + w / 2.0, y + h));
+        // Out past the corner between them, not across the box.
+        assert!(arrow.points[3].0 > x + w && arrow.points[3].1 > y + h);
+        // A moved, it goes with it.
+        studio.selected.clear();
+        pull(&mut studio, (x + 30.0, y + 20.0), (x + 70.0, y + 20.0), Mods::default());
+        let arrow = shape(&studio, 2);
+        assert!((arrow.points[0].0 - (x + w + 40.0)).abs() < 1.0, "{:?}", arrow.points[0]);
+    }
+
     #[test]
     fn an_arrow_pulled_from_a_dot_is_tied_to_a_box_it_is_let_go_near_not_only_on() {
         let mut studio = two_boxes();

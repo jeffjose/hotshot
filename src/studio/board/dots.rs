@@ -231,8 +231,8 @@ impl Studio {
                 self.drag = Drag::Pull { from, side, moved: true };
             }
         }
-        if let Drag::Pull { from, moved: true, .. } = self.drag {
-            self.board.bind = self.pulled_onto(from);
+        if let Drag::Pull { from, side, moved: true } = self.drag {
+            self.board.bind = self.pulled_onto(from, side);
             self.board.ports = self.board.bind.and_then(|onto| Some((onto, self.pulled_port(from, onto)?.0))).into_iter().collect();
         }
         self.dirty = true;
@@ -255,9 +255,46 @@ impl Studio {
         Some((arrow.points[1], (u, v)))
     }
 
+    /// The arrow being pulled out of a box as it will be when let go: tied
+    /// to the box it is over, at the port the pointer is nearest, or to the
+    /// box that will be made under the pointer; routed between them as
+    /// letting go routes it, in the board's look.
+    pub(in crate::studio) fn pulled_arrow(&mut self, from: usize, onto: Option<usize>) -> Option<Shape> {
+        let start = self.doc.layers.get(from)?.kind.clone().anchor_of(&mut self.text)?;
+        let a = self.box_frame(from);
+        let mut arrow = Shape::new(Tool::Arrow, self.board.stroke, LINE, (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0));
+        self.board_dress(&mut arrow);
+        self.arrow_like(&mut arrow, from);
+        arrow.routed = true;
+        match onto {
+            Some(index) => {
+                let (end, _) = self.pulled_port(from, index)?;
+                let anchor = self.doc.layers.get(index)?.kind.clone().anchor_of(&mut self.text)?;
+                let (u, v) = self.port_at(&anchor, self.to_doc(self.pointer));
+                arrow.points[1] = end;
+                arrow.stuck = [Some((start.id, shapes::WHOLE, shapes::WHOLE)), Some((anchor.id, u, v))];
+                // Back to itself: out of the side it is pulled from.
+                if let (true, Drag::Pull { side, .. }) = (index == from, self.drag) {
+                    let (su, sv) = shapes::PORTS[usize::from(side % 4)];
+                    arrow.stuck[0] = Some((start.id, su, sv));
+                }
+                shapes::follow(std::iter::once(&mut arrow), &self.anchors());
+            }
+            None => {
+                // A box the size of this one, its middle at the pointer.
+                let middle = self.to_doc(self.pointer);
+                let made = shapes::Anchor { id: u32::MAX, middle, half: (a.2 / 2.0, a.3 / 2.0), angle: 0.0, round: false, pointed: false };
+                arrow.points[1] = middle;
+                arrow.stuck = [Some((start.id, shapes::WHOLE, shapes::WHOLE)), Some((made.id, shapes::WHOLE, shapes::WHOLE))];
+                shapes::route(&mut arrow, &start, &made);
+            }
+        }
+        Some(arrow)
+    }
+
     /// The box an arrow pulled out would be let go on or near, but the one
     /// it is pulled out of and those round that.
-    fn pulled_onto(&mut self, from: usize) -> Option<usize> {
+    fn pulled_onto(&mut self, from: usize, side: u8) -> Option<usize> {
         if from >= self.doc.layers.len() {
             return None;
         }
@@ -266,6 +303,20 @@ impl Studio {
         skip.push(self.id_of(from));
         if let Some(onto) = self.bind_target(at, &skip, true) {
             return Some(onto);
+        }
+        // Back onto itself, nearest another of its sides than the one it is
+        // pulled out of: a loop, from the box to itself.
+        {
+            let (x, y, w, h) = self.box_frame(from);
+            let room = 12.0 / self.zoom;
+            let inside = at.0 > x - room && at.0 < x + w + room && at.1 > y - room && at.1 < y + h + room;
+            let anchor = self.doc.layers[from].kind.clone().anchor_of(&mut self.text);
+            if let (true, Some(anchor)) = (inside, anchor) {
+                let (u, v) = self.port_at(&anchor, at);
+                if shapes::port_of(u, v).is_some_and(|port| port != usize::from(side % 4)) {
+                    return Some(from);
+                }
+            }
         }
         // Nor is a new box made over another: the box it would be made on
         // is what it was meant for, the one nearest the pointer.
@@ -304,7 +355,7 @@ impl Studio {
         let (dx, dy) = SIDES[usize::from(side.min(3))];
         self.checkpoint();
         if moved {
-            if let Some(onto) = self.pulled_onto(from) {
+            if let Some(onto) = self.pulled_onto(from, side) {
                 // Into the other where it was let go, as the dot lit there
                 // showed.
                 let port = self.pulled_port(from, onto);
@@ -312,6 +363,13 @@ impl Studio {
                 if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(arrow) {
                     if let (Some((id, ..)), Some((_, (u, v)))) = (shape.stuck[1], port) {
                         shape.stuck[1] = Some((id, u, v));
+                    }
+                    // Back to itself: out of the side it was pulled from.
+                    if onto == from {
+                        if let Some((id, ..)) = shape.stuck[0] {
+                            let (u, v) = shapes::PORTS[usize::from(side % 4)];
+                            shape.stuck[0] = Some((id, u, v));
+                        }
                     }
                 }
                 self.follow();
@@ -411,22 +469,34 @@ impl Studio {
             if from < self.doc.layers.len() {
                 let spot = self.pull_start(from, side);
                 let onto = self.board.bind.filter(|&index| self.is_node(index));
-                let to = match onto {
-                    // To the edge of the box it would be tied to, which glows.
-                    Some(index) => {
-                        let port = self.pulled_port(from, index).map_or(self.to_doc(self.pointer), |(at, _)| at);
-                        self.draw_bind(canvas);
-                        self.to_window(port)
-                    }
+                match onto {
+                    // The box it would be tied to glows.
+                    Some(_) => self.draw_bind(canvas),
                     None => {
                         let (_, _, w, h) = self.box_frame(from);
                         let (hw, hh) = ((w * self.zoom / 2.0) as i32, (h * self.zoom / 2.0) as i32);
                         dashed_box(canvas, Rect::new(self.pointer.0 - hw, self.pointer.1 - hh, hw * 2, hh * 2), ACCENT);
-                        self.pointer
                     }
-                };
-                for shift in [0, 1] {
-                    line(canvas, (spot.0, spot.1 + shift), (to.0, to.1 + shift), ACCENT);
+                }
+                // The arrow as it will be once let go: routed and curved as
+                // it will be, and its head; a straight line where it cannot
+                // be worked out.
+                match self.pulled_arrow(from, onto) {
+                    Some(arrow) => {
+                        for ink in arrow.sketch_strokes() {
+                            let mut points: Vec<(f32, f32)> = ink.points.iter().map(|&point| self.to_window_f(point)).collect();
+                            // A head shut round.
+                            if ink.filled && points.len() > 2 {
+                                points.push(points[0]);
+                            }
+                            halo(canvas, &points, 1.1, ACCENT, 256);
+                        }
+                    }
+                    None => {
+                        for shift in [0, 1] {
+                            line(canvas, (spot.0, spot.1 + shift), (self.pointer.0, self.pointer.1 + shift), ACCENT);
+                        }
+                    }
                 }
             }
         }

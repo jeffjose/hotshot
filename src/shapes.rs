@@ -1306,7 +1306,11 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                 };
                 if let (Some(from), Some(to), Some(a), Some(b)) = (find(first), find(last), side(fu, fv), side(lu, lv)) {
                     let before = shape.points.clone();
-                    route_sides(shape, from, to, [a, b]);
+                    match first == last {
+                        // From a thing back to itself: a loop round it.
+                        true => route_loop(shape, from, [a, b]),
+                        false => route_sides(shape, from, to, [a, b]),
+                    }
                     this |= shape.points != before;
                 }
             }
@@ -1370,6 +1374,33 @@ pub fn side_point(anchor: &Anchor, side: usize) -> (Point, (f32, f32)) {
     let way = PORTS[side.min(3)];
     let (sin, cos) = anchor.angle.sin_cos();
     (anchor.at(way.0, way.1), (way.0 * cos - way.1 * sin, way.0 * sin + way.1 * cos))
+}
+
+/// An arrow from a thing back to itself: out of one side, round the
+/// corner past the next, and into that one, as a state that stays itself
+/// is drawn. Sides given in the order of `PORTS`, round the way it turns;
+/// the second, if none, the same or across from the first, the one after
+/// it.
+pub fn route_loop(shape: &mut Shape, anchor: &Anchor, sides: [Option<usize>; 2]) {
+    let first = sides[0].unwrap_or(1) % 4;
+    let last = match sides[1] {
+        Some(side) if side % 4 != first && side % 4 != (first + 2) % 4 => side % 4,
+        _ => (first + 1) % 4,
+    };
+    let (start, out) = side_point(anchor, first);
+    let (end, back) = side_point(anchor, last);
+    // How far out it goes: some of how deep the box is, enough to be seen.
+    let reach = (anchor.half.0.min(anchor.half.1) * 0.6).max(shape.stroke * 6.0 + 14.0);
+    let leave = (start.0 + out.0 * reach, start.1 + out.1 * reach);
+    let come = (end.0 + back.0 * reach, end.1 + back.1 * reach);
+    // Round the corner between the two sides, as far out from it.
+    let half = |way: (f32, f32)| way.0.abs() * anchor.half.0 + way.1.abs() * anchor.half.1;
+    let corner = (
+        anchor.middle.0 + out.0 * half(out) + back.0 * half(back) + (out.0 + back.0) * reach * 0.7,
+        anchor.middle.1 + out.1 * half(out) + back.1 * half(back) + (out.1 + back.1) * reach * 0.7,
+    );
+    shape.points = vec![start, end, leave, corner, come];
+    shape.elbow = false;
 }
 
 /// An arrow between the sides of two things, either side given or the
