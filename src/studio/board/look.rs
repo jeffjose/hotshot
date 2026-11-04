@@ -518,6 +518,26 @@ pub(in crate::studio) mod tests {
         }
     }
 
+
+    #[test]
+    fn a_tall_board_s_preview_is_as_wide_as_asked_with_it_in_the_middle() {
+        let mut studio = board();
+        // Two boxes one well under the other: taller than wide.
+        for top in [100.0, 700.0] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (100.0, top), (260.0, top + 72.0), Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+        }
+        let pages = studio.gathered();
+        let (w, h, pixels) = board_preview(&pages[0], 320, 200, &mut studio.text).expect("a preview");
+        assert!(((w as f32 / h as f32) - 1.6).abs() < 0.05, "{w}x{h}");
+        // The boxes in the middle across, paper either side.
+        let paper = PAPERS[0].0;
+        let column = |x: i32| (0..h).filter(|&y| pixels[(y * w + x) as usize] & 0xFF_FFFF != paper).count();
+        assert_eq!((column(2), column(w - 3)), (0, 0), "paper at the sides");
+        assert!(column(w / 2) > 0, "the boxes in the middle");
+    }
     #[test]
     fn a_dotted_line_drawn_by_hand_is_a_row_of_dots_all_along_it() {
         let mut studio = board();
@@ -628,7 +648,18 @@ pub fn board_preview(page: &super::super::Page, wide: i32, high: i32, text: &mut
         return Some((wide, high, vec![0xFF00_0000 | paper; (wide * high).max(0) as usize]));
     };
     let room = 24.0;
-    let (x, y, w, h) = (x - room, y - room, w + 2.0 * room, h + 2.0 * room);
+    let (mut x, mut y, mut w, mut h) = (x - room, y - room, w + 2.0 * room, h + 2.0 * room);
+    // As wide to as high as the picture asked for, what is on it in the
+    // middle of its paper: a tall board is not a tall picture in a row of
+    // wide ones.
+    let shape = wide.max(1) as f32 / high.max(1) as f32;
+    if w / h < shape {
+        let wider = h * shape;
+        (x, w) = (x - (wider - w) / 2.0, wider);
+    } else {
+        let taller = w / shape;
+        (y, h) = (y - (taller - h) / 2.0, taller);
+    }
     let mut sheet = Doc::new(w.ceil().max(1.0) as i32, h.ceil().max(1.0) as i32);
     sheet.background = Fill::Color(paper);
     sheet.layers = layers
