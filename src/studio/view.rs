@@ -105,6 +105,25 @@ impl Studio {
         }
     }
 
+    /// Whether the page's canvas is a light one, which dark words read on.
+    pub(super) fn light_canvas(&self) -> bool {
+        let (_, color, _) = CANVASES[usize::from(self.pages[self.page].canvas).min(CANVASES.len() - 1)];
+        let part = |shift: u32| (color >> shift & 0xFF) as f32 / 255.0;
+        0.2126 * part(16) + 0.7152 * part(8) + 0.0722 * part(0) > 0.5
+    }
+
+    /// The page of frames put on another of `CANVASES`, kept in the file.
+    pub(super) fn set_canvas(&mut self, which: u8) {
+        let which = which.min(CANVASES.len() as u8 - 1);
+        if self.pages[self.page].canvas != which {
+            self.checkpoint();
+            self.pages[self.page].canvas = which;
+            self.edited = true;
+        }
+        self.dirty = true;
+        self.say(format!("Canvas: {}", CANVASES[usize::from(which)].0));
+    }
+
     /// Opened as it was last left, if it has been opened before.
     pub fn recall_view(&mut self) {
         let Some(path) = self.path.clone() else { return };
@@ -120,6 +139,31 @@ impl Studio {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn a_page_of_frames_is_put_on_another_color_kept_in_its_file() {
+        let mut studio = Studio::new(Doc::new(400, 300), Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());
+        // Offered in View, the usual one picked.
+        let offered: Vec<String> = studio.menu_items(super::menu::MenuKind::Canvas).into_iter().filter_map(|item| match item {
+            super::menu::Item::Entry { says, on, .. } => Some(format!("{says}{}", if on { " *" } else { "" })),
+            _ => None,
+        }).collect();
+        assert_eq!(offered.len(), CANVASES.len());
+        assert_eq!(offered[0], "Dark *");
+        // White: the page drawn white round the frame, and kept so.
+        let white = CANVASES.iter().position(|(name, ..)| *name == "White").unwrap() as u8;
+        studio.set_canvas(white);
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let view = studio.layout().view;
+        assert_eq!(out[((view.y + 3) * studio.width + view.x + 3) as usize] & 0xFF_FFFF, 0xFFFFFF);
+        assert!(studio.light_canvas());
+        let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        assert_eq!(back[0].canvas, white);
+        // Undone, back to the usual.
+        studio.undo();
+        assert_eq!(studio.pages[0].canvas, 0);
+    }
     #[test]
     fn a_file_is_shown_again_where_it_was_left() {
         let mut studio = Studio::new(Doc::new(800, 600), Text::load(), 1400, 900, std::env::temp_dir(), "t.png".into());

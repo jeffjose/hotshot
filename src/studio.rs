@@ -75,6 +75,18 @@ pub(crate) const EDGE_COLOR: u32 = 0x383838;
 pub(crate) const FIELD_COLOR: u32 = 0x383838;
 pub(crate) const HOVER_COLOR: u32 = 0x444444;
 pub(crate) const VIEW_COLOR: u32 = 0x1E1E1E;
+
+/// What a page of frames can be on, as Figma lets its canvas be colored:
+/// what each is called, the color, and its dots. The first is the usual.
+pub(crate) const CANVASES: [(&str, u32, u32); 7] = [
+    ("Dark", VIEW_COLOR, 0x2E2E2E),
+    ("Black", 0x000000, 0x1A1A1A),
+    ("Dark gray", 0x2C2C2C, 0x3D3D3D),
+    ("Light gray", 0xE5E5E5, 0xCCCCCC),
+    ("White", 0xFFFFFF, 0xE2E2E2),
+    ("Solarized dark", 0x002B36, 0x0E3C48),
+    ("Solarized light", 0xFDF6E3, 0xE6DFC8),
+];
 pub(crate) const ACCENT: u32 = 0x3E63DD;
 /// What is picked out, in a list; and the accent as text on the dark.
 pub(crate) const ROW_ON: u32 = 0x2E3D73;
@@ -1040,6 +1052,10 @@ fn file_lines(pages: &[Page]) -> (String, Vec<Arc<Image>>) {
             }
             out += "\n";
         }
+        // What a page of frames is on, when not the usual.
+        if page.canvas != 0 {
+            out += &format!("canvas {}\n", page.canvas);
+        }
         if !page.board && page.frames.is_empty() {
             // A board made a page of frames again before it had any.
             out += "no-frames\n";
@@ -1102,6 +1118,10 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
         let page = pages.last_mut()?;
         if line == "board" && page.frames.is_empty() && !own {
             page.board = true;
+            continue;
+        }
+        if let Some(which) = line.strip_prefix("canvas ").filter(|_| page.frames.is_empty() && !own) {
+            page.canvas = which.trim().parse::<u8>().unwrap_or(0).min(CANVASES.len() as u8 - 1);
             continue;
         }
         if let Some(rest) = line.strip_prefix("board-look ").filter(|_| page.frames.is_empty() && !own) {
@@ -1201,11 +1221,13 @@ pub struct Page {
     /// How large a board's next words are, in pixels: the size last set
     /// in its bar of styles.
     pub px: u32,
+    /// What a page of frames is on: one of `CANVASES`.
+    pub canvas: u8,
 }
 
 impl Page {
     pub fn new(name: impl Into<String>, frames: Vec<Doc>) -> Page {
-        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false, font: board::LETTERING, px: board::WORDS_PX }
+        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false, font: board::LETTERING, px: board::WORDS_PX, canvas: 0 }
     }
 }
 
@@ -6120,12 +6142,14 @@ impl Studio {
             self.draw_debug.paper_ms = paper.elapsed().as_secs_f32() * 1000.0;
             self.draw_debug.mark("paper");
         } else {
-            out.par_chunks_mut(1 << 16).for_each(|part| part.fill(VIEW_COLOR));
+            // The page's canvas, as it is colored, and its dots.
+            let (_, canvas, dot) = CANVASES[usize::from(self.pages[self.page].canvas).min(CANVASES.len() - 1)];
+            out.par_chunks_mut(1 << 16).for_each(|part| part.fill(canvas));
             let dots = 24;
             let (ox, oy) = (self.pan.0.rem_euclid(dots as f32) as i32, self.pan.1.rem_euclid(dots as f32) as i32);
             for y in (view.y + oy..view.bottom()).step_by(dots as usize) {
                 for x in (view.x + ox..view.right()).step_by(dots as usize) {
-                    out[(y * width + x) as usize] = 0x2E2E2E;
+                    out[(y * width + x) as usize] = dot;
                 }
             }
         }
@@ -6210,8 +6234,9 @@ impl Studio {
         }
         for (index, place, name) in self.frame_labels() {
             // On a board's paper, in its ink.
-            let (lit, dim) = if self.on_board() { (board::INK, board::QUIET) } else { (TEXT_COLOR, DIM_TEXT_COLOR) };
-            let color = if index == self.active && self.frame_picked { if self.on_board() { ACCENT } else { ACCENT_TEXT } } else if index == self.active { lit } else { dim };
+            let light = !self.on_board() && self.light_canvas();
+            let (lit, dim) = if self.on_board() || light { (board::INK, board::QUIET) } else { (TEXT_COLOR, DIM_TEXT_COLOR) };
+            let color = if index == self.active && self.frame_picked { if self.on_board() || light { ACCENT } else { ACCENT_TEXT } } else if index == self.active { lit } else { dim };
             let name = match self.renaming.clone() {
                 Some((Naming::Frame, typed)) if index == self.active => self.typed_shown(&mut canvas, (place.x, place.y), 12, typed),
                 _ => name,

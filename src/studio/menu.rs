@@ -28,6 +28,8 @@ pub(super) enum MenuKind {
     MainSub(u8),
     /// What can be done with a page.
     Page(usize),
+    /// The colors a page of frames can be on.
+    Canvas,
     /// How large the page is shown.
     Zoom,
     /// Where a border lies on its edge; whether a line is solid, dashed
@@ -76,6 +78,8 @@ pub(super) enum Look {
     Face(usize),
     Head(u8),
     Icon(&'static str),
+    /// A swatch of a color: what a canvas is.
+    Swatch(u32),
     /// A small box drawn in one of a board's looks, and a swatch of one of
     /// its grounds.
     Board(u8),
@@ -103,6 +107,8 @@ pub(super) enum MenuAct {
     Shadow(usize),
     Style(u8),
     Act(Action),
+    /// A page of frames put on one of `CANVASES`.
+    Canvas(u8),
     Do(Command),
     /// Something only a board does.
     Board(super::board::Act),
@@ -463,9 +469,10 @@ impl Studio {
             ],
             MenuKind::MainSub(0) => vec![do_("New design page", "", Command::NewPageOf(false)), do_("New board page", "", Command::NewPageOf(true)), do_("New frame", "F", Command::NewFrame), Item::Rule, do_("Save", "Ctrl S", Command::Save), do_("Export frame", "Ctrl E", Command::ExportFrame), do_("Export every frame of the page", "Ctrl Shift E", Command::ExportPage)],
             MenuKind::MainSub(1) => vec![do_("Undo", "Ctrl Z", Command::Undo), do_("Redo", "Ctrl Shift Z", Command::Redo), Item::Rule, do_("Copy", "Ctrl C", Command::Copy), do_("Copy frame as PNG", "Ctrl Shift C", Command::CopyPng), do_("Paste", "Ctrl V", Command::Paste), do_("Duplicate", "Ctrl D", Command::Duplicate), do_("Delete", "Del", Command::Delete), Item::Rule, do_("Select all", "Ctrl A", Command::SelectAll)],
-            MenuKind::MainSub(2) => vec![do_("Zoom in", "Ctrl +", Command::ZoomIn), do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut), do_("Zoom to fit", "Ctrl 0", Command::ZoomFit), do_("Zoom to selection", "Shift 2", Command::ZoomSelection), do_("Actual size", "Ctrl 1", Command::Zoom(100)), Item::Rule, do_("Rulers", "Shift R", Command::Rulers).on(self.rulers), do_("Left panel", "Ctrl Shift \\", Command::LeftPanel).on(self.left_open), do_("Right panel", "Ctrl Alt \\", Command::RightPanel).on(self.right_open), do_("Zen mode", "Ctrl \\", Command::Zen).on(self.zen)],
+            MenuKind::MainSub(2) => vec![do_("Zoom in", "Ctrl +", Command::ZoomIn), do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut), do_("Zoom to fit", "Ctrl 0", Command::ZoomFit), do_("Zoom to selection", "Shift 2", Command::ZoomSelection), do_("Actual size", "Ctrl 1", Command::Zoom(100)), Item::Rule, do_("Rulers", "Shift R", Command::Rulers).on(self.rulers), do_("Left panel", "Ctrl Shift \\", Command::LeftPanel).on(self.left_open), do_("Right panel", "Ctrl Alt \\", Command::RightPanel).on(self.right_open), do_("Zen mode", "Ctrl \\", Command::Zen).on(self.zen), Item::Rule, Item::sub("Canvas color", MenuKind::Canvas)],
             MenuKind::MainSub(3) => vec![Item::sub("Order", MenuKind::Order), Item::entry("Frame selection", "Ctrl Alt G", MenuAct::Act(Action::FrameThem)), Item::entry("Add auto layout", "Shift A", MenuAct::Act(Action::AddStack)), Item::entry("Remove auto layout", "", MenuAct::Act(Action::RemoveStack)), Item::Rule, Item::entry("Flip across", "Shift H", MenuAct::Act(Action::FlipAcross)), Item::entry("Flip down", "Shift V", MenuAct::Act(Action::FlipDown)), Item::entry("Crop", "Enter", MenuAct::Act(Action::Crop)), Item::entry("Tight crop", "", MenuAct::Act(Action::Tight)), Item::Rule, do_("Show / hide", "Ctrl Shift H", Command::ToggleHide), do_("Lock / unlock", "Ctrl Shift L", Command::ToggleLock)],
             MenuKind::MainSub(_) => vec![do_("Capture the screen", "Ctrl G", Command::Capture), do_("Paste a picture", "Ctrl V", Command::Paste)],
+            MenuKind::Canvas => CANVASES.iter().enumerate().map(|(at, (name, color, _))| Item::entry(*name, "", MenuAct::Canvas(at as u8)).on(self.pages[self.page].canvas == at as u8).look(Look::Swatch(*color))).collect(),
             MenuKind::Page(page) => vec![do_("Rename", "Double-click", Command::RenamePage(page)), do_("Duplicate page", "", Command::DuplicatePage(page)), do_("Export every frame", "Ctrl Shift E", Command::ExportPage), Item::Rule, do_("New design page", "", Command::NewPageOf(false)), do_("New board page", "", Command::NewPageOf(true)), Item::Rule, do_("Delete page", "", Command::DeletePage(page))],
             MenuKind::Layer(index) => {
                 let layer = self.doc.layers.get(index);
@@ -636,6 +643,11 @@ impl Studio {
                             Look::Head(style) => {
                                 draw_head_sample(canvas, x, mid, *style, if lit { 0xFFFFFF } else { TEXT_COLOR });
                                 x += 34;
+                            }
+                            Look::Swatch(color) => {
+                                canvas.round_fill(x, mid - 7, 14, 14, 4, *color, 256);
+                                canvas.round_outline(x, mid - 7, 14, 14, 4, 1, 0x666666);
+                                x += 24;
                             }
                             Look::Icon(icon) => {
                                 self.text.draw_centered(canvas, x + 7, mid, 14, TEXT_COLOR, icon);
@@ -858,6 +870,7 @@ impl Studio {
             MenuAct::Act(action) => return self.act(action),
             MenuAct::Do(command) => return self.run_command(command),
             MenuAct::Board(act) => return self.board_act(act),
+            MenuAct::Canvas(which) => self.set_canvas(which),
         }
         Outcome::Continue
     }
