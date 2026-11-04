@@ -264,8 +264,26 @@ impl Studio {
         let at = self.to_doc(self.pointer);
         let start = self.to_doc(self.pull_start(from, side));
         let (dx, dy) = (at.0 - start.0, at.1 - start.1);
-        // The way it is pulled: across or down, whichever it has gone more;
-        // barely moved, the way the side it comes out of faces.
+        // Out of a side, and not pulled back past it: on that side, its near
+        // side at the pointer, slid along with it across, and clear of the
+        // box it comes from: pulled as far across as along, or a little
+        // more, it is still that way; much farther across, the other way.
+        if let Some(&way) = SIDES.get(usize::from(side)) {
+            let (along, across) = (dx * way.0 + dy * way.1, (dx * way.1 - dy * way.0).abs());
+            if along > -6.0 / self.zoom && across <= 2.5 * along.max(0.0) + 40.0 / self.zoom {
+                let (sx, sy, sw, sh) = self.box_frame(from);
+                let gap = 12.0 / self.zoom;
+                return match way {
+                    (x, _) if x > 0.0 => (at.0.max(sx + sw + gap), at.1 - h / 2.0, w, h),
+                    (x, _) if x < 0.0 => ((at.0 - w).min(sx - gap - w), at.1 - h / 2.0, w, h),
+                    (_, y) if y > 0.0 => (at.0 - w / 2.0, at.1.max(sy + sh + gap), w, h),
+                    _ => (at.0 - w / 2.0, (at.1 - h).min(sy - gap - h), w, h),
+                };
+            }
+        }
+        // Pulled back past its side, or from an arrow's middle: across or
+        // down, whichever it has gone more; barely moved, the way the side
+        // it comes out of faces.
         let across = match dx.abs().max(dy.abs()) * self.zoom < 6.0 {
             true => SIDES.get(usize::from(side)).is_none_or(|way| way.0 != 0.0),
             false => dx.abs() >= dy.abs(),

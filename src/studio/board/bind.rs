@@ -406,6 +406,25 @@ mod tests {
             let arrow = shape(&studio, 2);
             assert!(arrow.points[1].0 > arrow.points[0].0, "{by}: pointing right: {:?}", arrow.points);
         }
+        // Pulled right and as far down, from the right side: still right,
+        // slid down with the pointer, never over the first box.
+        for down in [20.0, 60.0, 110.0] {
+            let mut studio = board();
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            let (x, y, w, h) = studio.box_frame(0);
+            pull_dot(&mut studio, 0, (x + w + 30.0, y + h / 2.0 + down), Mods::default(), |studio| {
+                let ghost = studio.pulled_box(0, 1);
+                assert!(ghost.0 >= x + w, "{down}: right of the first: {ghost:?}");
+                assert!((ghost.1 + ghost.3 / 2.0 - (y + h / 2.0 + down)).abs() < 2.0, "{down}: level with the pointer: {ghost:?}");
+                let arrow = studio.pulled_arrow(0, None).expect("the arrow shown");
+                assert!(arrow.points[1].0 > arrow.points[0].0, "{down}: shown pointing right: {:?}", arrow.points);
+            });
+            let arrow = shape(&studio, 2);
+            assert!(arrow.points[1].0 > arrow.points[0].0, "{down}: pointing right: {:?}", arrow.points);
+        }
     }
     #[test]
     fn an_arrow_pulled_from_a_dot_back_into_its_own_box_loops_round_to_another_side() {

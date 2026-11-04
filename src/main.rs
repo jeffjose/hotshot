@@ -71,7 +71,7 @@ pub fn debugging() -> bool {
 pub fn debug_line(what: std::fmt::Arguments) {
     let since = STARTED.get_or_init(Instant::now).elapsed();
     eprintln!("hotshot: {since:>9.1?} {what}");
-    log_line(what);
+    write_log(what);
 }
 
 /// The log the canvas's drawing debug writes, opened when first written
@@ -82,6 +82,16 @@ static LOG: std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>> = std::s
 /// files, timed from when hotshot started; written out at once, for it to
 /// be read as it goes.
 pub fn log_line(what: std::fmt::Arguments) {
+    // Said on stderr too while debugging, with the rest.
+    if debugging() {
+        let since = STARTED.get_or_init(Instant::now).elapsed();
+        eprintln!("hotshot: {since:>9.1?} {what}");
+    }
+    write_log(what);
+}
+
+/// A line written at the end of the log alone.
+fn write_log(what: std::fmt::Arguments) {
     use std::io::Write;
     // Tests draw too, and leave the log of a hotshot running alone.
     if cfg!(test) {
