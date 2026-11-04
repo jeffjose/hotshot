@@ -59,7 +59,7 @@ impl Studio {
     /// before the last two drawn with the first.
     pub(in crate::studio) fn draw_zoom_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
         let (cx, cy) = rect.center();
-        let on = ctl == Ctl::Keys && self.board.keys;
+        let on = (ctl == Ctl::Keys && self.board.keys) || (ctl == Ctl::Theme && self.board.theme_open);
         if on {
             canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, ACCENT, 256);
         } else if hovered {
@@ -73,6 +73,14 @@ impl Studio {
                 let says = zoom_says(self.zoom);
                 let wide = self.text.width(&says, 12);
                 self.text.draw(canvas, cx - wide / 2, cy - Text::line_height(12) / 2, 12, color, &says);
+            }
+            // A palette's three dots of color, round a ring.
+            Ctl::Theme => {
+                canvas.disc(cx, cy, 8, color, 256);
+                canvas.disc(cx, cy, 7, if on { ACCENT } else if hovered { HOVER_COLOR } else { PANEL_COLOR }, 256);
+                for (dx, dy, dot) in [(0, -3, 0xF2B33D), (-3, 2, 0xE5577E), (3, 2, 0x4C8DF6)] {
+                    canvas.disc(cx + dx, cy + dy, 2, dot, 256);
+                }
             }
             Ctl::Fit => {
                 canvas.fill(rect.x - (RULE - GAP) / 2 - 1, rect.y + 6, 1, rect.h - 12, HOVER_COLOR);
@@ -105,6 +113,7 @@ impl Studio {
             Ctl::ZoomShown => "Zoom to 100%  Ctrl 1".to_owned(),
             Ctl::Fit => "Zoom to fit  Ctrl 0".to_owned(),
             Ctl::Keys => "Keyboard shortcuts  ?".to_owned(),
+            Ctl::Theme => "Theme, paper and guessing".to_owned(),
             _ => return None,
         })
     }

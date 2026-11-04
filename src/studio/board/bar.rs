@@ -170,15 +170,20 @@ impl Studio {
     }
 
     /// The board's own settings, at its bottom right as the zoom is at its
-    /// left, level with the bar of tools: its theme, its paper, and
-    /// guessing what comes next. Always there, as they are of the whole
-    /// board and not of what is picked out; not where it would reach the
-    /// bar, as in a narrow window.
+    /// left, level with the bar of tools: a button that opens its theme,
+    /// its paper, and guessing what comes next, as they are of the whole
+    /// board and not of what is picked out, and seldom changed; not where
+    /// it would reach the bar, as in a narrow window.
     pub(in crate::studio) fn layout_theme(&mut self, layout: &mut Layout) {
         const SIDE: i32 = 28;
         const PAD: i32 = 4;
         let widest = look::LOOKS.iter().map(|says| self.text.width(says, 12)).max().unwrap_or(0);
-        let parts = [(Ctl::Look, widest + 30), (Ctl::Ground, 38), (Ctl::Guess, SIDE + 6)];
+        // Shut, only its button; open, the three before it.
+        let mut parts = match self.board.theme_open {
+            true => vec![(Ctl::Look, widest + 30), (Ctl::Ground, 38), (Ctl::Guess, SIDE + 6)],
+            false => vec![],
+        };
+        parts.push((Ctl::Theme, SIDE));
         let wide = parts.iter().map(|(_, w)| w + GAP).sum::<i32>() - GAP + 2 * PAD;
         let high = SIDE + 2 * PAD;
         let dock = layout.dock;

@@ -572,6 +572,7 @@ pub(in crate::studio) mod tests {
         pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
         type_in(&mut studio, "Queue");
         press_key(&mut studio, Key::Escape, Mods::default());
+        open_theme(&mut studio);
         let (look, font) = (studio.control_rect(Control::Board(Ctl::Look)).unwrap(), studio.control_rect(Control::Board(Ctl::Font)).unwrap());
         assert!(!look.intersects(font), "two controls");
         click(&mut studio, font.center());
@@ -586,33 +587,81 @@ pub(in crate::studio) mod tests {
     }
 
     #[test]
-    fn the_theme_paper_and_guessing_are_the_board_s_at_its_bottom_right_not_in_the_panel_of_styles() {
+    fn the_theme_paper_and_guessing_are_the_board_s_behind_a_button_at_its_bottom_right_not_in_the_panel_of_styles() {
         let mut studio = board();
-        // With nothing picked out, there all the same.
+        // Only its button, to begin with, with nothing picked out as with.
         let layout = studio.layout();
-        let theme = layout.board_theme.expect("the board's settings");
+        let shut = layout.board_theme.expect("the board's settings");
         assert!(layout.board_bar.is_none());
-        assert!(theme.right() > studio.width - 40 && theme.y > layout.dock.y - 10, "at the bottom right: {theme:?}");
+        assert!(shut.right() > studio.width - 40 && shut.y > layout.dock.y - 10, "at the bottom right: {shut:?}");
+        assert!(shut.w < 48, "only a button: {shut:?}");
         for ctl in [Ctl::Look, Ctl::Ground, Ctl::Guess] {
-            assert!(theme.contains(studio.control_rect(Control::Board(ctl)).unwrap().center().0, studio.control_rect(Control::Board(ctl)).unwrap().center().1), "{ctl:?} in it");
+            assert!(studio.control_rect(Control::Board(ctl)).is_none(), "{ctl:?} not shown");
         }
-        // A box picked out: its panel has none of them.
+        // A click opens them beside it.
+        open_theme(&mut studio);
+        let open = studio.layout().board_theme.unwrap();
+        assert!(open.w > shut.w + 100 && open.right() == shut.right());
+        for ctl in [Ctl::Look, Ctl::Ground, Ctl::Guess] {
+            let place = studio.control_rect(Control::Board(ctl)).unwrap();
+            assert!(open.contains(place.center().0, place.center().1), "{ctl:?} in it");
+        }
+        // A click on the board shuts them, and does what it does.
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
+        assert!(!studio.board.theme_open && studio.doc.layers.len() == 1, "shut, and the box drawn");
+        // With a box picked out: its panel has none of them.
+        open_theme(&mut studio);
         let layout = studio.layout();
         let panel = layout.board_bar.expect("its panel");
         for ctl in [Ctl::Look, Ctl::Ground, Ctl::Guess] {
             let place = studio.control_rect(Control::Board(ctl)).unwrap();
-            assert!(!panel.intersects(place) && layout.board_theme.unwrap().contains(place.center().0, place.center().1), "{ctl:?} not in the panel");
+            assert!(!panel.intersects(place), "{ctl:?} not in the panel");
         }
-        assert!(panel.contains(studio.control_rect(Control::Board(Ctl::Font)).unwrap().center().0, studio.control_rect(Control::Board(Ctl::Font)).unwrap().center().1), "the font is the shape's");
+        let font = studio.control_rect(Control::Board(Ctl::Font)).unwrap();
+        assert!(panel.contains(font.center().0, font.center().1), "the font is the shape's");
+        // Open while a list of theirs is chosen from.
         choose(&mut studio, Ctl::Look, "Diagram");
         assert_eq!(studio.pages[0].look, DIAGRAM);
+        assert!(studio.board.theme_open);
+        choose(&mut studio, Ctl::Ground, "Dark gray");
+        assert_eq!(studio.pages[0].ground, 1);
     }
 
-    /// A control of the bar clicked, and a row of the list it opens.
+    #[test]
+    fn what_the_theme_button_says_hovered_is_all_inside_the_window() {
+        let mut studio = board();
+        let button = studio.control_rect(Control::Board(Ctl::Theme)).unwrap();
+        studio.pointer_moved(button.center().0, button.center().1, Mods::default());
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let dock = studio.layout().dock;
+        // Its last column, from over the bar to the top of the button:
+        // the paper, not the dark of the tip cut off by the edge.
+        let x = studio.width - 2;
+        let dark = (dock.y - 60..button.y).filter(|&y| out[(y * studio.width + x) as usize] & 0xFF < 0x80).count();
+        assert_eq!(dark, 0);
+        // And it is drawn, ending a little before the edge.
+        let row = (dock.y - 60..button.y).find(|&y| (studio.width - 60..studio.width - 4).any(|x| out[(y * studio.width + x) as usize] & 0xFF < 0x40));
+        assert!(row.is_some(), "its tip shown");
+    }
+
+    /// The board's theme, paper and guessing opened from their button.
+    pub(in crate::studio) fn open_theme(studio: &mut Studio) {
+        if !studio.board.theme_open {
+            let place = studio.control_rect(Control::Board(Ctl::Theme)).unwrap();
+            click(studio, place.center());
+        }
+        assert!(studio.board.theme_open);
+    }
+
+    /// A control of the bar clicked, and a row of the list it opens; the
+    /// board's own opened first, for one of theirs.
     pub(in crate::studio) fn choose(studio: &mut Studio, ctl: Ctl, says: &str) {
+        if matches!(ctl, Ctl::Look | Ctl::Ground | Ctl::Guess) {
+            open_theme(studio);
+        }
         let place = studio.control_rect(Control::Board(ctl)).unwrap();
         click(studio, place.center());
         let kind = studio.menu.map(|menu| menu.kind).expect("a list open");
@@ -628,6 +677,7 @@ pub(in crate::studio) mod tests {
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
+        open_theme(&mut studio);
         for (ctl, kind, rows) in [(Ctl::Look, MenuKind::Looks, &LOOKS[..]), (Ctl::Ground, MenuKind::Grounds, &GROUNDS[..])] {
             let place = studio.control_rect(Control::Board(ctl)).unwrap();
             let (look, ground) = (studio.pages[0].look, studio.pages[0].ground);
@@ -935,6 +985,9 @@ pub(in crate::studio) mod tests {
         let mut out = vec![0u32; (studio.width * studio.height) as usize];
         studio.draw(&mut out);
         std::fs::write(to.join("window.png"), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
+        open_theme(&mut studio);
+        studio.draw(&mut out);
+        std::fs::write(to.join("window-theme.png"), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
     }
 
     #[test]

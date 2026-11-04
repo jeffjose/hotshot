@@ -3820,6 +3820,14 @@ impl Studio {
         if self.library.is_some() && button <= 7 && self.library_press(button) {
             return Outcome::Continue;
         }
+        // A board's theme, paper and guessing close with a click off them,
+        // which goes on to do what it does; not one on a list they opened.
+        if self.board.theme_open && button <= 3 && !matches!(self.control_at(self.pointer), Some(Control::Board(board::Ctl::Theme | board::Ctl::Look | board::Ctl::Ground | board::Ctl::Guess) | Control::MenuRow(..))) {
+            self.board.theme_open = false;
+            if self.menu.is_some_and(|menu| matches!(menu.kind, MenuKind::Looks | MenuKind::Grounds)) {
+                self.menu = None;
+            }
+        }
         let at_window = self.pointer;
         let double =time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at_window);
@@ -7252,9 +7260,11 @@ impl Studio {
         };
         if let (Some(says), None) = (says, self.flyout) {
             let wide = self.text.width(&says, px) + 16;
-            let (x, y) = (self.pointer.0 - wide / 2, layout.dock.y - line_high - 18);
-            canvas.round_fill(x.max(4), y, wide, line_high + 8, 6, 0x000000, 220);
-            self.text.draw(canvas, x.max(4) + 8, y + 4, px, TEXT_COLOR, &says);
+            // Kept inside the window at either edge.
+            let x = (self.pointer.0 - wide / 2).min(self.width - wide - 4).max(4);
+            let y = layout.dock.y - line_high - 18;
+            canvas.round_fill(x, y, wide, line_high + 8, 6, 0x000000, 220);
+            self.text.draw(canvas, x + 8, y + 4, px, TEXT_COLOR, &says);
         }
         self.draw_menus(canvas, layout, hover);
         self.draw_keys(canvas, layout);
