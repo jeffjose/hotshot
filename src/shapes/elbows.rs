@@ -13,7 +13,7 @@ use std::collections::BinaryHeap;
 const WAYS: [(f32, f32); 4] = [(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
 /// What a turn costs against a pixel of going on: more than any way could
 /// be long, so that the fewest turns win and the shortest of those.
-const TURN: f64 = 1.0e6;
+pub const TURN: f64 = 1.0e6;
 /// How near a way may go to something in it, besides the stretch out of
 /// a side, in pixels.
 const PAD: f32 = 2.0;
@@ -23,6 +23,10 @@ const MOST: usize = 40_000;
 
 /// A thing a way goes round, as its left, top, right and bottom.
 pub type Block = [f32; 4];
+/// Where a way may begin or end: the point on a side it leaves or comes
+/// into, which side it is, by `WAYS`, and what going by it costs more
+/// than by another, against a pixel of going on.
+pub type End = (Point, usize, f64);
 
 /// A place it has got to, the way it is going, and what that cost, in
 /// the order the cheapest is looked at first.
@@ -73,18 +77,18 @@ fn index(lines: &[f32], value: f32) -> usize {
     }
 }
 
-/// The way from one of some sides to one of others: each given as the
-/// point on it a way leaves or comes into, and which side it is, by
-/// `WAYS`. Round the blocks, the two things joined the first two of them;
-/// `stub` the way straight out of a side before it may turn, and how far
-/// from what it goes past it keeps where it can. Gives which side it went
-/// from and which into, and the points it turns at, from its first end
-/// to its last, those ends with them.
-pub fn orthogonal(starts: &[(Point, usize)], goals: &[(Point, usize)], blocks: &[Block], stub: f32) -> Option<(usize, usize, Vec<Point>)> {
+/// The way from one of some sides to one of others, each an `End`, the
+/// cheapest of them: the fewest turns, with what each end costs more, and
+/// of those the shortest. Round the blocks, the two things joined the
+/// first two of them; `stub` the way straight out of a side before it may
+/// turn, and how far from what it goes past it keeps where it can. Gives
+/// which side it went from and which into, and the points it turns at,
+/// from its first end to its last, those ends with them.
+pub fn orthogonal(starts: &[End], goals: &[End], blocks: &[Block], stub: f32) -> Option<(usize, usize, Vec<Point>)> {
     if starts.is_empty() || goals.is_empty() {
         return None;
     }
-    let out = |(at, side): (Point, usize)| (at.0 + WAYS[side % 4].0 * stub, at.1 + WAYS[side % 4].1 * stub);
+    let out = |(at, side, _): End| (at.0 + WAYS[side % 4].0 * stub, at.1 + WAYS[side % 4].1 * stub);
     // The lines it can go along: out from each side's stub, a stub's
     // width off each block, and half way between the two things joined.
     let (mut xs, mut ys) = (Vec::new(), Vec::new());
@@ -113,7 +117,7 @@ pub fn orthogonal(starts: &[(Point, usize)], goals: &[(Point, usize)], blocks: &
     let place = |node: usize| (xs[node / high], ys[node % high]);
     // The places it ends at, going in to each side: the opposite way to
     // out of it.
-    let ends: Vec<(usize, Point, usize)> = goals.iter().map(|&goal| (node(out(goal)) * 4 + (goal.1 + 2) % 4, out(goal), goal.1)).collect();
+    let ends: Vec<(usize, Point, f64)> = goals.iter().map(|&goal| (node(out(goal)) * 4 + (goal.1 + 2) % 4, out(goal), goal.2)).collect();
     // How much more it must cost at least from a place, going some way:
     // as far as the nearest end across and down, and the turns there must
     // be to come into it the way it goes in: none straight on to it; one
@@ -144,10 +148,10 @@ pub fn orthogonal(starts: &[(Point, usize)], goals: &[(Point, usize)], blocks: &
     let states = wide * high * 4;
     let (mut cost, mut came, mut done) = (vec![f64::MAX; states], vec![usize::MAX; states], vec![false; states]);
     let mut heap = BinaryHeap::new();
-    let began = |start: (Point, usize)| node(out(start)) * 4 + start.1 % 4;
+    let began = |start: End| node(out(start)) * 4 + start.1 % 4;
     for &start in starts {
-        cost[began(start)] = 0.0;
-        heap.push(Step { guess: guess(began(start)), key: began(start) });
+        cost[began(start)] = start.2;
+        heap.push(Step { guess: start.2 + guess(began(start)), key: began(start) });
     }
     let mut looked = 0;
     while let Some(Step { key, .. }) = heap.pop() {
@@ -182,7 +186,7 @@ pub fn orthogonal(starts: &[(Point, usize)], goals: &[(Point, usize)], blocks: &
         }
         let (here, way) = (key / 4, key % 4);
         let mut reach = |next: usize, more: f64, heap: &mut BinaryHeap<Step>| {
-            let total = gone + more;
+            let total = gone + more + ends.iter().find(|end| end.0 == next).map_or(0.0, |end| end.2);
             if !done[next] && total < cost[next] {
                 (cost[next], came[next]) = (total, key);
                 heap.push(Step { guess: total + guess(next), key: next });
@@ -305,10 +309,10 @@ mod tests {
     #[test]
     fn a_way_between_two_boxes_in_line_goes_straight_and_one_off_to_the_side_steps_half_way() {
         let blocks = [[0.0, 0.0, 100.0, 60.0], [300.0, 0.0, 400.0, 60.0]];
-        let (_, _, path) = orthogonal(&[((100.0, 30.0), 1)], &[((300.0, 30.0), 3)], &blocks, 16.0).unwrap();
+        let (_, _, path) = orthogonal(&[((100.0, 30.0), 1, 0.0)], &[((300.0, 30.0), 3, 0.0)], &blocks, 16.0).unwrap();
         assert_eq!(path, vec![(100.0, 30.0), (300.0, 30.0)]);
         let blocks = [[0.0, 0.0, 100.0, 60.0], [300.0, 100.0, 400.0, 160.0]];
-        let (_, _, path) = orthogonal(&[((100.0, 30.0), 1)], &[((300.0, 130.0), 3)], &blocks, 16.0).unwrap();
+        let (_, _, path) = orthogonal(&[((100.0, 30.0), 1, 0.0)], &[((300.0, 130.0), 3, 0.0)], &blocks, 16.0).unwrap();
         assert!(square(&path), "{path:?}");
         assert_eq!(path.len(), 4, "{path:?}");
         assert!((path[1].0 - 200.0).abs() < 0.5, "half way across: {path:?}");

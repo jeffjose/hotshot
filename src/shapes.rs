@@ -1337,9 +1337,13 @@ impl Shape {
 /// let go. Says whether any moved.
 pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]) -> bool {
     let find = |id: u32| anchors.iter().find(|anchor| anchor.id == id);
-    let mut moved = false;
-    for shape in lines.filter(|shape| shape.sticks() && shape.stuck.iter().any(Option::is_some)) {
-        let mut this = false;
+    let mut lines: Vec<&'a mut Shape> = lines.filter(|shape| shape.sticks() && shape.stuck.iter().any(Option::is_some)).collect();
+    let before: Vec<Vec<Point>> = lines.iter().map(|shape| shape.points.clone()).collect();
+    // The sides of what they are stuck to that the ends of each meet, for
+    // those between two things that come square into a side.
+    let mut meets: Vec<[Option<usize>; 2]> = vec![[None; 2]; lines.len()];
+    for (line, shape) in lines.iter_mut().enumerate() {
+        let shape: &mut Shape = shape;
         for _ in 0..2 {
             for end in 0..2 {
                 let Some((id, u, v)) = shape.stuck[end] else { continue };
@@ -1380,7 +1384,6 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                 };
                 if (to.0 - shape.points[at].0).abs() + (to.1 - shape.points[at].1).abs() > 0.01 {
                     shape.points[at] = to;
-                    this = true;
                 }
             }
         }
@@ -1396,13 +1399,24 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                     false => port_of(u, v).map(Some),
                 };
                 if let (Some(from), Some(to), Some(a), Some(b)) = (find(first), find(last), side(fu, fv), side(lu, lv)) {
-                    let before = shape.points.clone();
                     match first == last {
                         // From a thing back to itself: a loop round it.
                         true => route_loop(shape, from, [a, b]),
                         false => route_sides(shape, from, to, [a, b]),
                     }
-                    this |= shape.points != before;
+                }
+                // Between two things, which side of each its ends came to the
+                // middle of, as a whole or at that side's dot.
+                if first != last && shape.points.len() <= 3 {
+                    meets[line] = [0, 1].map(|end| {
+                        let (id, u, v) = shape.stuck[end]?;
+                        let anchor = find(id)?;
+                        match u == WHOLE {
+                            true if v == AIMED => None,
+                            true => (0..4).find(|&side| distance(side_point(anchor, side).0, shape.points[end]) < 0.01),
+                            false => port_of(u, v),
+                        }
+                    });
                 }
             }
             // One end at the middle of a side, the other free: bowed so as
@@ -1413,7 +1427,6 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                 if shape.elbow {
                     continue;
                 }
-                let before = shape.points.clone();
                 let (at, out) = side_point(anchor, side);
                 let free = shape.points[1 - end];
                 let reach = (free.0 - at.0).hypot(free.1 - at.1) * 0.4;
@@ -1424,22 +1437,96 @@ pub fn follow<'a>(lines: impl Iterator<Item = &'a mut Shape>, anchors: &[Anchor]
                 if segment(through, at, free) > 2.0 {
                     shape.points.push(through);
                 }
-                this |= shape.points != before;
             }
         }
         // An elbow between two things goes square out of a side of one,
         // round what is in its way, and square into a side of the other.
         if shape.elbow && !shape.routed {
-            let before = shape.points.clone();
-            route_elbow(shape, anchors, None);
-            this |= shape.points != before;
+            meets[line] = route_elbow(shape, anchors, [None, None]).map_or([None, None], |sides| sides.map(Some));
         }
-        if this {
+    }
+    spread(&mut lines, &meets, anchors);
+    let mut moved = false;
+    for (shape, before) in lines.iter_mut().zip(before) {
+        if shape.points != before {
             moved = true;
             shape.touch();
         }
     }
     moved
+}
+
+/// Several arrows stuck as a whole to the same side of the same thing,
+/// spread out along it side by side, evenly, rather than meeting at its
+/// middle: in the order of where each comes from along that side, so that
+/// none crosses another on the way in; each routed again from where it now
+/// meets it. Those stuck at a spot of their own are left where they are.
+fn spread(lines: &mut [&mut Shape], meets: &[[Option<usize>; 2]], anchors: &[Anchor]) {
+    let find = |id: u32| anchors.iter().find(|anchor| anchor.id == id);
+    // Each end that meets a side of a thing, and which side of which.
+    let mut meeting: Vec<(u32, usize, (usize, usize))> = Vec::new();
+    for (line, shape) in lines.iter().enumerate() {
+        for (end, &met) in meets[line].iter().enumerate() {
+            let (Some((id, u, v)), Some(side)) = (shape.stuck[end], met) else { continue };
+            // An elbow aimed at the middle of a thing comes to a side of it
+            // as one stuck as a whole does; any other aimed one goes straight.
+            if u != WHOLE || (v == AIMED && !shape.elbow) {
+                continue;
+            }
+            meeting.push((id, side, (line, end)));
+        }
+    }
+    meeting.sort_by_key(|&(id, side, end)| (id, side, end));
+    let mut spots: Vec<[Option<Point>; 2]> = vec![[None; 2]; lines.len()];
+    for group in meeting.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+        let (id, side) = (group[0].0, group[0].1);
+        let mut ends: Vec<(usize, usize)> = group.iter().map(|&(.., end)| end).collect();
+        let Some(anchor) = find(id).filter(|_| ends.len() > 1) else { continue };
+        // Along the side: across a top or a bottom, down a left or a right.
+        let along = |p: Point| {
+            let (x, y) = turn_point(p, anchor.middle, -anchor.angle);
+            if side % 2 == 0 { x } else { y }
+        };
+        ends.sort_by(|&(a, ae), &(b, be)| along(lines[a].points[1 - ae]).total_cmp(&along(lines[b].points[1 - be])).then((a, ae).cmp(&(b, be))));
+        let count = ends.len() as f32;
+        for (at, &(line, end)) in ends.iter().enumerate() {
+            let across = -1.0 + 2.0 * (at as f32 + 1.0) / (count + 1.0);
+            let (u, v) = match side {
+                0 => (across, -1.0),
+                1 => (1.0, across),
+                2 => (across, 1.0),
+                _ => (-1.0, across),
+            };
+            spots[line][end] = Some(anchor.at(u, v));
+        }
+    }
+    for (line, shape) in lines.iter_mut().enumerate() {
+        let (met, spot) = (meets[line], spots[line]);
+        if spot == [None, None] {
+            continue;
+        }
+        // An elbow from where its ends now are, the side of an end not
+        // spread as suits it from there.
+        if shape.elbow && !shape.routed {
+            route_elbow(shape, anchors, [0, 1].map(|end| Some((met[end]?, spot[end]?))));
+            continue;
+        }
+        let mut at = [0, 1].map(|end| spot[end].unwrap_or(shape.points[end]));
+        let way = |end: usize| Some(side_point(find(shape.stuck[end]?.0)?, met[end]?).1);
+        match (way(0), way(1)) {
+            (Some(out), Some(into)) => bow(shape, (at[0], out), (at[1], into)),
+            // Straight on to the other, aimed at its middle from where it
+            // now leaves.
+            _ => {
+                for end in 0..2 {
+                    if let (Some((id, WHOLE, AIMED)), None) = (shape.stuck[end], spot[end]) {
+                        at[end] = find(id).map_or(at[end], |anchor| anchor.out_towards(at[1 - end], 0.0));
+                    }
+                }
+                shape.points = at.to_vec();
+            }
+        }
+    }
 }
 
 /// How far an elbow goes straight out of a side before it turns, and how
@@ -1454,14 +1541,16 @@ fn block_of(anchor: &Anchor) -> elbows::Block {
 }
 
 /// An elbow with both ends stuck to two things, each as a whole, aimed at
-/// its middle, or at the middle of a side, routed from a side of one to a side of the other, a
-/// stretch at a time level or upright, round the rest of the things it
-/// could be stuck to: out of and into the sides given, with where on each,
-/// or else whichever make the fewest turns. Its turns kept as the points
-/// after its ends. Gives the sides it goes from and into; none where it
-/// cannot be routed so, which with no sides given turns it once again, at
-/// the corner its ends make.
-fn route_elbow(shape: &mut Shape, anchors: &[Anchor], given: Option<[(usize, Point); 2]>) -> Option<[usize; 2]> {
+/// its middle, or at the middle of a side, routed from a side of one to a
+/// side of the other, a stretch at a time level or upright, round the rest
+/// of the things it could be stuck to: at either end out of or into the
+/// side given, at the point given on it, or else whichever side makes the
+/// fewest turns, at its middle; a side facing away from the other thing
+/// counted as half a turn more, so as not to go round its own for nothing.
+/// Its turns kept as the points after its ends. Gives the sides it goes
+/// from and into; none where it cannot be routed so, which with nothing
+/// given turns it once again, at the corner its ends make.
+fn route_elbow(shape: &mut Shape, anchors: &[Anchor], given: [Option<(usize, Point)>; 2]) -> Option<[usize; 2]> {
     let find = |id: u32| anchors.iter().find(|anchor| anchor.id == id);
     let way = (|| {
         let (first, last) = (shape.stuck[0]?, shape.stuck[1]?);
@@ -1472,17 +1561,18 @@ fn route_elbow(shape: &mut Shape, anchors: &[Anchor], given: Option<[(usize, Poi
         }
         // One aimed at the middle of a thing comes into whichever side
         // suits, as one stuck to it as a whole does.
-        let sides = |(_, u, v): (u32, f32, f32), anchor: &Anchor| -> Option<Vec<(Point, usize)>> {
+        let sides = |(_, u, v): (u32, f32, f32), anchor: &Anchor, other: &Anchor, given: Option<(usize, Point)>| -> Option<Vec<elbows::End>> {
+            if let Some((side, at)) = given {
+                return Some(vec![(at, side, 0.0)]);
+            }
             let sides = match u == WHOLE {
                 true => vec![0, 1, 2, 3],
                 false => vec![port_of(u, v)?],
             };
-            Some(sides.into_iter().map(|side| (side_point(anchor, side).0, side)).collect())
+            let away = |side: usize| PORTS[side].0 * (other.middle.0 - anchor.middle.0) + PORTS[side].1 * (other.middle.1 - anchor.middle.1) < 0.0;
+            Some(sides.into_iter().map(|side| (side_point(anchor, side).0, side, if away(side) { elbows::TURN / 2.0 } else { 0.0 })).collect())
         };
-        let (starts, goals) = match given {
-            Some([(a, at), (b, to)]) => (vec![(at, a)], vec![(to, b)]),
-            None => (sides(first, from)?, sides(last, to)?),
-        };
+        let ends = (sides(first, from, to, given[0])?, sides(last, to, from, given[1])?);
         // Round everything else, but what overlaps either end's own thing,
         // as a lane they are both in does.
         let (a, b) = (block_of(from), block_of(to));
@@ -1498,10 +1588,11 @@ fn route_elbow(shape: &mut Shape, anchors: &[Anchor], given: Option<[(usize, Poi
         let room = [a[0].min(b[0]) - grow, a[1].min(b[1]) - grow, a[2].max(b[2]) + grow, a[3].max(b[3]) + grow];
         let near: Vec<elbows::Block> = blocks.iter().enumerate().filter(|&(index, r)| index < 2 || overlaps(r, &room)).map(|(_, &r)| r).collect();
         let clear = |path: &[Point]| path.windows(2).all(|pair| elbows::clear(pair[0], pair[1], &blocks[2..]));
-        let (start, goal, path) = elbows::orthogonal(&starts, &goals, &near, stub)
+        let (starts, goals) = &ends;
+        let (start, goal, path) = elbows::orthogonal(starts, goals, &near, stub)
             .filter(|(.., path)| near.len() == blocks.len() || clear(path))
-            .or_else(|| elbows::orthogonal(&starts, &goals, &blocks, stub).filter(|_| near.len() < blocks.len()))
-            .or_else(|| elbows::orthogonal(&starts, &goals, &blocks[..2], stub))?;
+            .or_else(|| elbows::orthogonal(starts, goals, &blocks, stub).filter(|_| near.len() < blocks.len()))
+            .or_else(|| elbows::orthogonal(starts, goals, &blocks[..2], stub))?;
         Some(([starts[start].1, goals[goal].1], path))
     })();
     match way {
@@ -1512,7 +1603,7 @@ fn route_elbow(shape: &mut Shape, anchors: &[Anchor], given: Option<[(usize, Poi
             Some(sides)
         }
         None => {
-            if given.is_none() {
+            if given == [None, None] {
                 shape.points.truncate(2);
             }
             None
@@ -1595,6 +1686,12 @@ pub fn route_sides(shape: &mut Shape, from: &Anchor, to: &Anchor, sides: [Option
         Some(side) => side_point(to, side),
         None => side_towards(to, start),
     };
+    bow(shape, (start, out), (end, into));
+}
+
+/// An arrow from one point to another, each on a side and with the way
+/// out of that side, bowed so as to leave and come into each square.
+fn bow(shape: &mut Shape, (start, out): (Point, (f32, f32)), (end, into): (Point, (f32, f32))) {
     let reach = (end.0 - start.0).hypot(end.1 - start.1) * 0.4;
     let through = ((start.0 + end.0) / 2.0 + 0.375 * reach * (out.0 + into.0), (start.1 + end.1) / 2.0 + 0.375 * reach * (out.1 + into.1));
     shape.points.truncate(2);

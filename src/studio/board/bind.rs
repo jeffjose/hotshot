@@ -1326,4 +1326,76 @@ mod tests {
         let round = assert_routed(&studio, arrow, 0, 1);
         assert_ne!(round[1..round.len() - 1], lower[1..lower.len() - 1], "out of the way of the box drawn: {round:?}");
     }
+
+    /// Whether two ways cross, a stretch of one through a stretch of the
+    /// other.
+    fn cross(one: &[(f32, f32)], other: &[(f32, f32)]) -> bool {
+        let side = |a: (f32, f32), b: (f32, f32), p: (f32, f32)| ((b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0)).signum();
+        one.windows(2).any(|s| other.windows(2).any(|t| side(s[0], s[1], t[0]) * side(s[0], s[1], t[1]) < 0.0 && side(t[0], t[1], s[0]) * side(t[0], t[1], s[1]) < 0.0))
+    }
+
+    /// Whether some points along a line are evenly spaced, from a quarter of
+    /// the way along it to three quarters, in order.
+    fn spaced_evenly(along: &[f32], from: f32, to: f32) {
+        let count = along.len() as f32;
+        for (at, &value) in along.iter().enumerate() {
+            let meant = from + (to - from) * (at as f32 + 1.0) / (count + 1.0);
+            assert!((value - meant).abs() < 0.6, "end {at} at {value}, not {meant}: {along:?}");
+        }
+    }
+
+    /// CUJ: three boxes in a row over a wide one, an arrow pulled from each
+    /// into the wide one and all three made to go round corners: they come
+    /// into its top side by side, evenly along it, in the order of the
+    /// boxes they come from, none crossing another.
+    #[test]
+    fn elbows_into_the_same_side_of_a_box_come_in_side_by_side() {
+        let mut studio = board();
+        let froms = [draw_box(&mut studio, (100.0, 100.0), (260.0, 172.0)), draw_box(&mut studio, (350.0, 100.0), (510.0, 172.0)), draw_box(&mut studio, (600.0, 100.0), (760.0, 172.0))];
+        let into = draw_box(&mut studio, (100.0, 400.0), (760.0, 472.0));
+        let mut arrows = Vec::new();
+        for from in froms {
+            pull_dot(&mut studio, from, (430.0, 436.0), Mods::default(), |_| {});
+            studio.commit_text();
+            studio.selected.clear();
+            arrows.push(studio.doc.layers.len() - 1);
+        }
+        elbowed(&mut studio, arrows.clone());
+        let ways: Vec<Vec<(f32, f32)>> = arrows.iter().zip(froms).map(|(&arrow, from)| assert_routed(&studio, arrow, from, into)).collect();
+        let (x, y, w, _) = studio.box_frame(into);
+        assert!(ways.iter().all(|way| (way[way.len() - 1].1 - y).abs() < 0.5), "all into its top: {ways:?}");
+        spaced_evenly(&ways.iter().map(|way| way[way.len() - 1].0).collect::<Vec<_>>(), x, x + w);
+        for (one, other) in [(0, 1), (0, 2), (1, 2)] {
+            assert!(!cross(&ways[one], &ways[other]), "{one} and {other} cross: {ways:?}");
+        }
+        // The wide one moved: still side by side along its top.
+        studio.selected.clear();
+        pull(&mut studio, (700.0, 440.0), (760.0, 470.0), Mods::default());
+        let (x, y, w, _) = studio.box_frame(into);
+        let ends: Vec<(f32, f32)> = arrows.iter().map(|&arrow| shape(&studio, arrow).points[1]).collect();
+        assert!(ends.iter().all(|end| (end.1 - y).abs() < 0.5), "{ends:?}");
+        spaced_evenly(&ends.iter().map(|end| end.0).collect::<Vec<_>>(), x, x + w);
+    }
+
+    /// CUJ: a box over three in a row, an arrow pulled out of it into each:
+    /// the three curve out of its bottom side by side, evenly along it, in
+    /// the order of the boxes they go to.
+    #[test]
+    fn arrows_out_of_the_same_side_of_a_box_leave_it_side_by_side() {
+        let mut studio = board();
+        let from = draw_box(&mut studio, (350.0, 100.0), (510.0, 172.0));
+        let intos = [draw_box(&mut studio, (100.0, 400.0), (260.0, 472.0)), draw_box(&mut studio, (350.0, 400.0), (510.0, 472.0)), draw_box(&mut studio, (600.0, 400.0), (760.0, 472.0))];
+        let mut arrows = Vec::new();
+        for into in intos {
+            let (x, y, w, h) = studio.box_frame(into);
+            pull_dot(&mut studio, from, (x + w / 2.0, y + h / 2.0), Mods::default(), |_| {});
+            studio.commit_text();
+            studio.selected.clear();
+            arrows.push(studio.doc.layers.len() - 1);
+        }
+        let (x, y, w, h) = studio.box_frame(from);
+        let starts: Vec<(f32, f32)> = arrows.iter().map(|&arrow| shape(&studio, arrow).points[0]).collect();
+        assert!(starts.iter().all(|start| (start.1 - y - h).abs() < 0.5), "all out of its bottom: {starts:?}");
+        spaced_evenly(&starts.iter().map(|start| start.0).collect::<Vec<_>>(), x, x + w);
+    }
 }
