@@ -519,6 +519,27 @@ pub(in crate::studio) mod tests {
     }
 
 
+
+    #[test]
+    fn a_board_drawn_large_has_room_round_it_in_its_preview() {
+        let mut studio = board();
+        // Two boxes far apart, as drawn zoomed far out: wider than tall.
+        for left in [0.0, 6000.0] {
+            let mut shape = Shape::new(Tool::Rect, INK, LINE * 10.0, (left, 0.0));
+            studio.board_dress(&mut shape);
+            (shape.stroke, shape.points[1]) = (LINE * 10.0, (left + 2000.0, 1500.0));
+            studio.doc.layers.push(Layer::shape(shape));
+        }
+        studio.changed();
+        let pages = studio.gathered();
+        let (w, h, pixels) = board_preview(&pages[0], 320, 200, &mut studio.text).expect("a preview");
+        let paper = PAPERS[0].0;
+        // Some columns of paper at either side, not the boxes' edges.
+        for x in (0..6).chain(w - 6..w) {
+            let column = (0..h).filter(|&y| pixels[(y * w + x) as usize] & 0xFF_FFFF != paper).count();
+            assert_eq!(column, 0, "column {x} of {w} is paper");
+        }
+    }
     #[test]
     fn a_tall_board_s_preview_is_as_wide_as_asked_with_it_in_the_middle() {
         let mut studio = board();
@@ -537,6 +558,35 @@ pub(in crate::studio) mod tests {
         let column = |x: i32| (0..h).filter(|&y| pixels[(y * w + x) as usize] & 0xFF_FFFF != paper).count();
         assert_eq!((column(2), column(w - 3)), (0, 0), "paper at the sides");
         assert!(column(w / 2) > 0, "the boxes in the middle");
+    }
+
+    #[test]
+    fn words_past_a_box_s_edge_are_drawn_on_the_board_as_in_its_preview() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (300.0, 200.0), (460.0, 272.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.selected.clear();
+        studio.changed();
+        studio.draw(&mut out);
+        // Words set by hand larger than the box holds: past its foot.
+        if let Kind::Shape(shape) = &mut studio.doc.layers[0].kind {
+            (shape.text, shape.nominal, shape.font_px) = ("one\ntwo\nthree\nfour\nfive\nsix".into(), 0, 20);
+            shape.touch();
+        }
+        // Drawn again only where it changed, as a step of typing is.
+        studio.changed_layers(&[0]);
+        studio.draw(&mut out);
+        let shape = shape(&studio, 0);
+        let (lines, high) = shape.label_lines(&mut studio.text);
+        let (_, left, top, wide) = lines.last().expect("words").clone();
+        assert!(top > 272.0, "the last line past the foot: {top}");
+        let paper = studio.paper().0;
+        let (a, b) = (studio.to_window_page((left, top)), studio.to_window_page((left + wide as f32, top + high as f32)));
+        let inked = (a.1..b.1).flat_map(|y| (a.0..b.0).map(move |x| (x, y))).filter(|&(x, y)| out[(y * studio.width + x) as usize] & 0xFF_FFFF != paper).count();
+        assert!(inked > 10, "the last line drawn: {inked} pixels of it");
     }
     #[test]
     fn a_dotted_line_drawn_by_hand_is_a_row_of_dots_all_along_it() {
@@ -647,7 +697,10 @@ pub fn board_preview(page: &super::super::Page, wide: i32, high: i32, text: &mut
     let Some((x, y, w, h)) = super::super::actions::union(&boxes) else {
         return Some((wide, high, vec![0xFF00_0000 | paper; (wide * high).max(0) as usize]));
     };
-    let room = 24.0;
+    // Room round it as large to the eye however large it was drawn: a
+    // share of it, not so many pixels, which a board drawn zoomed far out
+    // has next to none of at the size of a card.
+    let room = (w.max(h) * 0.06).max(24.0);
     let (mut x, mut y, mut w, mut h) = (x - room, y - room, w + 2.0 * room, h + 2.0 * room);
     // As wide to as high as the picture asked for, what is on it in the
     // middle of its paper: a tall board is not a tall picture in a row of

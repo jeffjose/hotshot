@@ -870,6 +870,18 @@ impl Shape {
                 let (x, y) = (of.x.min(shown.x), of.y.min(shown.y));
                 Rect::new(x, y, of.right().max(shown.right()) - x, of.bottom().max(shown.bottom()) - y)
             }
+            // A box's words where they are past its edge, as they are drawn:
+            // so that all of them are drawn again with it, as a picture of
+            // the whole board has them.
+            Tool::Rect | Tool::Ellipse if !self.text.is_empty() => {
+                let place = self.extent();
+                let (lines, high) = self.label_lines(text);
+                lines.iter().fold(place, |place, (_, left, top, wide)| {
+                    let line = Rect::new(left.floor() as i32 - 1, top.floor() as i32 - 1, wide + 3, high + 2);
+                    let (x, y) = (place.x.min(line.x), place.y.min(line.y));
+                    Rect::new(x, y, place.right().max(line.right()) - x, place.bottom().max(line.bottom()) - y)
+                })
+            }
             _ => self.extent(),
         }
     }
