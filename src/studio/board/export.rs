@@ -7,7 +7,7 @@ use super::*;
 use crate::output::Format;
 
 /// The kinds a board exports as, by number: PNG, AVIF, JPEG XL, and SVG.
-pub(in crate::studio) const KINDS: [&str; 4] = ["PNG", "AVIF", "JPEG XL", "SVG"];
+pub(in crate::studio) const KINDS: [&str; 5] = ["PNG", "AVIF", "JPEG XL", "SVG", "JPEG"];
 
 /// Room left round what is exported of a board.
 const MARGIN: f32 = 32.0;
@@ -102,7 +102,18 @@ impl Studio {
     /// The board, a frame of it, or what is picked out, written: as a
     /// picture of a kind, twice its size to stay sharp; or as an SVG.
     pub(in crate::studio) fn export_board(&mut self, kind: u8) {
-        let Some((layers, part, name)) = self.export_part() else { return self.say("Nothing to export") };
+        self.export_board_of(kind, false);
+    }
+
+    /// The same, of the whole board however much is picked out, when
+    /// `whole`, as the right click on the board offers it.
+    pub(in crate::studio) fn export_board_of(&mut self, kind: u8, whole: bool) {
+        let kept = whole.then(|| std::mem::take(&mut self.selected));
+        let part = self.export_part();
+        if let Some(kept) = kept {
+            self.selected = kept;
+        }
+        let Some((layers, part, name)) = part else { return self.say("Nothing to export") };
         let dir = self.export_dir();
         if let Err(error) = std::fs::create_dir_all(&dir) {
             return self.say(format!("Could not make {}: {error}", dir.display()));
@@ -111,7 +122,12 @@ impl Studio {
         let (bytes, ending) = match kind {
             3 => (self.board_svg(&layers, part).into_bytes(), "svg"),
             _ => {
-                let format = [Format::Png, Format::Avif, Format::Jxl][usize::from(kind.min(2))];
+                let format = match kind {
+                    1 => Format::Avif,
+                    2 => Format::Jxl,
+                    4 => Format::Jpeg,
+                    _ => Format::Png,
+                };
                 let sheet = self.part_sheet(&layers, part);
                 let times = if self.on_board() { 2.0 } else { 1.0 };
                 let (w, h, pixels) = sheet.render(times, &mut self.text);
@@ -282,6 +298,49 @@ mod tests {
     use super::*;
     use crate::studio::board::tests::*;
 
+
+    #[test]
+    fn a_right_click_on_a_board_exports_it_and_what_is_picked_out_as_png_or_jpg() {
+        let mut studio = board();
+        let dir = std::env::temp_dir().join(format!("hotshot-board-export-{}", std::process::id()));
+        studio.dir = dir.clone();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (600.0, 400.0), (760.0, 472.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let says = |studio: &mut Studio| -> Vec<String> {
+            studio.menu_items(MenuKind::Context).into_iter().filter_map(|item| match item {
+                crate::studio::menu::Item::Entry { says, .. } => Some(says),
+                _ => None,
+            }).collect()
+        };
+        // Nothing picked out: the board, as either.
+        studio.selected.clear();
+        let offered = says(&mut studio);
+        assert!(offered.contains(&"Export board as PNG".to_owned()) && offered.contains(&"Export board as JPG".to_owned()));
+        assert!(!offered.iter().any(|said| said.starts_with("Export selection")));
+        // A box picked out: that too.
+        studio.selected = vec![0];
+        let offered = says(&mut studio);
+        assert!(offered.contains(&"Export selection as PNG".to_owned()) && offered.contains(&"Export selection as JPG".to_owned()));
+        // The whole board as a JPG, though a box is picked out: both boxes in
+        // it, wider than the one box.
+        studio.export_board_of(4, true);
+        let written: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).map(|entry| entry.path()).collect();
+        let jpg = written.iter().find(|path| path.extension().is_some_and(|ending| ending == "jpg")).expect("a JPEG written");
+        let bytes = std::fs::read(jpg).unwrap();
+        assert_eq!(&bytes[..3], &[0xFF, 0xD8, 0xFF], "a JPEG");
+        let whole = crate::convert::decode(&bytes).map(|decoded| decoded.width);
+        // The selection alone as a PNG: narrower.
+        studio.export_board_of(0, false);
+        let png = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).map(|entry| entry.path()).find(|path| path.extension().is_some_and(|ending| ending == "png")).expect("a PNG written");
+        let part = crate::convert::decode(&std::fs::read(&png).unwrap()).map(|decoded| decoded.width);
+        let (whole, part) = (whole.expect("the JPEG read"), part.expect("the PNG read"));
+        assert!(whole > part, "the board {whole} wider than the box {part}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn a_board_is_written_as_an_svg_of_its_hand_drawn_shapes_and_words() {
         let mut studio = board();

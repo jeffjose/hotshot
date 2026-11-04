@@ -378,6 +378,18 @@ impl Studio {
             MenuKind::Context => {
                 let mut items = Vec::new();
                 let chosen = !self.chosen().is_empty();
+                // On a board, the board written as a picture; and with some
+                // of it picked out, that alone.
+                if self.on_board() {
+                    use super::board::Act;
+                    items.push(Item::entry("Export board as PNG", "", MenuAct::Board(Act::ExportBoard(0))));
+                    items.push(Item::entry("Export board as JPG", "", MenuAct::Board(Act::ExportBoard(4))));
+                    if chosen {
+                        items.push(Item::entry("Export selection as PNG", "Ctrl E", MenuAct::Board(Act::Export(0))));
+                        items.push(Item::entry("Export selection as JPG", "", MenuAct::Board(Act::Export(4))));
+                    }
+                    items.push(Item::Rule);
+                }
                 if chosen {
                     items.push(do_("Copy", "Ctrl C", Command::Copy));
                     items.push(do_("Copy frame as PNG", "Ctrl Shift C", Command::CopyPng));

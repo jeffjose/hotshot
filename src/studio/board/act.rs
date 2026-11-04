@@ -32,6 +32,9 @@ pub(in crate::studio) enum Act {
     /// The board, a frame of it, or what is picked out written as one of
     /// `export::KINDS`.
     Export(u8),
+    /// All of the board written as one of `export::KINDS`, however much
+    /// is picked out.
+    ExportBoard(u8),
     /// The board drawn in one of `look::LOOKS`, or on one of `look::GROUNDS`;
     /// its words in one of the faces.
     Look(u8),
@@ -116,6 +119,7 @@ impl Studio {
             Act::KeepPicture => self.keep_svg_picture(),
             Act::MergePicture => self.merge_picture(),
             Act::Export(kind) => self.export_board(kind),
+            Act::ExportBoard(kind) => self.export_board_of(kind, true),
             Act::Look(look) => self.set_look(Some(look), None),
             Act::Mermaid(map) => self.copy_mermaid(map),
             Act::Neaten => self.press_style(Ctl::Neaten),
