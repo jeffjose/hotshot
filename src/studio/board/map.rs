@@ -69,6 +69,15 @@ impl Studio {
         self.editing.or_else(|| self.picked()).filter(|&index| self.is_node(index))
     }
 
+    /// How far apart a box's map is spaced against at its own size: as
+    /// much larger as the box was drawn, zoomed out.
+    fn spaced(&self, id: u32) -> f32 {
+        match self.index_of(id).map(|index| &self.doc.layers[index].kind) {
+            Some(Kind::Shape(shape)) => bar::drawn_larger(shape),
+            _ => 1.0,
+        }
+    }
+
     /// Tab: a child of the box picked out, after any it has, joined to it,
     /// in its look a shade lighter, and typed into.
     pub(in crate::studio) fn add_child(&mut self) -> bool {
@@ -84,17 +93,19 @@ impl Studio {
             _ => (w, h),
         };
         let down = self.goes_down(id);
+        // As far apart as at their own size, drawn zoomed out or in.
+        let by = self.spaced(id);
         let center = match self.child_boxes(id).last().and_then(|&last| self.index_of(last)) {
             Some(last) => {
                 let (lx, ly, lw, lh) = self.box_frame(last);
                 match down {
-                    true => (lx + lw + SIBLING + size.0 / 2.0, ly + lh / 2.0),
-                    false => (lx + lw / 2.0, ly + lh + SIBLING + size.1 / 2.0),
+                    true => (lx + lw + SIBLING * by + size.0 / 2.0, ly + lh / 2.0),
+                    false => (lx + lw / 2.0, ly + lh + SIBLING * by + size.1 / 2.0),
                 }
             }
             None => match down {
-                true => (x + w / 2.0, y + h + LEVEL + size.1 / 2.0),
-                false => (x + w + LEVEL + size.0 / 2.0, y + h / 2.0),
+                true => (x + w / 2.0, y + h + LEVEL * by + size.1 / 2.0),
+                false => (x + w + LEVEL * by + size.0 / 2.0, y + h / 2.0),
             },
         };
         self.checkpoint();
@@ -120,8 +131,8 @@ impl Studio {
         let (x, y, w, h) = self.box_frame(index);
         let after = self.child_boxes(parent_id).into_iter().filter_map(|child| self.index_of(child)).map(|child| self.box_frame(child)).filter(|frame| if down { frame.0 >= x && (frame.1 - y).abs() < h } else { frame.1 >= y && (frame.0 - x).abs() < w }).fold((x, y, w, h), |last, frame| if down { if frame.0 > last.0 { frame } else { last } } else if frame.1 > last.1 { frame } else { last });
         let center = match down {
-            true => (after.0 + after.2 + SIBLING + w / 2.0, after.1 + after.3 / 2.0),
-            false => (after.0 + after.2 / 2.0, after.1 + after.3 + SIBLING + h / 2.0),
+            true => (after.0 + after.2 + SIBLING * self.spaced(parent_id) + w / 2.0, after.1 + after.3 / 2.0),
+            false => (after.0 + after.2 / 2.0, after.1 + after.3 + SIBLING * self.spaced(parent_id) + h / 2.0),
         };
         self.checkpoint();
         let made = self.box_like(index, center, 0);
@@ -210,12 +221,12 @@ impl Studio {
                 continue;
             }
             let spans: Vec<f32> = kids.iter().map(|&kid| self.span(kid, down, &mut seen.clone())).collect();
-            let total = spans.iter().sum::<f32>() + SIBLING * (kids.len() - 1) as f32;
+            let total = spans.iter().sum::<f32>() + SIBLING * self.spaced(root) * (kids.len() - 1) as f32;
             let mut along = if down { middle.0 } else { middle.1 } - total / 2.0;
             let reach = if down { rh / 2.0 } else { rw / 2.0 };
             for (&kid, span) in kids.iter().zip(spans) {
-                self.place(kid, down, side, if down { middle.1 } else { middle.0 } + side * (reach + self.board.level), along, span, &mut seen);
-                along += span + SIBLING;
+                self.place(kid, down, side, if down { middle.1 } else { middle.0 } + side * (reach + self.board.level * self.spaced(root)), along, span, &mut seen);
+                along += span + SIBLING * self.spaced(root);
             }
         }
     }
@@ -236,7 +247,7 @@ impl Studio {
         if kids.is_empty() {
             return own;
         }
-        let stacked = kids.iter().map(|&kid| self.span(kid, down, seen)).sum::<f32>() + SIBLING * (kids.len() - 1) as f32;
+        let stacked = kids.iter().map(|&kid| self.span(kid, down, seen)).sum::<f32>() + SIBLING * self.spaced(id) * (kids.len() - 1) as f32;
         stacked.max(own)
     }
 
@@ -267,12 +278,12 @@ impl Studio {
             return;
         }
         let spans: Vec<f32> = kids.iter().map(|&kid| self.span(kid, down, &mut seen.clone())).collect();
-        let total = spans.iter().sum::<f32>() + SIBLING * (kids.len() - 1) as f32;
+        let total = spans.iter().sum::<f32>() + SIBLING * self.spaced(id) * (kids.len() - 1) as f32;
         let mut at = mid - total / 2.0;
-        let next = if side > 0.0 { near + deep + self.board.level } else { near - self.board.level };
+        let next = if side > 0.0 { near + deep + self.board.level * self.spaced(id) } else { near - self.board.level * self.spaced(id) };
         for (&kid, kid_span) in kids.iter().zip(spans) {
             self.place(kid, down, side, next, at, kid_span, seen);
-            at += kid_span + SIBLING;
+            at += kid_span + SIBLING * self.spaced(id);
         }
     }
 

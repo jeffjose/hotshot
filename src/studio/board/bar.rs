@@ -42,6 +42,25 @@ const SPLIT: i32 = 12;
 /// How wide − and + are.
 const STEP: i32 = 28;
 
+/// Which of S M L XL a line so wide with words so large is, at whatever
+/// zoom it was drawn at: the one whose line is to its words as these are,
+/// within a few in a hundred; none for another.
+pub(in crate::studio) fn size_at(width: f32, px: f32) -> Option<u8> {
+    let ratio = width / px;
+    (0..SIZES.len()).find(|&at| {
+        let (line, words) = SIZES[at];
+        (ratio / (line / words as f32) - 1.0).abs() < 0.03
+    }).map(|at| at as u8)
+}
+
+/// How much larger on the page a shape was drawn than at its own size, by
+/// the zoom it was drawn at: its line against the line of its size, or of
+/// the usual size where it is none of them.
+pub(in crate::studio) fn drawn_larger(shape: &Shape) -> f32 {
+    let line = size_at(shape.stroke, shape.font_px as f32).map_or(LINE, |at| SIZES[usize::from(at)].0);
+    (shape.stroke / line).clamp(0.125, 8.0)
+}
+
 impl Studio {
     /// The shapes picked out the bar styles.
     fn bar_styled(&self) -> Vec<usize> {
@@ -369,9 +388,12 @@ impl Studio {
                     };
                 }
             }
-            // S M L XL, lit as the line is as wide as that size's.
+            // S M L XL.
             Ctl::Size(at) => {
-                choice(canvas, (SIZES[usize::from(at)].0 - width).abs() < 0.01);
+                // Lit when its line and its words are in the proportion of
+                // that size, at whatever zoom it was drawn at.
+                let px = self.shown_px().map_or(f32::NAN, |px| px as f32);
+                choice(canvas, size_at(width, px) == Some(at));
                 let says = ["S", "M", "L", "XL"][usize::from(at)];
                 self.text.draw_centered(canvas, cx, cy, 12, TEXT_COLOR, says);
             }
@@ -541,7 +563,10 @@ impl Studio {
             // S M L XL: how wide the line is and how large the words, the
             // two together.
             Ctl::Size(at) => {
-                let (width, px) = SIZES[usize::from(at)];
+                // As large to the eye as that size at 100%, at the zoom it is
+                // chosen at.
+                let by = self.dynamic();
+                let (width, px) = (SIZES[usize::from(at)].0 * by, ((SIZES[usize::from(at)].1 as f32 * by).round() as u32).max(1));
                 self.board.width = width;
                 self.restyle_shapes(|shape| {
                     if !matches!(shape.tool, Tool::Text) {
@@ -636,6 +661,34 @@ impl Studio {
 mod tests {
     use super::*;
     use crate::studio::board::tests::*;
+
+    #[test]
+    fn drawn_zoomed_out_a_box_and_its_arrow_are_as_large_to_the_eye_as_at_100() {
+        let mut studio = board();
+        studio.zoom = 0.25;
+        studio.changed();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        let (a, b) = (studio.to_doc((600, 400)), studio.to_doc((700, 450)));
+        pull(&mut studio, a, b, Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let box_ = shape(&studio, 0);
+        assert_eq!((box_.stroke, box_.font_px), (LINE * 4.0, WORDS_PX * 4));
+        // Still M, at that zoom, in the panel's sense.
+        assert_eq!(size_at(box_.stroke, box_.font_px as f32), Some(1));
+        // An arrow joining it to another is as heavy as it.
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        let (a, b) = (studio.to_doc((900, 400)), studio.to_doc((1000, 450)));
+        pull(&mut studio, a, b, Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let arrow = studio.join(0, 1);
+        assert_eq!(shape(&studio, arrow).stroke, LINE * 4.0);
+        // Back at 100%, a new box is drawn as before.
+        studio.zoom = 1.0;
+        studio.changed();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 600.0), (260.0, 672.0), Mods::default());
+        assert_eq!(shape(&studio, studio.doc.layers.len() - 1).stroke, LINE);
+    }
 
     /// Where −, the number or + of the size of the words is.
     fn words_at(studio: &mut Studio, side: u8) -> (i32, i32) {

@@ -160,10 +160,12 @@ impl Studio {
         }
         if slight {
             let run = if boxy { self.run_size() } else { None };
+            // A note clicked out zoomed out as large to the eye as at 100%.
+            let by = self.dynamic();
             let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return };
             match (run, sticky) {
                 (_, true) | (Some(_), false) => {
-                    let size = if sticky { run.unwrap_or(STICKY) } else { run.unwrap_or(BOX) };
+                    let size = if sticky { run.unwrap_or((STICKY.0 * by, STICKY.1 * by)) } else { run.unwrap_or((BOX.0 * by, BOX.1 * by)) };
                     shape.points = vec![(from.0 - size.0 / 2.0, from.1 - size.1 / 2.0), (from.0 + size.0 / 2.0, from.1 + size.1 / 2.0)];
                     shape.touch();
                 }

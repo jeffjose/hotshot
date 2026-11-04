@@ -521,12 +521,23 @@ impl Studio {
         self.set_mode(board);
     }
 
+    /// How much larger on the page a shape drawn now is than at its own
+    /// size, for it to look as large in the window: one at 100%, four at
+    /// 25%; none past an eighth or eight times.
+    pub(super) fn dynamic(&self) -> f32 {
+        (1.0 / self.zoom.max(1e-3)).clamp(0.125, 8.0)
+    }
+
     /// A shape about to be drawn on a board, made as a board draws one: by
     /// hand, in its ink and fill, its words in the board's font; a box the
     /// kind the box tool makes; an arrow routed between what it joins.
     pub(super) fn board_dress(&self, shape: &mut Shape) {
         let board = &self.board;
-        (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width, self.board_font(), self.board_px());
+        // As large to the eye as at its own size, whatever the zoom it is
+        // drawn at: drawn zoomed out, its line and words larger on the
+        // page, as tldraw's dynamic size has them.
+        let by = self.dynamic();
+        (shape.color, shape.stroke, shape.face, shape.font_px) = (board.stroke, board.width * by, self.board_font(), ((self.board_px() as f32 * by).round() as u32).max(1));
         if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Arrow | Tool::Line) {
             (shape.dashed, shape.dotted) = (board.dash == 1, board.dash == 2);
         }

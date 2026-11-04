@@ -154,6 +154,9 @@ impl Studio {
         let (a, b) = frames;
         let mut arrow = Shape::new(Tool::Arrow, self.board.stroke, LINE, (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0));
         self.board_dress(&mut arrow);
+        if let Some(index) = self.index_of(from) {
+            self.arrow_like(&mut arrow, index);
+        }
         arrow.points[1] = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0);
         arrow.stuck = [Some((from, shapes::WHOLE, shapes::WHOLE)), Some((to, shapes::WHOLE, shapes::WHOLE))];
         let anchor = |(x, y, w, h): (f32, f32, f32, f32), id: u32| shapes::Anchor { id, middle: (x + w / 2.0, y + h / 2.0), half: (w / 2.0, h / 2.0), angle: 0.0, round: false, pointed: false };

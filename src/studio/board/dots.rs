@@ -322,7 +322,14 @@ impl Studio {
         }
         let center = match moved {
             true => self.to_doc(self.pointer),
-            false => (x + w / 2.0 + dx * (w + GAP_ACROSS), y + h / 2.0 + dy * (h + GAP_DOWN)),
+            // As far beside it as at its own size, drawn zoomed out or in.
+            false => {
+                let by = match &self.doc.layers[from].kind {
+                    Kind::Shape(source) => bar::drawn_larger(source),
+                    Kind::Picture(_) => 1.0,
+                };
+                (x + w / 2.0 + dx * (w + GAP_ACROSS * by), y + h / 2.0 + dy * (h + GAP_DOWN * by))
+            }
         };
         let made = self.box_like(from, center, 0);
         self.join(from, made);
@@ -365,12 +372,24 @@ impl Studio {
         self.doc.layers.len() - 1
     }
 
+    /// An arrow from a box as heavy as that box's line, and its words as
+    /// large as the box's, rather than as the zoom it is drawn at says: it
+    /// joins what was drawn, at whatever size that was.
+    pub(in crate::studio) fn arrow_like(&self, arrow: &mut Shape, from: usize) {
+        if let Some(Kind::Shape(source)) = self.doc.layers.get(from).map(|layer| &layer.kind) {
+            if matches!(source.tool, Tool::Rect | Tool::Ellipse) {
+                (arrow.stroke, arrow.font_px) = (source.stroke, source.font_px);
+            }
+        }
+    }
+
     /// Two boxes joined by a board's arrow, from one to the other, going
     /// from side to side as they move. Gives the arrow's layer.
     pub(in crate::studio) fn join(&mut self, from: usize, to: usize) -> usize {
         let (a, b) = (self.box_frame(from), self.box_frame(to));
         let mut arrow = Shape::new(Tool::Arrow, self.board.stroke, LINE, (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0));
         self.board_dress(&mut arrow);
+        self.arrow_like(&mut arrow, from);
         arrow.points[1] = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0);
         arrow.stuck = [Some((self.id_of(from), shapes::WHOLE, shapes::WHOLE)), Some((self.id_of(to), shapes::WHOLE, shapes::WHOLE))];
         arrow.routed = true;
