@@ -483,11 +483,21 @@ impl Studio {
                 // be worked out.
                 match self.pulled_arrow(from, onto) {
                     Some(arrow) => {
-                        for ink in arrow.sketch_strokes() {
-                            let mut points: Vec<(f32, f32)> = ink.points.iter().map(|&point| self.to_window_f(point)).collect();
-                            // A head shut round.
+                        // Worked out at the zoom it is seen at, as the arrow
+                        // itself is drawn, so that its head is as large as it
+                        // will be: past the page's corner, by the pan.
+                        let seen = super::scaled(&arrow, self.zoom);
+                        let shift = (self.doc.x * self.zoom + self.pan.0, self.doc.y * self.zoom + self.pan.1);
+                        for ink in seen.sketch_strokes() {
+                            let mut points: Vec<(f32, f32)> = ink.points.iter().map(|&(x, y)| (x + shift.0, y + shift.1)).collect();
+                            // A head filled, as it will be.
                             if ink.filled && points.len() > 2 {
                                 points.push(points[0]);
+                                let ring: Vec<(f32, f32)> = points.clone();
+                                let (left, top) = ring.iter().fold((f32::MAX, f32::MAX), |(l, t), p| (l.min(p.0), t.min(p.1)));
+                                let (right, bottom) = ring.iter().fold((f32::MIN, f32::MIN), |(r, b), p| (r.max(p.0), b.max(p.1)));
+                                let bounds = Rect::new(left.floor() as i32 - 1, top.floor() as i32 - 1, (right - left).ceil() as i32 + 3, (bottom - top).ceil() as i32 + 3);
+                                canvas.mask(&shapes::fill_path(bounds, &ring), ACCENT, 256);
                             }
                             halo(canvas, &points, 1.1, ACCENT, 256);
                         }

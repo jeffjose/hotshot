@@ -81,7 +81,21 @@ impl Studio {
             return true;
         }
         if !double {
-            // A drag from an arrow's middle branches it.
+            // The knob at the middle of the arrow picked out bends it.
+            let knob = self.picked().filter(|&index| match &self.doc.layers[index].kind {
+                Kind::Shape(shape) if matches!(shape.tool, Tool::Arrow | Tool::Line) && shape.points.len() >= 2 => {
+                    let middle = self.to_window(shape.middle());
+                    (middle.0 - at_window.0).abs() <= 8 && (middle.1 - at_window.1).abs() <= 8
+                }
+                _ => false,
+            });
+            if let Some(arrow) = knob {
+                self.checkpoint();
+                self.held = vec![self.doc.layers[arrow].clone()];
+                self.drag = Drag::Scale { pull: (super::BEND, 0), from: at };
+                return true;
+            }
+            // A drag from another arrow's middle branches it.
             return self.press_branch(at_window);
         }
         match self.layer_at(at) {

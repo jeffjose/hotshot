@@ -157,6 +157,10 @@ const SHADOW_SIZE: f32 = 2.0;
 /// How a handle at an end of a line pulls: that end, and nothing else.
 const END: i32 = 9;
 
+/// How the knob at the middle of a line pulls: its curve through the
+/// pointer, its ends where they are.
+const BEND: i32 = 10;
+
 /// The widths of line there are, in pixels of the picture; and the sizes
 /// of text that go with them.
 const STROKES: [f32; 4] = [2.0, 3.5, 6.0, 10.0];
@@ -2460,6 +2464,9 @@ pub struct Studio {
     board: board::Board,
     /// What drawing the canvas did, shown and written down with F12.
     draw_debug: drawdebug::DrawDebug,
+    /// The view last written down, for it to be written again only once
+    /// it has changed.
+    kept_view: Option<view::View>,
 }
 
 impl Studio {
@@ -2577,6 +2584,7 @@ impl Studio {
             dirty: true,
             board: board::Board::new(false),
             draw_debug: drawdebug::DrawDebug::default(),
+            kept_view: None,
         };
         // A board with no frames is worked in on its page.
         studio.active = if studio.pages[0].frames.is_empty() { LOOSE } else { 0 };
@@ -4026,7 +4034,11 @@ impl Studio {
         // on it does; a click let go there without a move picks that out.
         self.under_press = None;
         let beneath = under.filter(|index| self.chosen().iter().all(|chosen| chosen > index));
-        if !self.mods.shift && !double && (under.is_none_or(|index| self.selected.contains(&index)) || beneath.is_some()) && !self.chosen().is_empty() {
+        // Lines and arrows alone are taken only on themselves: the box
+        // round a curved one is mostly empty board, which a click on is
+        // meant for what is there, or nothing.
+        let only_lines = self.chosen().iter().all(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow)));
+        if !self.mods.shift && !double && !only_lines && (under.is_none_or(|index| self.selected.contains(&index)) || beneath.is_some()) && !self.chosen().is_empty() {
             let corners: Vec<(i32, i32)> = self.chosen().into_iter().flat_map(|index| self.box_corners(index)).collect();
             let (left, right) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.0).max().unwrap_or(0));
             let (top, bottom) = (corners.iter().map(|c| c.1).min().unwrap_or(0), corners.iter().map(|c| c.1).max().unwrap_or(0));
@@ -4611,7 +4623,20 @@ impl Studio {
                 for index in 0..self.doc.layers.len() {
                     let (x, y, w, h) = self.doc.layers[index].bounds(&mut self.text);
                     let layer = &self.doc.layers[index];
-                    if !layer.hidden && !layer.locked && x < right && x + w > left && y < bottom && y + h > top && !self.selected.contains(&index) {
+                    // A line or an arrow by where it goes, not the box round
+                    // it, which for a curve is mostly empty: some of it
+                    // passes through the box dragged out.
+                    let crossed = match &layer.kind {
+                        Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => shape.line_strokes().iter().any(|run| {
+                            run.windows(2).any(|pair| (0..=4).any(|step| {
+                                let t = step as f32 / 4.0;
+                                let (px, py) = (pair[0].0 + (pair[1].0 - pair[0].0) * t, pair[0].1 + (pair[1].1 - pair[0].1) * t);
+                                px >= left && px <= right && py >= top && py <= bottom
+                            }))
+                        }),
+                        _ => x < right && x + w > left && y < bottom && y + h > top,
+                    };
+                    if !layer.hidden && !layer.locked && crossed && !self.selected.contains(&index) {
                         self.selected.push(index);
                     }
                 }
@@ -4761,6 +4786,15 @@ impl Studio {
                 if let Kind::Shape(was) = &before.kind {
                     effects::pull_zoom(shape, was, pull, from, at);
                 }
+            }
+            // The middle of a line through the pointer, its ends as they
+            // are: a curve of the user's own, kept as it is rather than
+            // routed again as what it joins moves.
+            Kind::Shape(shape) if pull.0 == BEND => {
+                shape.points.truncate(2);
+                shape.points.push(at);
+                (shape.routed, shape.elbow) = (false, false);
+                shape.touch();
             }
             // An end of a line where the pointer is; with Shift, along
             // one of the eight ways from the other end.
@@ -7702,6 +7736,9 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                 studio.save(false);
                 saved = std::time::Instant::now();
             }
+            // Where it is looked at, written down once it is still, so
+            // that it opens there again however it is left, even killed.
+            studio.keep_view_when_still();
         } else if outcome == Outcome::Quit {
             break;
         }

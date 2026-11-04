@@ -21,6 +21,12 @@ pub(super) struct View {
     pub middle: (f32, f32),
 }
 
+/// A file's path in full, however it was named when opened, so that it
+/// is the same file each time it is looked up.
+fn whole(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn file() -> Option<PathBuf> {
     crate::output::state_file("views")
 }
@@ -83,15 +89,29 @@ impl Studio {
         if let Some(dir) = views.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(&views, remembered(&text, path, self.view()));
+        let _ = std::fs::write(&views, remembered(&text, &whole(path), self.view()));
+    }
+
+    /// The view written down when it has changed since it last was and
+    /// is still: nothing dragged, the page not moving.
+    pub fn keep_view_when_still(&mut self) {
+        if self.drag != Drag::None || self.moving.is_some() {
+            return;
+        }
+        let now = self.view();
+        if self.kept_view != Some(now) {
+            self.keep_view();
+            self.kept_view = Some(now);
+        }
     }
 
     /// Opened as it was last left, if it has been opened before.
     pub fn recall_view(&mut self) {
         let Some(path) = self.path.clone() else { return };
         let text = file().and_then(|views| std::fs::read_to_string(views).ok()).unwrap_or_default();
-        if let Some(view) = recalled(&text, &path) {
+        if let Some(view) = recalled(&text, &whole(&path)) {
             self.restore_view(view);
+            self.kept_view = Some(self.view());
         }
     }
 }

@@ -323,6 +323,65 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn a_click_on_empty_board_inside_a_curved_arrow_s_box_is_not_on_the_arrow() {
+        let mut studio = two_boxes();
+        // Out of A's right dot into the top of B: a curve.
+        let (bx, by, bw, _) = studio.box_frame(1);
+        pull_dot(&mut studio, 0, (bx + bw / 2.0, by + 2.0), Mods::default(), |_| {});
+        let arrow = studio.doc.layers.len() - 1;
+        studio.selected = vec![arrow];
+        let shape = shape(&studio, arrow);
+        // A point inside the box round the curve, well off the curve.
+        let (xs, ys): (Vec<f32>, Vec<f32>) = shape.points.iter().copied().unzip();
+        let (left, right) = (xs.iter().copied().fold(f32::MAX, f32::min), xs.iter().copied().fold(f32::MIN, f32::max));
+        let (top, bottom) = (ys.iter().copied().fold(f32::MAX, f32::min), ys.iter().copied().fold(f32::MIN, f32::max));
+        let mut off = None;
+        for i in 0..=20 {
+            for j in 0..=20 {
+                let p = (left + (right - left) * i as f32 / 20.0, top + (bottom - top) * j as f32 / 20.0);
+                let clear = (0..studio.doc.layers.len()).all(|index| !studio.doc.layers[index].clone().hit(p, &mut studio.text));
+                if off.is_none() && clear && (p.1 - (top + bottom) / 2.0).abs() < (bottom - top) / 3.0 {
+                    off = Some(p);
+                }
+            }
+        }
+        let Some(off) = off else { return };
+        let at = studio.to_window_page(off);
+        click(&mut studio, at);
+        assert!(!studio.selected.contains(&arrow), "clicked off the curve at {off:?}");
+    }
+
+
+    #[test]
+    fn the_knob_at_the_middle_of_an_arrow_picked_out_bends_it_through_the_pointer() {
+        let (mut studio, arrow) = joined();
+        studio.selected = vec![arrow];
+        let before = shape(&studio, arrow);
+        let knob = studio.to_window(before.middle());
+        let to = (before.middle().0, before.middle().1 + 120.0);
+        studio.pointer_moved(knob.0, knob.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        assert!(matches!(studio.drag, Drag::Scale { pull: (BEND, 0), .. }), "{:?}", studio.drag);
+        let at = studio.to_window(to);
+        studio.pointer_moved(at.0, at.1, Mods::default());
+        studio.released();
+        let bent = shape(&studio, arrow);
+        assert_eq!(studio.doc.layers.len(), 4, "no branch");
+        assert_eq!((bent.points.len(), bent.routed), (3, false));
+        assert!((bent.middle().1 - to.1).abs() < 2.0, "through the pointer: {:?} {to:?}", bent.middle());
+        assert_eq!((bent.stuck[0].map(|s| s.0), bent.stuck[1].map(|s| s.0)), (before.stuck[0].map(|s| s.0), before.stuck[1].map(|s| s.0)), "still joined");
+        // B moved: the arrow keeps its bend, its end goes with B.
+        studio.selected.clear();
+        let (bx, by, _, _) = studio.box_frame(1);
+        pull(&mut studio, (bx + 20.0, by + 20.0), (bx + 20.0, by + 80.0), Mods::default());
+        let after = shape(&studio, arrow);
+        assert_eq!(after.points.len(), 3, "the bend kept");
+        assert!((after.points[1].1 - bent.points[1].1 - 60.0).abs() < 2.0, "{:?} {:?}", after.points[1], bent.points[1]);
+    }
+
     #[test]
     fn an_arrow_pulled_from_a_dot_back_into_its_own_box_loops_round_to_another_side() {
         let mut studio = two_boxes();
