@@ -120,6 +120,24 @@ impl Studio {
         across.extend(theirs_across);
         down.extend(theirs_down);
         let snapped = spacing::snap_box([left + dx, top + dy, right + dx, bottom + dy], &across, &down, &others, 6.0 / self.zoom);
+        // While drawing is looked into: what it was near, each way, and
+        // what it took.
+        if self.draw_debug.logging() {
+            let near = |lines: &[f32], mine: [f32; 3]| {
+                let mut found: Vec<(f32, f32)> = lines.iter().flat_map(|&line| mine.iter().map(move |&at| (line - at, line))).filter(|(by, _)| by.abs() * self.zoom <= 40.0).collect();
+                found.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+                found.dedup_by(|a, b| (a.1 - b.1).abs() < 0.5);
+                found.iter().take(6).map(|(by, line)| format!("{line:.0}({:+.0}px)", by * self.zoom)).collect::<Vec<_>>().join(" ")
+            };
+            let (l, t, r, b) = (left + dx, top + dy, right + dx, bottom + dy);
+            crate::log_line(format_args!(
+                "snap moving ({l:.0},{t:.0} {:.0}x{:.0}) among {} others, reach {:.0}px | across near: {} | down near: {} | took {:+.1},{:+.1} guides {:?} gaps {}",
+                r - l, b - t, others.len(), 6.0,
+                near(&across, [l, (l + r) / 2.0, r]),
+                near(&down, [t, (t + b) / 2.0, b]),
+                snapped.by.0, snapped.by.1, snapped.guides, snapped.gaps.len(),
+            ));
+        }
         (self.guides, self.gaps) = (snapped.guides, snapped.gaps);
         (dx + snapped.by.0, dy + snapped.by.1)
     }
