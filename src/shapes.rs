@@ -1591,7 +1591,19 @@ fn route_elbow(shape: &mut Shape, anchors: &[Anchor], given: [Option<(usize, Poi
                 false => vec![port_of(u, v)?],
             };
             let away = |side: usize| PORTS[side].0 * (other.middle.0 - anchor.middle.0) + PORTS[side].1 * (other.middle.1 - anchor.middle.1) < 0.0;
-            Some(sides.into_iter().map(|side| (side_point(anchor, side).0, side, if away(side) { elbows::TURN / 2.0 } else { 0.0 })).collect())
+            // Where the two are well apart one way, across rather than
+            // down, a side that faces that way rather than one square to
+            // it, as a diagram's lines go: worth more than the turn it
+            // saves, so that a step across beats a corner into a top.
+            let (dx, dy) = ((other.middle.0 - anchor.middle.0).abs(), (other.middle.1 - anchor.middle.1).abs());
+            let (gx, gy) = (dx - anchor.half.0 - other.half.0, dy - anchor.half.1 - other.half.1);
+            let square = |side: usize| match side % 2 {
+                // Up or down, where they are apart across.
+                0 => gx > 0.0 && gx > 2.0 * gy.max(0.0),
+                _ => gy > 0.0 && gy > 2.0 * gx.max(0.0),
+            };
+            let cost = |side: usize| if away(side) { elbows::TURN / 2.0 } else { 0.0 } + if square(side) { elbows::TURN * 1.5 } else { 0.0 };
+            Some(sides.into_iter().map(|side| (side_point(anchor, side).0, side, cost(side))).collect())
         };
         let ends = (sides(first, from, to, given[0])?, sides(last, to, from, given[1])?);
         // Round everything else, but what overlaps either end's own thing,

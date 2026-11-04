@@ -494,6 +494,23 @@ pub(in crate::studio) mod tests {
     }
 
     #[test]
+    fn a_connector_round_corners_between_boxes_well_apart_across_goes_side_to_side() {
+        let mut studio = board();
+        studio.set_look(Some(DIAGRAM), None);
+        for (from, to) in [((40.0, 200.0), (240.0, 260.0)), ((420.0, 290.0), (640.0, 360.0))] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, to, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            studio.selected.clear();
+        }
+        let arrow = studio.join(0, 1);
+        let points = shape(&studio, arrow).points.clone();
+        // Out of the right of one and into the left of the other, a step
+        // between, rather than round a corner into its top.
+        assert!((points[0].0 - 240.0).abs() < 2.0 && (points[1].0 - 420.0).abs() < 2.0, "{points:?}");
+    }
+
+    #[test]
     fn diagram_colors_are_figjam_s() {
         assert_eq!(figjam(0x1971C2), 0x3662E3);
         assert_eq!(figjam(0xD0EBFF), 0xEBF2FE);
@@ -831,6 +848,50 @@ pub(in crate::studio) mod tests {
     /// `$HOTSHOT_TIMES` its size, or its own.
     ///
     ///     HOTSHOT_SNAPSHOTS=shots cargo test look_snapshots -- --ignored
+    /// A diagram as a blog's figure would have it, in the Diagram look:
+    ///
+    ///     HOTSHOT_SNAPSHOTS=shots cargo test diagram_snapshot -- --ignored
+    #[test]
+    #[ignore]
+    fn diagram_snapshot() {
+        let Some(to) = std::env::var_os("HOTSHOT_SNAPSHOTS") else { return };
+        let to = std::path::PathBuf::from(to);
+        std::fs::create_dir_all(&to).unwrap();
+        let mut studio = board();
+        studio.set_look(Some(DIAGRAM), None);
+        let mut add = |studio: &mut Studio, from: (f32, f32), to: (f32, f32), color: u32, fill: u32, words: &str| {
+            let mut shape = Shape::new(Tool::Rect, INK, LINE, from);
+            shape.points[1] = to;
+            studio.board_dress(&mut shape);
+            (shape.color, shape.fill, shape.filled) = (color, fill, true);
+            shape.text = words.into();
+            shape.touch();
+            studio.doc.layers.push(Layer::shape(shape));
+            studio.doc.layers.len() - 1
+        };
+        let gateway = add(&mut studio, (360.0, 60.0), (900.0, 520.0), INK, 0xFFFFFF, "MCP Gateway");
+        let _ = gateway;
+        let agents: Vec<usize> = ["Agent Builder", "Coding Agents", "Chat", "Workflows"].iter().enumerate()
+            .map(|(i, words)| add(&mut studio, (40.0, 90.0 + i as f32 * 110.0), (240.0, 150.0 + i as f32 * 110.0), 0x7048E8, 0xE5DBFF, words)).collect();
+        let registry = add(&mut studio, (420.0, 120.0), (640.0, 190.0), 0x1971C2, 0xD0EBFF, "Registry");
+        let proxy = add(&mut studio, (420.0, 290.0), (640.0, 360.0), 0x1971C2, 0xD0EBFF, "Proxy");
+        let auth = add(&mut studio, (700.0, 290.0), (860.0, 360.0), 0x2F9E44, 0xD3F9D8, "Auth");
+        let crawler = add(&mut studio, (420.0, 420.0), (640.0, 490.0), 0xF08C00, 0xFFE8CC, "AutoCrawler");
+        let services = add(&mut studio, (980.0, 290.0), (1160.0, 360.0), 0x868E96, 0xF1F3F5, "Services");
+        for &agent in &agents {
+            studio.join(agent, proxy);
+        }
+        for (from, to) in [(proxy, registry), (proxy, auth), (crawler, registry), (proxy, services)] {
+            studio.join(from, to);
+        }
+        studio.selected.clear();
+        studio.changed();
+        let layers: Vec<Layer> = studio.doc.layers.clone();
+        let sheet = studio.part_sheet(&layers, (0.0, 0.0, 1200.0, 560.0));
+        let (pw, ph, pixels) = sheet.render(2.0, &mut studio.text);
+        std::fs::write(to.join("diagram.png"), crate::output::encode(pw as u32, ph as u32, &pixels, false).unwrap()).unwrap();
+    }
+
     #[test]
     #[ignore]
     fn look_snapshots() {
