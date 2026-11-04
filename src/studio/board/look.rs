@@ -305,6 +305,7 @@ impl Studio {
     pub(in crate::studio) fn set_look(&mut self, look: Option<u8>, ground: Option<u8>) {
         self.checkpoint();
         let page = &mut self.pages[self.page];
+        let was = page.look;
         if let Some(look) = look {
             page.look = look.min(DIAGRAM);
         }
@@ -324,6 +325,24 @@ impl Studio {
                     }
                 }
             }
+        }
+        // Its connectors go round corners, as a diagram's do: those bowed
+        // between two things, when the look is chosen.
+        let mut turned = false;
+        if page.look == DIAGRAM && was != DIAGRAM {
+            for layer in &mut self.doc.layers {
+                if let Kind::Shape(shape) = &mut layer.kind {
+                    if matches!(shape.tool, Tool::Arrow | Tool::Line) && shape.routed && shape.stuck.iter().all(Option::is_some) {
+                        (shape.routed, shape.elbow) = (false, true);
+                        shape.points.truncate(2);
+                        shape.touch();
+                        turned = true;
+                    }
+                }
+            }
+        }
+        if turned {
+            self.follow();
         }
         let page = &self.pages[self.page];
         let (look, ground, font) = (page.look, page.ground, page.font);
@@ -452,6 +471,26 @@ pub(in crate::studio) mod tests {
         let section = shape(&studio, 0).clone();
         let (frame, bounds) = (section.frame(), section.local_bounds(&mut studio.text));
         assert!(bounds.y < frame.1 as i32 - 10, "its tag in its bounds: {bounds:?} {frame:?}");
+    }
+
+    #[test]
+    fn a_diagram_s_connectors_go_round_corners_those_there_and_those_drawn_next() {
+        let mut studio = board();
+        for (from, to) in [((100.0, 100.0), (260.0, 172.0)), ((500.0, 300.0), (660.0, 372.0)), ((100.0, 500.0), (260.0, 572.0))] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, to, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            studio.selected.clear();
+        }
+        let bowed = studio.join(0, 1);
+        assert!(shape(&studio, bowed).routed && !shape(&studio, bowed).elbow, "bowed in Rounded");
+        studio.set_look(Some(DIAGRAM), None);
+        assert!(shape(&studio, bowed).elbow && !shape(&studio, bowed).routed, "round corners once a diagram");
+        assert!(shape(&studio, bowed).points.len() > 2, "a turn between them: {:?}", shape(&studio, bowed).points);
+        let next = studio.join(1, 2);
+        assert!(shape(&studio, next).elbow && !shape(&studio, next).routed, "and the next");
+        studio.undo();
+        assert!(shape(&studio, bowed).routed && !shape(&studio, bowed).elbow, "one step to undo");
     }
 
     #[test]

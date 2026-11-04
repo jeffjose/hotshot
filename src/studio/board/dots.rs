@@ -250,7 +250,7 @@ impl Studio {
         let mut arrow = Shape::new(Tool::Arrow, INK, LINE, (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0));
         arrow.points[1] = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0);
         arrow.stuck = [Some((self.id_of(from), shapes::WHOLE, shapes::WHOLE)), Some((anchor.id, u, v))];
-        arrow.routed = true;
+        self.board_route(&mut arrow);
         shapes::follow(std::iter::once(&mut arrow), &self.anchors());
         Some((arrow.points[1], (u, v)))
     }
@@ -310,7 +310,7 @@ impl Studio {
         let mut arrow = Shape::new(Tool::Arrow, self.board.stroke, LINE, (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0));
         self.board_dress(&mut arrow);
         self.arrow_like(&mut arrow, from);
-        arrow.routed = true;
+        self.board_route(&mut arrow);
         match onto {
             Some(index) => {
                 let (end, _) = self.pulled_port(from, index)?;
@@ -491,6 +491,13 @@ impl Studio {
         }
     }
 
+    /// How a board's new connector goes: round corners in the Diagram look,
+    /// as a diagram's do, and bowed in the others.
+    pub(in crate::studio) fn board_route(&self, arrow: &mut Shape) {
+        let diagram = self.pages[self.page].look == super::look::DIAGRAM;
+        (arrow.routed, arrow.elbow) = (!diagram, diagram);
+    }
+
     /// Two boxes joined by a board's arrow, from one to the other, going
     /// from side to side as they move. Gives the arrow's layer.
     pub(in crate::studio) fn join(&mut self, from: usize, to: usize) -> usize {
@@ -500,7 +507,7 @@ impl Studio {
         self.arrow_like(&mut arrow, from);
         arrow.points[1] = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0);
         arrow.stuck = [Some((self.id_of(from), shapes::WHOLE, shapes::WHOLE)), Some((self.id_of(to), shapes::WHOLE, shapes::WHOLE))];
-        arrow.routed = true;
+        self.board_route(&mut arrow);
         self.doc.layers.push(Layer::shape(arrow));
         self.follow();
         self.doc.layers.len() - 1
