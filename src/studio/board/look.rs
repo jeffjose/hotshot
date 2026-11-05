@@ -566,124 +566,57 @@ pub(in crate::studio) mod tests {
     }
 
     #[test]
-    fn the_font_is_chosen_from_its_own_list_in_the_bar_beside_the_look() {
+    fn the_font_is_chosen_from_its_own_list_in_the_bar() {
         let mut studio = board();
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
         type_in(&mut studio, "Queue");
         press_key(&mut studio, Key::Escape, Mods::default());
-        open_theme(&mut studio);
-        let (look, font) = (studio.control_rect(Control::Board(Ctl::Look)).unwrap(), studio.control_rect(Control::Board(Ctl::Font)).unwrap());
-        assert!(!look.intersects(font), "two controls");
+        let font = studio.control_rect(Control::Board(Ctl::Font)).unwrap();
         click(&mut studio, font.center());
         assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Fonts));
         let row = studio.menu_items(MenuKind::Fonts).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == "Instrument Serif")).unwrap();
         let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
         click(&mut studio, rect.center());
         assert_eq!((shape(&studio, 0).face, studio.board_font(), studio.pages[0].look), (1, 1, 0));
-        // The look's list still only changes the look.
-        choose(&mut studio, Ctl::Look, "Sketchy");
+        // The theme still only changes the theme.
+        choose_board(&mut studio, "Theme", "Sketchy");
         assert_eq!((shape(&studio, 0).face, studio.board_font(), studio.pages[0].look), (1, 1, 1));
     }
 
-    #[test]
-    fn the_theme_paper_and_guessing_are_the_board_s_behind_a_button_at_its_bottom_right_not_in_the_panel_of_styles() {
-        let mut studio = board();
-        // Only its button, to begin with, with nothing picked out as with.
-        let layout = studio.layout();
-        let shut = layout.board_theme.expect("the board's settings");
-        assert!(layout.board_bar.is_none());
-        assert!(shut.right() > studio.width - 40 && shut.y > layout.dock.y - 10, "at the bottom right: {shut:?}");
-        assert!(shut.w < 48, "only a button: {shut:?}");
-        for ctl in [Ctl::Look, Ctl::Ground, Ctl::Guess] {
-            assert!(studio.control_rect(Control::Board(ctl)).is_none(), "{ctl:?} not shown");
+    /// The logo's menu opened, and one of the board's lists in it, Theme
+    /// or Paper, opened beside it by the pointer over it. Gives its kind.
+    pub(in crate::studio) fn open_board_list(studio: &mut Studio, list: &str) -> MenuKind {
+        if studio.menu.map(|menu| menu.kind) != Some(MenuKind::Main) {
+            let logo = studio.control_rect(Control::Home).unwrap();
+            click(studio, logo.center());
         }
-        // A click opens them beside it.
-        open_theme(&mut studio);
-        let open = studio.layout().board_theme.unwrap();
-        assert!(open.w > shut.w + 100 && open.right() == shut.right());
-        for ctl in [Ctl::Look, Ctl::Ground, Ctl::Guess] {
-            let place = studio.control_rect(Control::Board(ctl)).unwrap();
-            assert!(open.contains(place.center().0, place.center().1), "{ctl:?} in it");
-        }
-        // A click on the board shuts them, and does what it does.
-        press_key(&mut studio, Key::Char('r'), Mods::default());
-        pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
-        press_key(&mut studio, Key::Escape, Mods::default());
-        assert!(!studio.board.theme_open && studio.doc.layers.len() == 1, "shut, and the box drawn");
-        // With a box picked out: its panel has none of them.
-        open_theme(&mut studio);
-        let layout = studio.layout();
-        let panel = layout.board_bar.expect("its panel");
-        for ctl in [Ctl::Look, Ctl::Ground, Ctl::Guess] {
-            let place = studio.control_rect(Control::Board(ctl)).unwrap();
-            assert!(!panel.intersects(place), "{ctl:?} not in the panel");
-        }
-        let font = studio.control_rect(Control::Board(Ctl::Font)).unwrap();
-        assert!(panel.contains(font.center().0, font.center().1), "the font is the shape's");
-        // Open while a list of theirs is chosen from.
-        choose(&mut studio, Ctl::Look, "Diagram");
-        assert_eq!(studio.pages[0].look, DIAGRAM);
-        assert!(studio.board.theme_open);
-        choose(&mut studio, Ctl::Ground, "Dark gray");
-        assert_eq!(studio.pages[0].ground, 1);
-    }
-
-    #[test]
-    fn what_the_theme_button_says_hovered_is_all_inside_the_window() {
-        let mut studio = board();
-        let button = studio.control_rect(Control::Board(Ctl::Theme)).unwrap();
-        studio.pointer_moved(button.center().0, button.center().1, Mods::default());
-        let mut out = vec![0u32; (studio.width * studio.height) as usize];
-        studio.draw(&mut out);
-        let dock = studio.layout().dock;
-        // Its last column, from over the bar to the top of the button:
-        // the paper, not the dark of the tip cut off by the edge.
-        let x = studio.width - 2;
-        let dark = (dock.y - 60..button.y).filter(|&y| out[(y * studio.width + x) as usize] & 0xFF < 0x80).count();
-        assert_eq!(dark, 0);
-        // And it is drawn, ending a little before the edge.
-        let row = (dock.y - 60..button.y).find(|&y| (studio.width - 60..studio.width - 4).any(|x| out[(y * studio.width + x) as usize] & 0xFF < 0x40));
-        assert!(row.is_some(), "its tip shown");
-    }
-
-    /// The board's theme, paper and guessing opened from their button.
-    pub(in crate::studio) fn open_theme(studio: &mut Studio) {
-        if !studio.board.theme_open {
-            let place = studio.control_rect(Control::Board(Ctl::Theme)).unwrap();
-            click(studio, place.center());
-        }
-        assert!(studio.board.theme_open);
-    }
-
-    /// A control of the bar clicked, and a row of the list it opens; the
-    /// board's own opened first, for one of theirs.
-    pub(in crate::studio) fn choose(studio: &mut Studio, ctl: Ctl, says: &str) {
-        if matches!(ctl, Ctl::Look | Ctl::Ground | Ctl::Guess) {
-            open_theme(studio);
-        }
-        let place = studio.control_rect(Control::Board(ctl)).unwrap();
-        click(studio, place.center());
-        let kind = studio.menu.map(|menu| menu.kind).expect("a list open");
-        let row = studio.menu_items(kind).iter().position(|item| matches!(item, menu::Item::Entry { says: row, .. } if row == says)).unwrap_or_else(|| panic!("{says} in the list"));
+        let row = studio.menu_items(MenuKind::Main).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == list)).unwrap_or_else(|| panic!("{list} in the menu"));
         let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+        studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+        let (_, kind) = studio.menu.and_then(|menu| menu.sub).expect("its list open beside it");
+        kind
+    }
+
+    /// A row of the board's Theme or Paper chosen, from the logo's menu.
+    pub(in crate::studio) fn choose_board(studio: &mut Studio, list: &str, says: &str) {
+        let kind = open_board_list(studio, list);
+        let row = studio.menu_items(kind).iter().position(|item| matches!(item, menu::Item::Entry { says: row, .. } if row == says)).unwrap_or_else(|| panic!("{says} in the list"));
+        let rect = studio.control_rect(Control::MenuRow(1, row as u16)).unwrap();
         studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
         click(studio, rect.center());
     }
 
     #[test]
-    fn the_look_and_the_ground_are_lists_that_open_from_the_bar_rather_than_switches() {
+    fn the_theme_and_the_paper_are_lists_in_the_logo_s_menu() {
         let mut studio = board();
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
-        open_theme(&mut studio);
-        for (ctl, kind, rows) in [(Ctl::Look, MenuKind::Looks, &LOOKS[..]), (Ctl::Ground, MenuKind::Grounds, &GROUNDS[..])] {
-            let place = studio.control_rect(Control::Board(ctl)).unwrap();
+        for (list, kind, rows) in [("Theme", MenuKind::Looks, &LOOKS[..]), ("Paper", MenuKind::Grounds, &GROUNDS[..])] {
             let (look, ground) = (studio.pages[0].look, studio.pages[0].ground);
-            click(&mut studio, place.center());
-            assert_eq!(studio.menu.map(|menu| menu.kind), Some(kind), "a click opens its list");
-            assert_eq!((studio.pages[0].look, studio.pages[0].ground), (look, ground), "and changes nothing");
+            assert_eq!(open_board_list(&mut studio, list), kind);
+            assert_eq!((studio.pages[0].look, studio.pages[0].ground), (look, ground), "opening it changes nothing");
             let items = studio.menu_items(kind);
             let says: Vec<(String, bool)> = items.iter().filter_map(|item| match item {
                 menu::Item::Entry { says, on, .. } => Some((says.clone(), *on)),
@@ -691,21 +624,20 @@ pub(in crate::studio) mod tests {
             }).collect();
             assert_eq!(says.iter().map(|(says, _)| says.as_str()).collect::<Vec<_>>(), rows.to_vec());
             assert_eq!(says.iter().filter(|(_, on)| *on).count(), 1, "the one it is checked");
-            // Hovering a row shows it on the board, and moving off puts it
-            // back; Esc closes the list.
+            // Hovering a row shows it on the board; Esc puts it back.
             let row = items.iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == rows[2])).unwrap();
-            let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+            let rect = studio.control_rect(Control::MenuRow(1, row as u16)).unwrap();
             studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
-            let shown = if ctl == Ctl::Look { studio.pages[0].look } else { studio.pages[0].ground };
+            let shown = if kind == MenuKind::Looks { studio.pages[0].look } else { studio.pages[0].ground };
             assert_eq!(shown, 2, "previewed");
-            studio.pointer_moved(rect.x - 300, rect.y - 300, Mods::default());
-            assert_eq!((studio.pages[0].look, studio.pages[0].ground), (look, ground), "put back");
+            press_key(&mut studio, Key::Escape, Mods::default());
             press_key(&mut studio, Key::Escape, Mods::default());
             assert_eq!(studio.menu, None);
+            assert_eq!((studio.pages[0].look, studio.pages[0].ground), (look, ground), "put back");
         }
-        choose(&mut studio, Ctl::Ground, "Black");
+        choose_board(&mut studio, "Paper", "Black");
         assert_eq!(studio.pages[0].ground, 2);
-        choose(&mut studio, Ctl::Look, "Clean");
+        choose_board(&mut studio, "Theme", "Clean");
         assert_eq!((studio.pages[0].look, studio.pages[0].ground), (2, 2));
         studio.undo();
         assert_eq!((studio.pages[0].look, studio.pages[0].ground), (0, 2), "each one step");
@@ -985,9 +917,15 @@ pub(in crate::studio) mod tests {
         let mut out = vec![0u32; (studio.width * studio.height) as usize];
         studio.draw(&mut out);
         std::fs::write(to.join("window.png"), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
-        open_theme(&mut studio);
+        open_board_list(&mut studio, "Theme");
         studio.draw(&mut out);
         std::fs::write(to.join("window-theme.png"), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
+        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.set_mode(false);
+        studio.left_open = true;
+        studio.draw(&mut out);
+        std::fs::write(to.join("design.png"), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
     }
 
     #[test]

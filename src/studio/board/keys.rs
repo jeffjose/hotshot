@@ -152,8 +152,7 @@ mod tests {
     #[test]
     fn question_mark_opens_the_sheet_of_keys_and_esc_or_a_click_off_it_closes_it() {
         let mut studio = board();
-        let keys = studio.control_rect(Control::Board(Ctl::Keys)).unwrap().center();
-        click(&mut studio, keys);
+        studio.run_menu(crate::studio::menu::MenuAct::Board(crate::studio::board::Act::Keys));
         assert!(studio.board.keys);
         let sheet = studio.control_rect(Control::Board(Ctl::Sheet)).unwrap();
         assert!(sheet.x > 0 && sheet.right() < studio.width && sheet.bottom() <= studio.height, "{sheet:?}");

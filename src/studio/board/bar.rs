@@ -169,37 +169,6 @@ impl Studio {
         layout.board_bar = Some(panel);
     }
 
-    /// The board's own settings, at its bottom right as the zoom is at its
-    /// left, level with the bar of tools: a button that opens its theme,
-    /// its paper, and guessing what comes next, as they are of the whole
-    /// board and not of what is picked out, and seldom changed; not where
-    /// it would reach the bar, as in a narrow window.
-    pub(in crate::studio) fn layout_theme(&mut self, layout: &mut Layout) {
-        const SIDE: i32 = 28;
-        const PAD: i32 = 4;
-        let widest = look::LOOKS.iter().map(|says| self.text.width(says, 12)).max().unwrap_or(0);
-        // Shut, only its button; open, the three before it.
-        let mut parts = match self.board.theme_open {
-            true => vec![(Ctl::Look, widest + 30), (Ctl::Ground, 38), (Ctl::Guess, SIDE + 6)],
-            false => vec![],
-        };
-        parts.push((Ctl::Theme, SIDE));
-        let wide = parts.iter().map(|(_, w)| w + GAP).sum::<i32>() - GAP + 2 * PAD;
-        let high = SIDE + 2 * PAD;
-        let dock = layout.dock;
-        let place = Rect::new(self.open_area().right() - 12 - wide, dock.y + (dock.h - high) / 2, wide, high);
-        if place.x < dock.right() + 12 {
-            return;
-        }
-        let mut x = place.x + PAD;
-        for (ctl, w) in parts {
-            layout.controls.push((Rect::new(x, place.y + PAD, w, SIDE), Control::Board(ctl)));
-            x += w + GAP;
-        }
-        layout.controls.push((place, Control::Panel));
-        layout.board_theme = Some(place);
-    }
-
     /// What the panel shows as set: of the first shape picked out, or of
     /// the next to be drawn: its line, its fill if it has one, whether it
     /// is drawn by hand, its status, whether its fill is hatched, how its
@@ -352,7 +321,7 @@ impl Studio {
     }
 
     pub(in crate::studio) fn draw_style_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
-        let (stroke, fill, sketch, status, hatch, dash, width) = self.shown_style();
+        let (stroke, fill, _, status, hatch, dash, width) = self.shown_style();
         let (cx, cy) = rect.center();
         let ring = |canvas: &mut Canvas, on: bool| {
             if on {
@@ -485,28 +454,6 @@ impl Studio {
                 choice(canvas, size_at(width, px) == Some(at));
                 let says = ["S", "M", "L", "XL"][usize::from(at)];
                 self.text.draw_centered(canvas, cx, cy, 12, TEXT_COLOR, says);
-            }
-            // The ground's paper, and the arrow of the list it opens.
-            Ctl::Ground => {
-                if hovered || self.bar_open(MenuKind::Grounds) {
-                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
-                }
-                let (paper, _) = self.paper();
-                canvas.disc(rect.x + 11, cy, 8, 0x8F8F8F, 256);
-                canvas.disc(rect.x + 11, cy, 7, paper, 256);
-                self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);
-            }
-            Ctl::Look => {
-                if hovered || self.bar_open(MenuKind::Looks) {
-                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
-                }
-                // How the board draws its shapes and lines: rounded,
-                // sketchy or clean, said plainly, as it has nothing to do
-                // with the font.
-                let says = look::LOOKS[usize::from(self.pages[self.page].look.min(look::DIAGRAM))];
-                let _ = sketch;
-                self.text.draw(canvas, rect.x + 7, cy - Text::line_height(12) / 2, 12, TEXT_COLOR, says);
-                self.text.draw_centered(canvas, rect.right() - 8, cy, 9, DIM_TEXT_COLOR, icons::DOWN);
             }
             Ctl::Font => {
                 let open = matches!(self.menu, Some(MenuState { kind: MenuKind::Fonts, .. }));
@@ -704,9 +651,7 @@ impl Studio {
             }
             // Each a list, under the bar, or over it where it is low; a
             // second click on it closes it.
-            Ctl::Look => self.open_bar_menu(ctl, MenuKind::Looks),
             Ctl::Font => self.open_bar_menu(ctl, MenuKind::Fonts),
-            Ctl::Ground => self.open_bar_menu(ctl, MenuKind::Grounds),
             // − or +, a step at once and then more while held; the number
             // typed into.
             Ctl::Words(side @ (0 | 2)) => {

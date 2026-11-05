@@ -454,19 +454,36 @@ impl Studio {
                 items
             }
             MenuKind::Order => vec![do_("Bring to front", "Ctrl Shift ]", Command::Front), Item::entry("Bring forward", "Ctrl ]", MenuAct::Act(Action::Forward)), Item::entry("Send backward", "Ctrl [", MenuAct::Act(Action::Backward)), do_("Send to back", "Ctrl Shift [", Command::Back)],
-            MenuKind::Main => vec![
-                do_("Back to projects", "", Command::Home).look(Look::Icon(icons::HOME)),
-                Item::Rule,
-                Item::sub("File", MenuKind::MainSub(0)),
-                Item::sub("Edit", MenuKind::MainSub(1)),
-                Item::sub("View", MenuKind::MainSub(2)),
-                Item::sub("Object", MenuKind::MainSub(3)),
-                Item::sub("Capture", MenuKind::MainSub(4)),
-                Item::Rule,
-                do_("Search actions", "Ctrl K", Command::Palette).look(Look::Icon(icons::SEARCH)),
-                do_("Zen mode", "Ctrl \\", Command::Zen),
-                do_("Close", "Ctrl Q", Command::Quit),
-            ],
+            MenuKind::Main => {
+                let mut items = vec![
+                    do_("Back to projects", "", Command::Home).look(Look::Icon(icons::HOME)),
+                    Item::Rule,
+                    Item::sub("File", MenuKind::MainSub(0)),
+                    Item::sub("Edit", MenuKind::MainSub(1)),
+                    Item::sub("View", MenuKind::MainSub(2)),
+                    Item::sub("Object", MenuKind::MainSub(3)),
+                    Item::sub("Capture", MenuKind::MainSub(4)),
+                    Item::Rule,
+                ];
+                // A board's own, of all of it rather than what is picked
+                // out, kept here so that the board has nothing on it.
+                if self.on_board() {
+                    use super::board::Act;
+                    items.extend([
+                        Item::sub("Theme", MenuKind::Looks),
+                        Item::sub("Paper", MenuKind::Grounds),
+                        Item::entry("Guess what comes next", "", MenuAct::Board(Act::Guessing)).on(self.board.guessing),
+                        Item::entry("Keyboard shortcuts", "?", MenuAct::Board(Act::Keys)),
+                        Item::Rule,
+                    ]);
+                }
+                items.extend([
+                    do_("Search actions", "Ctrl K", Command::Palette).look(Look::Icon(icons::SEARCH)),
+                    do_("Zen mode", "Ctrl \\", Command::Zen),
+                    do_("Close", "Ctrl Q", Command::Quit),
+                ]);
+                items
+            }
             MenuKind::MainSub(0) => vec![do_("New design page", "", Command::NewPageOf(false)), do_("New board page", "", Command::NewPageOf(true)), do_("New frame", "F", Command::NewFrame), Item::Rule, do_("Save", "Ctrl S", Command::Save), do_("Export frame", "Ctrl E", Command::ExportFrame), do_("Export every frame of the page", "Ctrl Shift E", Command::ExportPage)],
             MenuKind::MainSub(1) => vec![do_("Undo", "Ctrl Z", Command::Undo), do_("Redo", "Ctrl Shift Z", Command::Redo), Item::Rule, do_("Copy", "Ctrl C", Command::Copy), do_("Copy frame as PNG", "Ctrl Shift C", Command::CopyPng), do_("Paste", "Ctrl V", Command::Paste), do_("Duplicate", "Ctrl D", Command::Duplicate), do_("Delete", "Del", Command::Delete), Item::Rule, do_("Select all", "Ctrl A", Command::SelectAll)],
             MenuKind::MainSub(2) => vec![do_("Zoom in", "Ctrl +", Command::ZoomIn), do_("Zoom out", "Ctrl \u{2212}", Command::ZoomOut), do_("Zoom to fit", "Ctrl 0", Command::ZoomFit), do_("Zoom to selection", "Shift 2", Command::ZoomSelection), do_("Actual size", "Ctrl 1", Command::Zoom(100)), Item::Rule, do_("Rulers", "Shift R", Command::Rulers).on(self.rulers), do_("Left panel", "Ctrl Shift \\", Command::LeftPanel).on(self.left_open), do_("Right panel", "Ctrl Alt \\", Command::RightPanel).on(self.right_open), do_("Zen mode", "Ctrl \\", Command::Zen).on(self.zen), Item::Rule, Item::sub("Canvas color", MenuKind::Canvas)],

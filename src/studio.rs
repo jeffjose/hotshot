@@ -2222,10 +2222,8 @@ struct Layout {
     menus: Vec<(Rect, MenuKind)>,
     /// A board's bar of styles, by what is picked out.
     board_bar: Option<Rect>,
-    /// A board's zoom, at its bottom left.
+    /// A board's zoom, at its top left.
     board_zoom: Option<Rect>,
-    /// The board's own settings, at its bottom right: its theme, paper and guessing.
-    board_theme: Option<Rect>,
 }
 
 /// The whole file as it was, to come back to with undo: its pages, the
@@ -3104,6 +3102,9 @@ impl Studio {
     fn left_panel(&mut self, layout: &mut Layout) {
         // Its button first, where it is whether the panel shows or not;
         // hidden, the panel is that button and nothing else.
+        if !self.zen {
+            layout.controls.push((self.logo_place(), Control::Home));
+        }
         layout.controls.push((self.side_button(0), Control::SidePanel(0)));
         self.layout_switch(layout);
         if !self.shows_left() {
@@ -3113,11 +3114,9 @@ impl Studio {
         layout.panels.push(panel);
         let (left, inner) = (panel.x + 12, panel.w - 24);
         let line = Text::line_height(12);
-        // The file: the way home, its project, and its name.
-        // Under the switch between Design and Board, which is beside the
-        // button that hides the panel.
-        let home = self.side_button(0).x;
-        layout.controls.push((Rect::new(home, panel.y + 12 + SWITCH_ROOM, 28, 28), Control::Home));
+        // The file: its project, and its name, under the logo and the
+        // switch between Design and Board.
+        let home = left - 38;
         let project = self.path.as_ref().and_then(|path| path.parent()).and_then(|dir| dir.file_name()).map_or("Drafts".to_owned(), |name| name.to_string_lossy().into_owned());
         layout.words.push(((home + 38, panel.y + 10 + SWITCH_ROOM), project, DIM_TEXT_COLOR, 11));
         let name = self.title().trim_end_matches(" \u{2014} hotshot").to_owned();
@@ -3293,12 +3292,19 @@ impl Studio {
         if self.shows_right() { self.width - INSET - RIGHT_W - INSET } else { self.width }
     }
 
+    /// The logo, at the very top left, which opens the menu of
+    /// everything: there whether the left panel is shown or not.
+    fn logo_place(&self) -> Rect {
+        Rect::new(INSET + 12, INSET + 12, 28, 28)
+    }
+
     /// The button that hides and shows a panel, at the top of it: the
     /// same place whether the panel is there or not, so that nothing
     /// moves, as Claude's own sidebar button does not.
     fn side_button(&self, side: u8) -> Rect {
         match side {
-            0 => Rect::new(INSET + 12, INSET + 12, 28, 28),
+            // After the logo.
+            0 => Rect::new(INSET + 12 + 28 + 6, INSET + 12, 28, 28),
             _ => Rect::new(self.width - INSET - 14 - 28, INSET + 12, 28, 28),
         }
     }
@@ -3819,14 +3825,6 @@ impl Studio {
         // click off it closes it and does nothing else.
         if self.library.is_some() && button <= 7 && self.library_press(button) {
             return Outcome::Continue;
-        }
-        // A board's theme, paper and guessing close with a click off them,
-        // which goes on to do what it does; not one on a list they opened.
-        if self.board.theme_open && button <= 3 && !matches!(self.control_at(self.pointer), Some(Control::Board(board::Ctl::Theme | board::Ctl::Look | board::Ctl::Ground | board::Ctl::Guess) | Control::MenuRow(..))) {
-            self.board.theme_open = false;
-            if self.menu.is_some_and(|menu| matches!(menu.kind, MenuKind::Looks | MenuKind::Grounds)) {
-                self.menu = None;
-            }
         }
         let at_window = self.pointer;
         let double =time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
@@ -6648,7 +6646,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.board_zoom, layout.board_theme].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.board_zoom].into_iter().flatten() {
             soft_shadow(canvas, place, 12);
             canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);
@@ -10054,9 +10052,10 @@ mod tests {
         let in_panel = (INSET + 100, 400);
         assert!(!studio.over_page(in_panel) && studio.control_rect(Control::Home).is_some());
         // Ctrl+Shift+\ hides the left panel: the page reaches the edge,
-        // and its button is the one thing left there, where it was.
+        // and its button is left there, where it was, after the logo.
         studio.key(Key::Char('|'), ctrl_shift, true);
-        assert!(!studio.left_open && studio.over_page(in_panel) && studio.control_rect(Control::Home).is_none());
+        let logo = studio.control_rect(Control::Home);
+        assert!(!studio.left_open && studio.over_page(in_panel) && logo.is_some(), "the logo's menu there all the same");
         assert_eq!(studio.control_rect(Control::SidePanel(0)), Some(left));
         assert_eq!(studio.control_at(in_panel), None);
         assert!(studio.open_area().x < INSET + LEFT_W);
@@ -10065,7 +10064,7 @@ mod tests {
         assert_ne!(out[(400 * 1400 + INSET + 100) as usize] & 0xFFFFFF, PANEL_COLOR);
         // Its button brings it back.
         click(&mut studio, left.center());
-        assert!(studio.left_open && studio.control_rect(Control::Home).is_some());
+        assert!(studio.left_open && studio.control_rect(Control::Home) == logo, "the logo where it was");
         // The right one the same, by Ctrl+Alt+\ and its own button.
         studio.key(Key::Char('\\'), Mods { ctrl: true, alt: true, ..Mods::default() }, true);
         assert!(!studio.right_open && studio.control_rect(Control::Zoom).is_none());

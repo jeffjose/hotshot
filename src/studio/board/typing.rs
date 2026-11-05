@@ -611,9 +611,9 @@ mod tests {
         assert!(box_.hatch && box_.dashed && !box_.dotted);
         assert_eq!((box_.stroke, box_.font_px), SIZES[3]);
         // The look is the board's, chosen from its list.
-        crate::studio::board::look::tests::choose(&mut studio, Ctl::Look, "Sketchy");
+        crate::studio::board::look::tests::choose_board(&mut studio, "Theme", "Sketchy");
         assert_eq!(studio.pages[0].look, 1);
-        crate::studio::board::look::tests::choose(&mut studio, Ctl::Look, "Clean");
+        crate::studio::board::look::tests::choose_board(&mut studio, "Theme", "Clean");
         assert_eq!(studio.pages[0].look, 2);
         // R takes up the box tool again, rather than typing over its words.
         press_key(&mut studio, Key::Char('r'), Mods::default());

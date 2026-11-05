@@ -47,6 +47,8 @@ pub(in crate::studio) enum Act {
     Neaten,
     /// The words a size larger, or smaller.
     Words(bool),
+    /// The sheet of the board's keys, open or shut.
+    Keys,
 }
 
 impl Studio {
@@ -64,10 +66,10 @@ impl Studio {
         acts.push((if self.board.neaten { "Stop neatening pen strokes" } else { "Neaten pen strokes" }.to_owned(), "", Act::Neaten));
         acts.push(("Copy as Mermaid mind map".to_owned(), "", Act::Mermaid(true)));
         for (at, name) in look::LOOKS.iter().enumerate() {
-            acts.push((format!("Look: {name}"), "", Act::Look(at as u8)));
+            acts.push((format!("Theme: {name}"), "", Act::Look(at as u8)));
         }
         for (at, name) in look::GROUNDS.iter().enumerate() {
-            acts.push((format!("Board on {}", name.to_lowercase()), "", Act::Ground(at as u8)));
+            acts.push((format!("Paper: {name}"), "", Act::Ground(at as u8)));
         }
         for (at, name) in FACES.iter().enumerate() {
             acts.push((format!("Font: {name}"), "", Act::Font(at as u8)));
@@ -110,6 +112,7 @@ impl Studio {
             Act::History => self.open_history(),
             Act::Tidy => self.tidy(),
             Act::Guessing => self.press_style(Ctl::Guess),
+            Act::Keys => self.board.keys = !self.board.keys,
             Act::Focus => self.focus(),
             Act::Present => self.present(),
             Act::Template(which) => self.template(which),

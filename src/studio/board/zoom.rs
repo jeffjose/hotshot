@@ -1,205 +1,135 @@
-//! The zoom of a board, at its bottom left, as Excalidraw keeps it: −, how
-//! large it is shown, which a click makes 100%, +, all of it fitted, and
-//! ? for the sheet of its keys; on the same dark as the bar of tools.
+//! How large a board is shown, at its top left after the switch of
+//! Design and Board, a list of zooms; the menu of everything, the logo's,
+//! before them, has the board's theme, paper, guessing and keys. So the
+//! board itself has nothing on it but the bar of tools, to draw on.
 
 use super::*;
 
-/// How wide each of its buttons is, how far apart, and its edge round them.
+/// How high the zoom is and how wide, and the edge round it.
 const SIDE: i32 = 28;
-const SHOWN_W: i32 = 52;
-const GAP: i32 = 2;
+const ZOOM_W: i32 = 72;
 const PAD: i32 = 4;
-/// Where the rule between the zoom and the rest goes, and its room.
-const RULE: i32 = 9;
 
 impl Studio {
-    /// The zoom laid out at the bottom left of what is open, its middle
-    /// level with the bar of tools'; not where it would reach the bar, as
-    /// in a narrow window.
-    pub(in crate::studio) fn layout_zoom(&mut self, layout: &mut Layout) {
-        let parts = [(Ctl::ZoomOut, SIDE), (Ctl::ZoomShown, SHOWN_W), (Ctl::ZoomIn, SIDE), (Ctl::Fit, SIDE), (Ctl::Keys, SIDE)];
-        let wide = parts.iter().map(|(_, w)| w + GAP).sum::<i32>() - GAP + RULE - GAP + 2 * PAD;
-        let high = SIDE + 2 * PAD;
-        let dock = layout.dock;
-        let place = Rect::new(self.open_area().x + 12, dock.y + (dock.h - high) / 2, wide, high);
-        if place.right() + 12 > dock.x {
-            return;
-        }
-        let mut x = place.x + PAD;
-        for (ctl, w) in parts {
-            if ctl == Ctl::Fit {
-                x += RULE - GAP;
-            }
-            layout.controls.push((Rect::new(x, place.y + PAD, w, SIDE), Control::Board(ctl)));
-            x += w + GAP;
-        }
+    /// The zoom laid out after the switch, on a little panel of its own.
+    pub(in crate::studio) fn layout_corner(&mut self, layout: &mut Layout) {
+        let switch = self.switch_place();
+        let place = Rect::new(switch.right() + 10, switch.y + (switch.h - SIDE - 2 * PAD) / 2, ZOOM_W + 2 * PAD, SIDE + 2 * PAD);
+        layout.controls.push((Rect::new(place.x + PAD, place.y + PAD, ZOOM_W, SIDE), Control::Zoom));
         layout.controls.push((place, Control::Panel));
         layout.board_zoom = Some(place);
     }
 
-    /// A button of the zoom pressed.
+    /// The sheet of keys pressed: on it, nothing; round it, closed.
     pub(in crate::studio) fn press_zoom(&mut self, ctl: Ctl) {
-        let middle = self.open_area().center();
-        match ctl {
-            Ctl::ZoomOut => self.zoom_about(0.8, middle),
-            Ctl::ZoomIn => self.zoom_about(1.25, middle),
-            Ctl::ZoomShown => self.zoom_about(1.0 / self.zoom, middle),
-            Ctl::Fit if self.doc.layers.is_empty() && self.frame_count() == 0 => self.say("Nothing on the board to fit"),
-            Ctl::Fit => self.fit(),
-            Ctl::Keys => self.board.keys = !self.board.keys,
-            // A click round the sheet closes it; on it, nothing.
-            Ctl::Scrim => self.board.keys = false,
-            _ => {}
+        if ctl == Ctl::Scrim {
+            self.board.keys = false;
         }
         self.dirty = true;
     }
 
-    /// A button of the zoom drawn: − and +, how large as a percentage, the
-    /// four corners of what is fitted, and a question mark; the rule
-    /// before the last two drawn with the first.
-    pub(in crate::studio) fn draw_zoom_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
-        let (cx, cy) = rect.center();
-        let on = (ctl == Ctl::Keys && self.board.keys) || (ctl == Ctl::Theme && self.board.theme_open);
-        if on {
-            canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, ACCENT, 256);
-        } else if hovered {
-            canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 7, HOVER_COLOR, 256);
-        }
-        let color = if on { 0xFFFFFF } else { TEXT_COLOR };
-        match ctl {
-            Ctl::ZoomOut => self.text.draw_centered(canvas, cx, cy, 15, color, icons::MINUS),
-            Ctl::ZoomIn => self.text.draw_centered(canvas, cx, cy, 15, color, icons::PLUS),
-            Ctl::ZoomShown => {
-                let says = zoom_says(self.zoom);
-                let wide = self.text.width(&says, 12);
-                self.text.draw(canvas, cx - wide / 2, cy - Text::line_height(12) / 2, 12, color, &says);
-            }
-            // A palette's three dots of color, round a ring.
-            Ctl::Theme => {
-                canvas.disc(cx, cy, 8, color, 256);
-                canvas.disc(cx, cy, 7, if on { ACCENT } else if hovered { HOVER_COLOR } else { PANEL_COLOR }, 256);
-                for (dx, dy, dot) in [(0, -3, 0xF2B33D), (-3, 2, 0xE5577E), (3, 2, 0x4C8DF6)] {
-                    canvas.disc(cx + dx, cy + dy, 2, dot, 256);
-                }
-            }
-            Ctl::Fit => {
-                canvas.fill(rect.x - (RULE - GAP) / 2 - 1, rect.y + 6, 1, rect.h - 12, HOVER_COLOR);
-                // Four corners round what is fitted.
-                let (w, h, arm) = (14, 12, 4);
-                let (left, top) = (cx - w / 2, cy - h / 2);
-                for (x, y, across, down) in [(left, top, 1, 1), (left + w - 1, top, -1, 1), (left, top + h - 1, 1, -1), (left + w - 1, top + h - 1, -1, -1)] {
-                    for step in 0..arm {
-                        for thick in 0..2 {
-                            canvas.fill(x + step * across, y + thick * down, 1, 1, color);
-                            canvas.fill(x + thick * across, y + step * down, 1, 1, color);
-                        }
-                    }
-                }
-            }
-            _ => {
-                let wide = self.text.width("?", 14);
-                self.text.draw(canvas, cx - wide / 2, cy - Text::line_height(14) / 2, 14, color, "?");
-            }
-        }
-    }
-
     /// What a control of a board says as it is hovered: a tool, its name
-    /// and key; a button of the zoom, what it does and its key.
+    /// and key.
     pub(in crate::studio) fn board_tip(&self, ctl: Ctl) -> Option<String> {
         Some(match ctl {
             Ctl::Tool(which) => TOOLS.get(usize::from(which)).map(|(name, key)| format!("{name}  {}", key.to_ascii_uppercase()))?,
-            Ctl::ZoomOut => "Zoom out  Ctrl \u{2212}".to_owned(),
-            Ctl::ZoomIn => "Zoom in  Ctrl +".to_owned(),
-            Ctl::ZoomShown => "Zoom to 100%  Ctrl 1".to_owned(),
-            Ctl::Fit => "Zoom to fit  Ctrl 0".to_owned(),
-            Ctl::Keys => "Keyboard shortcuts  ?".to_owned(),
-            Ctl::Theme => "Theme, paper and guessing".to_owned(),
             _ => return None,
         })
     }
-}
-
-/// How large a board is shown, as a whole percentage.
-fn zoom_says(zoom: f32) -> String {
-    format!("{}%", (zoom * 100.0).round() as i64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::studio::board::tests::*;
+    use crate::studio::menu::{self, Item};
 
-    fn press(studio: &mut Studio, ctl: Ctl) {
-        let at = studio.control_rect(Control::Board(ctl)).unwrap().center();
-        click(studio, at);
+    /// A row of an open list clicked, by what it says.
+    fn pick(studio: &mut Studio, says: &str) {
+        let kind = studio.menu.map(|menu| menu.kind).expect("a list open");
+        let row = studio.menu_items(kind).iter().position(|item| matches!(item, Item::Entry { says: row, .. } if row == says)).unwrap_or_else(|| panic!("{says} in the list"));
+        let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+        studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+        click(studio, rect.center());
     }
 
     #[test]
-    fn the_zoom_at_the_bottom_left_steps_resets_to_100_and_fits_the_board() {
+    fn a_board_has_nothing_on_it_but_the_bar_of_tools_the_rest_at_its_top_left() {
         let mut studio = board();
-        let place = studio.layout().board_zoom.unwrap();
-        let dock = studio.layout().dock;
-        assert!(place.x < 40 && place.right() < dock.x && place.y >= dock.y && place.bottom() <= dock.bottom(), "at the bottom left, level with the bar: {place:?} {dock:?}");
-        press(&mut studio, Ctl::ZoomIn);
-        assert!((studio.zoom - 1.25).abs() < 1e-4);
-        press(&mut studio, Ctl::ZoomOut);
-        press(&mut studio, Ctl::ZoomOut);
-        assert!((studio.zoom - 0.8).abs() < 1e-4);
-        assert_eq!(zoom_says(studio.zoom), "80%");
-        assert_eq!(zoom_says(0.6249), "62%");
-        // The percentage clicked: 100%, about the middle of what is open.
-        press(&mut studio, Ctl::ZoomShown);
-        assert!((studio.zoom - 1.0).abs() < 1e-4);
-        // Nothing to fit, nothing done but saying so.
-        press(&mut studio, Ctl::Fit);
-        assert_eq!(studio.zoom, 1.0);
-        // Two boxes far apart, and a frame further: all of them in view,
-        // with room round them, and never past 100%.
+        let layout = studio.layout();
+        let dock = layout.dock;
+        // Along the bottom, only the bar of tools.
+        let low: Vec<Rect> = layout.controls.iter().map(|(rect, _)| *rect).filter(|rect| rect.bottom() > dock.y - 40 && !dock.contains(rect.center().0, rect.center().1)).collect();
+        assert!(low.is_empty(), "nothing else along the bottom: {low:?}");
+        // At the top left: the logo first, and after the switch the zoom.
+        let corner = layout.board_zoom.expect("the corner");
+        let (logo, zoom) = (studio.control_rect(Control::Home).unwrap(), studio.control_rect(Control::Zoom).unwrap());
+        assert!(corner.x > studio.switch_place().right() && corner.y < 60, "{corner:?}");
+        assert!(logo.x < 40 && logo.y < 40 && corner.contains(zoom.center().0, zoom.center().1), "{logo:?} {zoom:?}");
+    }
+
+    #[test]
+    fn the_zoom_at_the_top_left_lists_the_zooms_and_fits_the_board() {
+        let mut studio = board();
+        let zoom = studio.control_rect(Control::Zoom).unwrap();
+        click(&mut studio, zoom.center());
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Zoom));
+        pick(&mut studio, "Zoom to 200%");
+        assert!((studio.zoom - 2.0).abs() < 1e-4);
+        // Two boxes far apart: all of them in view, never past 100%.
         for (x, y) in [(-800.0, -300.0), (1900.0, 900.0)] {
             let mut shape = Shape::new(Tool::Rect, INK, LINE, (x, y));
             shape.points[1] = (x + 160.0, y + 72.0);
             studio.doc.layers.push(Layer::shape(shape));
         }
         studio.changed();
-        press(&mut studio, Ctl::Fit);
+        click(&mut studio, zoom.center());
+        pick(&mut studio, "Zoom to fit");
         let open = studio.open_area();
         let (a, b) = (studio.to_window_page((-800.0, -300.0)), studio.to_window_page((2060.0, 972.0)));
         assert!(a.0 > open.x && a.1 > open.y && b.0 < open.right() && b.1 < open.bottom(), "{a:?} {b:?} in {open:?}");
-        assert!(studio.zoom < 0.5);
         let mut small = board();
         let mut shape = Shape::new(Tool::Rect, INK, LINE, (100.0, 100.0));
         shape.points[1] = (140.0, 120.0);
         small.doc.layers.push(Layer::shape(shape));
         small.changed();
         small.zoom = 0.3;
-        press(&mut small, Ctl::Fit);
-        assert_eq!(small.zoom, 1.0, "a small board is fitted at 100%, not blown up");
-        // Ctrl+0 is the same.
-        small.zoom = 0.3;
         press_key(&mut small, Key::Char('0'), Mods { ctrl: true, ..Mods::default() });
-        assert_eq!(small.zoom, 1.0);
+        assert_eq!(small.zoom, 1.0, "a small board is fitted at 100%, not blown up");
     }
 
     #[test]
-    fn a_press_on_the_zoom_never_reaches_the_board() {
+    fn the_logo_s_menu_on_a_board_has_its_theme_paper_guessing_and_keys() {
         let mut studio = board();
-        press_key(&mut studio, Key::Char('r'), Mods::default());
-        let place = studio.layout().board_zoom.unwrap();
-        // Between two of its buttons, on its own edge.
-        let at = (place.x + 1, place.y + 1);
-        studio.pointer_moved(at.0, at.1, Mods::default());
-        studio.last_press.0 = 0;
-        studio.pressed(1, 100_000);
-        studio.pointer_moved(at.0 + 120, at.1 - 200, Mods::default());
-        studio.released();
-        assert!(studio.doc.layers.is_empty(), "no box drawn from it");
-        // Hovered, each says what it does.
-        assert_eq!(studio.board_tip(Ctl::Fit).as_deref(), Some("Zoom to fit  Ctrl 0"));
-        assert_eq!(studio.board_tip(Ctl::Tool(LASER_TOOL)).as_deref(), Some("Laser  K"));
+        let logo = studio.control_rect(Control::Home).unwrap();
+        click(&mut studio, logo.center());
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Main));
+        let items = studio.menu_items(MenuKind::Main);
+        let says: Vec<&str> = items.iter().filter_map(|item| match item {
+            Item::Entry { says, .. } => Some(says.as_str()),
+            _ => None,
+        }).collect();
+        for want in ["Theme", "Paper", "Guess what comes next", "Keyboard shortcuts"] {
+            assert!(says.contains(&want), "{want} in {says:?}");
+        }
+        assert!(items.iter().any(|item| matches!(item, Item::Entry { says, sub: Some(MenuKind::Looks), .. } if says == "Theme")));
+        let guessing = studio.board.guessing;
+        pick(&mut studio, "Guess what comes next");
+        assert_eq!(studio.board.guessing, !guessing);
+        click(&mut studio, logo.center());
+        pick(&mut studio, "Keyboard shortcuts");
+        assert!(studio.board.keys);
+        // Design's has none of them.
+        studio.set_mode(false);
+        let says: Vec<String> = studio.menu_items(MenuKind::Main).iter().filter_map(|item| match item {
+            menu::Item::Entry { says, .. } => Some(says.clone()),
+            _ => None,
+        }).collect();
+        assert!(!says.iter().any(|says| says == "Theme"));
     }
 
     #[test]
-    fn the_zoom_is_hidden_with_everything_else_and_while_presenting() {
+    fn the_corner_is_hidden_with_everything_else() {
         let mut studio = board();
         press_key(&mut studio, Key::Char('\\'), Mods { ctrl: true, ..Mods::default() });
         assert!(studio.layout().board_zoom.is_none());

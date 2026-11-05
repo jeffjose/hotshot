@@ -37,6 +37,10 @@ impl Studio {
                 return true;
             }
         }
+        // A board's theme or paper, in the list the logo's menu opens.
+        if let (Control::MenuRow(1, _), Some(MenuState { sub: Some((_, MenuKind::Looks | MenuKind::Grounds)), .. })) = (control, self.menu) {
+            return true;
+        }
         if self.chosen().is_empty() {
             return false;
         }

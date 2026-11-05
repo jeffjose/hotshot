@@ -89,11 +89,8 @@ pub(super) enum Ctl {
     /// `HEAD_CHOICES`; and the way it goes: curved, straight or elbowed.
     Head(u8, u8),
     Route(u8),
-    Look,
-    /// The font its words are in, a list of the faces, apart from the look.
+    /// The font its words are in, a list of the faces.
     Font,
-    /// What the board is on: light paper, dark gray or black.
-    Ground,
     /// How large the words are: smaller (0), the number of pixels, which a
     /// click types into (1), and larger (2).
     Words(u8),
@@ -107,16 +104,6 @@ pub(super) enum Ctl {
     Present,
     /// Neaten, by the pen.
     Neaten,
-    /// The zoom at the bottom left: smaller, how large, which a click
-    /// makes 100%, larger, all of the board fitted, and its keys.
-    ZoomOut,
-    ZoomShown,
-    ZoomIn,
-    Fit,
-    Keys,
-    /// The button at the bottom right that opens the board's theme, paper
-    /// and guessing, and closes them.
-    Theme,
     /// The sheet of the board's keys, while it is open, and all round it,
     /// which a click closes it on.
     Sheet,
@@ -182,8 +169,6 @@ pub(super) struct Board {
     pub beam: bool,
     /// The sheet of its keys is open.
     pub keys: bool,
-    /// The board's theme, paper and guessing shown, from their button.
-    pub theme_open: bool,
     /// What the box tool would draw round, outlined.
     pub pick: Option<pick::Pick>,
     /// What letting go of the box being moved would do to an arrow.
@@ -222,7 +207,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, theme_open: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
     }
 }
 
@@ -450,8 +435,7 @@ impl Studio {
         }
         layout.controls.push((dock, Control::Panel));
         layout.dock = dock;
-        self.layout_zoom(layout);
-        self.layout_theme(layout);
+        self.layout_corner(layout);
     }
 
     /// Which of the board's tools is in hand.
@@ -515,7 +499,6 @@ impl Studio {
             Ctl::Mode(board) => self.set_mode(board),
             Ctl::Tool(which) => return self.take_board_tool(which),
             Ctl::Present => self.present(),
-            Ctl::Theme => self.board.theme_open = !self.board.theme_open,
             Ctl::HistoryTrack => {
                 let x = self.pointer.0;
                 if let Some(history) = &mut self.board.history {
@@ -525,7 +508,7 @@ impl Studio {
             }
             Ctl::Branch => self.branch_here(),
             Ctl::Now => self.history_now(),
-            Ctl::ZoomOut | Ctl::ZoomShown | Ctl::ZoomIn | Ctl::Fit | Ctl::Keys | Ctl::Sheet | Ctl::Scrim => self.press_zoom(ctl),
+            Ctl::Sheet | Ctl::Scrim => self.press_zoom(ctl),
             other => self.press_style(other),
         }
         Outcome::Continue
@@ -688,7 +671,6 @@ impl Studio {
                 }
                 self.text.draw(canvas, rect.x + 30, cy - Text::line_height(12) / 2, 12, TEXT_COLOR, "Present");
             }
-            Ctl::ZoomOut | Ctl::ZoomShown | Ctl::ZoomIn | Ctl::Fit | Ctl::Keys | Ctl::Theme => self.draw_zoom_control(canvas, rect, ctl, hovered),
             // Drawn over everything, once the rest is.
             Ctl::Sheet | Ctl::Scrim => {}
             other => self.draw_style_control(canvas, rect, other, hovered),
