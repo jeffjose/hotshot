@@ -352,6 +352,60 @@ mod tests {
         assert!(partly > 20, "drawn again only in part {partly} times");
     }
 
+    #[test]
+    fn a_box_dragged_over_a_connector_is_drawn_again_with_all_the_connector_does_under_it() {
+        use crate::studio::board::tests::{board, press_key, pull};
+        let none = Mods::default();
+        for (look, zoom) in [(0u8, 1.0), (1, 1.0), (2, 1.0), (crate::studio::board::look::DIAGRAM, 1.0), (0, 0.3), (1, 0.3), (0, 0.05), (1, 0.05)] {
+            let mut studio = board();
+            studio.set_look(Some(look), None);
+            studio.zoom = zoom;
+            let page = |at: (f32, f32)| (at.0 / zoom, at.1 / zoom);
+            // Two boxes joined, as joined from a dot; an arrow tied to
+            // nothing below; and a box above them all, to drag down across.
+            for (from, to) in [((100.0, 300.0), (260.0, 372.0)), ((700.0, 300.0), (860.0, 372.0)), ((400.0, 80.0), (520.0, 140.0))] {
+                press_key(&mut studio, Key::Char('r'), none);
+                pull(&mut studio, page(from), page(to), none);
+                press_key(&mut studio, Key::Escape, none);
+                press_key(&mut studio, Key::Escape, none);
+            }
+            studio.join(0, 1);
+            press_key(&mut studio, Key::Char('a'), none);
+            pull(&mut studio, page((300.0, 560.0)), page((800.0, 600.0)), none);
+            press_key(&mut studio, Key::Escape, none);
+            press_key(&mut studio, Key::Escape, none);
+            studio.selected.clear();
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            board_as_if_whole(&mut studio);
+            // Down over the joined arrow, on across the free one, and back.
+            let start = studio.to_window_page(page((460.0, 110.0)));
+            studio.pointer_moved(start.0, start.1, none);
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for step in 1..=60 {
+                let down = if step <= 40 { step * 14 } else { (80 - step) * 14 };
+                studio.pointer_moved(start.0 + step % 3, start.1 + down, none);
+                studio.draw(&mut out);
+                board_as_if_whole(&mut studio);
+                // All of the window, what is drawn over the board too, as
+                // drawn from nothing.
+                let mut fresh = vec![0u32; out.len()];
+                (studio.shown.clear(), studio.shown_page.clear());
+                studio.draw(&mut fresh);
+                let far = |a: &u32, b: &u32| [0, 8, 16].iter().any(|shift| ((a >> shift & 0xFF) as i32 - (b >> shift & 0xFF) as i32).abs() > 2);
+                let off = out.iter().zip(&fresh).filter(|(a, b)| far(a, b)).count();
+                let w = studio.width as usize;
+                let at: Vec<(usize, usize, u32, u32)> = out.iter().zip(&fresh).enumerate().filter(|(_, (a, b))| far(a, b)).map(|(i, (a, b))| (i % w, i / w, *a, *b)).take(12).collect();
+                assert!(off == 0, "look {look} zoom {zoom} step {step}: {off} pixels of the window differ: {at:x?}");
+                out = fresh;
+            }
+            studio.released();
+            studio.draw(&mut out);
+            board_as_if_whole(&mut studio);
+        }
+    }
+
     /// The same, each picture on it drawn afresh rather than as it was
     /// kept.
     fn board_as_if_drawn_afresh(studio: &mut Studio) {

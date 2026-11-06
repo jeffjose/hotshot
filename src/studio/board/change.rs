@@ -238,25 +238,23 @@ impl Studio {
             studio.to_window_page((fx + fw / 2.0, fy + fh / 2.0))
         };
         let (ca, cb) = (center(self, a), center(self, b));
+        // Dashes drawn smooth, as the lines of the board are, rather than
+        // stepped a pixel at a time.
         let dashed = |canvas: &mut Canvas, p: (i32, i32), q: (i32, i32), color: u32| {
-            let long = (((q.0 - p.0) as f32).hypot((q.1 - p.1) as f32)).max(1.0);
+            let (p, q) = ((p.0 as f32, p.1 as f32), (q.0 as f32, q.1 as f32));
+            let long = (q.0 - p.0).hypot(q.1 - p.1).max(1.0);
+            let at = |u: f32| (p.0 + (q.0 - p.0) * u / long, p.1 + (q.1 - p.1) * u / long);
             let mut t = 0.0;
             while t < long {
-                let s = (t + 7.0).min(long);
-                let at = |u: f32| (p.0 + ((q.0 - p.0) as f32 * u / long) as i32, p.1 + ((q.1 - p.1) as f32 * u / long) as i32);
-                for shift in [0, 1] {
-                    line(canvas, (at(t).0, at(t).1 + shift), (at(s).0, at(s).1 + shift), color);
-                }
+                halo(canvas, &[at(t), at((t + 7.0).min(long))], 1.1, color, 256);
                 t += 12.0;
             }
         };
         let (color, says) = match drop.split {
+            // Where it would go, between the two the arrow joins: nothing
+            // painted over the arrow itself, which would leave a mark of
+            // paper on the box being moved and on any paper but the light.
             true => {
-                // The arrow broken where the box goes: a gap of paper across it.
-                if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(drop.arrow) {
-                    let gap = self.to_window(shape.middle());
-                    canvas.disc(gap.0, gap.1, 9, shapes::PAPER, 256);
-                }
                 dashed(canvas, ca, mid, ACCENT);
                 dashed(canvas, mid, cb, ACCENT);
                 (ACCENT, "Between")
@@ -581,5 +579,34 @@ mod tests {
         assert!(studio.pages[1].name.ends_with("later") && studio.pages[1].loose.layers.len() == 2 && studio.pages[1].board);
         studio.undo();
         assert_eq!((studio.pages.len(), studio.doc.layers.len()), (1, 2));
+    }
+
+    #[test]
+    fn a_box_dragged_onto_an_arrow_shows_where_it_would_go_without_painting_over_the_arrow() {
+        // On dark gray paper, as a light patch would show.
+        let mut studio = board();
+        studio.set_look(None, Some(1));
+        for (from, till) in [((100.0, 300.0), (260.0, 372.0)), ((700.0, 360.0), (860.0, 432.0)), ((400.0, 80.0), (520.0, 140.0))] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, till, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+        }
+        let arrow = studio.join(0, 1);
+        studio.selected.clear();
+        let start = studio.to_window_page((460.0, 110.0));
+        studio.pointer_moved(start.0, start.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        for step in 1..=13 {
+            studio.pointer_moved(start.0, start.1 + step * 20, Mods::default());
+        }
+        assert_eq!(studio.board.drop.map(|drop| drop.split), Some(true), "between the two");
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let middle = studio.to_window(shape(&studio, arrow).middle());
+        let light = (middle.0 - 12..=middle.0 + 12).flat_map(|x| (middle.1 - 12..=middle.1 + 12).map(move |y| (x, y))).filter(|&(x, y)| out[(y * studio.width + x) as usize] & 0xFF_FFFF == shapes::PAPER).count();
+        assert_eq!(light, 0, "no patch of light paper on the arrow");
+        studio.released();
     }
 }

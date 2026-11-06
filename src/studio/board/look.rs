@@ -900,6 +900,40 @@ pub(in crate::studio) mod tests {
         std::fs::write(to.join("diagram.png"), crate::output::encode(pw as u32, ph as u32, &pixels, false).unwrap()).unwrap();
     }
 
+    /// A box dragged onto a connector, before it is let go, in each look:
+    ///
+    ///     HOTSHOT_SNAPSHOTS=shots cargo test drop_snapshot -- --ignored
+    #[test]
+    #[ignore]
+    fn drop_snapshot() {
+        let Some(to) = std::env::var_os("HOTSHOT_SNAPSHOTS") else { return };
+        let to = std::path::PathBuf::from(to);
+        std::fs::create_dir_all(&to).unwrap();
+        for (look, ground) in [(0u8, 0u8), (DIAGRAM, 0), (0, 1)] {
+            let mut studio = board();
+            studio.set_look(Some(look), Some(ground));
+            for (from, till) in [((100.0, 300.0), (260.0, 372.0)), ((700.0, 360.0), (860.0, 432.0)), ((400.0, 80.0), (520.0, 140.0))] {
+                press_key(&mut studio, Key::Char('r'), Mods::default());
+                pull(&mut studio, from, till, Mods::default());
+                press_key(&mut studio, Key::Escape, Mods::default());
+                press_key(&mut studio, Key::Escape, Mods::default());
+            }
+            studio.join(0, 1);
+            studio.selected.clear();
+            let start = studio.to_window_page((460.0, 110.0));
+            studio.pointer_moved(start.0, start.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for step in 1..=13 {
+                studio.pointer_moved(start.0, start.1 + step * 20, Mods::default());
+            }
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            eprintln!("look {look} ground {ground}: drop {:?}", studio.board.drop.map(|drop| drop.split));
+            std::fs::write(to.join(format!("drop-{look}-{ground}.png")), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
+        }
+    }
+
     /// A board's right click, with nothing and with a box picked out:
     ///
     ///     HOTSHOT_SNAPSHOTS=shots cargo test menu_snapshot -- --ignored
