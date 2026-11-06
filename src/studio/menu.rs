@@ -144,6 +144,8 @@ pub(super) enum Command {
     Rulers,
     /// The left panel hidden or shown, and the right.
     LeftPanel,
+    /// The page shown made a board, or a page of frames.
+    Mode(bool),
     RightPanel,
     /// Everything but the page hidden, or brought back.
     Zen,
@@ -455,8 +457,16 @@ impl Studio {
             }
             MenuKind::Order => vec![do_("Bring to front", "Ctrl Shift ]", Command::Front), Item::entry("Bring forward", "Ctrl ]", MenuAct::Act(Action::Forward)), Item::entry("Send backward", "Ctrl [", MenuAct::Act(Action::Backward)), do_("Send to back", "Ctrl Shift [", Command::Back)],
             MenuKind::Main => {
+                // First what the corner had: Design or Board, how large the
+                // page is shown, and the left panel.
+                let board = self.on_board();
+                let zoom = format!("{}%", (self.zoom * 100.0).round() as i64);
                 let mut items = vec![
-                    do_("Back to projects", "", Command::Home).look(Look::Icon(icons::HOME)),
+                    do_("Design", if board { "Ctrl M" } else { "" }, Command::Mode(false)).on(!board).look(Look::Icon(icons::FRAME)),
+                    do_("Board", if board { "" } else { "Ctrl M" }, Command::Mode(true)).on(board).look(Look::Icon(icons::PEN)),
+                    Item::Rule,
+                    Item::Entry { says: "Zoom".into(), keys: zoom.into(), act: MenuAct::Nothing, on: false, sub: Some(MenuKind::Zoom), look: Look::Plain },
+                    do_("Pages and layers", "Ctrl Shift \\", Command::LeftPanel).on(self.shows_left()),
                     Item::Rule,
                     Item::sub("File", MenuKind::MainSub(0)),
                     Item::sub("Edit", MenuKind::MainSub(1)),
@@ -479,7 +489,9 @@ impl Studio {
                 }
                 items.extend([
                     do_("Search actions", "Ctrl K", Command::Palette).look(Look::Icon(icons::SEARCH)),
-                    do_("Zen mode", "Ctrl \\", Command::Zen),
+                    do_("Zen mode", "Ctrl \\", Command::Zen).on(self.zen),
+                    Item::Rule,
+                    do_("Back to projects", "", Command::Home).look(Look::Icon(icons::HOME)),
                     do_("Close", "Ctrl Q", Command::Quit),
                 ]);
                 items
@@ -963,6 +975,7 @@ impl Studio {
             }
             Command::Rulers => self.rulers = !self.rulers,
             Command::LeftPanel => self.toggle_panel(0),
+            Command::Mode(board) => self.set_mode(board),
             Command::RightPanel => self.toggle_panel(1),
             Command::Zen => self.toggle_zen(),
             Command::Palette => self.open_palette(),

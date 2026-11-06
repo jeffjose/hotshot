@@ -2222,8 +2222,6 @@ struct Layout {
     menus: Vec<(Rect, MenuKind)>,
     /// A board's bar of styles, by what is picked out.
     board_bar: Option<Rect>,
-    /// A board's zoom, at its top left.
-    board_zoom: Option<Rect>,
 }
 
 /// The whole file as it was, to come back to with undo: its pages, the
@@ -3100,12 +3098,12 @@ impl Studio {
     /// The panel down the left: the file, its pages, and the layers of the
     /// page shown, by frame.
     fn left_panel(&mut self, layout: &mut Layout) {
-        // Its button first, where it is whether the panel shows or not;
-        // hidden, the panel is that button and nothing else.
-        if !self.zen {
-            layout.controls.push((self.logo_place(), Control::Home));
-        }
-        layout.controls.push((self.side_button(0), Control::SidePanel(0)));
+        // At the top left, whether the panel shows or not, in Design and on
+        // a board alike: one pill, the logo and the file's name, which opens
+        // the menu of everything; the switch of Design and Board, the zoom
+        // and this panel are in it. Hidden, the panel is that and nothing
+        // else.
+        layout.controls.push((self.logo_place(), Control::Home));
         self.layout_switch(layout);
         if !self.shows_left() {
             return;
@@ -3114,15 +3112,10 @@ impl Studio {
         layout.panels.push(panel);
         let (left, inner) = (panel.x + 12, panel.w - 24);
         let line = Text::line_height(12);
-        // The file: its project, and its name, under the logo and the
-        // switch between Design and Board.
-        let home = left - 38;
-        let project = self.path.as_ref().and_then(|path| path.parent()).and_then(|dir| dir.file_name()).map_or("Drafts".to_owned(), |name| name.to_string_lossy().into_owned());
-        layout.words.push(((home + 38, panel.y + 10 + SWITCH_ROOM), project, DIM_TEXT_COLOR, 11));
-        let name = self.title().trim_end_matches(" \u{2014} hotshot").to_owned();
-        layout.words.push(((home + 38, panel.y + 25 + SWITCH_ROOM), name, TEXT_COLOR, 13));
+        // Its own button, to hide it, at the right of its top.
+        layout.controls.push((self.side_button(0), Control::SidePanel(0)));
         // The pages.
-        let mut y = panel.y + 56 + SWITCH_ROOM;
+        let mut y = panel.y + SWITCH_ROOM + 20;
         layout.rules.push(Rect::new(panel.x, y, panel.w, 1));
         y += 10;
         layout.words.push(((left, y + (22 - line) / 2), "Pages".to_owned(), TEXT_COLOR, 12));
@@ -3292,19 +3285,41 @@ impl Studio {
         if self.shows_right() { self.width - INSET - RIGHT_W - INSET } else { self.width }
     }
 
-    /// The logo, at the very top left, which opens the menu of
-    /// everything: there whether the left panel is shown or not.
-    fn logo_place(&self) -> Rect {
-        Rect::new(INSET + 12, INSET + 12, 28, 28)
+    /// The pill at the very top left, the logo and the file's name, which
+    /// opens the menu of everything: there whether the left panel is shown
+    /// or not.
+    fn logo_place(&mut self) -> Rect {
+        let name = self.pill_name();
+        let wide = self.text.width(&name, 13);
+        Rect::new(INSET + 8, INSET + 8, 4 + 28 + 10 + wide + 8 + 10 + 10, 36)
+    }
+
+    /// The file's name as the pill shows it, cut short with an ellipsis
+    /// where it is long, a dot after it while it has changes not saved.
+    fn pill_name(&mut self) -> String {
+        const MOST: i32 = 120;
+        let whole = self.title().trim_end_matches(" \u{2014} hotshot").to_owned();
+        if self.text.width(&whole, 13) <= MOST {
+            return whole;
+        }
+        let mut chars: Vec<char> = whole.chars().collect();
+        while chars.len() > 1 {
+            chars.pop();
+            let cut = format!("{}\u{2026}", chars.iter().collect::<String>().trim_end());
+            if self.text.width(&cut, 13) <= MOST {
+                return cut;
+            }
+        }
+        whole
     }
 
     /// The button that hides and shows a panel, at the top of it: the
-    /// same place whether the panel is there or not, so that nothing
-    /// moves, as Claude's own sidebar button does not.
+    /// left one's at the right of its panel's top, there only while it
+    /// shows; the right one's where it is whether its panel is there or
+    /// not.
     fn side_button(&self, side: u8) -> Rect {
         match side {
-            // After the logo.
-            0 => Rect::new(INSET + 12 + 28 + 6, INSET + 12, 28, 28),
+            0 => Rect::new(INSET + LEFT_W - 12 - 28, INSET + 12, 28, 28),
             _ => Rect::new(self.width - INSET - 14 - 28, INSET + 12, 28, 28),
         }
     }
@@ -3392,6 +3407,7 @@ impl Studio {
         let middle = (open.x as f32 + open.w as f32 / 2.0, open.y as f32 + open.h as f32 / 2.0);
         self.pan = (middle.0 - (x + w / 2.0) * self.zoom, middle.1 - (y + h / 2.0) * self.zoom);
         self.dirty = true;
+        self.say_zoom();
     }
 
     /// Larger or smaller, about a point of the window, which stays over
@@ -3401,6 +3417,15 @@ impl Studio {
         self.zoom = (self.zoom * times).clamp(MIN_ZOOM, MAX_ZOOM);
         self.pan = (at.0 as f32 + 0.5 - before.0 * self.zoom, at.1 as f32 + 0.5 - before.1 * self.zoom);
         self.dirty = true;
+        self.say_zoom();
+    }
+
+    /// On a board, which shows its zoom nowhere, how large it now is, said
+    /// for a moment by the bar of tools.
+    fn say_zoom(&mut self) {
+        if self.on_board() && !self.presenting() {
+            self.say(format!("{}%", (self.zoom * 100.0).round() as i64));
+        }
     }
 
     /// The wheel turned, or a trackpad stroked, by so many notches down
@@ -6646,7 +6671,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.board_zoom].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar].into_iter().flatten() {
             soft_shadow(canvas, place, 12);
             canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);
@@ -6770,9 +6795,22 @@ impl Studio {
                     }
                     draw_side_icon(canvas, rect, side, open, if hovered { TEXT_COLOR } else { DIM_TEXT_COLOR });
                 }
+                // The pill: the logo, the file's name and the arrow of the
+                // menu it opens; on a little panel of its own where the
+                // left one is hidden.
                 Control::Home => {
-                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 8, if hovered { 0x5472E4 } else { ACCENT }, 256);
-                    self.text.draw_centered(canvas, cx, cy, 15, 0xFFFFFF, if hovered { icons::HOME } else { icons::CAMERA });
+                    let open = matches!(self.menu, Some(MenuState { kind: MenuKind::Main, .. }));
+                    if !self.shows_left() {
+                        soft_shadow(canvas, rect, 10);
+                    }
+                    canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 10, if hovered || open { HOVER_COLOR } else { PANEL_COLOR }, 256);
+                    canvas.round_outline(rect.x, rect.y, rect.w, rect.h, 10, 1, EDGE_COLOR);
+                    let logo = Rect::new(rect.x + 4, rect.y + 4, 28, 28);
+                    canvas.round_fill(logo.x, logo.y, logo.w, logo.h, 7, ACCENT, 256);
+                    self.text.draw_centered(canvas, logo.center().0, logo.center().1, 15, 0xFFFFFF, icons::CAMERA);
+                    let name = self.pill_name();
+                    self.text.draw(canvas, logo.right() + 10, cy - Text::line_height(13) / 2, 13, TEXT_COLOR, &name);
+                    self.text.draw_centered(canvas, rect.right() - 15, cy, 10, DIM_TEXT_COLOR, icons::DOWN);
                 }
                 Control::NewPage => {
                     if hovered {
@@ -10050,21 +10088,26 @@ mod tests {
         let left = studio.control_rect(Control::SidePanel(0)).unwrap();
         let right = studio.control_rect(Control::SidePanel(1)).unwrap();
         let in_panel = (INSET + 100, 400);
-        assert!(!studio.over_page(in_panel) && studio.control_rect(Control::Home).is_some());
-        // Ctrl+Shift+\ hides the left panel: the page reaches the edge,
-        // and its button is left there, where it was, after the logo.
-        studio.key(Key::Char('|'), ctrl_shift, true);
         let logo = studio.control_rect(Control::Home);
-        assert!(!studio.left_open && studio.over_page(in_panel) && logo.is_some(), "the logo's menu there all the same");
-        assert_eq!(studio.control_rect(Control::SidePanel(0)), Some(left));
+        assert!(!studio.over_page(in_panel) && logo.is_some());
+        assert!(left.right() < INSET + LEFT_W && left.x > INSET + LEFT_W / 2, "its button on it, at its right");
+        // Ctrl+Shift+\ hides the left panel: the page reaches the edge,
+        // and the pill is left there, where it was, its button gone.
+        studio.key(Key::Char('|'), ctrl_shift, true);
+        assert!(!studio.left_open && studio.over_page(in_panel) && studio.control_rect(Control::Home) == logo, "the pill's menu there all the same");
+        assert_eq!(studio.control_rect(Control::SidePanel(0)), None);
         assert_eq!(studio.control_at(in_panel), None);
         assert!(studio.open_area().x < INSET + LEFT_W);
         let mut out = vec![0u32; (1400 * 900) as usize];
         studio.draw(&mut out);
         assert_ne!(out[(400 * 1400 + INSET + 100) as usize] & 0xFFFFFF, PANEL_COLOR);
-        // Its button brings it back.
-        click(&mut studio, left.center());
-        assert!(studio.left_open && studio.control_rect(Control::Home) == logo, "the logo where it was");
+        // Pages and layers, in the pill's menu, brings it back.
+        click(&mut studio, logo.unwrap().center());
+        let row = studio.menu_items(MenuKind::Main).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == "Pages and layers")).unwrap();
+        let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+        click(&mut studio, rect.center());
+        assert!(studio.left_open && studio.control_rect(Control::Home) == logo, "the pill where it was");
+        assert_eq!(studio.control_rect(Control::SidePanel(0)), Some(left));
         // The right one the same, by Ctrl+Alt+\ and its own button.
         studio.key(Key::Char('\\'), Mods { ctrl: true, alt: true, ..Mods::default() }, true);
         assert!(!studio.right_open && studio.control_rect(Control::Zoom).is_none());
@@ -10081,16 +10124,16 @@ mod tests {
         let mut studio = studio();
         let ctrl = Mods { ctrl: true, ..Mods::default() };
         studio.rulers = true;
-        let button = studio.control_rect(Control::SidePanel(0)).unwrap();
+        let pill = studio.control_rect(Control::Home).unwrap();
         studio.key(Key::Char('\\'), ctrl, true);
         assert!(studio.zen);
-        // Nothing left but the page and the one button, where it was, and
-        // the switch between Design and Board beside it.
+        // Nothing left but the page and the pill at the top left, where it
+        // was.
         let layout = studio.layout();
         assert!(layout.panels.is_empty() && layout.dock.w == 0);
         let controls: Vec<Control> = layout.controls.iter().map(|(_, control)| *control).filter(|control| !matches!(control, Control::Frame(_))).collect();
-        assert_eq!(controls, vec![Control::SidePanel(0), Control::Board(board::Ctl::Mode(false)), Control::Board(board::Ctl::Mode(true))]);
-        assert_eq!(studio.control_rect(Control::SidePanel(0)), Some(button));
+        assert_eq!(controls, vec![Control::Home]);
+        assert_eq!(studio.control_rect(Control::Home), Some(pill));
         assert!(!studio.press_rulers((700, 5)) && studio.over_page((5, 450)) && studio.over_page((1395, 450)));
         // Esc leaves it as it is; the tools' keys still work, each said
         // for a moment.
@@ -10102,8 +10145,12 @@ mod tests {
         assert!(studio.note_left().is_some_and(|left| left.as_secs_f32() <= 1.4));
         let mut out = vec![0u32; (1400 * 900) as usize];
         studio.draw(&mut out);
-        // The button brings everything back, as Ctrl+\ again does.
-        click(&mut studio, button.center());
+        // Zen mode, ticked in the pill's menu, brings everything back, as
+        // Ctrl+\ again does.
+        click(&mut studio, pill.center());
+        let row = studio.menu_items(MenuKind::Main).iter().position(|item| matches!(item, menu::Item::Entry { says, on: true, .. } if says == "Zen mode")).expect("Zen mode, ticked");
+        let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+        click(&mut studio, rect.center());
         assert!(!studio.zen && studio.left_open && studio.layout().dock.w > 0);
         studio.key(Key::Char('\\'), ctrl, true);
         studio.key(Key::Char('\\'), ctrl, true);
@@ -10134,16 +10181,18 @@ mod tests {
         let home = studio.control_rect(Control::Home).unwrap().center();
         click(&mut studio, home);
         studio.key(Key::Down, none, true);
-        assert_eq!(says(&mut studio), "Back to projects");
+        assert_eq!(says(&mut studio), "Design");
         studio.key(Key::Up, none, true);
         assert_eq!(says(&mut studio), "Close");
         // A letter does nothing while it is open: no tool taken up.
         studio.key(Key::Char('r'), none, true);
         assert!(studio.tool == Tool::Select && studio.menu.is_some());
-        // Down round to the top and past the rule to File; Right into it,
+        // Down round to the top, Design, Board, Zoom, Pages and layers, and
+        // past the rule to File; Right into it,
         // Left back out.
-        studio.key(Key::Down, none, true);
-        studio.key(Key::Down, none, true);
+        for _ in 0..5 {
+            studio.key(Key::Down, none, true);
+        }
         assert_eq!(says(&mut studio), "File");
         studio.key(Key::Right, none, true);
         assert_eq!((says(&mut studio), studio.menu.unwrap().sub.map(|(_, kind)| kind)), ("New design page".to_owned(), Some(MenuKind::MainSub(0))));

@@ -496,6 +496,9 @@ mod tests {
         };
         let (mut first, mut changed) = (opened(), opened());
         changed.changed();
+        // Its name in the pill at the top left the same, a dot after it
+        // apart.
+        changed.edited = first.edited;
         let (mut a, mut b) = (vec![0u32; 1280 * 800], vec![0u32; 1280 * 800]);
         first.draw(&mut a);
         changed.draw(&mut b);

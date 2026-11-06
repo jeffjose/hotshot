@@ -73,8 +73,6 @@ pub(super) const LASER_TOOL: u8 = 11;
 /// What on a board is clicked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Ctl {
-    /// The switch at the top left: Board, or Design.
-    Mode(bool),
     /// A tool of the board's bar.
     Tool(u8),
     /// The style panel: a color by name, which colors a line and its fill;
@@ -407,21 +405,12 @@ impl Studio {
         }
     }
 
-    /// The switch at the top left, beside the button that hides the left
-    /// panel, where it is whether the panel is shown or not.
-    pub(super) fn switch_place(&self) -> Rect {
-        let beside = self.side_button(0);
-        Rect::new(beside.right() + 10, beside.y - 1, 164, 30)
-    }
-
+    /// Present, at a board's top right.
     pub(super) fn layout_switch(&mut self, layout: &mut Layout) {
-        let place = self.switch_place();
         if self.on_board() && !self.zen && !self.shows_right() {
             let beside = self.side_button(1);
             layout.controls.push((Rect::new(beside.right() - 96, beside.y - 1, 96, 30), Control::Board(Ctl::Present)));
         }
-        layout.controls.push((Rect::new(place.x, place.y, place.w / 2, place.h), Control::Board(Ctl::Mode(false))));
-        layout.controls.push((Rect::new(place.x + place.w / 2, place.y, place.w - place.w / 2, place.h), Control::Board(Ctl::Mode(true))));
     }
 
     /// The bar of a board's tools, along the bottom as Design's is.
@@ -435,7 +424,6 @@ impl Studio {
         }
         layout.controls.push((dock, Control::Panel));
         layout.dock = dock;
-        self.layout_corner(layout);
     }
 
     /// Which of the board's tools is in hand.
@@ -496,7 +484,6 @@ impl Studio {
     pub(super) fn press_board(&mut self, ctl: Ctl) -> Outcome {
         self.dirty = true;
         match ctl {
-            Ctl::Mode(board) => self.set_mode(board),
             Ctl::Tool(which) => return self.take_board_tool(which),
             Ctl::Present => self.present(),
             Ctl::HistoryTrack => {
@@ -605,28 +592,6 @@ impl Studio {
     pub(super) fn draw_board_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
         let (cx, cy) = rect.center();
         match ctl {
-            Ctl::Mode(board) => {
-                // The pill both halves are on, drawn with the first.
-                if !board {
-                    let place = self.switch_place();
-                    soft_shadow(canvas, place, 9);
-                    canvas.round_fill(place.x, place.y, place.w, place.h, 9, PANEL_COLOR, 256);
-                    canvas.round_outline(place.x, place.y, place.w, place.h, 9, 1, EDGE_COLOR);
-                }
-                let on = self.on_board() == board;
-                let inner = Rect::new(rect.x + 3, rect.y + 3, rect.w - 6, rect.h - 6);
-                if on {
-                    canvas.round_fill(inner.x, inner.y, inner.w, inner.h, 6, ACCENT, 256);
-                } else if hovered {
-                    canvas.round_fill(inner.x, inner.y, inner.w, inner.h, 6, HOVER_COLOR, 256);
-                }
-                let color = if on { 0xFFFFFF } else if hovered { TEXT_COLOR } else { DIM_TEXT_COLOR };
-                let words = if board { "Board" } else { "Design" };
-                let wide = self.text.width(words, 12) + 20;
-                let left = cx - wide / 2;
-                self.text.draw_centered(canvas, left + 7, cy, 13, color, if board { icons::PEN } else { icons::FRAME });
-                self.text.draw(canvas, left + 18, cy - Text::line_height(12) / 2, 12, color, words);
-            }
             Ctl::Tool(which) => {
                 let on = self.board_tool() == which;
                 if on {
@@ -808,10 +773,12 @@ pub(super) mod tests {
         assert!(studio.on_board() && studio.on_page() && studio.frame_count() == 0);
         assert!(!studio.shows_left() && !studio.shows_right());
         assert!(matches!(shown(&mut studio, (300.0, 300.0)), shapes::PAPER | DOTS));
-        // The switch: Design, and back with Ctrl+M.
-        let design = studio.control_rect(Control::Board(Ctl::Mode(false))).unwrap().center();
-        let board_half = studio.control_rect(Control::Board(Ctl::Mode(true))).unwrap();
-        assert!(board_half.x < 300 && board_half.y < 60, "at the top left, where it always is");
+        // The pill's menu: Design, and back with Ctrl+M.
+        let pill = studio.control_rect(Control::Home).unwrap();
+        assert!(pill.x < 30 && pill.y < 30, "at the top left, where it always is");
+        click(&mut studio, pill.center());
+        let row = studio.menu_items(MenuKind::Main).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == "Design")).unwrap();
+        let design = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap().center();
         click(&mut studio, design);
         assert!(!studio.on_board());
         assert_ne!(shown(&mut studio, (300.0, 300.0)), shapes::PAPER, "Design is on the dark");
