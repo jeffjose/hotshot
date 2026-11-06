@@ -3954,7 +3954,10 @@ impl Studio {
             if self.on_board() && self.press_while_typing(index, at, at_window, double) {
                 return Outcome::Continue;
             }
-            if self.doc.layers[index].hit(at, &mut self.text) {
+            // On a board, the tool's key just typed into the box: the press
+            // is the tool's, to draw another, though it is on this one.
+            let tool_letter = self.on_board() && self.board.tool_letter.is_some_and(|(id, _)| self.index_of(id) == Some(index));
+            if !tool_letter && self.doc.layers[index].hit(at, &mut self.text) {
                 return Outcome::Continue;
             }
             self.commit_text();

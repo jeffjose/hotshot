@@ -270,6 +270,13 @@ impl Studio {
         if double || self.mods.shift || !movable {
             return false;
         }
+        // The tool's key just typed into the box drawn with it: the press
+        // draws another with the tool, as the key meant, however near the
+        // box or its edge it is, rather than moving the box or changing its
+        // size; the letter is taken out once the new one is drawn.
+        if self.board.tool_letter.is_some_and(|(id, _)| self.index_of(id) == Some(index)) {
+            return false;
+        }
         // An arrow's end at the box takes the press, the typing done.
         if self.arrow_end_at(at_window).is_some() {
             self.commit_text();
@@ -552,6 +559,24 @@ mod tests {
         type_in(&mut studio, "red");
         pull(&mut studio, (100.0, 300.0), (260.0, 372.0), Mods::default());
         assert_eq!(shape(&studio, 1).text, "red");
+    }
+
+    #[test]
+    fn r_again_then_a_box_drawn_over_the_last_one_s_edge_draws_it_and_leaves_that_one_as_it_was() {
+        // Begun inside the last box, by its right edge, or across it: each
+        // a new box, the last one neither moved nor made another size.
+        for (from, to) in [((180.0, 150.0), (350.0, 250.0)), ((199.0, 250.0), (360.0, 330.0)), ((190.0, 120.0), (300.0, 380.0))] {
+            let mut studio = board();
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (100.0, 100.0), (200.0, 400.0), Mods::default());
+            let was = shape(&studio, 0).frame();
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, to, Mods::default());
+            assert_eq!(studio.doc.layers.len(), 2, "{from:?}: another box");
+            assert_eq!((shape(&studio, 0).frame(), shape(&studio, 0).text.as_str()), (was, ""), "{from:?}: the first as it was");
+            let drawn = shape(&studio, 1).frame();
+            assert_eq!((drawn.0, drawn.1), (from.0 + 0.5, from.1 + 0.5), "{from:?}: drawn where it was begun");
+        }
     }
     #[test]
     fn a_box_picked_out_is_typed_over_and_enter_types_into_it() {
