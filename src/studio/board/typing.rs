@@ -240,8 +240,8 @@ impl Studio {
         }
         self.note_size((w, h));
         self.selected = vec![index];
-        // Drawn inside a box, it is in it.
-        self.nest_moved();
+        // Drawn wholly inside a box, it is in it; over its edge, it is not.
+        self.nest_drawn();
         self.edit_text(index);
         self.changed();
         self.guess(true);
@@ -805,5 +805,26 @@ mod tests {
         assert_eq!((studio.editing, studio.selected.clone(), studio.board_tool()), (None, vec![0], SELECT));
         press_key(&mut studio, Key::Char('o'), Mods::default());
         assert_eq!((studio.board_tool(), shape(&studio, 0).text.as_str()), (OVAL, "Hello"));
+    }
+
+    #[test]
+    fn a_box_drawn_over_another_s_edge_is_not_put_in_it_nor_that_one_grown_and_one_drawn_inside_is() {
+        // As the log had it: a tall box, then one begun right of its edge
+        // and pulled back over it, its middle inside the first.
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (358.0, 566.0), (706.0, 881.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let was = shape(&studio, 0).frame();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (745.0, 626.0), (647.0, 780.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert_eq!(shape(&studio, 0).frame(), was, "the first as it was");
+        assert!(studio.holder_of(shape(&studio, 1).id).is_none(), "in no box");
+        // One drawn all inside it is in it, as before.
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (400.0, 600.0), (520.0, 660.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        assert_eq!(studio.holder_of(shape(&studio, 2).id), Some(shape(&studio, 0).id));
     }
 }

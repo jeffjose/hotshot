@@ -112,6 +112,19 @@ impl Studio {
     /// grown or shrunk round them, and what is beside those making room.
     /// Nothing of it with Alt held.
     pub(in crate::studio) fn nest_moved(&mut self) {
+        self.nest_let_go(false);
+    }
+
+    /// A box just drawn put in the smallest box it was drawn wholly
+    /// inside; one drawn only over another's edge is in none, and that
+    /// one is not grown round it.
+    pub(in crate::studio) fn nest_drawn(&mut self) {
+        self.nest_let_go(true);
+    }
+
+    /// Each box let go put in a box: one moved, in the one its middle is
+    /// in; one `drawn`, in the one it is all inside.
+    fn nest_let_go(&mut self, drawn: bool) {
         self.board.carried.clear();
         self.board.letting_go = false;
         if self.mods.alt {
@@ -143,7 +156,11 @@ impl Studio {
                 .filter(|&other| self.is_box(other) && !self.doc.layers[other].hidden && !mine.contains(&self.id_of(other)))
                 .filter(|&other| {
                     let (ox, oy, ow, oh) = self.box_frame(other);
-                    middle.0 >= ox && middle.0 <= ox + ow && middle.1 >= oy && middle.1 <= oy + oh && ow * oh > w * h
+                    let held = match drawn {
+                        true => x >= ox - 1.0 && y >= oy - 1.0 && x + w <= ox + ow + 1.0 && y + h <= oy + oh + 1.0,
+                        false => middle.0 >= ox && middle.0 <= ox + ow && middle.1 >= oy && middle.1 <= oy + oh,
+                    };
+                    held && ow * oh > w * h
                 })
                 .min_by(|&a, &b| {
                     let area = |index: usize| self.box_frame(index).2 * self.box_frame(index).3;
