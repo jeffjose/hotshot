@@ -9,6 +9,13 @@ use crate::output::Format;
 /// The kinds a board exports as, by number: PNG, AVIF, JPEG XL, and SVG.
 pub(in crate::studio) const KINDS: [&str; 5] = ["PNG", "AVIF", "JPEG XL", "SVG", "JPEG"];
 
+/// The kinds, by their numbers in `KINDS`, a board is copied as, in the
+/// order offered: the ones a chat or a document takes from the clipboard.
+pub(in crate::studio) const COPY_KINDS: [u8; 2] = [0, 4];
+/// The kinds it is exported as, in the order offered: PNG and JPEG first,
+/// as most often wanted, then the smaller AVIF and JPEG XL, and SVG.
+pub(in crate::studio) const EXPORT_KINDS: [u8; 5] = [0, 4, 1, 2, 3];
+
 /// Room left round what is exported of a board.
 const MARGIN: f32 = 32.0;
 
@@ -365,27 +372,32 @@ mod tests {
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (600.0, 400.0), (760.0, 472.0), Mods::default());
         press_key(&mut studio, Key::Escape, Mods::default());
-        let says = |studio: &mut Studio| -> Vec<String> {
-            studio.menu_items(MenuKind::Context).into_iter().filter_map(|item| match item {
-                crate::studio::menu::Item::Entry { says, .. } => Some(says),
-                _ => None,
+        let says = |studio: &mut Studio, kind: MenuKind| -> Vec<String> {
+            studio.menu_items(kind).into_iter().map(|item| match item {
+                crate::studio::menu::Item::Entry { says, .. } => says.to_string(),
+                crate::studio::menu::Item::Heading(says) => format!("[{says}]"),
+                crate::studio::menu::Item::Rule => "-".to_owned(),
             }).collect()
         };
-        // Nothing picked out: the board, copied or written, as either.
+        // Nothing picked out: the board copied or exported, a list of the
+        // kinds beside each, and how the board looks.
         studio.selected.clear();
-        let offered = says(&mut studio);
-        for want in ["Copy board as PNG", "Copy board as JPG", "Export board as PNG", "Export board as JPG"] {
+        let offered = says(&mut studio, MenuKind::Context);
+        for want in ["Paste here", "Copy board as", "Export board as", "Theme", "Paper"] {
             assert!(offered.contains(&want.to_owned()), "{want} in {offered:?}");
         }
-        assert!(!offered.iter().any(|said| said == "Copy as PNG"));
-        // A box picked out: that, copied or written, and the whole board
-        // in a list beside.
+        assert_eq!(says(&mut studio, MenuKind::CopyAs), ["PNG", "JPEG"]);
+        assert_eq!(says(&mut studio, MenuKind::ExportAs), ["PNG", "JPEG", "AVIF", "JPEG XL", "SVG"]);
+        // A box picked out: that, and the whole board after it, in each.
         studio.selected = vec![0];
-        let offered = says(&mut studio);
-        for want in ["Copy", "Copy as PNG", "Copy as JPG", "Export as PNG", "Export as JPG", "Whole board"] {
+        let offered = says(&mut studio, MenuKind::Context);
+        for want in ["Copy", "Copy as", "Export as", "Order"] {
             assert!(offered.contains(&want.to_owned()), "{want} in {offered:?}");
         }
-        assert!(!offered.iter().any(|said| said == "Copy frame as PNG"), "no frame to copy on a board");
+        for gone in ["Copy frame as PNG", "Add auto layout", "Export frame", "Apply style", "Show / hide"] {
+            assert!(!offered.contains(&gone.to_owned()), "no {gone} on a board: {offered:?}");
+        }
+        assert_eq!(says(&mut studio, MenuKind::CopyAs), ["[SELECTION]", "PNG", "JPEG", "[WHOLE BOARD]", "PNG", "JPEG"]);
         // Copied: Ctrl+Shift+C, the box alone as a PNG; and the whole
         // board as a JPG, wider.
         press_key(&mut studio, Key::Char('C'), Mods { ctrl: true, shift: true, ..Mods::default() });

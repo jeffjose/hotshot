@@ -21,8 +21,10 @@ pub(super) enum MenuKind {
     Format(usize),
     /// What can be done with what is under a right click.
     Context,
-    /// All of a board copied or written as a picture, from the right click.
-    WholeBoard,
+    /// What is picked out on a board, or all of it, copied or written as
+    /// each kind of picture, from the right click.
+    CopyAs,
+    ExportAs,
     /// Over and under the rest.
     Order,
     /// Everything, from the logo; and each part of it.
@@ -385,38 +387,99 @@ impl Studio {
                 }
                 items
             }
-            MenuKind::WholeBoard => {
+            // A board's: what is picked out, or the board, copied or
+            // written as each kind of picture, from one list of them.
+            MenuKind::CopyAs | MenuKind::ExportAs => {
+                use super::board::{export, Act};
+                let copy = kind == MenuKind::CopyAs;
+                let kinds: &[u8] = if copy { &export::COPY_KINDS } else { &export::EXPORT_KINDS };
+                let entries = |whole: bool| kinds.iter().enumerate().map(move |(at, &which)| {
+                    let act = match (copy, whole) {
+                        (true, false) => Act::CopyAs(which),
+                        (true, true) => Act::CopyBoard(which),
+                        (false, false) => Act::Export(which),
+                        (false, true) => Act::ExportBoard(which),
+                    };
+                    // The first, PNG, has the key; for what is picked out,
+                    // or for the board where nothing is.
+                    let key = match (at, copy) {
+                        (0, true) => "Ctrl Shift C",
+                        (0, false) => "Ctrl E",
+                        _ => "",
+                    };
+                    Item::entry(export::KINDS[usize::from(which)], key, MenuAct::Board(act))
+                });
+                match self.chosen().is_empty() {
+                    true => entries(true).collect(),
+                    false => {
+                        let mut items = vec![Item::Heading("SELECTION")];
+                        items.extend(entries(false));
+                        items.push(Item::Heading("WHOLE BOARD"));
+                        items.extend(entries(true).map(|item| match item {
+                            Item::Entry { says, act, on, sub, look, .. } => Item::Entry { says, keys: "".into(), act, on, sub, look },
+                            other => other,
+                        }));
+                        items
+                    }
+                }
+            }
+            MenuKind::Context if self.on_board() => {
                 use super::board::Act;
-                let key = if self.chosen().is_empty() { "Ctrl Shift C" } else { "" };
-                vec![
-                    Item::entry("Copy board as PNG", key, MenuAct::Board(Act::CopyBoard(0))),
-                    Item::entry("Copy board as JPG", "", MenuAct::Board(Act::CopyBoard(4))),
-                    Item::entry("Export board as PNG", "", MenuAct::Board(Act::ExportBoard(0))),
-                    Item::entry("Export board as JPG", "", MenuAct::Board(Act::ExportBoard(4))),
-                ]
+                let chosen = !self.chosen().is_empty();
+                let mut items = Vec::new();
+                match chosen {
+                    // What is picked out: the clipboard's, then as pictures,
+                    // then its place among the rest.
+                    true => {
+                        items.push(do_("Copy", "Ctrl C", Command::Copy));
+                        items.push(do_("Paste here", "Ctrl V", Command::Paste));
+                        items.push(do_("Duplicate", "Ctrl D", Command::Duplicate));
+                        items.push(do_("Delete", "Del", Command::Delete));
+                        items.push(Item::Rule);
+                        items.push(Item::sub("Copy as", MenuKind::CopyAs));
+                        items.push(Item::sub("Export as", MenuKind::ExportAs));
+                        items.push(Item::Rule);
+                        items.push(Item::sub("Order", MenuKind::Order));
+                        items.push(Item::entry("Gather into a group", "G", MenuAct::Board(Act::Group)));
+                        if self.board.svg.as_ref().is_some_and(|svg| self.chosen().iter().all(|&index| svg.ids.contains(&self.id_of(index)))) {
+                            items.push(Item::entry("Keep as picture", "", MenuAct::Board(Act::KeepPicture)));
+                        }
+                        items.push(Item::entry("Merge into picture", "", MenuAct::Board(Act::MergePicture)));
+                        if let Some(Kind::Picture(_)) = picked {
+                            items.push(Item::Rule);
+                            items.push(Item::entry("Crop", "Enter", MenuAct::Act(Action::Crop)));
+                            items.push(Item::entry("Tight crop", "", MenuAct::Act(Action::Tight)));
+                            items.push(Item::entry("Flip across", "Shift H", MenuAct::Act(Action::FlipAcross)));
+                            items.push(Item::entry("Flip down", "Shift V", MenuAct::Act(Action::FlipDown)));
+                        }
+                        items.push(Item::Rule);
+                        items.push(do_("Lock / unlock", "Ctrl Shift L", Command::ToggleLock));
+                    }
+                    // The board itself: what goes on it, the board as
+                    // pictures, and how it looks.
+                    false => {
+                        items.push(do_("Paste here", "Ctrl V", Command::Paste));
+                        if !self.copied.is_empty() {
+                            items.push(do_("Paste picture", "Ctrl Shift V", Command::PastePicture));
+                        }
+                        items.push(do_("Select all", "Ctrl A", Command::SelectAll));
+                        items.push(Item::Rule);
+                        items.push(Item::sub("Copy board as", MenuKind::CopyAs));
+                        items.push(Item::sub("Export board as", MenuKind::ExportAs));
+                        items.push(Item::Rule);
+                        items.push(Item::sub("Theme", MenuKind::Looks));
+                        items.push(Item::sub("Paper", MenuKind::Grounds));
+                        items.push(do_("Zoom to fit", "Ctrl 0", Command::ZoomFit));
+                        items.push(Item::Rule);
+                        items.push(do_("Capture the screen", "Ctrl G", Command::Capture));
+                    }
+                }
+                items
             }
             MenuKind::Context => {
                 let mut items = Vec::new();
                 let chosen = !self.chosen().is_empty();
-                // On a board, what is picked out copied or written as a
-                // picture, and the whole board in a list beside; with
-                // nothing picked out, the whole board.
-                if self.on_board() {
-                    use super::board::Act;
-                    match chosen {
-                        true => {
-                            items.push(do_("Copy", "Ctrl C", Command::Copy));
-                            items.push(Item::entry("Copy as PNG", "Ctrl Shift C", MenuAct::Board(Act::CopyAs(0))));
-                            items.push(Item::entry("Copy as JPG", "", MenuAct::Board(Act::CopyAs(4))));
-                            items.push(Item::entry("Export as PNG", "Ctrl E", MenuAct::Board(Act::Export(0))));
-                            items.push(Item::entry("Export as JPG", "", MenuAct::Board(Act::Export(4))));
-                            items.push(Item::sub("Whole board", MenuKind::WholeBoard));
-                        }
-                        false => items.extend(self.menu_items(MenuKind::WholeBoard)),
-                    }
-                    items.push(Item::Rule);
-                }
-                if chosen && !self.on_board() {
+                if chosen {
                     items.push(do_("Copy", "Ctrl C", Command::Copy));
                     items.push(do_("Copy frame as PNG", "Ctrl Shift C", Command::CopyPng));
                 }
@@ -432,14 +495,6 @@ impl Studio {
                     items.push(Item::entry("Add auto layout", "Shift A", MenuAct::Act(Action::AddStack)));
                     if self.picked_stack().is_some() {
                         items.push(Item::entry("Remove auto layout", "", MenuAct::Act(Action::RemoveStack)));
-                    }
-                    // A board: an SVG brought in as shapes kept as the picture it
-                    // was, or anything picked out made one picture.
-                    if self.on_board() {
-                        if self.board.svg.as_ref().is_some_and(|svg| self.chosen().iter().all(|&index| svg.ids.contains(&self.id_of(index)))) {
-                            items.push(Item::entry("Keep as picture", "", MenuAct::Board(super::board::Act::KeepPicture)));
-                        }
-                        items.push(Item::entry("Merge into picture", "", MenuAct::Board(super::board::Act::MergePicture)));
                     }
                     if let Some(Kind::Picture(_)) = picked {
                         items.push(Item::Rule);
@@ -480,8 +535,10 @@ impl Studio {
                 let board = self.on_board();
                 let zoom = format!("{}%", (self.zoom * 100.0).round() as i64);
                 let mut items = vec![
-                    do_("Design", if board { "Ctrl M" } else { "" }, Command::Mode(false)).on(!board).look(Look::Icon(icons::FRAME)),
-                    do_("Board", if board { "" } else { "Ctrl M" }, Command::Mode(true)).on(board).look(Look::Icon(icons::PEN)),
+                    match board {
+                        true => do_("Switch to Design", "Ctrl M", Command::Mode(false)).look(Look::Icon(icons::FRAME)),
+                        false => do_("Switch to Board", "Ctrl M", Command::Mode(true)).look(Look::Icon(icons::PEN)),
+                    },
                     Item::Rule,
                     Item::Entry { says: "Zoom".into(), keys: zoom.into(), act: MenuAct::Nothing, on: false, sub: Some(MenuKind::Zoom), look: Look::Plain },
                     do_("Pages and layers", "Ctrl Shift \\", Command::LeftPanel).on(self.shows_left()),

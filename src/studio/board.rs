@@ -220,7 +220,7 @@ mod change;
 mod explain;
 mod pick;
 pub(super) mod svg;
-mod export;
+pub(super) mod export;
 mod mermaid;
 mod neaten;
 mod zoom;
@@ -777,7 +777,7 @@ pub(super) mod tests {
         let pill = studio.control_rect(Control::Home).unwrap();
         assert!(pill.x < 30 && pill.y < 30, "at the top left, where it always is");
         click(&mut studio, pill.center());
-        let row = studio.menu_items(MenuKind::Main).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == "Design")).unwrap();
+        let row = studio.menu_items(MenuKind::Main).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == "Switch to Design")).unwrap();
         let design = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap().center();
         click(&mut studio, design);
         assert!(!studio.on_board());

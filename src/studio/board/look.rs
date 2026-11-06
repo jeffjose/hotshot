@@ -900,6 +900,34 @@ pub(in crate::studio) mod tests {
         std::fs::write(to.join("diagram.png"), crate::output::encode(pw as u32, ph as u32, &pixels, false).unwrap()).unwrap();
     }
 
+    /// A board's right click, with nothing and with a box picked out:
+    ///
+    ///     HOTSHOT_SNAPSHOTS=shots cargo test menu_snapshot -- --ignored
+    #[test]
+    #[ignore]
+    fn menu_snapshot() {
+        let Some(to) = std::env::var_os("HOTSHOT_SNAPSHOTS") else { return };
+        let to = std::path::PathBuf::from(to);
+        std::fs::create_dir_all(&to).unwrap();
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (300.0, 300.0), (460.0, 372.0), Mods::default());
+        type_in(&mut studio, "Proxy");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        for (name, picked, list) in [("menu-board.png", false, "Paper"), ("menu-picked.png", true, "Export as")] {
+            studio.selected = if picked { vec![0] } else { Vec::new() };
+            let at = if picked { studio.to_window((380.0, 330.0)) } else { studio.to_window((700.0, 200.0)) };
+            studio.right_click(at);
+            let row = studio.menu_items(MenuKind::Context).iter().position(|item| matches!(item, menu::Item::Entry { says, .. } if says == list)).unwrap();
+            let rect = studio.control_rect(Control::MenuRow(0, row as u16)).unwrap();
+            studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            std::fs::write(to.join(name), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
+            studio.menu = None;
+        }
+    }
+
     /// A board's window with a box picked out, its panel and its bars:
     ///
     ///     HOTSHOT_SNAPSHOTS=shots cargo test window_snapshot -- --ignored

@@ -10192,16 +10192,15 @@ mod tests {
         let home = studio.control_rect(Control::Home).unwrap().center();
         click(&mut studio, home);
         studio.key(Key::Down, none, true);
-        assert_eq!(says(&mut studio), "Design");
+        assert_eq!(says(&mut studio), "Switch to Board");
         studio.key(Key::Up, none, true);
         assert_eq!(says(&mut studio), "Close");
         // A letter does nothing while it is open: no tool taken up.
         studio.key(Key::Char('r'), none, true);
         assert!(studio.tool == Tool::Select && studio.menu.is_some());
-        // Down round to the top, Design, Board, Zoom, Pages and layers, and
-        // past the rule to File; Right into it,
-        // Left back out.
-        for _ in 0..5 {
+        // Down round to the top, Switch to Board, Zoom, Pages and layers,
+        // and past the rule to File; Right into it, Left back out.
+        for _ in 0..4 {
             studio.key(Key::Down, none, true);
         }
         assert_eq!(says(&mut studio), "File");

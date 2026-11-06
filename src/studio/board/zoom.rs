@@ -65,7 +65,7 @@ mod tests {
     fn the_pill_s_menu_switches_design_and_board_zooms_and_shows_the_panel() {
         let mut studio = board();
         open_menu(&mut studio);
-        let design = row(&mut studio, 0, "Design");
+        let design = row(&mut studio, 0, "Switch to Design");
         click(&mut studio, design.center());
         assert!(!studio.on_board());
         press_key(&mut studio, Key::Char('m'), Mods { ctrl: true, ..Mods::default() });
