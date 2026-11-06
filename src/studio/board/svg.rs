@@ -346,7 +346,7 @@ impl Studio {
             layer.translate(-x, -y);
             layer
         }).collect();
-        let (pw, ph, pixels) = sheet.render(2.0, &mut self.text);
+        let (pw, ph, pixels) = sheet.render(super::export::export_times(2.0, w, h), &mut self.text);
         self.checkpoint();
         let at = *chosen.iter().min().unwrap_or(&0);
         let mut sorted = chosen.clone();

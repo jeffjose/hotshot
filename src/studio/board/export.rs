@@ -12,6 +12,20 @@ pub(in crate::studio) const KINDS: [&str; 5] = ["PNG", "AVIF", "JPEG XL", "SVG",
 /// Room left round what is exported of a board.
 const MARGIN: f32 = 32.0;
 
+/// The longest side of a picture of a board, and how many pixels it may
+/// have in all: a board drawn far zoomed out is many thousands across, and
+/// twice that would take long to draw and more memory than there is.
+const LONGEST: f32 = 8192.0;
+const MOST_PIXELS: f32 = 32.0e6;
+
+/// How much larger than itself a part so wide and high is drawn to be
+/// exported or copied: `wanted`, made smaller where that would be more
+/// than `LONGEST` across or `MOST_PIXELS` in all.
+pub(in crate::studio) fn export_times(wanted: f32, w: f32, h: f32) -> f32 {
+    let (w, h) = (w.max(1.0), h.max(1.0));
+    wanted.min(LONGEST / w.max(h)).min((MOST_PIXELS / (w * h)).sqrt())
+}
+
 /// Bytes as base64, for a picture inside an SVG.
 fn base64(bytes: &[u8]) -> String {
     const LETTERS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -174,7 +188,10 @@ impl Studio {
                     _ => Format::Png,
                 };
                 let sheet = self.part_sheet(&layers, part);
-                let times = if self.on_board() { 2.0 } else { 1.0 };
+                // A board twice its size, to stay sharp; a frame as it is;
+                // either smaller where that would be too large to draw.
+                let wanted = if self.on_board() { 2.0 } else { 1.0 };
+                let times = export_times(wanted, part.2, part.3);
                 let (w, h, pixels) = sheet.render(times, &mut self.text);
                 let clear = pixels.iter().any(|pixel| pixel >> 24 != 255);
                 let encoded = crate::convert::encode(w as u32, h as u32, &pixels, clear, None, format, &self.convert).map_err(|error| error.to_string())?;
@@ -197,7 +214,7 @@ impl Studio {
                     // Anything else drawn as it is, as a picture in its place.
                     let (bx, by, bw, bh) = layer.bounds(&mut self.text);
                     let sheet = self.part_sheet(std::slice::from_ref(layer), (bx, by, bw, bh));
-                    let (pw, ph, pixels) = sheet.render(2.0, &mut self.text);
+                    let (pw, ph, pixels) = sheet.render(export_times(2.0, bw, bh), &mut self.text);
                     if let Ok(png) = crate::output::encode(pw as u32, ph as u32, &pixels, true) {
                         out += &format!("  <image x=\"{bx:.1}\" y=\"{by:.1}\" width=\"{bw:.1}\" height=\"{bh:.1}\" href=\"data:image/png;base64,{}\"/>\n", base64(&png));
                     }
@@ -397,6 +414,42 @@ mod tests {
         assert!(whole > part, "the board {whole} wider than the box {part}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn a_board_drawn_far_zoomed_out_is_copied_at_a_size_that_can_be_drawn() {
+        // Boxes drawn at a few percent are thousands across: twice that
+        // would be tens of thousands of pixels, and hang.
+        let mut studio = board();
+        studio.zoom = 0.1;
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (0.0, 0.0), (6000.0, 3000.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected.clear();
+        let began = std::time::Instant::now();
+        studio.copy_board(0, true);
+        let png = studio.copied_picture.take().expect("copied");
+        let decoded = crate::convert::decode(&png).expect("a PNG");
+        assert!(decoded.width <= 8192 && decoded.height <= 8192, "{}x{}", decoded.width, decoded.height);
+        assert!(decoded.width as u64 * decoded.height as u64 <= 32_100_000, "{}x{}", decoded.width, decoded.height);
+        assert!(decoded.width >= 4000, "still large enough to be sharp: {}", decoded.width);
+        assert!(began.elapsed().as_secs_f32() < 10.0);
+        // However far it is zoomed out or in when copied, the same size.
+        let mut sizes = Vec::new();
+        for zoom in [1.0, 0.1, 3.0] {
+            let mut studio = board();
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (100.0, 100.0), (900.0, 700.0), Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            studio.zoom = zoom;
+            studio.copy_board(0, true);
+            let decoded = crate::convert::decode(&studio.copied_picture.take().unwrap()).unwrap();
+            sizes.push((decoded.width, decoded.height));
+        }
+        assert!(sizes.iter().all(|&size| size == sizes[0]), "{sizes:?}");
+        // A small board, twice its size as before.
+        assert_eq!(export_times(2.0, 400.0, 300.0), 2.0);
+        assert!(export_times(2.0, 9000.0, 9000.0) < 1.0);
+    }
+
     #[test]
     fn a_board_is_written_as_an_svg_of_its_hand_drawn_shapes_and_words() {
         let mut studio = board();
