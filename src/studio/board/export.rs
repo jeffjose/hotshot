@@ -108,19 +108,64 @@ impl Studio {
     /// The same, of the whole board however much is picked out, when
     /// `whole`, as the right click on the board offers it.
     pub(in crate::studio) fn export_board_of(&mut self, kind: u8, whole: bool) {
-        let kept = whole.then(|| std::mem::take(&mut self.selected));
-        let part = self.export_part();
-        if let Some(kept) = kept {
-            self.selected = kept;
-        }
-        let Some((layers, part, name)) = part else { return self.say("Nothing to export") };
+        let (bytes, ending, name) = match self.board_picture(kind, whole) {
+            Ok(picture) => picture,
+            Err(error) => return self.say(error),
+        };
         let dir = self.export_dir();
         if let Err(error) = std::fs::create_dir_all(&dir) {
             return self.say(format!("Could not make {}: {error}", dir.display()));
         }
         let stem = one_line(&name).replace('/', "-");
-        let (bytes, ending) = match kind {
-            3 => (self.board_svg(&layers, part).into_bytes(), "svg"),
+        let path = dir.join(format!("{stem}.{ending}"));
+        match std::fs::write(&path, bytes) {
+            Ok(()) => self.show_exported(vec![path]),
+            Err(error) => self.say(format!("Could not write {}: {error}", path.display())),
+        }
+    }
+
+    /// What is picked out, or the board where nothing is or `whole`, put
+    /// on the clipboard as a PNG or a JPEG (`kind` 0 or 4), twice its size
+    /// to stay sharp, to paste into a chat or a document.
+    pub(in crate::studio) fn copy_board(&mut self, kind: u8, whole: bool) {
+        let kind = if kind == 4 { 4 } else { 0 };
+        let (bytes, ending, _) = match self.board_picture(kind, whole) {
+            Ok(picture) => picture,
+            Err(error) => return self.say(error),
+        };
+        let what = if whole || self.chosen().is_empty() { "Board" } else { "Selection" };
+        let said = format!("{what} copied as {}", if kind == 4 { "JPG" } else { "PNG" });
+        // Under test, kept to be looked at, and nothing started nor
+        // written where hotshot keeps its things.
+        if cfg!(test) {
+            self.copied_picture = Some(bytes);
+            return self.say(said);
+        }
+        let kept = crate::output::state_file("pins").and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_nanos());
+            let file = dir.join(format!("{}-{stamp}-board.{ending}", std::process::id()));
+            std::fs::write(&file, &bytes).ok()?;
+            Some(file)
+        });
+        match kept.map(|file| crate::pin::again(&["--clip".as_ref(), file.as_os_str(), "--forget".as_ref()])) {
+            Some(Ok(())) => self.say(said),
+            _ => self.say("Could not copy"),
+        }
+    }
+
+    /// The board, a frame of it, or what is picked out, as the bytes of a
+    /// picture of a kind, its ending and its name; of the whole board,
+    /// however much is picked out, when `whole`.
+    fn board_picture(&mut self, kind: u8, whole: bool) -> Result<(Vec<u8>, &'static str, String), String> {
+        let kept = whole.then(|| std::mem::take(&mut self.selected));
+        let part = self.export_part();
+        if let Some(kept) = kept {
+            self.selected = kept;
+        }
+        let Some((layers, part, name)) = part else { return Err("Nothing to export".into()) };
+        Ok(match kind {
+            3 => (self.board_svg(&layers, part).into_bytes(), "svg", name),
             _ => {
                 let format = match kind {
                     1 => Format::Avif,
@@ -132,17 +177,10 @@ impl Studio {
                 let times = if self.on_board() { 2.0 } else { 1.0 };
                 let (w, h, pixels) = sheet.render(times, &mut self.text);
                 let clear = pixels.iter().any(|pixel| pixel >> 24 != 255);
-                match crate::convert::encode(w as u32, h as u32, &pixels, clear, None, format, &self.convert) {
-                    Ok(encoded) => (encoded.bytes, format.ending()),
-                    Err(error) => return self.say(error),
-                }
+                let encoded = crate::convert::encode(w as u32, h as u32, &pixels, clear, None, format, &self.convert).map_err(|error| error.to_string())?;
+                (encoded.bytes, format.ending(), name)
             }
-        };
-        let path = dir.join(format!("{stem}.{ending}"));
-        match std::fs::write(&path, bytes) {
-            Ok(()) => self.show_exported(vec![path]),
-            Err(error) => self.say(format!("Could not write {}: {error}", path.display())),
-        }
+        })
     }
 
     /// Some layers of the board as an SVG, the part given its whole: each
@@ -300,7 +338,7 @@ mod tests {
 
 
     #[test]
-    fn a_right_click_on_a_board_exports_it_and_what_is_picked_out_as_png_or_jpg() {
+    fn a_right_click_on_a_board_copies_or_exports_it_and_what_is_picked_out_as_png_or_jpg() {
         let mut studio = board();
         let dir = std::env::temp_dir().join(format!("hotshot-board-export-{}", std::process::id()));
         studio.dir = dir.clone();
@@ -316,15 +354,33 @@ mod tests {
                 _ => None,
             }).collect()
         };
-        // Nothing picked out: the board, as either.
+        // Nothing picked out: the board, copied or written, as either.
         studio.selected.clear();
         let offered = says(&mut studio);
-        assert!(offered.contains(&"Export board as PNG".to_owned()) && offered.contains(&"Export board as JPG".to_owned()));
-        assert!(!offered.iter().any(|said| said.starts_with("Export selection")));
-        // A box picked out: that too.
+        for want in ["Copy board as PNG", "Copy board as JPG", "Export board as PNG", "Export board as JPG"] {
+            assert!(offered.contains(&want.to_owned()), "{want} in {offered:?}");
+        }
+        assert!(!offered.iter().any(|said| said == "Copy as PNG"));
+        // A box picked out: that, copied or written, and the whole board
+        // in a list beside.
         studio.selected = vec![0];
         let offered = says(&mut studio);
-        assert!(offered.contains(&"Export selection as PNG".to_owned()) && offered.contains(&"Export selection as JPG".to_owned()));
+        for want in ["Copy", "Copy as PNG", "Copy as JPG", "Export as PNG", "Export as JPG", "Whole board"] {
+            assert!(offered.contains(&want.to_owned()), "{want} in {offered:?}");
+        }
+        assert!(!offered.iter().any(|said| said == "Copy frame as PNG"), "no frame to copy on a board");
+        // Copied: Ctrl+Shift+C, the box alone as a PNG; and the whole
+        // board as a JPG, wider.
+        press_key(&mut studio, Key::Char('C'), Mods { ctrl: true, shift: true, ..Mods::default() });
+        let png = studio.copied_picture.take().expect("a picture copied");
+        assert!(crate::clipboard::picture_kind(&png) == Some("image/png"));
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Selection copied as PNG"));
+        studio.run_menu(crate::studio::menu::MenuAct::Board(crate::studio::board::Act::CopyBoard(4)));
+        let jpg = studio.copied_picture.take().expect("the board copied");
+        assert!(crate::clipboard::picture_kind(&jpg) == Some("image/jpeg"));
+        let (boxed, board) = (crate::convert::decode(&png).unwrap().width, crate::convert::decode(&jpg).unwrap().width);
+        assert!(board > boxed, "the board {board} wider than the box {boxed}");
+        assert_eq!(studio.selected, vec![0], "still picked out");
         // The whole board as a JPG, though a box is picked out: both boxes in
         // it, wider than the one box.
         studio.export_board_of(4, true);

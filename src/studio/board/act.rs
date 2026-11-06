@@ -49,6 +49,10 @@ pub(in crate::studio) enum Act {
     Words(bool),
     /// The sheet of the board's keys, open or shut.
     Keys,
+    /// What is picked out, or the board where nothing is, on the clipboard
+    /// as one of `export::KINDS`, PNG or JPEG; and all of the board so.
+    CopyAs(u8),
+    CopyBoard(u8),
 }
 
 impl Studio {
@@ -62,6 +66,10 @@ impl Studio {
             ("Insert Before / After".to_owned(), "", Act::Template(2)),
             (if self.board.guessing { "Stop guessing what comes next" } else { "Guess what comes next" }.to_owned(), "", Act::Guessing),
         ];
+        acts.push(("Copy as PNG".to_owned(), "Ctrl+Shift+C", Act::CopyAs(0)));
+        acts.push(("Copy as JPG".to_owned(), "", Act::CopyAs(4)));
+        acts.push(("Copy board as PNG".to_owned(), "", Act::CopyBoard(0)));
+        acts.push(("Copy board as JPG".to_owned(), "", Act::CopyBoard(4)));
         acts.push(("Copy as Mermaid".to_owned(), "", Act::Mermaid(false)));
         acts.push((if self.board.neaten { "Stop neatening pen strokes" } else { "Neaten pen strokes" }.to_owned(), "", Act::Neaten));
         acts.push(("Copy as Mermaid mind map".to_owned(), "", Act::Mermaid(true)));
@@ -123,6 +131,8 @@ impl Studio {
             Act::MergePicture => self.merge_picture(),
             Act::Export(kind) => self.export_board(kind),
             Act::ExportBoard(kind) => self.export_board_of(kind, true),
+            Act::CopyAs(kind) => self.copy_board(kind, false),
+            Act::CopyBoard(kind) => self.copy_board(kind, true),
             Act::Look(look) => self.set_look(Some(look), None),
             Act::Mermaid(map) => self.copy_mermaid(map),
             Act::Neaten => self.press_style(Ctl::Neaten),

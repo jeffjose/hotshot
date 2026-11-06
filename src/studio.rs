@@ -2320,6 +2320,9 @@ pub struct Studio {
     zen: bool,
     keep_ratio: bool,
     copied: Vec<Layer>,
+    /// The last picture of a board put on the clipboard, kept under test
+    /// to be looked at.
+    copied_picture: Option<Vec<u8>>,
     crop_aspect: usize,
     /// The color being picked, as hue, saturation and value; and whether
     /// the next click takes a color off the page.
@@ -2563,6 +2566,7 @@ impl Studio {
             zen: false,
             keep_ratio: false,
             copied: Vec::new(),
+            copied_picture: None,
             crop_aspect: 0,
             hsv: (0.0, 0.0, 1.0),
             eyedropping: false,
@@ -5625,6 +5629,10 @@ impl Studio {
     /// The artboard on the clipboard, kept there by a hotshot of its own,
     /// as the pin does.
     fn copy(&mut self) {
+        // On a board, what is picked out, or all of it, as a picture.
+        if self.on_board() {
+            return self.copy_board(0, false);
+        }
         if self.on_page() {
             return self.say("Pick a frame to copy it");
         }

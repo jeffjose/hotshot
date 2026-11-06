@@ -253,10 +253,11 @@ fn run(mut options: Options, started: Instant) -> x11::Result<ExitCode> {
         if options.forget {
             let _ = std::fs::remove_file(file);
         }
-        // A picture as a picture, and anything else as the text it is.
-        match clipboard::is_png(&bytes) {
-            true => clipboard::offer(Display::open()?, bytes)?,
-            false => clipboard::offer_text(Display::open()?, &String::from_utf8_lossy(&bytes))?,
+        // A picture as a picture, a PNG or a JPEG, and anything else as
+        // the text it is.
+        match clipboard::picture_kind(&bytes) {
+            Some(kind) => clipboard::offer_picture(Display::open()?, kind, bytes)?,
+            None => clipboard::offer_text(Display::open()?, &String::from_utf8_lossy(&bytes))?,
         }
         return Ok(ExitCode::SUCCESS);
     }

@@ -21,6 +21,8 @@ pub(super) enum MenuKind {
     Format(usize),
     /// What can be done with what is under a right click.
     Context,
+    /// All of a board copied or written as a picture, from the right click.
+    WholeBoard,
     /// Over and under the rest.
     Order,
     /// Everything, from the logo; and each part of it.
@@ -383,22 +385,38 @@ impl Studio {
                 }
                 items
             }
+            MenuKind::WholeBoard => {
+                use super::board::Act;
+                let key = if self.chosen().is_empty() { "Ctrl Shift C" } else { "" };
+                vec![
+                    Item::entry("Copy board as PNG", key, MenuAct::Board(Act::CopyBoard(0))),
+                    Item::entry("Copy board as JPG", "", MenuAct::Board(Act::CopyBoard(4))),
+                    Item::entry("Export board as PNG", "", MenuAct::Board(Act::ExportBoard(0))),
+                    Item::entry("Export board as JPG", "", MenuAct::Board(Act::ExportBoard(4))),
+                ]
+            }
             MenuKind::Context => {
                 let mut items = Vec::new();
                 let chosen = !self.chosen().is_empty();
-                // On a board, the board written as a picture; and with some
-                // of it picked out, that alone.
+                // On a board, what is picked out copied or written as a
+                // picture, and the whole board in a list beside; with
+                // nothing picked out, the whole board.
                 if self.on_board() {
                     use super::board::Act;
-                    items.push(Item::entry("Export board as PNG", "", MenuAct::Board(Act::ExportBoard(0))));
-                    items.push(Item::entry("Export board as JPG", "", MenuAct::Board(Act::ExportBoard(4))));
-                    if chosen {
-                        items.push(Item::entry("Export selection as PNG", "Ctrl E", MenuAct::Board(Act::Export(0))));
-                        items.push(Item::entry("Export selection as JPG", "", MenuAct::Board(Act::Export(4))));
+                    match chosen {
+                        true => {
+                            items.push(do_("Copy", "Ctrl C", Command::Copy));
+                            items.push(Item::entry("Copy as PNG", "Ctrl Shift C", MenuAct::Board(Act::CopyAs(0))));
+                            items.push(Item::entry("Copy as JPG", "", MenuAct::Board(Act::CopyAs(4))));
+                            items.push(Item::entry("Export as PNG", "Ctrl E", MenuAct::Board(Act::Export(0))));
+                            items.push(Item::entry("Export as JPG", "", MenuAct::Board(Act::Export(4))));
+                            items.push(Item::sub("Whole board", MenuKind::WholeBoard));
+                        }
+                        false => items.extend(self.menu_items(MenuKind::WholeBoard)),
                     }
                     items.push(Item::Rule);
                 }
-                if chosen {
+                if chosen && !self.on_board() {
                     items.push(do_("Copy", "Ctrl C", Command::Copy));
                     items.push(do_("Copy frame as PNG", "Ctrl Shift C", Command::CopyPng));
                 }

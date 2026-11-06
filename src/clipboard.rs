@@ -69,6 +69,21 @@ pub fn is_png(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x89PNG\r\n\x1a\n")
 }
 
+/// Puts a picture on the clipboard as the kind it is, a PNG or a JPEG.
+pub fn offer_picture(display: Display, kind: &str, bytes: Vec<u8>) -> Result<()> {
+    offer_all(display, vec![(kind, bytes)])
+}
+
+/// The kind of picture a file holds, by how it begins: a PNG or a JPEG;
+/// none, for text.
+pub fn picture_kind(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        _ if is_png(bytes) => Some("image/png"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+        _ => None,
+    }
+}
+
 /// Puts something on the clipboard in each of the kinds it can be had
 /// as: whoever pastes says which it wants.
 fn offer_all(display: Display, kinds: Vec<(&str, Vec<u8>)>) -> Result<()> {
