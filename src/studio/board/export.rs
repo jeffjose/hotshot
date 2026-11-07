@@ -344,6 +344,8 @@ impl Studio {
             }
         };
         let fill = match shape.tool {
+            // A block of code's words light on its dark.
+            Tool::Rect if shape.form == shapes::FORM_CODE => shapes::ink_on(shape.fill),
             Tool::Rect | Tool::Ellipse if shape.border && shape.form != shapes::FORM_STICKY => shape.color,
             Tool::Rect | Tool::Ellipse if shape.filled => shapes::ink_on(shape.fill),
             _ => shape.color,

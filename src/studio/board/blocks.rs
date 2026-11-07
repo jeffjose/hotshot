@@ -467,6 +467,11 @@ mod tests {
             Kind::Picture(_) => panic!("a shape"),
         };
         assert_eq!((kept.form, kept.text.clone(), kept.face), (shapes::FORM_CODE, shape(&studio, index).text, shapes::MONO));
+        // As an SVG, its words light on its dark.
+        let layers = studio.doc.layers.clone();
+        let svg = studio.board_svg(&layers, (0.0, 0.0, 1400.0, 900.0));
+        let line = svg.lines().find(|line| line.contains(">main.rs</text>")).expect("its name");
+        assert!(line.contains("fill=\"#FFFFFF\""), "{line}");
     }
 
     #[test]

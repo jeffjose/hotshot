@@ -7,7 +7,7 @@
 use super::*;
 
 /// The groups of the sheet, each with what a key does and the key.
-const EDITING: [(&str, &str); 18] = [
+const EDITING: [(&str, &str); 20] = [
     ("Type into what is picked out", "Enter"),
     ("Type over a box picked out", "A letter"),
     ("A new line in a box", "Shift Enter"),
@@ -26,6 +26,8 @@ const EDITING: [(&str, &str); 18] = [
     ("Make a box another shape", "Shift S"),
     ("Gather notes into a box", "G"),
     ("A vote on a note, one fewer", "D, Shift D"),
+    ("Stamp what is picked out", "Shift E"),
+    ("A block of code", "Ctrl `"),
 ];
 
 const ARROWS: [(&str, &str); 8] = [
@@ -39,13 +41,14 @@ const ARROWS: [(&str, &str); 8] = [
     ("Copy with what is in it", "Alt drag"),
 ];
 
-const VIEW: [(&str, &str); 13] = [
+const VIEW: [(&str, &str); 14] = [
     ("Move the board", "Space drag"),
     ("Zoom about the pointer", "Ctrl wheel"),
     ("Zoom in, out", "Ctrl +, Ctrl \u{2212}"),
     ("Zoom to fit", "Ctrl 0"),
     ("Zoom to 100%", "Ctrl 1"),
     ("Zoom to what is picked out", "Shift 2"),
+    ("Snap to the dots", "Ctrl '"),
     ("Search everything", "Ctrl K"),
     ("Export as a PNG", "Ctrl E"),
     ("Design or Board", "Ctrl M"),
@@ -92,7 +95,7 @@ impl Studio {
     pub(in crate::studio) fn keys_key(&mut self, key: Key, mods: Mods) -> bool {
         let asked = key == Key::Char('?') && !mods.ctrl && !mods.alt;
         if !self.board.keys {
-            let typing = self.editing.is_some() || self.renaming.is_some() || self.typing.is_some() || self.board.px_typed.is_some() || self.search.is_some() || self.menu.is_some() || self.library.is_some();
+            let typing = self.editing.is_some() || self.renaming.is_some() || self.typing.is_some() || self.board.px_typed.is_some() || self.board.exact_typed.is_some() || self.search.is_some() || self.menu.is_some() || self.library.is_some();
             if asked && !typing {
                 self.board.keys = true;
                 self.dirty = true;
@@ -247,5 +250,22 @@ mod tests {
         studio.board.typed = Some(0);
         press_key(&mut studio, Key::Char('f'), Mods::default());
         assert!(studio.board.focus.is_some());
+        // Shift E the stamps, Ctrl ' the dots snapped to, Ctrl ` a block
+        // of code.
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected = vec![0];
+        press_key(&mut studio, Key::Char('E'), shift);
+        assert_eq!(studio.menu.map(|menu| menu.kind), Some(MenuKind::Stamps));
+        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Char('\''), ctrl);
+        assert!(studio.snap_on());
+        let count = studio.doc.layers.len();
+        press_key(&mut studio, Key::Char('`'), ctrl);
+        assert_eq!((studio.doc.layers.len(), shape(&studio, count).form), (count + 1, shapes::FORM_CODE));
+        // ? typed into a number of the panel is not the sheet.
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.board.exact_typed = Some((0, String::new()));
+        press_key(&mut studio, Key::Char('?'), shift);
+        assert!(!studio.board.keys);
     }
 }
