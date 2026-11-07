@@ -120,7 +120,8 @@ impl Shape {
     /// dashed and hollow, as something still to be filled in.
     pub fn placeholder(&self) -> bool {
         let words = self.text.trim();
-        matches!(self.tool, Tool::Rect | Tool::Ellipse) && (words == "?" || words.eq_ignore_ascii_case("tbd"))
+        let held = self.tool == Tool::Rect && matches!(self.form, FORM_CODE | FORM_GRID);
+        matches!(self.tool, Tool::Rect | Tool::Ellipse) && !held && (words == "?" || words.eq_ignore_ascii_case("tbd"))
     }
 
     /// What its hand-drawn wobble is worked out from: what it is called,
@@ -356,6 +357,10 @@ impl Shape {
     pub fn label_lines(&self, text: &mut Text) -> (Vec<(String, f32, f32, i32)>, i32) {
         let px = self.font_px;
         let high = Text::line_height(px);
+        // A block of code's and a table's, which are there empty too.
+        if let Some((runs, high)) = self.held_runs(text) {
+            return (runs.into_iter().map(|(_, line, left, top, wide)| (line, left, top, wide)).collect(), high);
+        }
         if self.text.is_empty() {
             return (Vec::new(), high);
         }
@@ -442,6 +447,9 @@ impl Shape {
     /// lines; and how tall a line is. None for a table, whose lines are not
     /// its words in order.
     pub fn label_runs(&self, text: &mut Text) -> Option<(Vec<(usize, String, f32, f32, i32)>, i32)> {
+        if let Some(runs) = self.held_runs(text) {
+            return Some(runs);
+        }
         if self.form == FORM_TABLE && self.tool == Tool::Rect && !self.titled {
             return None;
         }
@@ -453,6 +461,17 @@ impl Shape {
             (at, line, x, y, wide)
         }).collect();
         Some((runs, high))
+    }
+
+    /// A block of code's lines or a table's cells, each with where in its
+    /// words it begins; and how tall a line is. None for the rest.
+    pub fn held_runs(&self, text: &mut Text) -> Option<(Vec<(usize, String, f32, f32, i32)>, i32)> {
+        let high = Text::line_height(self.font_px);
+        match (self.tool, self.form) {
+            (Tool::Rect, FORM_CODE) => Some((self.code_lines(text), high)),
+            (Tool::Rect, FORM_GRID) => Some((self.grid_lines(text), high)),
+            _ => None,
+        }
     }
 
     /// Where the caret goes at the end of its words: across, down, and how
@@ -478,6 +497,16 @@ impl Shape {
     /// them: as wide as the longest line unwrapped, up to `most` across,
     /// and then as tall as they wrap to; never smaller than `least`.
     pub fn label_needs(&self, text: &mut Text, least: (f32, f32), most: f32) -> (f32, f32) {
+        // A block of code and a table are as large as their lines and cells
+        // need, unwrapped, or as they were made where that is larger.
+        let held = match (self.tool, self.form) {
+            (Tool::Rect, FORM_CODE) => Some(self.code_needs(text)),
+            (Tool::Rect, FORM_GRID) => Some(self.grid_needs(text)),
+            _ => None,
+        };
+        if let Some((w, h)) = held {
+            return (w.max(least.0), h.max(least.1));
+        }
         if self.text.is_empty() || self.titled || !matches!(self.tool, Tool::Rect | Tool::Ellipse) || ui_kind(&self.text).is_some() {
             return least;
         }

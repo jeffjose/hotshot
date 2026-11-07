@@ -191,6 +191,10 @@ pub struct Shape {
     pub status: u8,
     /// How many votes a sticky note has, each a dot along its top.
     pub votes: u8,
+    /// The stamps a box has been given, each one of `STAMPS` by where it
+    /// is among them, in the order they were put on: round badges side by
+    /// side at its top right.
+    pub stamps: Vec<u8>,
     /// Whether an arrow goes from the nearest side of what it is stuck to
     /// to the nearest side of the other, curving into it, as a board's do.
     pub routed: bool,
@@ -276,6 +280,25 @@ pub fn corners_read(word: &str) -> Option<[f32; 4]> {
     let parts: Vec<f32> = word.split(':').map(|part| part.parse::<f32>().ok().filter(|radius| radius.is_finite())).collect::<Option<_>>()?;
     let [a, b, c, d] = parts[..] else { return None };
     Some([a, b, c, d].map(|radius| radius.max(0.0)))
+}
+
+/// A box's stamps as a word of a file: the number of each, in the order
+/// they were put on, or a dash for none.
+fn stamps_word(stamps: &[u8]) -> String {
+    match stamps.is_empty() {
+        true => "-".to_owned(),
+        false => stamps.iter().map(|&kind| char::from(b'0' + kind)).collect(),
+    }
+}
+
+fn stamps_read(word: &str) -> Vec<u8> {
+    let mut stamps: Vec<u8> = Vec::new();
+    for kind in word.bytes().filter(|digit| digit.is_ascii_digit()).map(|digit| digit - b'0').filter(|&kind| usize::from(kind) < STAMPS.len()) {
+        if !stamps.contains(&kind) {
+            stamps.push(kind);
+        }
+    }
+    stamps
 }
 
 /// A fill of more than one color, as Figma's are: from a shape's `fill` to
@@ -368,10 +391,18 @@ pub const FORM_DOUBLE: u8 = 15;
 pub const FORM_TABLE: u8 = 16;
 pub const FORM_WEDGE: u8 = 17;
 pub const FORM_FACE: u8 = 18;
-const FORM_LAST: u8 = FORM_FACE;
+/// And what a board's box holds besides words: a table of cells typed
+/// into, its rows on lines of its words and its cells parted by tabs; and
+/// a block of code, its first line the name of its file and the rest its
+/// lines, in a monospaced face, colored by what each word is.
+pub const FORM_GRID: u8 = 19;
+pub const FORM_CODE: u8 = 20;
+const FORM_LAST: u8 = FORM_CODE;
 
+mod blocks;
 mod elbows;
 mod forms;
+pub use blocks::{code_parts, code_runs, draw_stamp, looks_like_code, looks_tabular, tabular_rows, MONO, STAMPS};
 pub use forms::PAPER;
 
 /// The heads a line can have at either end, by what each is called: the
@@ -435,7 +466,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, step: None, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, step: None, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, stamps: Vec::new(), routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -443,7 +474,9 @@ impl Shape {
     pub fn write(&self) -> String {
         let name = TOOL_NAMES.iter().find(|(tool, _)| *tool == self.tool).map_or("", |(_, name)| name);
         let points: Vec<String> = self.points.iter().map(|point| format!("{},{}", point.0, point.1)).collect();
-        let text = self.text.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', " ");
+        // Its new lines and tabs said in two letters each, as the tabs of
+        // a table's cells are what part them.
+        let text = self.text.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', "\\t");
         format!(
             "{name}\t{:06X}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}\t{:06X}\t{}\t{}\t{text}",
             self.color,
@@ -455,7 +488,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -486,7 +519,8 @@ impl Shape {
                 self.region,
                 u8::from(self.hatch),
                 self.nominal,
-                self.step.map_or("-".to_owned(), |(x, y)| format!("{x}:{y}"))
+                self.step.map_or("-".to_owned(), |(x, y)| format!("{x}:{y}")),
+                stamps_word(&self.stamps)
             ),
             self.fill,
             self.number,
@@ -568,12 +602,16 @@ impl Shape {
         // And where an arrow round corners was pulled to go, which a file
         // from before has not.
         shape.step = more.next().and_then(|word| word.split_once(':')).and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))).filter(|(x, y)| x.is_finite() && y.is_finite());
-        // The text has its new lines and its backslashes said in two
-        // letters each: put back one at a time, in order.
+        // And the stamps it has been given, which a file from before has
+        // none of.
+        shape.stamps = more.next().map(stamps_read).unwrap_or_default();
+        // The text has its new lines, its tabs and its backslashes said in
+        // two letters each: put back one at a time, in order.
         let mut letters = text.chars();
         while let Some(letter) = letters.next() {
             shape.text.push(match (letter, letter == '\\').1.then(|| letters.next()).flatten() {
                 Some('n') => '\n',
+                Some('t') => '\t',
                 Some(other) => other,
                 None => letter,
             });
@@ -685,7 +723,12 @@ impl Shape {
     /// The face its words are drawn in: its own, but that some looks of a
     /// badge keep to one of their own.
     pub fn words_face(&self) -> usize {
-        if self.tool == Tool::Badge { badge_face(self.number as usize, self.face) } else { self.face }
+        match self.tool {
+            Tool::Badge => badge_face(self.number as usize, self.face),
+            // A block of code is in the monospaced face, whatever the board's.
+            Tool::Rect if self.form == FORM_CODE => blocks::MONO,
+            _ => self.face,
+        }
     }
 
     /// Where the first letter of a shape with words on it goes.
@@ -863,8 +906,21 @@ impl Shape {
         turned_around(place, self.centre(text), self.angle)
     }
 
-    /// The rectangle that holds all of it as if it were not turned.
+    /// The rectangle that holds all of it as if it were not turned: and
+    /// the stamps a box has over its top right.
     pub fn local_bounds(&self, text: &mut Text) -> Rect {
+        let place = self.bare_bounds(text);
+        match self.stamp_reach() {
+            Some(stamps) => {
+                let (x, y) = (place.x.min(stamps.x), place.y.min(stamps.y));
+                Rect::new(x, y, place.right().max(stamps.right()) - x, place.bottom().max(stamps.bottom()) - y)
+            }
+            None => place,
+        }
+    }
+
+    /// The same, but for its stamps.
+    fn bare_bounds(&self, text: &mut Text) -> Rect {
         match self.tool {
             Tool::Text => {
                 let lines = self.text_lines(text);
@@ -2614,6 +2670,16 @@ impl Shape {
                 }
             }
             Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY * self.opacity / 256),
+            // A block of code and a table, each drawn its own way; and the
+            // stamps over either.
+            Tool::Rect if self.form == FORM_CODE => {
+                self.draw_code(canvas, text);
+                self.draw_stamps(canvas);
+            }
+            Tool::Rect if self.form == FORM_GRID => {
+                self.draw_grid(canvas, text);
+                self.draw_stamps(canvas);
+            }
             // Its fill, and its border over that; or the one it has.
             Tool::Rect | Tool::Ellipse => {
                 if self.fill_apart() {
@@ -2631,6 +2697,7 @@ impl Shape {
                 }
                 // On a board, its words, what it stands for and its dots.
                 self.draw_label(canvas, text);
+                self.draw_stamps(canvas);
             }
             // An edge of white first, a little wider all round, and the
             // line over it.
@@ -3858,10 +3925,27 @@ mod tests {
         assert_eq!(Shape::read(&boxed.write()).unwrap().nominal, 22);
         // And one from before either has neither.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0,-\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0,-,-\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
         assert_eq!((back.edge, back.shadow), (CENTER, None));
+    }
+
+    #[test]
+    fn a_tables_tabs_and_a_boxs_stamps_are_kept_in_its_line() {
+        let mut table = Shape::new(Tool::Rect, 0x1971C2, 2.0, (0.0, 0.0));
+        table.points[1] = (300.0, 90.0);
+        (table.form, table.text) = (FORM_GRID, "Name\tRole\nAda\tEngineer\\n\nGrace\t".into());
+        table.stamps = vec![3, 0, 4];
+        let back = Shape::read(&table.write()).unwrap();
+        assert_eq!((back.form, back.text.as_str(), back.stamps.clone()), (FORM_GRID, "Name\tRole\nAda\tEngineer\\n\nGrace\t", vec![3, 0, 4]));
+        // None is a dash, and one from before stamps has none.
+        table.stamps.clear();
+        let line = table.write();
+        assert!(Shape::read(&line).unwrap().stamps.is_empty());
+        let older = line.replacen(",-\t", "\t", 1);
+        assert_ne!(older, line);
+        assert!(Shape::read(&older).unwrap().stamps.is_empty());
     }
 
     #[test]
