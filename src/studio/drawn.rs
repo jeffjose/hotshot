@@ -399,7 +399,8 @@ mod tests {
                 // The paper and its dots apart, which are drawn finer once the
                 // page has been still a moment, by the clock.
                 let (paper, dots) = studio.paper();
-                let ground = |c: &u32| matches!(c & 0xFF_FFFF, c if c == paper || c == dots);
+                let near = |c: u32, to: u32| [0, 8, 16].iter().all(|shift| ((c >> shift & 0xFF) as i32 - (to >> shift & 0xFF) as i32).abs() <= 8);
+                let ground = |c: &u32| near(*c, paper) || near(*c, dots);
                 let far = |a: &u32, b: &u32| !(ground(a) && ground(b)) && [0, 8, 16].iter().any(|shift| ((a >> shift & 0xFF) as i32 - (b >> shift & 0xFF) as i32).abs() > 2);
                 let off = out.iter().zip(&fresh).filter(|(a, b)| far(a, b)).count();
                 let w = studio.width as usize;

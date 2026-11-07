@@ -390,6 +390,10 @@ impl Studio {
         let styled: Vec<usize> = self.chosen().into_iter().filter(|&index| matches!(self.doc.layers[index].kind, Kind::Shape(_))).collect();
         for index in styled {
             if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
+                // A block of code keeps to its monospaced face.
+                if shape.tool == Tool::Rect && shape.form == shapes::FORM_CODE {
+                    continue;
+                }
                 shape.face = font;
                 shape.touch();
             }

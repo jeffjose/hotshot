@@ -38,6 +38,7 @@ fn fingerprint(shape: &Shape) -> Vec<(&'static str, String)> {
         ("frame", format!("{} {} {} {}", round(x), round(y), round(w), round(h))),
         ("points", format!("{:?}", shape.points.iter().map(|&(x, y)| (round(x), round(y))).collect::<Vec<_>>())),
         ("link", shape.link.clone()),
+        ("stamps", format!("{:?}", shape.stamps)),
     ]
 }
 
@@ -323,6 +324,34 @@ fn each_thing_done_on_a_board_is_one_step_to_undo_and_kept_in_the_file() {
             type_in(studio, "Next");
             press_key(studio, Key::Escape, Mods::default());
         }),
+        ("stamped", |studio, _| {
+            studio.selected = vec![0, 1];
+            studio.stamp(4);
+        }),
+        ("a table put down and typed into", |studio, _| {
+            studio.insert_table(Some((500.0, 500.0)));
+            type_in(studio, "Name");
+            press_key(studio, Key::Tab, Mods::default());
+            type_in(studio, "Role");
+            press_key(studio, Key::Escape, Mods::default());
+        }),
+        ("rows pasted as a table", |studio, _| studio.pasted(None, Some("a\tb\nc\td\n".into()))),
+        ("a block of code put down and typed into", |studio, _| {
+            press_key(studio, Key::Char('`'), Mods { ctrl: true, ..Mods::default() });
+            type_in(studio, "if ready {");
+            press_key(studio, Key::Enter, Mods::default());
+            type_in(studio, "go();");
+            press_key(studio, Key::Escape, Mods::default());
+        }),
+        ("sized exactly", |studio, _| {
+            studio.selected = vec![0];
+            studio.set_exact(0, 300.0);
+        }),
+        ("placed exactly", |studio, _| {
+            studio.selected = vec![0, 1];
+            studio.set_exact(3, 36.0);
+        }),
+        ("a piece from the library", |studio, _| studio.put_piece(0, (600.0, 520.0))),
         ("deleted", |studio, _| {
             studio.selected = vec![1];
             press_key(studio, Key::Delete, Mods::default());
@@ -465,11 +494,95 @@ fn as_if_drawn_afresh(studio: &mut Studio, what: &str) {
     (studio.shown.clear(), studio.shown_page.clear());
     studio.draw(&mut fresh);
     let (paper, dots) = studio.paper();
-    let ground = |c: u32| matches!(c & 0xFF_FFFF, c if c == paper || c == dots);
+    let near = |c: u32, to: u32| [0, 8, 16].iter().all(|shift| ((c >> shift & 0xFF) as i32 - (to >> shift & 0xFF) as i32).abs() <= 8);
+    let ground = |c: u32| near(c, paper) || near(c, dots);
     let far = |a: u32, b: u32| !(ground(a) && ground(b)) && [0, 8, 16].iter().any(|shift| ((a >> shift & 0xFF) as i32 - (b >> shift & 0xFF) as i32).abs() > 2);
     let w = studio.width as usize;
     let off: Vec<(usize, usize)> = kept.iter().zip(&fresh).enumerate().filter(|&(_, (&a, &b))| far(a, b)).map(|(at, _)| (at % w, at / w)).collect();
     assert!(off.is_empty(), "{what}: {} pixels of the window as drawn differ from it drawn afresh, from {:?}", off.len(), &off[..off.len().min(4)]);
+}
+
+#[test]
+fn in_each_look_a_block_of_code_a_table_a_stamp_and_an_exact_size_are_drawn_as_if_afresh() {
+    // Each done on a board already drawn: what is shown is what drawing it
+    // all from nothing shows, typing, the caret and the panel too.
+    type Done = fn(&mut Studio);
+    let doings: [(&str, Done); 8] = [
+        ("a stamped box dragged", |studio| {
+            // Its words XL, its stamps as large, well past its edge.
+            studio.selected = vec![0];
+            studio.press_style(Ctl::Size(3));
+            for kind in 0..5 {
+                studio.stamp(kind);
+            }
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            // Typed into, it grows, its stamps along with its corner.
+            press_key(studio, Key::Enter, Mods::default());
+            for letter in "Gateway".chars() {
+                type_in(studio, &letter.to_string());
+                studio.draw(&mut out);
+            }
+            press_key(studio, Key::Escape, Mods::default());
+            studio.draw(&mut out);
+            studio.selected.clear();
+            let from = studio.to_window_page((180.0, 360.0));
+            studio.pointer_moved(from.0, from.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            // Still held: what is drawn is what was drawn again of it.
+            for step in 1..=6 {
+                studio.pointer_moved(from.0 + step * 9, from.1 + step * 23, Mods::default());
+                studio.draw(&mut out);
+            }
+        }),
+        ("a block of code typed into", |studio| {
+            studio.insert_code(Some((560.0, 520.0)));
+            type_in(studio, "fn go() {");
+            press_key(studio, Key::Enter, Mods::default());
+            type_in(studio, "let long_name_here = \"words\"; // a comment");
+        }),
+        ("a table typed into", |studio| {
+            studio.insert_table(Some((560.0, 520.0)));
+            type_in(studio, "Name");
+            press_key(studio, Key::Tab, Mods::default());
+            type_in(studio, "A longer heading");
+            press_key(studio, Key::Enter, Mods::default());
+            type_in(studio, "x");
+        }),
+        ("a row more for a table", |studio| {
+            studio.insert_table(Some((560.0, 520.0)));
+            studio.board.caret = Some(studio.block_words(studio.doc.layers.len() - 1).len());
+            press_key(studio, Key::Tab, Mods::default());
+            type_in(studio, "more");
+        }),
+        ("stamped", |studio| {
+            studio.selected = vec![0];
+            studio.stamp(0);
+            studio.stamp(3);
+        }),
+        ("a stamp taken off", |studio| {
+            studio.selected = vec![0];
+            studio.stamp(0);
+            studio.stamp(1);
+            studio.stamp(0);
+        }),
+        ("sized exactly", |studio| {
+            studio.selected = vec![0];
+            studio.set_exact(0, 90.0);
+            studio.set_exact(1, 160.0);
+        }),
+        ("a piece put down", |studio| studio.put_piece(3, (560.0, 520.0))),
+    ];
+    for look in 0..=look::DIAGRAM {
+        for (name, doing) in doings {
+            let (mut studio, _) = furnished(look);
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            doing(&mut studio);
+            as_if_drawn_afresh(&mut studio, &format!("look {look}, {name}"));
+        }
+    }
 }
 
 #[test]

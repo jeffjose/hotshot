@@ -42,12 +42,23 @@ impl Studio {
         let (runs, high) = shape.label_runs(&mut self.text)?;
         let last = runs.len().checked_sub(1)?;
         let row = runs.iter().position(|run| at.1 < run.3 + high as f32).unwrap_or(last);
+        // Of the runs along that line, as a table's cells are, the one
+        // nearest across.
+        let row = (0..runs.len()).filter(|&at| runs[at].3 == runs[row].3).min_by(|&a, &b| {
+            let off = |run: &(usize, String, f32, f32, i32)| (run.2 - at.0).max(at.0 - run.2 - run.4 as f32).max(0.0);
+            off(&runs[a]).total_cmp(&off(&runs[b]))
+        }).unwrap_or(row);
         let (start, line, left, top, wide) = &runs[row];
         let on = at.1 >= runs[0].3 && at.1 <= runs[last].3 + high as f32 && at.0 >= left - 6.0 && at.0 <= left + *wide as f32 + 6.0;
+        // Anywhere in a table or a block of code is on its words: a cell's
+        // room, a line's end.
+        let (x, y, w, h) = shape.frame();
+        let held = shape.tool == Tool::Rect && matches!(shape.form, shapes::FORM_CODE | shapes::FORM_GRID);
+        let on = on || held && at.0 >= x && at.0 <= x + w && at.1 >= y && at.1 <= y + h;
         let along = at.0 - left;
         let mut best = (0, f32::MAX);
         for (offset, _) in line.char_indices().chain([(line.len(), ' ')]) {
-            let x = self.text.width_in(shape.face, &line[..offset], shape.font_px) as f32;
+            let x = self.text.width_in(shape.words_face(), &line[..offset], shape.font_px) as f32;
             if (x - along).abs() < best.1 {
                 best = (offset, (x - along).abs());
             }
@@ -63,7 +74,7 @@ impl Studio {
         let run = runs.iter().rev().find(|run| run.0 <= at)?;
         let offset = (at - run.0).min(run.1.len());
         let offset = (0..=offset).rev().find(|&offset| run.1.is_char_boundary(offset)).unwrap_or(0);
-        Some((run.2 + self.text.width_in(shape.face, &run.1[..offset], shape.font_px) as f32, run.3, high))
+        Some((run.2 + self.text.width_in(shape.words_face(), &run.1[..offset], shape.font_px) as f32, run.3, high))
     }
 
     /// Where the caret of the words being typed is drawn on a board, if it
@@ -116,7 +127,7 @@ impl Studio {
             if a >= b {
                 continue;
             }
-            let x = |offset: usize, text: &mut Text| left + text.width_in(shape.face, &line[..offset - start], shape.font_px) as f32;
+            let x = |offset: usize, text: &mut Text| left + text.width_in(shape.words_face(), &line[..offset - start], shape.font_px) as f32;
             let (x0, x1) = (x(a, &mut self.text), x(b, &mut self.text));
             let (p, q) = (self.to_window((x0, top)), self.to_window((x1, top + high as f32)));
             canvas.round_fill(p.0, p.1, (q.0 - p.0).max(1), (q.1 - p.1).max(1), 0, ACCENT, 70);
