@@ -109,6 +109,13 @@ pub(super) enum Ctl {
     /// which a click closes it on.
     Sheet,
     Scrim,
+    /// The find bar, while it is open: all of it, its field, back to the
+    /// one before, on to the next, and close.
+    FindBar,
+    FindField,
+    FindBack,
+    FindNext,
+    FindClose,
 }
 
 /// What a board keeps of its own, in the window rather than the file.
@@ -207,11 +214,18 @@ pub(super) struct Board {
     /// How far the wheel has gone over that number toward the next step,
     /// and when it last stepped, for a run of it to be one step to undo.
     pub wheeled: (f32, Option<std::time::Instant>),
+    /// Ctrl held down alone, since when: held a moment, where the next box
+    /// each arrow key would make shows.
+    pub ctrl: Option<std::time::Instant>,
+    /// The view gliding over to something.
+    pub glide: Option<glide::Glide>,
+    /// The find bar, while it is open.
+    pub find: Option<find::Find>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None), ctrl: None, glide: None, find: None }
     }
 }
 
@@ -231,6 +245,9 @@ mod mermaid;
 mod neaten;
 mod zoom;
 mod keys;
+mod flow;
+mod glide;
+mod find;
 #[cfg(test)]
 mod consistency;
 /// Whether a frame is the one a new page of frames begins with, as it
@@ -504,6 +521,7 @@ impl Studio {
             Ctl::Branch => self.branch_here(),
             Ctl::Now => self.history_now(),
             Ctl::Sheet | Ctl::Scrim => self.press_zoom(ctl),
+            Ctl::FindBar | Ctl::FindField | Ctl::FindBack | Ctl::FindNext | Ctl::FindClose => self.press_find(ctl),
             Ctl::Arrange(at) => return self.act(bar::ARRANGE[usize::from(at).min(bar::ARRANGE.len() - 1)].0),
             other => self.press_style(other),
         }
@@ -650,7 +668,7 @@ impl Studio {
                 self.text.draw(canvas, rect.x + 30, cy - Text::line_height(12) / 2, 12, TEXT_COLOR, "Present");
             }
             // Drawn over everything, once the rest is.
-            Ctl::Sheet | Ctl::Scrim => {}
+            Ctl::Sheet | Ctl::Scrim | Ctl::FindBar | Ctl::FindField | Ctl::FindBack | Ctl::FindNext | Ctl::FindClose => {}
             other => self.draw_style_control(canvas, rect, other, hovered),
         }
     }

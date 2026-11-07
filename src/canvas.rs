@@ -290,6 +290,42 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// A stroke of a marker across, from `x0` to `x1`, its top and bottom at
+    /// each column as `edge` says: laid over what is there as a marker's ink
+    /// is, each pixel its color as light as the pixel was, so that letters
+    /// under it stay as dark and a tint under it is the marker's color all
+    /// the same; or, `dark`, what is dark under it the color and what is
+    /// light, letters on dark, as it was. Its edges smooth.
+    pub fn marker(&mut self, x0: f32, x1: f32, edge: impl Fn(f32) -> (f32, f32), color: u32, dark: bool) {
+        let (left, right) = ((x0.floor() as i32).max(self.clip.x), (x1.ceil() as i32).min(self.clip.right()));
+        for x in left..right {
+            let across = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
+            let (top, bottom) = edge(x as f32 + 0.5);
+            if across <= 0.0 || bottom <= top {
+                continue;
+            }
+            for y in (top.floor() as i32).max(self.clip.y)..(bottom.ceil() as i32).min(self.clip.bottom()) {
+                let down = ((y as f32 + 1.0).min(bottom) - (y as f32).max(top)).clamp(0.0, 1.0);
+                let cover = (across * down * 256.0) as u32;
+                if cover == 0 {
+                    continue;
+                }
+                let pixel = &mut self.pixels[(y * self.width + x) as usize];
+                let light = ((*pixel >> 16 & 0xFF) * 77 + (*pixel >> 8 & 0xFF) * 150 + (*pixel & 0xFF) * 29) >> 8;
+                let inked = match dark {
+                    // Dark, the color; light, as it was, letters and their
+                    // soft edges between.
+                    true => mix(color, *pixel, ((light as i32 - 52) * 256 / 40).clamp(0, 256) as u32),
+                    false => {
+                        let times = |shift: u32| ((color >> shift & 0xFF) * light / 255) << shift;
+                        times(16) | times(8) | times(0)
+                    }
+                };
+                *pixel = mix(*pixel, inked, cover.min(256));
+            }
+        }
+    }
+
     /// Blends one pixel of a letter in.
     pub fn blend(&mut self, x: i32, y: i32, color: u32, coverage: u8) {
         if self.clip.contains(x, y) {

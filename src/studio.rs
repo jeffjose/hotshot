@@ -3037,6 +3037,7 @@ impl Studio {
             self.layout_style_bar(&mut layout);
             self.layout_arrange(&mut layout);
             self.layout_history(&mut layout);
+            self.layout_find(&mut layout);
             self.layout_keys(&mut layout);
         }
         self.layout_menus(&mut layout);
@@ -3939,6 +3940,12 @@ impl Studio {
         self.commit_name();
         self.board.typed = None;
         (self.palette, self.flyout) = (None, None);
+        // On a board, the keys the board's again, the find bar left open;
+        // and Ctrl was held for the press.
+        if self.on_board() {
+            self.find_let_go();
+            self.board.ctrl = None;
+        }
         let off_everything = self.frame_at(self.to_page(at_window)).is_none() && self.page_layer_at(self.to_page(at_window)).is_none() && !self.near_selection(at_window);
         if self.space || self.tool == Tool::Select && self.mods.alt && off_everything {
             self.drag = Drag::Pan { from: at_window, origin: self.pan };
@@ -5537,6 +5544,12 @@ impl Studio {
     /// What the clipboard had: a picture, put on the artboard; or text,
     /// put on it as text.
     pub fn pasted(&mut self, picture: Option<Vec<u8>>, text: Option<String>) {
+        // Words, into a board's find bar as it is typed into.
+        if let Some(words) = text.as_deref().filter(|_| self.on_board()) {
+            if self.find_pasted(words) {
+                return;
+            }
+        }
         // Mermaid, on a board: its boxes and arrows.
         if let Some(words) = text.as_deref().filter(|words| self.on_board() && self.editing.is_none() && board::is_mermaid(words)) {
             if self.bring_mermaid(words) {
@@ -5713,6 +5726,20 @@ impl Studio {
         if down && self.on_board() && self.present_key(key) {
             return Outcome::Continue;
         }
+        // Any key but an arrow with Ctrl held: where Ctrl and an arrow would
+        // put the next box no longer shows, as Ctrl was for something else.
+        if down && key != Key::Other && !(mods.ctrl && matches!(key, Key::Left | Key::Right | Key::Up | Key::Down)) {
+            self.board.ctrl = None;
+        }
+        // Ctrl+F finds on a board, and its bar, typed into, takes the keys,
+        // and what is pasted.
+        if down && mods.ctrl && matches!(key, Key::Char('v' | 'V')) && self.board.find.as_ref().is_some_and(|find| find.typing) {
+            return Outcome::Paste;
+        }
+        if down && self.on_board() && self.find_key(key, mods) {
+            self.mods = mods;
+            return Outcome::Continue;
+        }
         // ? opens the sheet of a board's keys, which takes them while open.
         if down && self.on_board() && self.keys_key(key, mods) {
             return Outcome::Continue;
@@ -5803,6 +5830,11 @@ impl Studio {
                 self.step_words(matches!(mark, '>' | '.'));
                 return Outcome::Continue;
             }
+        }
+        // Ctrl and an arrow on a board, the next box that way; Alt and an
+        // arrow, the box joined that way picked out; typing or not.
+        if self.on_board() && self.flow_key(key, mods) {
+            return Outcome::Continue;
         }
         // A box moved or sized as it was typed into: what is typed after is
         // a step of its own to undo, rather than undone with the move.
@@ -7312,6 +7344,11 @@ impl Studio {
                 self.text.draw(canvas, x + 12, y + (32 - line_high) / 2, px, TEXT_COLOR, &note);
             }
         }
+        // A board's find bar, over the board and under the name of what is
+        // hovered.
+        if self.on_board() {
+            self.draw_find(canvas, layout, hover);
+        }
         let says = match hover {
             Some(Control::Tool(tool)) => TOOLS.iter().find(|(known, ..)| *known == tool).map(|(_, name, key)| format!("{name}  {key}")),
             Some(Control::FrameTool) => Some("Frame  F".to_owned()),
@@ -7638,6 +7675,11 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                         }
                         Shown::Home(_) => {}
                         Shown::Studio(studio) => {
+                            // Ctrl itself, which the state it comes with
+                            // says nothing of as it is pressed.
+                            if matches!(display.symbol(press.detail, 0), 0xFFE3 | 0xFFE4) {
+                                studio.ctrl_held(down);
+                            }
                             outcome = studio.key(key, crate::x11::mods(state), down);
                             // Shift or Alt pressed or let go partway through a
                             // drag changes it then: the keys as they are now,
