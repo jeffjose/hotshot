@@ -512,6 +512,35 @@ pub(in crate::studio) mod tests {
     }
 
     #[test]
+    fn an_arrow_set_round_corners_stays_so_when_tied_and_the_next_are_so_too() {
+        let mut studio = board();
+        for (from, to) in [((100.0, 100.0), (260.0, 172.0)), ((600.0, 400.0), (760.0, 472.0))] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, to, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+        }
+        // An arrow drawn free, set round corners, then its end tied to a box.
+        press_key(&mut studio, Key::Char('a'), Mods::default());
+        pull(&mut studio, (300.0, 600.0), (500.0, 650.0), Mods::default());
+        let arrow = studio.doc.layers.len() - 1;
+        studio.selected = vec![arrow];
+        studio.press_style(Ctl::Route(2));
+        studio.bind_end(arrow, 1, (680.0, 436.0));
+        let tied = shape(&studio, arrow);
+        assert!(tied.stuck[1].is_some(), "tied");
+        assert!(tied.elbow && !tied.routed, "still round corners, not bowed");
+        // The next pulled from a box is round corners too, though the look
+        // is Rounded; and the next drawn.
+        studio.selected.clear();
+        let next = studio.join(0, 1);
+        assert!(shape(&studio, next).elbow && !shape(&studio, next).routed);
+        press_key(&mut studio, Key::Char('a'), Mods::default());
+        pull(&mut studio, (300.0, 700.0), (500.0, 760.0), Mods::default());
+        assert!(shape(&studio, studio.doc.layers.len() - 1).elbow);
+    }
+
+    #[test]
     fn diagram_colors_are_figjam_s() {
         assert_eq!(figjam(0x1971C2), 0x3662E3);
         assert_eq!(figjam(0xD0EBFF), 0xC2E5FF, "light blue, not near white");

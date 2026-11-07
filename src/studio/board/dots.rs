@@ -494,8 +494,16 @@ impl Studio {
     /// How a board's new connector goes: round corners in the Diagram look,
     /// as a diagram's do, and bowed in the others.
     pub(in crate::studio) fn board_route(&self, arrow: &mut Shape) {
+        let kind = self.board_route_kind();
+        (arrow.routed, arrow.elbow) = (kind == 0, kind == 2);
+    }
+
+    /// How a board's next arrow goes: as last chosen in its panel, curved
+    /// (0), straight (1) or round corners (2); with none chosen, round
+    /// corners in the Diagram look and curved in the others.
+    pub(in crate::studio) fn board_route_kind(&self) -> u8 {
         let diagram = self.pages[self.page].look == super::look::DIAGRAM;
-        (arrow.routed, arrow.elbow) = (!diagram, diagram);
+        self.board.route.unwrap_or(if diagram { 2 } else { 0 })
     }
 
     /// Two boxes joined by a board's arrow, from one to the other, going
@@ -543,20 +551,43 @@ impl Studio {
                         // Worked out at the zoom it is seen at, as the arrow
                         // itself is drawn, so that its head is as large as it
                         // will be: past the page's corner, by the pan.
-                        let seen = super::scaled(&arrow, self.zoom);
+                        let mut seen = super::scaled(&arrow, self.zoom);
                         let shift = (self.doc.x * self.zoom + self.pan.0, self.doc.y * self.zoom + self.pan.1);
-                        for ink in seen.sketch_strokes() {
-                            let mut points: Vec<(f32, f32)> = ink.points.iter().map(|&(x, y)| (x + shift.0, y + shift.1)).collect();
-                            // A head filled, as it will be.
-                            if ink.filled && points.len() > 2 {
-                                points.push(points[0]);
-                                let ring: Vec<(f32, f32)> = points.clone();
-                                let (left, top) = ring.iter().fold((f32::MAX, f32::MAX), |(l, t), p| (l.min(p.0), t.min(p.1)));
-                                let (right, bottom) = ring.iter().fold((f32::MIN, f32::MIN), |(r, b), p| (r.max(p.0), b.max(p.1)));
-                                let bounds = Rect::new(left.floor() as i32 - 1, top.floor() as i32 - 1, (right - left).ceil() as i32 + 3, (bottom - top).ceil() as i32 + 3);
-                                canvas.mask(&shapes::fill_path(bounds, &ring), ACCENT, 256);
+                        // In the board's look, as it is drawn once let go:
+                        // clean and square in Clean and Diagram, rather than
+                        // by hand until it is let go.
+                        let page = &self.pages[self.page];
+                        look::dress(&mut seen, page.look, 0, self.zoom);
+                        if !seen.sketch {
+                            let filled = |end: usize| seen.heads[end] && seen.ends[end] == shapes::FILLED_HEAD;
+                            let strokes = seen.line_strokes();
+                            for (at, stroke) in strokes.iter().enumerate() {
+                                let points: Vec<(f32, f32)> = stroke.iter().map(|&(x, y)| (x + shift.0, y + shift.1)).collect();
+                                // A head filled, as it will be: the heads
+                                // follow the way, the end's own first.
+                                let head_of = if seen.heads[1] { [1, 0] } else { [0, 1] };
+                                if at > 0 && points.len() > 2 && filled(head_of[(at - 1).min(1)]) {
+                                    let (left, top) = points.iter().fold((f32::MAX, f32::MAX), |(l, t), p| (l.min(p.0), t.min(p.1)));
+                                    let (right, bottom) = points.iter().fold((f32::MIN, f32::MIN), |(r, b), p| (r.max(p.0), b.max(p.1)));
+                                    let bounds = Rect::new(left.floor() as i32 - 1, top.floor() as i32 - 1, (right - left).ceil() as i32 + 3, (bottom - top).ceil() as i32 + 3);
+                                    canvas.mask(&shapes::fill_path(bounds, &points), ACCENT, 256);
+                                }
+                                halo(canvas, &points, 1.1, ACCENT, 256);
                             }
-                            halo(canvas, &points, 1.1, ACCENT, 256);
+                        } else {
+                            for ink in seen.sketch_strokes() {
+                                let mut points: Vec<(f32, f32)> = ink.points.iter().map(|&(x, y)| (x + shift.0, y + shift.1)).collect();
+                                // A head filled, as it will be.
+                                if ink.filled && points.len() > 2 {
+                                    points.push(points[0]);
+                                    let ring: Vec<(f32, f32)> = points.clone();
+                                    let (left, top) = ring.iter().fold((f32::MAX, f32::MAX), |(l, t), p| (l.min(p.0), t.min(p.1)));
+                                    let (right, bottom) = ring.iter().fold((f32::MIN, f32::MIN), |(r, b), p| (r.max(p.0), b.max(p.1)));
+                                    let bounds = Rect::new(left.floor() as i32 - 1, top.floor() as i32 - 1, (right - left).ceil() as i32 + 3, (bottom - top).ceil() as i32 + 3);
+                                    canvas.mask(&shapes::fill_path(bounds, &ring), ACCENT, 256);
+                                }
+                                halo(canvas, &points, 1.1, ACCENT, 256);
+                            }
                         }
                     }
                     None => {
@@ -697,5 +728,50 @@ pub(in crate::studio) fn dashed_box(canvas: &mut Canvas, rect: Rect, color: u32)
         canvas.fill(rect.x, rect.y + along, 2, run, color);
         canvas.fill(rect.right() - 2, rect.y + along, 2, run, color);
         along += dash + gap;
+    }
+}
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use crate::studio::board::tests::*;
+
+    #[test]
+    fn an_arrow_pulled_out_in_diagram_or_clean_is_shown_clean_as_it_will_be_not_by_hand() {
+        // Pulled straight out to the right: the line shown along the row of
+        // the box's middle, as drawn once let go; by hand it wanders off it.
+        for (look, clean) in [(crate::studio::board::look::DIAGRAM, true), (2, true), (1, false)] {
+            let mut studio = board();
+            studio.set_look(Some(look), None);
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (100.0, 300.0), (260.0, 372.0), Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            studio.selected.clear();
+            let over = studio.to_window_page((180.0, 336.0));
+            studio.pointer_moved(over.0, over.1, Mods::default());
+            let right = studio.dot_spots(0)[1];
+            studio.pointer_moved(right.0, right.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for step in 1..=20 {
+                studio.pointer_moved(right.0 + step * 20, right.1, Mods::default());
+            }
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            // Each column's middle of the line, by how blue each row is.
+            let blue = |x: i32, y: i32| {
+                let pixel = out[(y * studio.width + x) as usize] & 0xFF_FFFF;
+                let (r, g, b) = ((pixel >> 16 & 0xFF) as f32, (pixel >> 8 & 0xFF) as f32, (pixel & 0xFF) as f32);
+                (b - (r + g) / 2.0).max(0.0)
+            };
+            let middles: Vec<f32> = (right.0 + 24..right.0 + 140).filter_map(|x| {
+                let (weight, sum) = (right.1 - 30..right.1 + 30).fold((0.0, 0.0), |(w, s), y| (w + blue(x, y), s + blue(x, y) * y as f32));
+                (weight > 50.0).then(|| sum / weight)
+            }).collect();
+            assert!(middles.len() > 60, "look {look}: the arrow shown");
+            let (low, high) = middles.iter().fold((f32::MAX, f32::MIN), |(l, h), &m| (l.min(m), h.max(m)));
+            assert_eq!(high - low < 0.6, clean, "look {look}: its middle from {low} to {high}");
+            studio.released();
+        }
     }
 }

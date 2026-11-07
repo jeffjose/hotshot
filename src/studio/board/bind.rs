@@ -88,7 +88,9 @@ impl Studio {
         };
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) else { return None };
         shape.stuck[end] = spot;
-        shape.routed = true;
+        // Tied, it goes from side to side; one set to go round corners
+        // keeps doing so, rather than being bowed.
+        shape.routed = !shape.elbow && !(shape.points.len() <= 2 && !shape.routed && self.board.route == Some(1));
         // A bend is the route's between two boxes, and goes with it; an
         // end aimed at a middle goes straight.
         let sided = |stuck: Option<(u32, f32, f32)>| stuck.is_some_and(|(_, u, v)| (u == shapes::WHOLE && v != shapes::AIMED) || shapes::port_of(u, v).is_some());
@@ -206,7 +208,7 @@ impl Studio {
             shape.points[other] = spot;
             ports.push((target, spot));
         }
-        shape.routed = true;
+        shape.routed = !shape.elbow && !(shape.points.len() <= 2 && !shape.routed && self.board.route == Some(1));
         shape.touch();
         self.follow();
         Some(target)

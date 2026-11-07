@@ -139,6 +139,9 @@ pub(super) struct Board {
     /// that box's name: taken out if the next thing done is another box.
     pub tool_letter: Option<(u32, char)>,
     pub dash: u8,
+    /// How the next arrow goes, as last chosen in the panel: curved (0),
+    /// straight (1) or round corners (2); none, as the look has it.
+    pub route: Option<u8>,
     /// What is in what is being moved, carried along with it, each with
     /// how it was when the move began.
     pub carried: Vec<(usize, Layer)>,
@@ -205,7 +208,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
     }
 }
 
@@ -547,7 +550,10 @@ impl Studio {
                     shape.shadow = Some(frame::Layer { x: 0, y: 3, blur: 8, spread: 0, color: 0x2E00_0000 });
                 }
             }
-            Tool::Arrow | Tool::Line => (shape.sketch, shape.routed) = (board.sketch, true),
+            Tool::Arrow | Tool::Line => {
+                shape.sketch = board.sketch;
+                self.board_route(shape);
+            }
             Tool::Text => shape.color = INK,
             // The pen smooth, a little thinner at either end.
             Tool::Pen => shape.sketch = board.sketch,

@@ -126,7 +126,7 @@ impl Studio {
         row(layout, &mut y, &[Ctl::Dash(0), Ctl::Dash(1), Ctl::Dash(2)], ROW);
         y += SPLIT;
         // An arrow picked out: its heads, and the way it goes.
-        let arrows = styled.iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow)));
+        let arrows = styled.iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow))) || (styled.is_empty() && matches!(self.tool, Tool::Line | Tool::Arrow));
         if arrows {
             for (end, says) in [(0u8, "Start"), (1, "End")] {
                 heading(layout, &mut y, says);
@@ -431,7 +431,7 @@ impl Studio {
                     Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow) => Some(shape.clone()),
                     _ => None,
                 });
-                let now = first.map(|shape| if shape.elbow { 2 } else if shape.routed || shape.points.len() > 2 { 0 } else { 1 });
+                let now = first.map(|shape| if shape.elbow { 2 } else if shape.routed || shape.points.len() > 2 { 0 } else { 1 }).or_else(|| self.bar_styled().is_empty().then(|| self.board_route_kind()));
                 choice(canvas, now == Some(kind));
                 let (a, b) = (((rect.x + 8) as f32, (rect.bottom() - 7) as f32), ((rect.right() - 8) as f32, (rect.y + 7) as f32));
                 let path: Vec<(f32, f32)> = match kind {
@@ -614,6 +614,8 @@ impl Studio {
                     }
                 });
                 self.follow();
+                // And the next arrows so, as the panel's other choices carry on.
+                self.board.route = Some(kind);
                 self.say(["Curved", "Straight", "Round a corner"][usize::from(kind)]);
             }
             // A line whole, dashed or dotted.
