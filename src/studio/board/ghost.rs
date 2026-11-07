@@ -149,7 +149,8 @@ impl Studio {
     }
 
     /// A board's arrow from one thing to another, by what each is called,
-    /// routed between where they are.
+    /// going the way the board's arrows go; laid out with the rest of what
+    /// is guessed.
     fn ghost_arrow(&self, from: u32, to: u32, frames: ((f32, f32, f32, f32), (f32, f32, f32, f32))) -> Layer {
         let (a, b) = frames;
         let mut arrow = Shape::new(Tool::Arrow, self.board.stroke, LINE, (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0));
@@ -159,8 +160,6 @@ impl Studio {
         }
         arrow.points[1] = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0);
         arrow.stuck = [Some((from, shapes::WHOLE, shapes::WHOLE)), Some((to, shapes::WHOLE, shapes::WHOLE))];
-        let anchor = |(x, y, w, h): (f32, f32, f32, f32), id: u32| shapes::Anchor { id, middle: (x + w / 2.0, y + h / 2.0), half: (w / 2.0, h / 2.0), angle: 0.0, round: false, pointed: false };
-        shapes::route(&mut arrow, &anchor(a, from), &anchor(b, to));
         Layer::shape(arrow)
     }
 
@@ -171,12 +170,37 @@ impl Studio {
         if !self.board.guessing || !self.on_board() {
             return;
         }
-        let ghost = match drawn {
+        let mut ghost = match drawn {
             true => self.guess_number().or_else(|| self.guess_shapes()),
             false => self.guess_loop().or_else(|| self.guess_mirror()),
         };
+        if let Some(ghost) = &mut ghost {
+            self.lay_out_ghost(ghost);
+        }
         self.board.ghost = ghost;
         self.dirty = true;
+    }
+
+    /// The arrows of what is guessed laid out as keeping it lays them out:
+    /// among those already on the board, as those that come into one side
+    /// are spread along it, to its boxes as well as the board's; so that
+    /// they are kept where they were shown.
+    fn lay_out_ghost(&mut self, ghost: &mut Ghost) {
+        let mut anchors = self.anchors();
+        for layer in &ghost.layers {
+            if let Some(anchor) = layer.kind.clone().anchor_of(&mut self.text) {
+                anchors.push(anchor);
+            }
+        }
+        let mut others: Vec<Shape> = self.doc.layers.iter().filter_map(|layer| match &layer.kind {
+            Kind::Shape(shape) if shape.sticks() && shape.stuck.iter().any(Option::is_some) => Some(shape.clone()),
+            _ => None,
+        }).collect();
+        let guessed = ghost.layers.iter_mut().filter_map(|layer| match &mut layer.kind {
+            Kind::Shape(shape) if shape.sticks() => Some(shape),
+            _ => None,
+        });
+        shapes::follow(others.iter_mut().chain(guessed), &anchors);
     }
 
     /// What comes next of what is drawn, besides a number: a tick, an

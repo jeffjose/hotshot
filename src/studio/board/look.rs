@@ -347,11 +347,18 @@ impl Studio {
         }
         let page = &self.pages[self.page];
         let (look, ground, font) = (page.look, page.ground, page.font);
-        keep_look(look, ground, font);
+        // Kept for a new board, and said, once chosen; not while only
+        // hovered, which puts it back as the pointer moves off.
+        let chosen = self.preview.is_none();
+        if chosen {
+            keep_look(look, ground, font);
+        }
         self.shown.clear();
         self.shown_page.clear();
         self.changed();
-        self.say(format!("Theme: {}, on {}", LOOKS[usize::from(look)], GROUNDS[usize::from(ground)].to_lowercase()));
+        if chosen {
+            self.say(format!("Theme: {}, on {}", LOOKS[usize::from(look)], GROUNDS[usize::from(ground)].to_lowercase()));
+        }
     }
 
     /// The font a board's words are in: what is picked out set in it, and

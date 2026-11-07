@@ -43,9 +43,27 @@ fn changed(before: &[(&'static str, String)], after: &[(&'static str, String)]) 
 }
 
 /// Every shape on the board, fingerprinted, in order.
+/// What an end is stuck to said by its layer rather than its name, which
+/// two boards made alike name apart.
 fn all(studio: &Studio) -> Vec<Vec<(&'static str, String)>> {
-    studio.doc.layers.iter().filter_map(|layer| match &layer.kind {
-        Kind::Shape(shape) => Some(fingerprint(shape)),
+    all_of(&studio.doc.layers)
+}
+
+/// The same, of some layers: a board's, or a page read back from a file.
+fn all_of(layers: &[Layer]) -> Vec<Vec<(&'static str, String)>> {
+    let index_of = |id: u32| layers.iter().position(|layer| match &layer.kind {
+        Kind::Shape(shape) => shape.id == id,
+        Kind::Picture(picture) => picture.id == id,
+    });
+    layers.iter().filter_map(|layer| match &layer.kind {
+        Kind::Shape(shape) => {
+            let mut print = fingerprint(shape);
+            let to = shape.stuck.map(|end| end.map(|(id, u, v)| (index_of(id), u, v)));
+            if let Some(stuck) = print.iter_mut().find(|(name, _)| *name == "stuck") {
+                stuck.1 = format!("{to:?}");
+            }
+            Some(print)
+        }
         _ => None,
     }).collect()
 }
@@ -223,11 +241,11 @@ fn each_thing_done_on_a_board_is_one_step_to_undo_and_kept_in_the_file() {
         }),
         ("lined up", |studio, _| {
             studio.selected = vec![0, 1];
-            drop(studio.act(Action::Align(3)));
+            let _ = studio.act(Action::Align(3));
         }),
         ("matched", |studio, _| {
             studio.selected = vec![0, 3];
-            drop(studio.act(Action::Match(2)));
+            let _ = studio.act(Action::Match(2));
         }),
         ("on dark paper", |studio, _| studio.set_look(None, Some(1))),
         ("deleted", |studio, _| {
@@ -245,15 +263,219 @@ fn each_thing_done_on_a_board_is_one_step_to_undo_and_kept_in_the_file() {
             assert!(after != before || (studio.pages[0].look, studio.pages[0].ground) != paper, "look {look}, {name}: something done");
             // Kept in the file as it is.
             let back = read_pages(&write_pages(&studio.gathered())).unwrap();
-            let kept: Vec<Vec<(&'static str, String)>> = back[0].loose.layers.iter().filter_map(|layer| match &layer.kind {
-                Kind::Shape(shape) => Some(fingerprint(shape)),
-                _ => None,
-            }).collect();
+            let kept = all_of(&back[0].loose.layers);
             assert_eq!(kept, after, "look {look}, {name}: the file keeps it");
             // One step back: as it was.
             studio.undo();
             assert_eq!(all(&studio), before, "look {look}, {name}: one step undoes it");
             assert_eq!((studio.pages[0].look, studio.pages[0].ground), paper, "look {look}, {name}: and the paper");
         }
+    }
+}
+
+/// A box put on a board as its box tool would draw it.
+fn put(studio: &mut Studio, (x, y, w, h): (f32, f32, f32, f32), words: &str) -> usize {
+    let mut shape = Shape::new(Tool::Rect, INK, LINE, (x, y));
+    studio.board_dress(&mut shape);
+    shape.points[1] = (x + w, y + h);
+    (shape.text, shape.base) = (words.into(), (w, h));
+    studio.doc.layers.push(Layer::shape(shape));
+    studio.changed();
+    studio.doc.layers.len() - 1
+}
+
+#[test]
+fn in_each_look_what_is_guessed_is_kept_where_it_was_shown_and_drawn_the_look_s_way() {
+    // A third box of a row, the next of a chain, and another child of a
+    // tree: what Tab keeps where the ghost showed it, its arrows on the way
+    // the ghost showed and going the way the look's arrows go.
+    type Setup = fn(&mut Studio);
+    let setups: [(&str, Setup); 3] = [
+        ("a row", |studio| {
+            put(studio, (100.0, 100.0, 140.0, 60.0), "Read");
+            put(studio, (300.0, 100.0, 140.0, 60.0), "Parse");
+        }),
+        ("a chain", |studio| {
+            let a = put(studio, (100.0, 100.0, 120.0, 60.0), "API");
+            let b = put(studio, (300.0, 100.0, 120.0, 60.0), "Queue");
+            let c = put(studio, (500.0, 100.0, 120.0, 60.0), "Worker");
+            studio.join(a, b);
+            studio.join(b, c);
+            put(studio, (500.0, 300.0, 120.0, 60.0), "Store");
+        }),
+        ("a tree", |studio| {
+            let parent = put(studio, (100.0, 200.0, 120.0, 60.0), "Root");
+            let one = put(studio, (320.0, 100.0, 120.0, 60.0), "One");
+            let two = put(studio, (320.0, 200.0, 120.0, 60.0), "Two");
+            studio.join(parent, one);
+            studio.join(parent, two);
+        }),
+    ];
+    for look in 0..=look::DIAGRAM {
+        for (name, setup) in setups {
+            let mut studio = board();
+            studio.set_look(Some(look), None);
+            setup(&mut studio);
+            studio.changed();
+            studio.guess(true);
+            let ghost = studio.board.ghost.clone().unwrap_or_else(|| panic!("look {look}, {name}: something guessed"));
+            let shown: Vec<Shape> = ghost.layers.iter().filter_map(|layer| match &layer.kind {
+                Kind::Shape(shape) => Some(shape.clone()),
+                _ => None,
+            }).collect();
+            let start = studio.doc.layers.len();
+            assert!(studio.keep_ghost(false), "look {look}, {name}: kept");
+            let kept: Vec<Shape> = studio.doc.layers[start..].iter().filter_map(|layer| match &layer.kind {
+                Kind::Shape(shape) => Some(shape.clone()),
+                _ => None,
+            }).collect();
+            assert_eq!(kept.len(), shown.len(), "look {look}, {name}: all of it kept");
+            let route = studio.board_route_kind();
+            for (ghost, kept) in shown.iter().zip(&kept) {
+                match kept.tool {
+                    Tool::Arrow | Tool::Line => {
+                        assert_eq!((kept.routed, kept.elbow), (route == 0, route == 2), "look {look}, {name}: its arrow the look's way");
+                        let near = |a: &[(f32, f32)], b: &[(f32, f32)]| a.len() == b.len() && a.iter().zip(b).all(|(p, q)| (p.0 - q.0).abs() < 2.0 && (p.1 - q.1).abs() < 2.0);
+                        assert!(near(&ghost.path(), &kept.path()), "look {look}, {name}: the arrow shown {:?} as kept {:?}", ghost.points, kept.points);
+                    }
+                    _ => assert_eq!(ghost.frame(), kept.frame(), "look {look}, {name}: where it was shown"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn in_each_look_a_box_let_go_on_an_arrow_does_what_it_said_it_would() {
+    // Dragged onto the arrow, then let go: "Between" puts it between the
+    // two the arrow joined; "Branch beside" joins it from where the arrow
+    // comes, the arrow kept.
+    for look in 0..=look::DIAGRAM {
+        for (name, down) in [("onto it", 13), ("beside it", 11)] {
+            let mut studio = board();
+            studio.set_look(Some(look), None);
+            let a = put(&mut studio, (100.0, 300.0, 160.0, 72.0), "A");
+            let b = put(&mut studio, (700.0, 300.0, 160.0, 72.0), "B");
+            let c = put(&mut studio, (400.0, 60.0, 120.0, 60.0), "C");
+            studio.join(a, b);
+            studio.selected.clear();
+            let (a, b, c) = (studio.id_of(a), studio.id_of(b), studio.id_of(c));
+            let start = studio.to_window_page((460.0, 90.0));
+            studio.pointer_moved(start.0, start.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for step in 1..=down {
+                studio.pointer_moved(start.0, start.1 + step * 20, Mods::default());
+            }
+            let said = studio.board.drop.unwrap_or_else(|| panic!("look {look}, {name}: something said"));
+            studio.released();
+            let joined: Vec<(u32, u32)> = studio.links().into_iter().map(|(_, from, to)| (from, to)).collect();
+            match said.split {
+                true => assert!(joined.contains(&(a, c)) && joined.contains(&(c, b)) && !joined.contains(&(a, b)), "look {look}, {name}: between, as said: {joined:?}"),
+                false => assert!(joined.contains(&(a, c)) && joined.contains(&(a, b)), "look {look}, {name}: a branch, as said: {joined:?}"),
+            }
+        }
+    }
+}
+
+/// All of the window as drawn, against all of it drawn from nothing: the
+/// same, to a shade, the paper's dots apart.
+fn as_if_drawn_afresh(studio: &mut Studio, what: &str) {
+    let mut kept = vec![0u32; (studio.width * studio.height) as usize];
+    studio.draw(&mut kept);
+    let mut fresh = vec![0u32; kept.len()];
+    (studio.shown.clear(), studio.shown_page.clear());
+    studio.draw(&mut fresh);
+    let (paper, dots) = studio.paper();
+    let ground = |c: u32| matches!(c & 0xFF_FFFF, c if c == paper || c == dots);
+    let far = |a: u32, b: u32| !(ground(a) && ground(b)) && [0, 8, 16].iter().any(|shift| ((a >> shift & 0xFF) as i32 - (b >> shift & 0xFF) as i32).abs() > 2);
+    let w = studio.width as usize;
+    let off: Vec<(usize, usize)> = kept.iter().zip(&fresh).enumerate().filter(|&(_, (&a, &b))| far(a, b)).map(|(at, _)| (at % w, at / w)).collect();
+    assert!(off.is_empty(), "{what}: {} pixels of the window as drawn differ from it drawn afresh, from {:?}", off.len(), &off[..off.len().min(4)]);
+}
+
+#[test]
+fn in_each_look_what_the_panel_changes_is_drawn_as_if_afresh() {
+    let controls = [Ctl::Color(4), Ctl::FillKind(3), Ctl::FillKind(0), Ctl::Dash(2), Ctl::Size(3), Ctl::Size(0), Ctl::Words(2), Ctl::Route(2), Ctl::Route(0), Ctl::Head(1, 3)];
+    for look in 0..=look::DIAGRAM {
+        let (mut studio, arrow) = furnished(look);
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        for ctl in controls {
+            for picked in [vec![0], vec![arrow], vec![0, 1, arrow]] {
+                studio.selected = picked.clone();
+                studio.press_style(ctl);
+                studio.board.stepping = None;
+                as_if_drawn_afresh(&mut studio, &format!("look {look}, {ctl:?} on {picked:?}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_look_or_paper_hovered_shows_what_choosing_it_would_and_moving_off_puts_back_all_as_it_was() {
+    use crate::studio::menu::Item;
+    for look in 0..=look::DIAGRAM {
+        for (list, kind, rows) in [("Theme", MenuKind::Looks, 4usize), ("Paper", MenuKind::Grounds, 3)] {
+            for row in 0..rows {
+                let (mut studio, _) = furnished(look);
+                let mut before = vec![0u32; (studio.width * studio.height) as usize];
+                studio.draw(&mut before);
+                let shapes_before = all(&studio);
+                // Hovered in the logo's menu.
+                let logo = studio.control_rect(Control::Home).unwrap();
+                click(&mut studio, logo.center());
+                let at = studio.menu_items(MenuKind::Main).iter().position(|item| matches!(item, Item::Entry { says, .. } if says == list)).unwrap();
+                let rect = studio.control_rect(Control::MenuRow(0, at as u16)).unwrap();
+                studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+                let entries: Vec<usize> = studio.menu_items(kind).iter().enumerate().filter(|(_, item)| matches!(item, Item::Entry { .. })).map(|(at, _)| at).collect();
+                let rect = studio.control_rect(Control::MenuRow(1, entries[row] as u16)).unwrap();
+                studio.pointer_moved(rect.center().0, rect.center().1, Mods::default());
+                let hovered = (studio.pages[0].look, studio.pages[0].ground, all(&studio));
+                // Moved off and let go: all as it was, drawn the same.
+                press_key(&mut studio, Key::Escape, Mods::default());
+                press_key(&mut studio, Key::Escape, Mods::default());
+                assert_eq!((studio.pages[0].look, studio.pages[0].ground), (look, 0), "look {look}, {list} row {row}: put back");
+                assert_eq!(all(&studio), shapes_before, "look {look}, {list} row {row}: the shapes put back");
+                let mut after = vec![0u32; before.len()];
+                studio.draw(&mut after);
+                let w = studio.width as usize;
+                let spots: Vec<(usize, usize)> = before.iter().zip(&after).enumerate().filter(|(_, (a, b))| a != b).map(|(at, _)| (at % w, at / w)).collect();
+                let off = spots.len();
+                let bound = spots.iter().fold((usize::MAX, usize::MAX, 0, 0), |(l, t, r, b), &(x, y)| (l.min(x), t.min(y), r.max(x), b.max(y)));
+                assert!(off == 0, "look {look}, {list} row {row}: {off} pixels not put back, within {bound:?}; says {:?}", studio.note.as_ref().map(|(says, _)| says.clone()));
+                // Chosen: as it was shown hovered.
+                match kind {
+                    MenuKind::Looks => studio.set_look(Some(row as u8), None),
+                    _ => studio.set_look(None, Some(row as u8)),
+                }
+                assert_eq!((studio.pages[0].look, studio.pages[0].ground, all(&studio)), hovered, "look {look}, {list} row {row}: chosen as shown");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_key_does_what_the_panel_or_the_menu_does_for_it() {
+    for look in 0..=look::DIAGRAM {
+        // C then a number: the color of that swatch, as the panel's.
+        for (key, swatch) in [('1', 0u8), ('3', 2), ('7', 6)] {
+            let (mut by_key, _) = furnished(look);
+            let (mut by_panel, _) = furnished(look);
+            by_key.selected = vec![0];
+            by_panel.selected = vec![0];
+            press_key(&mut by_key, Key::Char('c'), Mods::default());
+            press_key(&mut by_key, Key::Char(key), Mods::default());
+            by_panel.press_style(Ctl::Color(swatch));
+            let differ: Vec<(usize, Vec<&str>)> = all(&by_key).iter().zip(all(&by_panel).iter()).enumerate().map(|(at, (a, b))| (at, changed(a, b))).filter(|(_, d)| !d.is_empty()).collect();
+            assert!(differ.is_empty(), "look {look}: C {key} as the panel's swatch {swatch}: {differ:?} {:?} {:?}", all(&by_key)[0][..3].to_vec(), all(&by_panel)[0][..3].to_vec());
+        }
+        // Ctrl+Shift+C: what the menu's Copy as PNG copies, of one board.
+        let (mut studio, _) = furnished(look);
+        studio.selected = vec![0];
+        press_key(&mut studio, Key::Char('C'), Mods { ctrl: true, shift: true, ..Mods::default() });
+        let by_key = studio.copied_picture.take();
+        studio.run_menu(crate::studio::menu::MenuAct::Board(Act::CopyAs(0)));
+        assert!(by_key.is_some() && by_key == studio.copied_picture, "look {look}: the same picture copied");
     }
 }
