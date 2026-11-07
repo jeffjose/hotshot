@@ -2222,6 +2222,8 @@ struct Layout {
     menus: Vec<(Rect, MenuKind)>,
     /// A board's bar of styles, by what is picked out.
     board_bar: Option<Rect>,
+    /// The bar over two or more picked out on a board, to line them up.
+    arrange_bar: Option<Rect>,
 }
 
 /// The whole file as it was, to come back to with undo: its pages, the
@@ -3033,6 +3035,7 @@ impl Studio {
         self.layout_search(&mut layout);
         if self.on_board() {
             self.layout_style_bar(&mut layout);
+            self.layout_arrange(&mut layout);
             self.layout_history(&mut layout);
             self.layout_keys(&mut layout);
         }
@@ -6687,7 +6690,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.arrange_bar].into_iter().flatten() {
             soft_shadow(canvas, place, 12);
             canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);
@@ -7314,7 +7317,12 @@ impl Studio {
             let wide = self.text.width(&says, px) + 16;
             // Kept inside the window at either edge.
             let x = (self.pointer.0 - wide / 2).min(self.width - wide - 4).max(4);
-            let y = layout.dock.y - line_high - 18;
+            // Over the bar of tools, above it; anything else, just under the
+            // pointer, by what it says.
+            let y = match self.pointer.1 < layout.dock.y - 60 {
+                true => (self.pointer.1 + 22).min(self.height - line_high - 12),
+                false => layout.dock.y - line_high - 18,
+            };
             canvas.round_fill(x, y, wide, line_high + 8, 6, 0x000000, 220);
             self.text.draw(canvas, x + 8, y + 4, px, TEXT_COLOR, &says);
         }

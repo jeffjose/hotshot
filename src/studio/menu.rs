@@ -24,6 +24,10 @@ pub(super) enum MenuKind {
     /// What is picked out on a board, or all of it, copied or written as
     /// each kind of picture, from the right click.
     CopyAs,
+    /// Two or more picked out on a board lined up and spaced, or made one
+    /// width, height or size.
+    Lineup,
+    Matching,
     ExportAs,
     /// Over and under the rest.
     Order,
@@ -423,6 +427,23 @@ impl Studio {
                     }
                 }
             }
+            MenuKind::Lineup => {
+                let arrange = &super::board::bar::ARRANGE;
+                let mut items: Vec<Item> = arrange[..3].iter().map(|&(action, says)| Item::entry(says, "", MenuAct::Act(action))).collect();
+                items.push(Item::Rule);
+                items.extend(arrange[3..6].iter().map(|&(action, says)| Item::entry(says, "", MenuAct::Act(action))));
+                items.push(Item::Rule);
+                items.extend(arrange[6..8].iter().map(|&(action, says)| Item::entry(says, "", MenuAct::Act(action))));
+                items.push(Item::entry("Pack across", "", MenuAct::Act(Action::Pack(0))));
+                items.push(Item::entry("Pack down", "", MenuAct::Act(Action::Pack(1))));
+                items
+            }
+            MenuKind::Matching => vec![
+                Item::Heading("TO THE FIRST PICKED"),
+                Item::entry("Match width", "", MenuAct::Act(Action::Match(0))),
+                Item::entry("Match height", "", MenuAct::Act(Action::Match(1))),
+                Item::entry("Match size", "", MenuAct::Act(Action::Match(2))),
+            ],
             MenuKind::Context if self.on_board() => {
                 use super::board::Act;
                 let chosen = !self.chosen().is_empty();
@@ -439,6 +460,12 @@ impl Studio {
                         items.push(Item::sub("Copy as", MenuKind::CopyAs));
                         items.push(Item::sub("Export as", MenuKind::ExportAs));
                         items.push(Item::Rule);
+                        // Two or more: lined up, spaced, one size.
+                        if self.chosen().len() > 1 {
+                            items.push(Item::sub("Align", MenuKind::Lineup));
+                            items.push(Item::sub("Match size", MenuKind::Matching));
+                            items.push(Item::Rule);
+                        }
                         items.push(Item::sub("Order", MenuKind::Order));
                         items.push(Item::entry("Gather into a group", "G", MenuAct::Board(Act::Group)));
                         if self.board.svg.as_ref().is_some_and(|svg| self.chosen().iter().all(|&index| svg.ids.contains(&self.id_of(index)))) {

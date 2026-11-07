@@ -73,6 +73,9 @@ pub(super) const LASER_TOOL: u8 = 11;
 /// What on a board is clicked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Ctl {
+    /// A button of the bar over two or more picked out: lined up six ways,
+    /// spaced evenly across or down, made the same size; by `bar::ARRANGE`.
+    Arrange(u8),
     /// A tool of the board's bar.
     Tool(u8),
     /// The style panel: a color by name, which colors a line and its fill;
@@ -212,7 +215,7 @@ impl Board {
     }
 }
 
-mod bar;
+pub(super) mod bar;
 mod bind;
 mod caret;
 mod dots;
@@ -499,6 +502,7 @@ impl Studio {
             Ctl::Branch => self.branch_here(),
             Ctl::Now => self.history_now(),
             Ctl::Sheet | Ctl::Scrim => self.press_zoom(ctl),
+            Ctl::Arrange(at) => return self.act(bar::ARRANGE[usize::from(at).min(bar::ARRANGE.len() - 1)].0),
             other => self.press_style(other),
         }
         Outcome::Continue
@@ -598,6 +602,7 @@ impl Studio {
     pub(super) fn draw_board_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
         let (cx, cy) = rect.center();
         match ctl {
+            Ctl::Arrange(at) => self.draw_arrange(canvas, rect, at, hovered),
             Ctl::Tool(which) => {
                 let on = self.board_tool() == which;
                 if on {

@@ -43,6 +43,25 @@ const SPLIT: i32 = 12;
 /// How wide − and + are.
 const STEP: i32 = 28;
 
+/// What each button of the bar over two or more picked out does, in its
+/// order: lined up left, centers, right, top, middles, bottom; spaced
+/// evenly across and down; made the size of the first picked.
+pub(in crate::studio) const ARRANGE: [(Action, &str); 9] = [
+    (Action::Align(0), "Align left"),
+    (Action::Align(1), "Align centers"),
+    (Action::Align(2), "Align right"),
+    (Action::Align(3), "Align top"),
+    (Action::Align(4), "Align middles"),
+    (Action::Align(5), "Align bottom"),
+    (Action::Distribute(0), "Space evenly across"),
+    (Action::Distribute(1), "Space evenly down"),
+    (Action::Match(2), "Match size"),
+];
+
+/// Where the bar's buttons are parted: after the three across, the three
+/// down, and the spacing.
+const ARRANGE_GROUPS: [usize; 3] = [3, 6, 8];
+
 /// Which of S M L XL a line so wide with words so large is, at whatever
 /// zoom it was drawn at: the one whose line is to its words as these are,
 /// within a few in a hundred; none for another.
@@ -167,6 +186,65 @@ impl Studio {
         let panel = Rect::new(x, top, PANEL_W, y - top);
         layout.controls.push((panel, Control::Panel));
         layout.board_bar = Some(panel);
+    }
+
+    /// The bar over two or more picked out on a board, as Figma's over a
+    /// selection: lined up, spaced, made one size. Above them, or below
+    /// where there is no room above; not while they are moved, typed into,
+    /// or a list is open.
+    pub(in crate::studio) fn layout_arrange(&mut self, layout: &mut Layout) {
+        const SIDE: i32 = 28;
+        const PAD: i32 = 4;
+        const PART: i32 = 9;
+        if self.zen || self.presenting() || self.drag != Drag::None || self.menu.is_some() || self.editing.is_some() || self.board.history.is_some() {
+            return;
+        }
+        let chosen = self.chosen();
+        if chosen.len() < 2 {
+            return;
+        }
+        let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
+        let Some((x, y, w, h)) = crate::studio::actions::union(&boxes) else { return };
+        let (top_left, bottom_right) = (self.to_window_page((x, y)), self.to_window_page((x + w, y + h)));
+        let wide = ARRANGE.len() as i32 * (SIDE + 2) - 2 + ARRANGE_GROUPS.len() as i32 * (PART - 2) + 2 * PAD;
+        let high = SIDE + 2 * PAD;
+        let open = self.open_area();
+        let middle = (top_left.0 + bottom_right.0) / 2;
+        let left = (middle - wide / 2).clamp(open.x + 8, (open.right() - wide - 8).max(open.x + 8));
+        let above = top_left.1 - 14 - high;
+        let top = if above >= open.y + 56 { above } else { (bottom_right.1 + 14).min(open.bottom() - high - 80) };
+        let place = Rect::new(left, top, wide, high);
+        let mut at = place.x + PAD;
+        for (index, _) in ARRANGE.iter().enumerate() {
+            if ARRANGE_GROUPS.contains(&index) {
+                at += PART - 2;
+            }
+            layout.controls.push((Rect::new(at, place.y + PAD, SIDE, SIDE), Control::Board(Ctl::Arrange(index as u8))));
+            at += SIDE + 2;
+        }
+        layout.controls.push((place, Control::Panel));
+        layout.arrange_bar = Some(place);
+    }
+
+    /// A button of that bar drawn: its icon, the one for the same size two
+    /// boxes alike; a rule before each part of it but the first.
+    pub(in crate::studio) fn draw_arrange(&mut self, canvas: &mut Canvas, rect: Rect, at: u8, hovered: bool) {
+        let (cx, cy) = rect.center();
+        if ARRANGE_GROUPS.contains(&usize::from(at)) {
+            canvas.fill(rect.x - 5, rect.y + 6, 1, rect.h - 12, HOVER_COLOR);
+        }
+        if hovered {
+            canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 6, HOVER_COLOR, 256);
+        }
+        let (action, _) = ARRANGE[usize::from(at).min(ARRANGE.len() - 1)];
+        match action.icon() {
+            Some(icon) => self.text.draw_centered(canvas, cx, cy, 14, TEXT_COLOR, icon),
+            // Two boxes the same size.
+            None => {
+                canvas.round_outline(cx - 9, cy - 4, 8, 8, 2, 1, TEXT_COLOR);
+                canvas.round_outline(cx + 1, cy - 4, 8, 8, 2, 1, TEXT_COLOR);
+            }
+        }
     }
 
     /// What the panel shows as set: of the first shape picked out, or of

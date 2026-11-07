@@ -541,6 +541,56 @@ pub(in crate::studio) mod tests {
     }
 
     #[test]
+    fn two_or_more_picked_out_have_a_bar_over_them_to_line_up_and_a_right_click_to_match_size() {
+        let mut studio = board();
+        for (from, to) in [((100.0, 300.0), (260.0, 372.0)), ((400.0, 330.0), (520.0, 420.0)), ((700.0, 280.0), (900.0, 340.0))] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, to, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+        }
+        let arrow = studio.join(0, 1);
+        // One picked out: no bar.
+        studio.selected = vec![0];
+        assert!(studio.layout().arrange_bar.is_none());
+        // Three: a bar over them.
+        studio.selected = vec![0, 1, 2];
+        let bar = studio.layout().arrange_bar.expect("a bar over them");
+        let top = studio.to_window_page((0.0, 280.0)).1;
+        assert!(bar.bottom() <= top, "above them: {bar:?}");
+        // Align top: all at the top of the highest, the arrow still joining.
+        let button = studio.control_rect(Control::Board(Ctl::Arrange(3))).unwrap();
+        assert_eq!(studio.board_tip(Ctl::Arrange(3)).as_deref(), Some("Align top"));
+        // What it says shown under it, not down by the bar of tools.
+        studio.pointer_moved(button.center().0, button.center().1, Mods::default());
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let under = out[((button.center().1 + 30) * studio.width + button.center().0) as usize] & 0xFF_FFFF;
+        assert!(under & 0xFF < 0x40, "a dark tip under the button: {under:06X}");
+        click(&mut studio, button.center());
+        let tops: Vec<f32> = (0..3).map(|at| shape(&studio, at).frame().1).collect();
+        assert!(tops.iter().all(|&y| (y - tops[0]).abs() < 0.6), "{tops:?}");
+        assert!(shape(&studio, arrow).stuck.iter().all(Option::is_some));
+        // The right click: Align and Match size, which makes each the size
+        // of the first.
+        let says: Vec<String> = studio.menu_items(MenuKind::Context).into_iter().filter_map(|item| match item {
+            menu::Item::Entry { says, .. } => Some(says.to_string()),
+            _ => None,
+        }).collect();
+        assert!(says.contains(&"Align".to_owned()) && says.contains(&"Match size".to_owned()), "{says:?}");
+        studio.selected = vec![0, 1, 2];
+        studio.run_menu(menu::MenuAct::Act(Action::Match(2)));
+        let first = shape(&studio, 0).frame();
+        for at in 1..3 {
+            let other = shape(&studio, at).frame();
+            assert!((other.2 - first.2).abs() < 0.6 && (other.3 - first.3).abs() < 0.6, "{other:?} the size of {first:?}");
+        }
+        // Not with one.
+        studio.selected = vec![0];
+        assert!(!studio.menu_items(MenuKind::Context).iter().any(|item| matches!(item, menu::Item::Entry { says, .. } if says == "Match size")));
+    }
+
+    #[test]
     fn diagram_colors_are_figjam_s() {
         assert_eq!(figjam(0x1971C2), 0x3662E3);
         assert_eq!(figjam(0xD0EBFF), 0xC2E5FF, "light blue, not near white");
@@ -986,6 +1036,30 @@ pub(in crate::studio) mod tests {
             let crop: Vec<u32> = (y..y + h).flat_map(|row| out[(row * studio.width + x) as usize..(row * studio.width + x + w) as usize].to_vec()).collect();
             std::fs::write(to.join(format!("palette-{look}.png")), crate::output::encode(w as u32, h as u32, &crop, false).unwrap()).unwrap();
         }
+    }
+
+    /// The bar over three boxes picked out:
+    ///
+    ///     HOTSHOT_SNAPSHOTS=shots cargo test arrange_snapshot -- --ignored
+    #[test]
+    #[ignore]
+    fn arrange_snapshot() {
+        let Some(to) = std::env::var_os("HOTSHOT_SNAPSHOTS") else { return };
+        let to = std::path::PathBuf::from(to);
+        std::fs::create_dir_all(&to).unwrap();
+        let mut studio = board();
+        for (from, till) in [((300.0, 300.0), (460.0, 372.0)), ((560.0, 330.0), (680.0, 420.0)), ((780.0, 280.0), (980.0, 340.0))] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, till, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+        }
+        studio.selected = vec![0, 1, 2];
+        let button = studio.control_rect(Control::Board(Ctl::Arrange(8))).unwrap();
+        studio.pointer_moved(button.center().0, button.center().1, Mods::default());
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        std::fs::write(to.join("arrange.png"), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
     }
 
     /// A board's right click, with nothing and with a box picked out:

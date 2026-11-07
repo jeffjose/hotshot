@@ -40,7 +40,12 @@ impl Studio {
         if chosen.is_empty() {
             return;
         }
-        let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| self.doc.layers[index].bounds(&mut self.text)).collect();
+        // A board's box by its frame, as its size is said and set, rather
+        // than by all its drawing takes, its line and its hand.
+        let boxes: Vec<(f32, f32, f32, f32)> = chosen.iter().map(|&index| match self.on_board() && self.is_box(index) {
+            true => self.box_frame(index),
+            false => self.doc.layers[index].bounds(&mut self.text),
+        }).collect();
         match action {
             Action::Pack(way) => {
                 let moves = packed(&boxes, way == 0);
