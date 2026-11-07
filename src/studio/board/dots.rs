@@ -482,13 +482,9 @@ impl Studio {
             return self.doc.layers.len() - 1;
         };
         let mut shape = source.copied();
-        let (_, _, w, h) = source.frame();
-        let (w, h) = match source.base {
-            (bw, bh) if bw > 0.0 && bh > 0.0 && !source.titled => (bw, bh),
-            _ if source.titled => BOX,
-            _ => (w, h),
-        };
+        let (w, h) = self.like_size(like);
         (shape.text, shape.titled, shape.status, shape.votes, shape.editing, shape.angle) = (String::new(), false, 0, 0, false, 0.0);
+        shape.link.clear();
         shape.points = vec![(center.0 - w / 2.0, center.1 - h / 2.0), (center.0 + w / 2.0, center.1 + h / 2.0)];
         shape.base = (w, h);
         if shape.filled {
@@ -546,6 +542,8 @@ impl Studio {
     /// and the arrow being pulled out of one, with the box it would make.
     pub(in crate::studio) fn draw_board(&mut self, canvas: &mut Canvas, view: Rect) {
         self.draw_focus(canvas, view);
+        self.draw_found(canvas);
+        self.draw_badges(canvas);
         if self.presenting() {
             self.draw_present(canvas, view);
             self.draw_laser(canvas);
@@ -623,6 +621,7 @@ impl Studio {
             self.draw_bind(canvas);
         }
         self.draw_ghost(canvas);
+        self.draw_flow_ghosts(canvas);
         self.draw_pick(canvas);
         self.draw_drop(canvas);
         self.draw_laser(canvas);

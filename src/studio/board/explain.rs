@@ -275,6 +275,11 @@ impl Studio {
     pub(in crate::studio) fn board_tick(&mut self) {
         let now = Instant::now();
         self.step_held(now);
+        self.glide_tick();
+        // Ctrl held long enough: where the next box would go, shown.
+        if self.board.ctrl.is_some() && self.ctrl_wait().is_none() && self.flow_ghosts().is_some() {
+            self.dirty = true;
+        }
         if let Some(laser) = &self.board.laser {
             if laser.let_go.is_some_and(|when| now.duration_since(when) >= REPEAT) {
                 let tapped = !laser.drawn && laser.let_go.is_some_and(|when| when.duration_since(laser.since) < Duration::from_millis(350));
@@ -299,7 +304,7 @@ impl Studio {
     /// trail fades or L is waited on, or − or + is held.
     pub fn board_wait(&self) -> Option<Duration> {
         let fading = (self.board.laser.is_some() || !self.board.trail.is_empty() || self.board.glow.is_some()).then_some(Duration::from_millis(16));
-        fading.into_iter().chain(self.step_wait()).min()
+        fading.into_iter().chain(self.step_wait()).chain(self.glide_wait()).chain(self.ctrl_wait()).min()
     }
 
     /// The pointer moved with L held, or with the laser's button down: its

@@ -34,6 +34,7 @@ fn fingerprint(shape: &Shape) -> Vec<(&'static str, String)> {
         ("stuck", format!("{:?}", shape.stuck.map(|end| end.map(|(id, ..)| id)))),
         ("frame", format!("{} {} {} {}", round(x), round(y), round(w), round(h))),
         ("points", format!("{:?}", shape.points.iter().map(|&(x, y)| (round(x), round(y))).collect::<Vec<_>>())),
+        ("link", shape.link.clone()),
     ]
 }
 
@@ -248,6 +249,23 @@ fn each_thing_done_on_a_board_is_one_step_to_undo_and_kept_in_the_file() {
             let _ = studio.act(Action::Match(2));
         }),
         ("on dark paper", |studio, _| studio.set_look(None, Some(1))),
+        ("linked to the web", |studio, _| {
+            studio.selected = vec![0];
+            studio.board_act(Act::Link);
+            type_in(studio, "example.com/a,b%20c");
+            press_key(studio, Key::Enter, Mods::default());
+        }),
+        ("linked to another box", |studio, _| {
+            studio.selected = vec![0];
+            studio.board_act(Act::LinkTo);
+            tap(studio, (780.0, 286.0));
+        }),
+        ("the next box by the keys", |studio, _| {
+            studio.selected = vec![0];
+            press_key(studio, Key::Right, Mods { ctrl: true, ..Mods::default() });
+            type_in(studio, "Next");
+            press_key(studio, Key::Escape, Mods::default());
+        }),
         ("deleted", |studio, _| {
             studio.selected = vec![1];
             press_key(studio, Key::Delete, Mods::default());
@@ -532,6 +550,65 @@ fn in_each_look_each_export_choice_changes_the_picture_as_it_says_and_nothing_on
 }
 
 #[test]
+fn in_each_look_ctrl_and_an_arrow_makes_the_next_box_where_it_showed_joined_the_look_s_way() {
+    // From a box picked out, and from one typed into, each way: a box like
+    // it where Ctrl held showed it, clear of the rest, joined from it by
+    // an arrow going the way the look's arrows go; one step to undo, and
+    // kept in the file.
+    let ways = [Key::Up, Key::Right, Key::Down, Key::Left];
+    for look in 0..=look::DIAGRAM {
+        for (way, key) in ways.into_iter().enumerate() {
+            for typing in [false, true] {
+                let (mut studio, _) = furnished(look);
+                studio.selected = vec![0];
+                if typing {
+                    press_key(&mut studio, Key::Enter, Mods::default());
+                    assert_eq!(studio.editing, Some(0));
+                }
+                let what = format!("look {look}, {key:?}, typing {typing}");
+                let before = all(&studio);
+                studio.ctrl_held(true);
+                studio.board.ctrl = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+                let shown = studio.flow_ghosts().unwrap_or_else(|| panic!("{what}: shown"))[way];
+                let count = studio.doc.layers.len();
+                press_key(&mut studio, key, Mods { ctrl: true, ..Mods::default() });
+                assert_eq!(studio.doc.layers.len(), count + 2, "{what}: a box and an arrow");
+                let made = studio.picked().unwrap();
+                assert_eq!(studio.editing, Some(made), "{what}: typed into");
+                assert_eq!(studio.box_frame(made), shown, "{what}: where it showed");
+                // Like the box it is from, but for its words and where it is.
+                let (from, new) = (fingerprint(&shape(&studio, 0)), fingerprint(&shape(&studio, made)));
+                let differ = changed(&from, &new);
+                assert!(differ.iter().all(|name| ["text", "frame", "points"].contains(name)), "{what}: also differs in {differ:?}");
+                // Clear of every other box.
+                let (x, y, w, h) = studio.box_frame(made);
+                for other in (0..studio.doc.layers.len()).filter(|&index| index != made && studio.is_node(index)) {
+                    let o = studio.box_frame(other);
+                    assert!(o.0 >= x + w || o.0 + o.2 <= x || o.1 >= y + h || o.1 + o.3 <= y, "{what}: over layer {other}");
+                }
+                // Joined from it, the look's way.
+                let arrow = studio.doc.layers.iter().rev().find_map(|layer| match &layer.kind {
+                    Kind::Shape(shape) if shape.sticks() => Some(shape.clone()),
+                    _ => None,
+                }).unwrap();
+                let ends = arrow.stuck.map(|end| end.map(|(id, ..)| id));
+                assert_eq!(ends, [Some(studio.id_of(0)), Some(studio.id_of(made))], "{what}: joined");
+                let route = studio.board_route_kind();
+                assert_eq!((arrow.routed, arrow.elbow), (route == 0, route == 2), "{what}: the look's way");
+                type_in(&mut studio, "Next");
+                press_key(&mut studio, Key::Escape, Mods::default());
+                let after = all(&studio);
+                let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+                assert_eq!(all_of(&back[0].loose.layers), after, "{what}: the file keeps it");
+                // One step, its words with it, as in any box made.
+                studio.undo();
+                assert_eq!(all(&studio), before, "{what}: one step undoes it");
+            }
+        }
+    }
+}
+
+#[test]
 fn in_each_look_a_board_copied_as_a_png_pastes_back_as_the_same_shapes_in_one_step() {
     for look in 0..=look::DIAGRAM {
         let (mut studio, _) = furnished(look);
@@ -560,5 +637,61 @@ fn in_each_look_a_board_copied_as_a_png_pastes_back_as_the_same_shapes_in_one_st
         assert_eq!(studio.selected, (count..count * 2).collect::<Vec<_>>(), "look {look}: picked out");
         studio.undo();
         assert_eq!(all(&studio), was, "look {look}: undone, as it was");
+    }
+}
+
+#[test]
+fn in_each_look_a_link_wears_its_badge_is_kept_in_the_file_and_goes_where_it_says() {
+    for look in 0..=look::DIAGRAM {
+        let (mut studio, _) = furnished(look);
+        studio.selected = vec![0];
+        studio.board_act(Act::LinkTo);
+        tap(&mut studio, (780.0, 286.0));
+        let linked = format!("#{}", studio.id_of(1));
+        assert_eq!(shape(&studio, 0).link, linked, "look {look}");
+        // Its badge, drawn and pressed where it is.
+        studio.selected.clear();
+        let badge = studio.control_rect(Control::Board(Ctl::LinkBadge(studio.id_of(0)))).unwrap_or_else(|| panic!("look {look}: a badge"));
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let (cx, cy) = badge.center();
+        let pixel = out[((cy + 6) * studio.width + cx) as usize];
+        assert!((pixel >> 8 & 0xFF) > (pixel >> 16 & 0xFF) + 40, "look {look}: green, {pixel:06X}");
+        // Kept in the file, and through it the same.
+        let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        assert_eq!(all_of(&back[0].loose.layers), all(&studio), "look {look}: the file keeps it");
+        // Its badge pressed, the other box picked out, in view.
+        studio.pan = (-3000.0, -3000.0);
+        studio.pointer_moved(cx, cy, Mods::default());
+        let badge = studio.control_rect(Control::Board(Ctl::LinkBadge(studio.id_of(0))));
+        assert!(badge.is_none(), "look {look}: out of view, no badge");
+        studio.pan = (0.0, 0.0);
+        click(&mut studio, (cx, cy));
+        assert_eq!(studio.selected, vec![1], "look {look}");
+    }
+}
+
+#[test]
+fn in_each_look_what_is_found_is_marked_on_its_own_words() {
+    // Words in a box and an arrow found in each look, each mark on the
+    // letters it marks, within its shape's own words.
+    for look in 0..=look::DIAGRAM {
+        let (mut studio, arrow) = furnished(look);
+        if let Kind::Shape(shape) = &mut studio.doc.layers[arrow].kind {
+            shape.text = "via auth".into();
+            shape.touch();
+        }
+        studio.changed();
+        press_key(&mut studio, Key::Char('f'), Mods { ctrl: true, ..Mods::default() });
+        type_in(&mut studio, "AUTH");
+        let found = studio.find_all();
+        assert_eq!(found.len(), 2, "look {look}: the box and the arrow");
+        for found in found {
+            let pieces = studio.found_pieces(found);
+            assert_eq!(pieces.len(), 1, "look {look}");
+            let (x, y, w, h) = pieces[0];
+            let words = studio.doc.layers[found.index].bounds(&mut studio.text);
+            assert!(w > 10.0 && h > 8.0 && x >= words.0 - 1.0 && y >= words.1 - 1.0 && x + w <= words.0 + words.2 + 1.0, "look {look}: {pieces:?} in {words:?}");
+        }
     }
 }

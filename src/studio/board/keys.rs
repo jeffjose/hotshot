@@ -28,8 +28,10 @@ const EDITING: [(&str, &str); 18] = [
     ("A vote on a note, one fewer", "D, Shift D"),
 ];
 
-const ARROWS: [(&str, &str); 8] = [
+const ARROWS: [(&str, &str); 10] = [
     ("Pull an arrow out of a box", "Drag a side's dot"),
+    ("The next box that way, joined", "Ctrl Arrows"),
+    ("The box joined that way", "Alt Arrows"),
     ("A box joined after it", "Tab"),
     ("Back to the box before", "Shift Tab"),
     ("The next box of a map", "Enter, typing"),
@@ -39,13 +41,15 @@ const ARROWS: [(&str, &str); 8] = [
     ("Copy with what is in it", "Alt drag"),
 ];
 
-const VIEW: [(&str, &str); 14] = [
+const VIEW: [(&str, &str); 16] = [
     ("Move the board", "Space drag"),
     ("Zoom about the pointer", "Ctrl wheel"),
     ("Zoom in, out", "Ctrl +, Ctrl \u{2212}"),
     ("Zoom to fit", "Ctrl 0"),
     ("Zoom to 100%", "Ctrl 1"),
     ("Zoom to what is picked out", "Shift 2"),
+    ("Find words on the board", "Ctrl F"),
+    ("Follow a shape's link", "Ctrl click"),
     ("Search everything", "Ctrl K"),
     ("Export, as last chosen", "Ctrl E"),
     ("Export options", "Ctrl Shift E"),
@@ -245,5 +249,16 @@ mod tests {
         studio.board.typed = Some(0);
         press_key(&mut studio, Key::Char('f'), Mods::default());
         assert!(studio.board.focus.is_some());
+        // Ctrl and an arrow, the next box that way; Alt and the other, back.
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected = vec![0];
+        let links = studio.links().len();
+        press_key(&mut studio, Key::Down, ctrl);
+        assert_eq!((studio.links().len(), studio.editing.is_some()), (links + 1, true));
+        press_key(&mut studio, Key::Up, Mods { alt: true, ..Mods::default() });
+        assert_eq!(studio.selected, vec![0]);
+        // Ctrl F, the find bar.
+        press_key(&mut studio, Key::Char('f'), ctrl);
+        assert!(studio.board.find.is_some());
     }
 }

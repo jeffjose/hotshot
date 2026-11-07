@@ -55,6 +55,13 @@ pub(in crate::studio) enum Act {
     CopyBoard(u8),
     /// The panel of how the board is copied and exported opened.
     ExportOptions,
+    /// A link for the shape picked out, typed; what it goes to, clicked on
+    /// the board; and its link taken away.
+    Link,
+    LinkTo,
+    Unlink,
+    /// The find bar opened.
+    Find,
 }
 
 impl Studio {
@@ -62,6 +69,7 @@ impl Studio {
     pub(in crate::studio) fn board_acts(&self) -> Vec<(String, &'static str, Act)> {
         let mut acts: Vec<(String, &'static str, Act)> = vec![
             ("History: go back and branch".to_owned(), "Ctrl+Alt+Z", Act::History),
+            ("Find on the board".to_owned(), "Ctrl+F", Act::Find),
             ("Present the board".to_owned(), "", Act::Present),
             ("Insert a 2\u{d7}2".to_owned(), "", Act::Template(0)),
             ("Insert Now / Next / Later lanes".to_owned(), "", Act::Template(1)),
@@ -93,6 +101,10 @@ impl Studio {
         let what = if !self.on_page() { "frame" } else if self.chosen().is_empty() { "board" } else { "selection" };
         for (kind, name) in export::KINDS.iter().enumerate() {
             acts.push((format!("Export {what} as {name}"), if kind as u8 == exported { "Ctrl+E" } else { "" }, Act::Export(kind as u8)));
+        }
+        if let Some(index) = self.picked().filter(|&index| matches!(self.doc.layers[index].kind, Kind::Shape(_))) {
+            acts.push((if self.link_of(index).is_some() { "Edit link" } else { "Add link" }.to_owned(), "", Act::Link));
+            acts.push(("Link to a shape or frame".to_owned(), "", Act::LinkTo));
         }
         if self.chosen().iter().any(|&index| self.is_box(index)) {
             acts.push(("Next shape".to_owned(), "Shift+S", Act::NextShape));
@@ -146,6 +158,15 @@ impl Studio {
             Act::Words(larger) => self.step_words(larger),
             Act::Ground(ground) => self.set_look(None, Some(ground)),
             Act::Font(font) => self.set_font(usize::from(font)),
+            Act::Find => self.open_find(),
+            Act::Link => self.begin_link(),
+            Act::LinkTo => self.begin_link_to(None),
+            Act::Unlink => {
+                if let Some(index) = self.picked() {
+                    let id = self.id_of(index);
+                    self.set_link(id, String::new());
+                }
+            }
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
