@@ -399,7 +399,7 @@ impl Studio {
     }
 
     pub(in crate::studio) fn draw_style_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
-        let (stroke, fill, _, status, hatch, dash, width) = self.shown_style();
+        let (stroke, fill, _, status, hatch, dash, _) = self.shown_style();
         let (cx, cy) = rect.center();
         let ring = |canvas: &mut Canvas, on: bool| {
             if on {
@@ -526,10 +526,10 @@ impl Studio {
             }
             // S M L XL.
             Ctl::Size(at) => {
-                // Lit when its line and its words are in the proportion of
-                // that size, at whatever zoom it was drawn at.
-                let px = self.shown_px().map_or(f32::NAN, |px| px as f32);
-                choice(canvas, size_at(width, px) == Some(at));
+                // Lit when the words are that size, as large to the eye at the
+                // zoom they are seen at as that size at 100%.
+                let wanted = ((SIZES[usize::from(at)].1 as f32 * self.dynamic()).round() as u32).max(1);
+                choice(canvas, self.shown_px() == Some(wanted));
                 let says = ["S", "M", "L", "XL"][usize::from(at)];
                 self.text.draw_centered(canvas, cx, cy, 12, TEXT_COLOR, says);
             }
@@ -709,15 +709,12 @@ impl Studio {
             // S M L XL: how wide the line is and how large the words, the
             // two together.
             Ctl::Size(at) => {
-                // As large to the eye as that size at 100%, at the zoom it is
-                // chosen at.
+                // The size of the words, as large to the eye as that size at
+                // 100% at the zoom it is chosen at; the line left as it is,
+                // its border no thicker nor thinner.
                 let by = self.dynamic();
-                let (width, px) = (SIZES[usize::from(at)].0 * by, ((SIZES[usize::from(at)].1 as f32 * by).round() as u32).max(1));
-                self.board.width = width;
+                let px = ((SIZES[usize::from(at)].1 as f32 * by).round() as u32).max(1);
                 self.restyle_shapes(|shape| {
-                    if !matches!(shape.tool, Tool::Text) {
-                        shape.stroke = width;
-                    }
                     // The size its words are meant to be, fitted to its box.
                     (shape.font_px, shape.nominal) = (px, if shape.nominal > 0 || matches!(shape.tool, Tool::Rect | Tool::Ellipse) { px } else { 0 });
                 });

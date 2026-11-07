@@ -634,7 +634,8 @@ mod tests {
         }
         let box_ = shape(&studio, 0);
         assert!(box_.hatch && box_.dashed && !box_.dotted);
-        assert_eq!((box_.stroke, box_.font_px), SIZES[3]);
+        // Large: its words, the line as it was.
+        assert_eq!((box_.stroke, box_.font_px), (SIZES[1].0, SIZES[3].1));
         // The look is the board's, chosen from its list.
         crate::studio::board::look::tests::choose_board(&mut studio, "Theme", "Sketchy");
         assert_eq!(studio.pages[0].look, 1);
@@ -645,7 +646,7 @@ mod tests {
         assert_eq!((studio.board_tool(), shape(&studio, 0).text.as_str()), (BOX_TOOL, ""));
         pull(&mut studio, (400.0, 100.0), (500.0, 200.0), Mods::default());
         let next = shape(&studio, 1);
-        assert_eq!((next.color, next.fill, next.hatch, next.dashed, next.stroke), (SWATCHES[2].0, SWATCHES[2].1, true, true, SIZES[3].0));
+        assert_eq!((next.color, next.fill, next.hatch, next.dashed, next.stroke, next.font_px), (SWATCHES[2].0, SWATCHES[2].1, true, true, SIZES[1].0, SIZES[3].1));
     }
 
     #[test]

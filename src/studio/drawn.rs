@@ -393,7 +393,11 @@ mod tests {
                 let mut fresh = vec![0u32; out.len()];
                 (studio.shown.clear(), studio.shown_page.clear());
                 studio.draw(&mut fresh);
-                let far = |a: &u32, b: &u32| [0, 8, 16].iter().any(|shift| ((a >> shift & 0xFF) as i32 - (b >> shift & 0xFF) as i32).abs() > 2);
+                // The paper and its dots apart, which are drawn finer once the
+                // page has been still a moment, by the clock.
+                let (paper, dots) = studio.paper();
+                let ground = |c: &u32| matches!(c & 0xFF_FFFF, c if c == paper || c == dots);
+                let far = |a: &u32, b: &u32| !(ground(a) && ground(b)) && [0, 8, 16].iter().any(|shift| ((a >> shift & 0xFF) as i32 - (b >> shift & 0xFF) as i32).abs() > 2);
                 let off = out.iter().zip(&fresh).filter(|(a, b)| far(a, b)).count();
                 let w = studio.width as usize;
                 let at: Vec<(usize, usize, u32, u32)> = out.iter().zip(&fresh).enumerate().filter(|(_, (a, b))| far(a, b)).map(|(i, (a, b))| (i % w, i / w, *a, *b)).take(12).collect();
