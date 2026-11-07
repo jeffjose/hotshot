@@ -9642,7 +9642,13 @@ mod tests {
         // Drawn a band at a time, the same as all at once.
         let part = Rect::new(30, 20, 700, 560);
         let whole = studio.doc.render_part(1.3, part, &mut studio.text);
-        assert_eq!(studio.doc.render_part_stopping(1.3, part, &mut studio.text, &mut || false), Some(whole));
+        // To a shade: the picture in it may be drawn from what is kept of it
+        // one time and afresh the other, as other tests fill and empty what
+        // is kept, which are alike to a shade rather than to the bit.
+        let banded = studio.doc.render_part_stopping(1.3, part, &mut studio.text, &mut || false).expect("drawn whole");
+        let far = |a: u32, b: u32| [0, 8, 16, 24].iter().any(|shift| ((a >> shift & 0xFF) as i32 - (b >> shift & 0xFF) as i32).abs() > 2);
+        let off = whole.iter().zip(&banded).filter(|&(&a, &b)| far(a, b)).count();
+        assert!(whole.len() == banded.len() && off == 0, "{off} pixels differ");
         let mut bands = 0;
         assert_eq!(studio.doc.render_part_stopping(1.3, part, &mut studio.text, &mut || { bands += 1; bands > 2 }), None);
         let mut out = vec![0u32; 1400 * 900];
