@@ -99,6 +99,44 @@ pub fn note_of(png: &[u8]) -> Option<String> {
     None
 }
 
+/// What the part of a board inside a PNG of it is called: the international
+/// text, packed, that a board pasted back is read from.
+const BOARD: &str = "hotshot-board";
+
+/// A PNG of a board with the board itself inside it, as packed
+/// international text after its header, for hotshot to paste back as the
+/// shapes it was; any other reader shows the picture and passes it over.
+pub fn with_board(png: Vec<u8>, board: &str) -> Vec<u8> {
+    use png::text_metadata::EncodableTextChunk;
+    if board.is_empty() || png.len() < 33 || &png[12..16] != b"IHDR" {
+        return png;
+    }
+    let mut text = png::text_metadata::ITXtChunk::new(BOARD, board);
+    text.compressed = true;
+    let mut chunk = Vec::new();
+    if text.compress_text().is_err() || text.encode(&mut chunk).is_err() {
+        return png;
+    }
+    let mut out = png[..33].to_vec();
+    out.extend_from_slice(&chunk);
+    out.extend_from_slice(&png[33..]);
+    out
+}
+
+/// The board inside a PNG, if one was put in it: read from the chunks
+/// before its pixels, unpacked.
+pub fn board_of(png: &[u8]) -> Option<String> {
+    if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let mut decoder = png::Decoder::new_with_limits(std::io::Cursor::new(png), png::Limits { bytes: 1 << 30 });
+    decoder.set_ignore_text_chunk(false);
+    let reader = decoder.read_info().ok()?;
+    let mut text = reader.info().utf8_text.iter().find(|text| text.keyword == BOARD)?.clone();
+    text.decompress_text_with_limit(1 << 30).ok()?;
+    text.get_text().ok()
+}
+
 /// What kind of file a picture is saved as. JPEG XL and WebP each come
 /// two ways, every pixel kept or smaller and nearly the same, listed as
 /// two kinds since they are chosen between as two.
@@ -403,6 +441,23 @@ mod tests {
         let webp = pack(Format::WebpLossless, &settings, 64, 64, &pixels, true).unwrap();
         let back = crate::convert::decode(&webp).unwrap();
         assert_eq!((back.width, back.height, back.pixels[0], back.pixels[63]), (64, 64, 0xFFFF_0000, 0));
+    }
+
+    #[test]
+    fn a_board_put_in_a_png_is_packed_read_back_and_leaves_the_picture_as_it_was() {
+        let pixels: Vec<u32> = (0..40 * 30).map(|at| 0xFF00_0000 | (at as u32).wrapping_mul(2_654_435_761) >> 8).collect();
+        let png = encode(40, 30, &pixels, false).unwrap();
+        assert_eq!(board_of(&png), None, "a plain PNG has none");
+        // Large, and much the same line after line, as a board's file is:
+        // packed to far less than it is.
+        let board: String = (0..2000).map(|at| format!("shape 0 0 rect 1E1E1E 2 {at} 40 \u{1F600} Cache\n")).collect();
+        let carried = with_board(png.clone(), &board);
+        assert!(carried.len() < png.len() + board.len() / 10, "{} of {}", carried.len() - png.len(), board.len());
+        assert_eq!(board_of(&carried).as_deref(), Some(board.as_str()));
+        // Shown as it was, by hotshot and by any reader.
+        let back = crate::convert::decode(&carried).unwrap();
+        assert_eq!((back.width, back.height, back.pixels), (40, 30, pixels));
+        assert!(with_board(b"not a png".to_vec(), &board) == b"not a png");
     }
 
     #[test]
