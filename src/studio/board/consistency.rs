@@ -34,6 +34,7 @@ fn fingerprint(shape: &Shape) -> Vec<(&'static str, String)> {
         ("stuck", format!("{:?}", shape.stuck.map(|end| end.map(|(id, ..)| id)))),
         ("frame", format!("{} {} {} {}", round(x), round(y), round(w), round(h))),
         ("points", format!("{:?}", shape.points.iter().map(|&(x, y)| (round(x), round(y))).collect::<Vec<_>>())),
+        ("link", shape.link.clone()),
     ]
 }
 
@@ -248,6 +249,17 @@ fn each_thing_done_on_a_board_is_one_step_to_undo_and_kept_in_the_file() {
             let _ = studio.act(Action::Match(2));
         }),
         ("on dark paper", |studio, _| studio.set_look(None, Some(1))),
+        ("linked to the web", |studio, _| {
+            studio.selected = vec![0];
+            studio.board_act(Act::Link);
+            type_in(studio, "example.com/a,b%20c");
+            press_key(studio, Key::Enter, Mods::default());
+        }),
+        ("linked to another box", |studio, _| {
+            studio.selected = vec![0];
+            studio.board_act(Act::LinkTo);
+            tap(studio, (780.0, 286.0));
+        }),
         ("the next box by the keys", |studio, _| {
             studio.selected = vec![0];
             press_key(studio, Key::Right, Mods { ctrl: true, ..Mods::default() });
@@ -542,6 +554,37 @@ fn in_each_look_ctrl_and_an_arrow_makes_the_next_box_where_it_showed_joined_the_
                 assert_eq!(all(&studio), before, "{what}: one step undoes it");
             }
         }
+    }
+}
+
+#[test]
+fn in_each_look_a_link_wears_its_badge_is_kept_in_the_file_and_goes_where_it_says() {
+    for look in 0..=look::DIAGRAM {
+        let (mut studio, _) = furnished(look);
+        studio.selected = vec![0];
+        studio.board_act(Act::LinkTo);
+        tap(&mut studio, (780.0, 286.0));
+        let linked = format!("#{}", studio.id_of(1));
+        assert_eq!(shape(&studio, 0).link, linked, "look {look}");
+        // Its badge, drawn and pressed where it is.
+        studio.selected.clear();
+        let badge = studio.control_rect(Control::Board(Ctl::LinkBadge(studio.id_of(0)))).unwrap_or_else(|| panic!("look {look}: a badge"));
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        let (cx, cy) = badge.center();
+        let pixel = out[((cy + 6) * studio.width + cx) as usize];
+        assert!((pixel >> 8 & 0xFF) > (pixel >> 16 & 0xFF) + 40, "look {look}: green, {pixel:06X}");
+        // Kept in the file, and through it the same.
+        let back = read_pages(&write_pages(&studio.gathered())).unwrap();
+        assert_eq!(all_of(&back[0].loose.layers), all(&studio), "look {look}: the file keeps it");
+        // Its badge pressed, the other box picked out, in view.
+        studio.pan = (-3000.0, -3000.0);
+        studio.pointer_moved(cx, cy, Mods::default());
+        let badge = studio.control_rect(Control::Board(Ctl::LinkBadge(studio.id_of(0))));
+        assert!(badge.is_none(), "look {look}: out of view, no badge");
+        studio.pan = (0.0, 0.0);
+        click(&mut studio, (cx, cy));
+        assert_eq!(studio.selected, vec![1], "look {look}");
     }
 }
 

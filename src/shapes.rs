@@ -207,6 +207,10 @@ pub struct Shape {
     /// it, so that zoomed in it is the same drawing, not a coarser one.
     /// Never kept in a file.
     pub scale: f32,
+    /// Where it links to, followed with Ctrl and a click: a web address;
+    /// `#` and what another layer of the board is called; or `frame:` and
+    /// a frame's name. Nothing for none.
+    pub link: String,
     mask: RefCell<Option<Rc<Mask>>>,
     /// The same of what is inside the border of a rectangle or an oval
     /// that has both, which is drawn in its fill.
@@ -435,7 +439,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, step: None, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, step: None, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, link: String::new(), mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -455,7 +459,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -486,7 +490,8 @@ impl Shape {
                 self.region,
                 u8::from(self.hatch),
                 self.nominal,
-                self.step.map_or("-".to_owned(), |(x, y)| format!("{x}:{y}"))
+                self.step.map_or("-".to_owned(), |(x, y)| format!("{x}:{y}")),
+                link_word(&self.link)
             ),
             self.fill,
             self.number,
@@ -568,6 +573,8 @@ impl Shape {
         // And where an arrow round corners was pulled to go, which a file
         // from before has not.
         shape.step = more.next().and_then(|word| word.split_once(':')).and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))).filter(|(x, y)| x.is_finite() && y.is_finite());
+        // And where it links to, which a file from before has not.
+        shape.link = more.next().map(link_read).unwrap_or_default();
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -1238,6 +1245,48 @@ pub const WHOLE: f32 = 9.0;
 /// meeting its outline on the way there, rather than at the middle of the
 /// side facing the other end.
 pub const AIMED: f32 = 8.0;
+
+/// Where a shape links to as a word of a file: a dash for nowhere, and
+/// otherwise with what would end the word or the line, and a percent sign,
+/// said as a percent sign and two hex digits.
+fn link_word(link: &str) -> String {
+    if link.is_empty() {
+        return "-".to_owned();
+    }
+    let mut word = String::new();
+    for letter in link.chars() {
+        match letter {
+            '%' | ',' | '\t' | '\n' | '\r' => word.push_str(&format!("%{:02X}", letter as u32)),
+            '-' if link == "-" => word.push_str("%2D"),
+            _ => word.push(letter),
+        }
+    }
+    word
+}
+
+/// Where a shape links to, from the word `link_word` made of it.
+fn link_read(word: &str) -> String {
+    if word == "-" {
+        return String::new();
+    }
+    let mut link = String::new();
+    let mut letters = word.chars();
+    while let Some(letter) = letters.next() {
+        if letter != '%' {
+            link.push(letter);
+            continue;
+        }
+        let hex: String = letters.by_ref().take(2).collect();
+        match u8::from_str_radix(&hex, 16) {
+            Ok(byte) => link.push(char::from(byte)),
+            Err(_) => {
+                link.push('%');
+                link.push_str(&hex);
+            }
+        }
+    }
+    link
+}
 
 fn stuck_word(stuck: Option<(u32, f32, f32)>) -> String {
     stuck.map_or("-".to_owned(), |(id, u, v)| format!("{id}:{u}:{v}"))
@@ -3856,12 +3905,17 @@ mod tests {
         // And the size its words are meant to be, fitted to it.
         boxed.nominal = 22;
         assert_eq!(Shape::read(&boxed.write()).unwrap().nominal, 22);
-        // And one from before either has neither.
+        // And where it links to, whatever is in the address.
+        for link in ["https://example.com/a,b?c=50%25&d=1", "#42", "frame:Hero, v2", "-"] {
+            boxed.link = link.into();
+            assert_eq!(Shape::read(&boxed.write()).unwrap().link, link);
+        }
+        // And one from before any of them has none.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0,-\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0,-,-\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
-        assert_eq!((back.edge, back.shadow), (CENTER, None));
+        assert_eq!((back.edge, back.shadow, back.link.as_str()), (CENTER, None, ""));
     }
 
     #[test]

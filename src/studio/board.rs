@@ -116,6 +116,16 @@ pub(super) enum Ctl {
     FindBack,
     FindNext,
     FindClose,
+    /// A shape's link: its badge, by what the shape is called; the card the
+    /// badge shows hovered, and its Edit, Copy and Remove; and the field a
+    /// link is typed into, and its Link to….
+    LinkBadge(u32),
+    LinkCard,
+    LinkEdit,
+    LinkCopy,
+    LinkRemove,
+    LinkEditor,
+    LinkPick,
 }
 
 /// What a board keeps of its own, in the window rather than the file.
@@ -221,11 +231,18 @@ pub(super) struct Board {
     pub glide: Option<glide::Glide>,
     /// The find bar, while it is open.
     pub find: Option<find::Find>,
+    /// A link being set; the layer whose link's card shows, its badge
+    /// hovered, by what it is called; the last web address followed, which
+    /// the browser is asked to open but in tests; and the last link copied.
+    pub linking: Option<link::Linking>,
+    pub link_card: Option<u32>,
+    pub opened: Option<String>,
+    pub copied_link: Option<String>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None), ctrl: None, glide: None, find: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None), ctrl: None, glide: None, find: None, linking: None, link_card: None, opened: None, copied_link: None }
     }
 }
 
@@ -248,6 +265,7 @@ mod keys;
 mod flow;
 mod glide;
 mod find;
+pub(super) mod link;
 #[cfg(test)]
 mod consistency;
 /// Whether a frame is the one a new page of frames begins with, as it
@@ -522,6 +540,7 @@ impl Studio {
             Ctl::Now => self.history_now(),
             Ctl::Sheet | Ctl::Scrim => self.press_zoom(ctl),
             Ctl::FindBar | Ctl::FindField | Ctl::FindBack | Ctl::FindNext | Ctl::FindClose => self.press_find(ctl),
+            Ctl::LinkBadge(_) | Ctl::LinkCard | Ctl::LinkEdit | Ctl::LinkCopy | Ctl::LinkRemove | Ctl::LinkEditor | Ctl::LinkPick => self.press_link_ctl(ctl),
             Ctl::Arrange(at) => return self.act(bar::ARRANGE[usize::from(at).min(bar::ARRANGE.len() - 1)].0),
             other => self.press_style(other),
         }
@@ -669,6 +688,7 @@ impl Studio {
             }
             // Drawn over everything, once the rest is.
             Ctl::Sheet | Ctl::Scrim | Ctl::FindBar | Ctl::FindField | Ctl::FindBack | Ctl::FindNext | Ctl::FindClose => {}
+            Ctl::LinkBadge(_) | Ctl::LinkCard | Ctl::LinkEdit | Ctl::LinkCopy | Ctl::LinkRemove | Ctl::LinkEditor | Ctl::LinkPick => {}
             other => self.draw_style_control(canvas, rect, other, hovered),
         }
     }

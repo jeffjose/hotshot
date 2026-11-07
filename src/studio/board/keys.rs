@@ -41,7 +41,7 @@ const ARROWS: [(&str, &str); 10] = [
     ("Copy with what is in it", "Alt drag"),
 ];
 
-const VIEW: [(&str, &str); 14] = [
+const VIEW: [(&str, &str); 15] = [
     ("Move the board", "Space drag"),
     ("Zoom about the pointer", "Ctrl wheel"),
     ("Zoom in, out", "Ctrl +, Ctrl \u{2212}"),
@@ -49,6 +49,7 @@ const VIEW: [(&str, &str); 14] = [
     ("Zoom to 100%", "Ctrl 1"),
     ("Zoom to what is picked out", "Shift 2"),
     ("Find words on the board", "Ctrl F"),
+    ("Follow a shape's link", "Ctrl click"),
     ("Search everything", "Ctrl K"),
     ("Export as a PNG", "Ctrl E"),
     ("Design or Board", "Ctrl M"),

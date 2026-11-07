@@ -3038,6 +3038,7 @@ impl Studio {
             self.layout_arrange(&mut layout);
             self.layout_history(&mut layout);
             self.layout_find(&mut layout);
+            self.layout_links(&mut layout);
             self.layout_keys(&mut layout);
         }
         self.layout_menus(&mut layout);
@@ -3687,6 +3688,7 @@ impl Studio {
                 (self.hovered, self.hovered_page, self.hover_shown, self.stack_hovered) = (hovered, hovered_page, over, stack);
                 if self.on_board() {
                     self.board_hover((x, y), over.is_some());
+                    self.link_hover(over);
                 }
             }
             Drag::NewFrame { .. } => self.dirty = true,
@@ -3894,6 +3896,10 @@ impl Studio {
         }
         if self.board.px_typed.is_some() && self.control_at(at_window) != Some(Control::Board(board::Ctl::Words(1))) {
             self.commit_px();
+        }
+        // A link being typed, left as it was for a click off its field.
+        if matches!(self.board.linking, Some(board::link::Linking::Typing { .. })) && !matches!(self.control_at(at_window), Some(Control::Board(board::Ctl::LinkEditor | board::Ctl::LinkPick))) {
+            self.board.linking = None;
         }
         // Another layer clicked in the list ends the typing of text first,
         // so that what is typed next goes nowhere it should not.
@@ -5546,7 +5552,7 @@ impl Studio {
     pub fn pasted(&mut self, picture: Option<Vec<u8>>, text: Option<String>) {
         // Words, into a board's find bar as it is typed into.
         if let Some(words) = text.as_deref().filter(|_| self.on_board()) {
-            if self.find_pasted(words) {
+            if self.link_pasted(words) || self.find_pasted(words) {
                 return;
             }
         }
@@ -5733,8 +5739,14 @@ impl Studio {
         }
         // Ctrl+F finds on a board, and its bar, typed into, takes the keys,
         // and what is pasted.
-        if down && mods.ctrl && matches!(key, Key::Char('v' | 'V')) && self.board.find.as_ref().is_some_and(|find| find.typing) {
+        let link_typed = matches!(self.board.linking, Some(board::link::Linking::Typing { .. }));
+        if down && mods.ctrl && matches!(key, Key::Char('v' | 'V')) && (link_typed || self.board.find.as_ref().is_some_and(|find| find.typing)) {
             return Outcome::Paste;
+        }
+        // A link being typed, or what it goes to picked out, takes the keys.
+        if down && self.on_board() && self.link_key(key, mods) {
+            self.mods = mods;
+            return Outcome::Continue;
         }
         if down && self.on_board() && self.find_key(key, mods) {
             self.mods = mods;
@@ -7348,6 +7360,7 @@ impl Studio {
         // hovered.
         if self.on_board() {
             self.draw_find(canvas, layout, hover);
+            self.draw_link_card(canvas, layout, hover);
         }
         let says = match hover {
             Some(Control::Tool(tool)) => TOOLS.iter().find(|(known, ..)| *known == tool).map(|(_, name, key)| format!("{name}  {key}")),

@@ -481,6 +481,7 @@ impl Studio {
         let mut shape = source.copied();
         let (w, h) = self.like_size(like);
         (shape.text, shape.titled, shape.status, shape.votes, shape.editing, shape.angle) = (String::new(), false, 0, 0, false, 0.0);
+        shape.link.clear();
         shape.points = vec![(center.0 - w / 2.0, center.1 - h / 2.0), (center.0 + w / 2.0, center.1 + h / 2.0)];
         shape.base = (w, h);
         if shape.filled {
@@ -539,6 +540,7 @@ impl Studio {
     pub(in crate::studio) fn draw_board(&mut self, canvas: &mut Canvas, view: Rect) {
         self.draw_focus(canvas, view);
         self.draw_found(canvas);
+        self.draw_badges(canvas);
         if self.presenting() {
             self.draw_present(canvas, view);
             self.draw_laser(canvas);

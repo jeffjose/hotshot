@@ -472,6 +472,16 @@ impl Studio {
                             items.push(Item::entry("Keep as picture", "", MenuAct::Board(Act::KeepPicture)));
                         }
                         items.push(Item::entry("Merge into picture", "", MenuAct::Board(Act::MergePicture)));
+                        // One shape: where it links to, typed or clicked.
+                        if let Some(index) = self.picked().filter(|&index| matches!(self.doc.layers[index].kind, Kind::Shape(_))) {
+                            let linked = self.link_of(index).is_some();
+                            items.push(Item::Rule);
+                            items.push(Item::entry(if linked { "Edit link\u{2026}" } else { "Add link\u{2026}" }, "", MenuAct::Board(Act::Link)));
+                            items.push(Item::entry("Link to\u{2026}", "", MenuAct::Board(Act::LinkTo)));
+                            if linked {
+                                items.push(Item::entry("Remove link", "", MenuAct::Board(Act::Unlink)));
+                            }
+                        }
                         if let Some(Kind::Picture(_)) = picked {
                             items.push(Item::Rule);
                             items.push(Item::entry("Crop", "Enter", MenuAct::Act(Action::Crop)));

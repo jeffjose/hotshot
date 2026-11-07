@@ -48,6 +48,11 @@ impl Studio {
     /// to pull an arrow out of; a double click on a box or an arrow, its
     /// words to type into; on nothing, a label begun there.
     pub(in crate::studio) fn board_pressed(&mut self, at: (f32, f32), at_window: (i32, i32), double: bool) -> bool {
+        // What a link goes to being picked out: what is clicked. With Ctrl,
+        // or presenting, a shape's link followed.
+        if self.press_link_to(at) || (!double && self.press_link(at)) {
+            return true;
+        }
         // The laser held: a box clicked glows.
         if self.laser_press(at) {
             return true;

@@ -16,11 +16,12 @@ impl Studio {
 
     /// What a control of a board says as it is hovered: a tool, its name
     /// and key.
-    pub(in crate::studio) fn board_tip(&self, ctl: Ctl) -> Option<String> {
+    pub(in crate::studio) fn board_tip(&mut self, ctl: Ctl) -> Option<String> {
         Some(match ctl {
             Ctl::Tool(which) => TOOLS.get(usize::from(which)).map(|(name, key)| format!("{name}  {}", key.to_ascii_uppercase()))?,
             Ctl::Arrange(at) => bar::ARRANGE.get(usize::from(at))?.1.to_owned(),
             Ctl::FindBack | Ctl::FindNext | Ctl::FindClose => self.find_tip(ctl)?,
+            Ctl::LinkPick => self.link_tip(ctl)?,
             _ => return None,
         })
     }

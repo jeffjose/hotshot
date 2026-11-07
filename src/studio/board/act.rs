@@ -53,6 +53,11 @@ pub(in crate::studio) enum Act {
     /// as one of `export::KINDS`, PNG or JPEG; and all of the board so.
     CopyAs(u8),
     CopyBoard(u8),
+    /// A link for the shape picked out, typed; what it goes to, clicked on
+    /// the board; and its link taken away.
+    Link,
+    LinkTo,
+    Unlink,
 }
 
 impl Studio {
@@ -139,6 +144,14 @@ impl Studio {
             Act::Words(larger) => self.step_words(larger),
             Act::Ground(ground) => self.set_look(None, Some(ground)),
             Act::Font(font) => self.set_font(usize::from(font)),
+            Act::Link => self.begin_link(),
+            Act::LinkTo => self.begin_link_to(None),
+            Act::Unlink => {
+                if let Some(index) = self.picked() {
+                    let id = self.id_of(index);
+                    self.set_link(id, String::new());
+                }
+            }
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
