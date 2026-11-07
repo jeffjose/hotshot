@@ -1043,8 +1043,9 @@ mod tests {
         studio.selected.clear();
         let body = studio.to_window(moved.points[1]);
         let grab = (body.0 - 30, body.1 - 4);
-        drag_from(&mut studio, grab, (500.0, 650.0), Mods::default(), |_| {});
-        assert_eq!(shape(&studio, arrow).stuck, [None, None]);
+        let mut grabbed = String::new();
+        drag_from(&mut studio, grab, (500.0, 650.0), Mods::default(), |studio| grabbed = format!("{:?} picked {:?} layers {}", studio.drag, studio.selected, studio.doc.layers.len()));
+        assert_eq!(shape(&studio, arrow).stuck, [None, None], "the press at {grab:?} took {grabbed}; arrow {:?}", shape(&studio, arrow).points);
         // A straight arrow as long as from A to B, both ends near their
         // dots: tied to both.
         let both = studio.doc.layers.len();

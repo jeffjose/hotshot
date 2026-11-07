@@ -231,6 +231,8 @@ mod mermaid;
 mod neaten;
 mod zoom;
 mod keys;
+#[cfg(test)]
+mod consistency;
 /// Whether a frame is the one a new page of frames begins with, as it
 /// began: called Frame 1, where it was put, its size, white, empty, and
 /// exported as it was.

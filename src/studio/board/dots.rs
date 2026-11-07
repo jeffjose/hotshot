@@ -323,7 +323,7 @@ impl Studio {
                     let (su, sv) = shapes::PORTS[usize::from(side % 4)];
                     arrow.stuck[0] = Some((start.id, su, sv));
                 }
-                shapes::follow(std::iter::once(&mut arrow), &self.anchors());
+                self.follow_among_the_rest(&mut arrow, None);
             }
             None => {
                 // The box that would be made, hung off the pointer.
@@ -336,12 +336,25 @@ impl Studio {
                 // Laid out as letting go lays it out, round corners in the
                 // Diagram look and curved in the others, rather than always
                 // curved until let go.
-                let mut anchors = self.anchors();
-                anchors.push(made);
-                shapes::follow(std::iter::once(&mut arrow), &anchors);
+                self.follow_among_the_rest(&mut arrow, Some(made));
             }
         }
         Some(arrow)
+    }
+
+    /// An arrow not yet on the board laid out as it will be once it is:
+    /// among the others stuck to what it is, as those that come into one
+    /// side are spread along it, round what is in its way; to a box not
+    /// yet made, where one is given. The others are left as they are.
+    fn follow_among_the_rest(&mut self, arrow: &mut Shape, made: Option<shapes::Anchor>) {
+        let mut anchors = self.anchors();
+        anchors.extend(made);
+        let mut others: Vec<Shape> = self.doc.layers.iter().filter_map(|layer| match &layer.kind {
+            Kind::Shape(shape) if shape.sticks() && shape.stuck.iter().any(Option::is_some) => Some(shape.clone()),
+            _ => None,
+        }).collect();
+        // Last, as it is put on the board after the rest.
+        shapes::follow(others.iter_mut().chain(std::iter::once(arrow)), &anchors);
     }
 
     /// The box an arrow pulled out would be let go on or near, but the one
