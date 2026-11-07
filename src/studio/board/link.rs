@@ -691,6 +691,37 @@ mod tests {
     }
 
     #[test]
+    fn a_link_to_a_frame_of_the_board_goes_to_the_frame_and_ctrl_k_finds_links_and_find() {
+        let mut studio = two_boxes();
+        let mut frame = Doc::new(600, 400);
+        (frame.name, frame.x, frame.y) = ("Hero".into(), 1000.0, -1200.0);
+        studio.pages[0].frames.push(frame);
+        // Ctrl+K has it, for the shape picked out.
+        let acts = studio.board_acts();
+        assert!(acts.iter().any(|(says, _, act)| says == "Link to a shape or frame" && *act == Act::LinkTo));
+        assert!(acts.iter().any(|(says, keys, act)| says == "Find on the board" && *keys == "Ctrl+F" && *act == Act::Find));
+        studio.run_menu(crate::studio::menu::MenuAct::Board(Act::LinkTo));
+        (studio.zoom, studio.pan) = (0.25, (100.0, 400.0));
+        tap(&mut studio, (1300.0, -1000.0));
+        assert_eq!(shape(&studio, 0).link, "frame:Hero");
+        // Followed, the frame in the middle of the view.
+        (studio.zoom, studio.pan) = (1.0, (0.0, 0.0));
+        studio.follow_link(0);
+        studio.end_glide();
+        let middle = studio.to_window_page((1300.0, -1000.0));
+        let open = studio.open_area();
+        assert!((middle.0 - open.center().0).abs() < 4 && open.contains(middle.0, middle.1), "{middle:?}");
+        // Gone, it says so and goes nowhere.
+        studio.pages[0].frames.clear();
+        let view = (studio.zoom, studio.pan);
+        studio.follow_link(0);
+        assert_eq!((studio.zoom, studio.pan, studio.board.glide.is_none()), (view.0, view.1, true));
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("What it linked to is gone"));
+        studio.run_menu(crate::studio::menu::MenuAct::Board(Act::Find));
+        assert!(studio.board.find.is_some());
+    }
+
+    #[test]
     fn presenting_a_click_on_a_linked_shape_follows_it() {
         let mut studio = two_boxes();
         if let Kind::Shape(shape) = &mut studio.doc.layers[0].kind {
