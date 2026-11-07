@@ -53,6 +53,8 @@ pub(in crate::studio) enum Act {
     /// as one of `export::KINDS`, PNG or JPEG; and all of the board so.
     CopyAs(u8),
     CopyBoard(u8),
+    /// The panel of how the board is copied and exported opened.
+    ExportOptions,
 }
 
 impl Studio {
@@ -66,8 +68,12 @@ impl Studio {
             ("Insert Before / After".to_owned(), "", Act::Template(2)),
             (if self.board.guessing { "Stop guessing what comes next" } else { "Guess what comes next" }.to_owned(), "", Act::Guessing),
         ];
-        acts.push(("Copy as PNG".to_owned(), "Ctrl+Shift+C", Act::CopyAs(0)));
-        acts.push(("Copy as JPG".to_owned(), "", Act::CopyAs(4)));
+        // The keys on the kind they copy and export as, as last chosen.
+        let (copied, exported) = (self.board.choices.copy_kind(), self.board.choices.kind);
+        acts.push(("Copy as PNG".to_owned(), if copied == 0 { "Ctrl+Shift+C" } else { "" }, Act::CopyAs(0)));
+        acts.push(("Copy as JPG".to_owned(), if copied == 4 { "Ctrl+Shift+C" } else { "" }, Act::CopyAs(4)));
+        acts.push(("Copy as SVG".to_owned(), if copied == 3 { "Ctrl+Shift+C" } else { "" }, Act::CopyAs(3)));
+        acts.push(("Export options\u{2026}".to_owned(), "Ctrl+Shift+E", Act::ExportOptions));
         acts.push(("Copy board as PNG".to_owned(), "", Act::CopyBoard(0)));
         acts.push(("Copy board as JPG".to_owned(), "", Act::CopyBoard(4)));
         acts.push(("Copy as Mermaid".to_owned(), "", Act::Mermaid(false)));
@@ -86,7 +92,7 @@ impl Studio {
         acts.push(("Smaller text".to_owned(), "Ctrl+Shift+<", Act::Words(false)));
         let what = if !self.on_page() { "frame" } else if self.chosen().is_empty() { "board" } else { "selection" };
         for (kind, name) in export::KINDS.iter().enumerate() {
-            acts.push((format!("Export {what} as {name}"), if kind == 0 { "Ctrl+E" } else { "" }, Act::Export(kind as u8)));
+            acts.push((format!("Export {what} as {name}"), if kind as u8 == exported { "Ctrl+E" } else { "" }, Act::Export(kind as u8)));
         }
         if self.chosen().iter().any(|&index| self.is_box(index)) {
             acts.push(("Next shape".to_owned(), "Shift+S", Act::NextShape));
@@ -133,6 +139,7 @@ impl Studio {
             Act::ExportBoard(kind) => self.export_board_of(kind, true),
             Act::CopyAs(kind) => self.copy_board(kind, false),
             Act::CopyBoard(kind) => self.copy_board(kind, true),
+            Act::ExportOptions => self.open_exporting(self.chosen().is_empty()),
             Act::Look(look) => self.set_look(Some(look), None),
             Act::Mermaid(map) => self.copy_mermaid(map),
             Act::Neaten => self.press_style(Ctl::Neaten),

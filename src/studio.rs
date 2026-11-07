@@ -3038,6 +3038,7 @@ impl Studio {
             self.layout_arrange(&mut layout);
             self.layout_history(&mut layout);
             self.layout_keys(&mut layout);
+            self.layout_exporting(&mut layout);
         }
         self.layout_menus(&mut layout);
         layout
@@ -3881,6 +3882,8 @@ impl Studio {
             }
             // The board's keys open, only a click, to close them.
             _ if self.board.keys && button != 1 => return Outcome::Continue,
+            // Nor while its panel of how it is exported is.
+            _ if self.board.exporting.is_some() && button != 1 => return Outcome::Continue,
             3 => return self.right_click(at_window),
             1 => {}
             _ => return Outcome::Continue,
@@ -5501,6 +5504,18 @@ impl Studio {
         }
     }
 
+    /// A picture's file dropped from a file manager: on a board, a PNG of
+    /// a board with the board inside it as its shapes again; anything
+    /// else as the picture it is.
+    pub fn drop_file(&mut self, bytes: &[u8], name: &str, at: Option<(i32, i32)>) {
+        if self.on_board() && self.bring_board_png(bytes, at) {
+            return;
+        }
+        if let Some(image) = Image::open(bytes) {
+            self.drop_picture(image, name, at);
+        }
+    }
+
     pub fn drop_picture(&mut self, image: Image, name: &str, at: Option<(i32, i32)>) {
         self.checkpoint();
         let at = at.filter(|&at| self.over_page(at)).unwrap_or_else(|| self.open_area().center());
@@ -5550,6 +5565,14 @@ impl Studio {
             }
             if let Some(image) = board::svg::render(words) {
                 return self.add_picture(image, "SVG");
+            }
+        }
+        // A PNG of a board with the board inside it, on a board: its shapes
+        // again, unless it was asked for as a picture.
+        let plain = std::mem::take(&mut self.board.paste_plain);
+        if let Some(png) = picture.as_deref().filter(|_| self.on_board() && self.editing.is_none() && !plain) {
+            if self.bring_board_png(png, None) {
+                return;
             }
         }
         if let Some(image) = picture.as_deref().and_then(Image::open) {
@@ -5649,7 +5672,7 @@ impl Studio {
     fn copy(&mut self) {
         // On a board, what is picked out, or all of it, as a picture.
         if self.on_board() {
-            return self.copy_board(0, false);
+            return self.copy_board(self.board.choices.copy_kind(), false);
         }
         if self.on_page() {
             return self.say("Pick a frame to copy it");
@@ -5715,6 +5738,10 @@ impl Studio {
         }
         // ? opens the sheet of a board's keys, which takes them while open.
         if down && self.on_board() && self.keys_key(key, mods) {
+            return Outcome::Continue;
+        }
+        // Its panel of how it is exported, while it is open, as well.
+        if down && self.on_board() && self.exporting_key(key, mods) {
             return Outcome::Continue;
         }
         // L held on a board is a laser.
@@ -5899,12 +5926,19 @@ impl Studio {
             // Ctrl+Shift+K does again what was last done; Ctrl+K searches.
             (Key::Char('k'), true) if mods.shift => return self.again(),
             (Key::Char('k'), true) => self.open_palette(),
+            // On a board, Ctrl+Shift+E opens its panel of how it is exported.
+            (Key::Char('e'), true) if mods.shift && self.on_board() => self.open_exporting(self.chosen().is_empty()),
             (Key::Char('e'), true) if mods.shift => drop(self.run_command(menu::Command::ExportPage)),
             (Key::Char('v'), true) if !self.copied.is_empty() && !mods.shift => self.paste_layers(),
-            (Key::Char('v'), true) => return Outcome::Paste,
+            // Ctrl+Shift+V: a picture, even of a board with the board in it.
+            (Key::Char('v'), true) => {
+                self.board.paste_plain = mods.shift;
+                return Outcome::Paste;
+            }
             (Key::Char('s'), true) => self.save(true),
-            // A board, a frame of it or what is picked out, as a PNG.
-            (Key::Char('e'), true) if self.on_board() => self.export_board(0),
+            // A board, a frame of it or what is picked out, as its panel last
+            // said: a PNG, as it begins.
+            (Key::Char('e'), true) if self.on_board() => self.export_board(self.board.choices.kind),
             (Key::Char('e'), true) => drop(self.run_menu(menu::MenuAct::Do(menu::Command::ExportFrame))),
             // The keys the menus say: Ctrl+Alt+G frames what is picked out,
             // Ctrl+Shift+H and L hide and lock it.
@@ -7335,6 +7369,7 @@ impl Studio {
         }
         self.draw_menus(canvas, layout, hover);
         self.draw_keys(canvas, layout);
+        self.draw_exporting(canvas, layout, hover);
     }
 }
 
@@ -7714,11 +7749,14 @@ pub fn run(files: &[PathBuf], options: &crate::options::Options) -> crate::x11::
                     studio.drop_svg(words, name, drop_at);
                 }
             }
-            dropped_pictures = paths.iter().filter(|path| crate::convert::reads(path)).filter_map(|path| Some((Image::open(&std::fs::read(path).ok()?)?, path.file_stem()?.to_string_lossy().into_owned()))).collect();
+            let pictures: Vec<(Vec<u8>, String)> = paths.iter().filter(|path| crate::convert::reads(path)).filter_map(|path| Some((std::fs::read(path).ok()?, path.file_stem()?.to_string_lossy().into_owned()))).collect();
+            if matches!(screen, Shown::Home(_)) {
+                dropped_pictures = pictures.iter().filter_map(|(bytes, name)| Some((Image::open(bytes)?, name.clone()))).collect();
+            }
             match &mut screen {
                 Shown::Studio(studio) => {
-                    for (image, name) in dropped_pictures.drain(..) {
-                        studio.drop_picture(image, &name, drop_at);
+                    for (bytes, name) in &pictures {
+                        studio.drop_file(bytes, name, drop_at);
                     }
                     if let Some(path) = canvas_file {
                         studio.open_next = Some(path);

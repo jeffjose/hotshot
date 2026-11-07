@@ -109,6 +109,8 @@ pub(super) enum Ctl {
     /// which a click closes it on.
     Sheet,
     Scrim,
+    /// A part of the panel of how the board is exported, while it is open.
+    Exporting(exporting::Part),
 }
 
 /// What a board keeps of its own, in the window rather than the file.
@@ -207,11 +209,18 @@ pub(super) struct Board {
     /// How far the wheel has gone over that number toward the next step,
     /// and when it last stepped, for a run of it to be one step to undo.
     pub wheeled: (f32, Option<std::time::Instant>),
+    /// How the board is copied and exported, as its panel of options last
+    /// said; and that panel, while it is open.
+    pub choices: export::Choices,
+    pub exporting: Option<exporting::Panel>,
+    /// The next picture pasted is a picture, even one with a board inside
+    /// it: Ctrl+Shift+V.
+    pub paste_plain: bool,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None), choices: export::last_choices(), exporting: None, paste_plain: false }
     }
 }
 
@@ -227,6 +236,7 @@ mod explain;
 mod pick;
 pub(super) mod svg;
 pub(super) mod export;
+mod exporting;
 mod mermaid;
 mod neaten;
 mod zoom;
@@ -504,6 +514,7 @@ impl Studio {
             Ctl::Branch => self.branch_here(),
             Ctl::Now => self.history_now(),
             Ctl::Sheet | Ctl::Scrim => self.press_zoom(ctl),
+            Ctl::Exporting(part) => return self.press_exporting(part),
             Ctl::Arrange(at) => return self.act(bar::ARRANGE[usize::from(at).min(bar::ARRANGE.len() - 1)].0),
             other => self.press_style(other),
         }
@@ -650,7 +661,7 @@ impl Studio {
                 self.text.draw(canvas, rect.x + 30, cy - Text::line_height(12) / 2, 12, TEXT_COLOR, "Present");
             }
             // Drawn over everything, once the rest is.
-            Ctl::Sheet | Ctl::Scrim => {}
+            Ctl::Sheet | Ctl::Scrim | Ctl::Exporting(_) => {}
             other => self.draw_style_control(canvas, rect, other, hovered),
         }
     }

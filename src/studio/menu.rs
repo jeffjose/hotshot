@@ -397,23 +397,26 @@ impl Studio {
                 use super::board::{export, Act};
                 let copy = kind == MenuKind::CopyAs;
                 let kinds: &[u8] = if copy { &export::COPY_KINDS } else { &export::EXPORT_KINDS };
-                let entries = |whole: bool| kinds.iter().enumerate().map(move |(at, &which)| {
+                // The key is on the kind it copies or exports as, as the
+                // panel of options last said: PNG, as it begins.
+                let keyed = if copy { self.board.choices.copy_kind() } else { self.board.choices.kind };
+                let entries = |whole: bool| kinds.iter().map(move |&which| {
                     let act = match (copy, whole) {
                         (true, false) => Act::CopyAs(which),
                         (true, true) => Act::CopyBoard(which),
                         (false, false) => Act::Export(which),
                         (false, true) => Act::ExportBoard(which),
                     };
-                    // The first, PNG, has the key; for what is picked out,
-                    // or for the board where nothing is.
-                    let key = match (at, copy) {
-                        (0, true) => "Ctrl Shift C",
-                        (0, false) => "Ctrl E",
+                    // For what is picked out, or for the board where
+                    // nothing is.
+                    let key = match (which == keyed, copy) {
+                        (true, true) => "Ctrl Shift C",
+                        (true, false) => "Ctrl E",
                         _ => "",
                     };
                     Item::entry(export::KINDS[usize::from(which)], key, MenuAct::Board(act))
                 });
-                match self.chosen().is_empty() {
+                let mut items: Vec<Item> = match self.chosen().is_empty() {
                     true => entries(true).collect(),
                     false => {
                         let mut items = vec![Item::Heading("SELECTION")];
@@ -425,7 +428,11 @@ impl Studio {
                         }));
                         items
                     }
-                }
+                };
+                // And how they are: the size, the ground, the room round it.
+                items.push(Item::Rule);
+                items.push(Item::entry("Options\u{2026}", "Ctrl Shift E", MenuAct::Board(Act::ExportOptions)));
+                items
             }
             MenuKind::Lineup => {
                 let arrange = &super::board::bar::ARRANGE;
@@ -1086,7 +1093,10 @@ impl Studio {
             Command::RenamePage(page) => self.start_naming(Naming::Page(page), self.pages[page].name.clone()),
             Command::DuplicatePage(page) => self.duplicate_page(page),
             Command::DeletePage(page) => self.delete_page(page),
-            Command::PastePicture => return Outcome::Paste,
+            Command::PastePicture => {
+                self.board.paste_plain = true;
+                return Outcome::Paste;
+            }
             Command::RenameLayer(index) => {
                 if let Some(name) = self.doc.layers.get(index).map(Layer::name) {
                     self.start_naming(Naming::Layer(index), name);

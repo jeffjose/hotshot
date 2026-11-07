@@ -10,14 +10,111 @@ use crate::output::Format;
 pub(in crate::studio) const KINDS: [&str; 5] = ["PNG", "AVIF", "JPEG XL", "SVG", "JPEG"];
 
 /// The kinds, by their numbers in `KINDS`, a board is copied as, in the
-/// order offered: the ones a chat or a document takes from the clipboard.
-pub(in crate::studio) const COPY_KINDS: [u8; 2] = [0, 4];
+/// order offered: the ones a chat or a document takes from the clipboard,
+/// and an SVG as its words.
+pub(in crate::studio) const COPY_KINDS: [u8; 3] = [0, 4, 3];
 /// The kinds it is exported as, in the order offered: PNG and JPEG first,
 /// as most often wanted, then the smaller AVIF and JPEG XL, and SVG.
 pub(in crate::studio) const EXPORT_KINDS: [u8; 5] = [0, 4, 1, 2, 3];
 
-/// Room left round what is exported of a board.
-const MARGIN: f32 = 32.0;
+/// The most room its panel leaves round what is exported of a board.
+pub(in crate::studio) const MOST_ROOM: u16 = 160;
+
+/// How a board is copied and exported, as last chosen in its panel of
+/// options: as which of `KINDS`; one, two or three times its size; on its
+/// paper (0), on white (1) or on nothing (2); with so much room round
+/// it; and, a PNG, with the board inside it, to paste back as shapes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::studio) struct Choices {
+    pub kind: u8,
+    pub times: u8,
+    pub ground: u8,
+    pub room: u16,
+    pub keep: bool,
+}
+
+impl Default for Choices {
+    fn default() -> Choices {
+        Choices { kind: 0, times: 2, ground: 0, room: 32, keep: true }
+    }
+}
+
+impl Choices {
+    /// As a line of `board-export`, and read back from one, each thing
+    /// kept to what it can be.
+    pub(in crate::studio) fn word(self) -> String {
+        format!("{} {} {} {} {}\n", self.kind, self.times, self.ground, self.room, u8::from(self.keep))
+    }
+
+    pub(in crate::studio) fn read(line: &str) -> Choices {
+        let mut words = line.split_whitespace().map(|word| word.parse::<u16>().ok());
+        let mut next = |or: u16| words.next().flatten().unwrap_or(or);
+        let was = Choices::default();
+        Choices {
+            kind: next(u16::from(was.kind)).min(KINDS.len() as u16 - 1) as u8,
+            times: next(u16::from(was.times)).clamp(1, 3) as u8,
+            ground: next(u16::from(was.ground)).min(2) as u8,
+            room: next(was.room).min(MOST_ROOM),
+            keep: next(1) == 1,
+        }
+    }
+
+    /// The kind Ctrl+Shift+C copies as: what was chosen, where it can go
+    /// on the clipboard; a PNG where it cannot.
+    pub(in crate::studio) fn copy_kind(self) -> u8 {
+        if matches!(self.kind, 0 | 3 | 4) { self.kind } else { 0 }
+    }
+}
+
+/// What is said of a JPEG said to go on nothing.
+pub(in crate::studio) const LOST: &str = "A JPEG can't be see-through: it goes on white";
+
+/// What some layers are, counted by kind as a board's tools name them:
+/// "2 boxes, 1 arrow".
+pub(in crate::studio) fn counted(layers: &[Layer]) -> String {
+    let mut counts: Vec<(&str, &str, usize)> = Vec::new();
+    for layer in layers {
+        let (one, many) = match &layer.kind {
+            Kind::Picture(_) => ("picture", "pictures"),
+            Kind::Shape(shape) => match shape.tool {
+                Tool::Rect if shape.form == shapes::FORM_STICKY => ("note", "notes"),
+                Tool::Rect if shape.form == shapes::FORM_DIAMOND => ("diamond", "diamonds"),
+                Tool::Rect => ("box", "boxes"),
+                Tool::Ellipse => ("oval", "ovals"),
+                Tool::Arrow => ("arrow", "arrows"),
+                Tool::Line => ("line", "lines"),
+                Tool::Pen | Tool::Marker => ("drawing", "drawings"),
+                Tool::Text => ("text", "texts"),
+                _ => ("shape", "shapes"),
+            },
+        };
+        match counts.iter_mut().find(|(known, ..)| *known == one) {
+            Some(count) => count.2 += 1,
+            None => counts.push((one, many, 1)),
+        }
+    }
+    counts.iter().map(|&(one, many, count)| format!("{count} {}", if count == 1 { one } else { many })).collect::<Vec<_>>().join(", ")
+}
+
+/// How a board was last copied and exported, kept in `board-export` among
+/// hotshot's state, for the next to be so; as it begins, under test.
+pub(in crate::studio) fn last_choices() -> Choices {
+    if cfg!(test) {
+        return Choices::default();
+    }
+    crate::output::state_file("board-export").and_then(|file| std::fs::read_to_string(file).ok()).map_or_else(Choices::default, |kept| Choices::read(&kept))
+}
+
+pub(in crate::studio) fn keep_choices(choices: Choices) {
+    if cfg!(test) {
+        return;
+    }
+    let Some(file) = crate::output::state_file("board-export") else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, choices.word());
+}
 
 /// The longest side of a picture of a board, and how many pixels it may
 /// have in all: a board drawn far zoomed out is many thousands across, and
@@ -44,6 +141,29 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Base64 as the bytes it is; nothing, from anything else.
+fn unbase64(words: &str) -> Option<Vec<u8>> {
+    let value = |letter: u8| match letter {
+        b'A'..=b'Z' => Some(letter - b'A'),
+        b'a'..=b'z' => Some(letter - b'a' + 26),
+        b'0'..=b'9' => Some(letter - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let letters: Vec<u8> = words.bytes().filter(|letter| !letter.is_ascii_whitespace() && *letter != b'=').collect();
+    let mut out = Vec::with_capacity(letters.len() * 3 / 4);
+    for chunk in letters.chunks(4) {
+        let mut n = 0u32;
+        for (at, &letter) in chunk.iter().enumerate() {
+            n |= u32::from(value(letter)?) << (18 - 6 * at);
+        }
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&bytes[..chunk.len().saturating_sub(1)]);
+    }
+    Some(out)
 }
 
 fn hex(color: u32) -> String {
@@ -98,14 +218,17 @@ impl Studio {
         };
         let boxes: Vec<(f32, f32, f32, f32)> = layers.iter().map(|layer| layer.bounds(&mut self.text)).collect();
         let (x, y, w, h) = actions::union(&boxes)?;
-        Some((layers, (x - MARGIN, y - MARGIN, w + 2.0 * MARGIN, h + 2.0 * MARGIN), name))
+        // As much room round it as its panel last said.
+        let room = f32::from(self.board.choices.room);
+        Some((layers, (x - room, y - room, w + 2.0 * room, h + 2.0 * room), name))
     }
 
     /// Some layers as a frame of their own, a part of the board in size,
-    /// on its paper on a board and on nothing elsewhere.
+    /// on a board on what its panel last said it goes on, and on nothing
+    /// elsewhere.
     pub(in crate::studio) fn part_sheet(&self, layers: &[Layer], (x, y, w, h): (f32, f32, f32, f32)) -> Doc {
         let mut sheet = Doc::new(w.ceil().max(1.0) as i32, h.ceil().max(1.0) as i32);
-        sheet.background = if self.on_board() { Fill::Color(self.board_ground()) } else { Fill::None };
+        sheet.background = self.export_ground(self.board.choices.kind).map_or(Fill::None, Fill::Color);
         sheet.layers = layers.iter().map(|layer| {
             let mut layer = layer.clone();
             layer.translate(-x, -y);
@@ -120,8 +243,28 @@ impl Studio {
         self.paper().0
     }
 
+    /// What a board written as a kind goes on: its paper, white, or
+    /// nothing, as its panel last said; white for a JPEG said to go on
+    /// nothing, which it cannot. Nothing, off a board.
+    pub(in crate::studio) fn export_ground(&self, kind: u8) -> Option<u32> {
+        if !self.on_board() {
+            return None;
+        }
+        match self.board.choices.ground {
+            0 => Some(self.board_ground()),
+            2 if kind != 4 => None,
+            _ => Some(0xFFFFFF),
+        }
+    }
+
+    /// Whether a board written as a kind goes on white though said to go
+    /// on nothing, as a JPEG does.
+    pub(in crate::studio) fn ground_lost(&self, kind: u8) -> bool {
+        kind == 4 && self.board.choices.ground == 2
+    }
+
     /// The board, a frame of it, or what is picked out, written: as a
-    /// picture of a kind, twice its size to stay sharp; or as an SVG.
+    /// picture of a kind, at the size its panel last said; or as an SVG.
     pub(in crate::studio) fn export_board(&mut self, kind: u8) {
         self.export_board_of(kind, false);
     }
@@ -140,22 +283,35 @@ impl Studio {
         let stem = one_line(&name).replace('/', "-");
         let path = dir.join(format!("{stem}.{ending}"));
         match std::fs::write(&path, bytes) {
-            Ok(()) => self.show_exported(vec![path]),
+            Ok(()) => {
+                self.show_exported(vec![path]);
+                if self.ground_lost(kind) {
+                    self.say(LOST);
+                }
+            }
             Err(error) => self.say(format!("Could not write {}: {error}", path.display())),
         }
     }
 
     /// What is picked out, or the board where nothing is or `whole`, put
-    /// on the clipboard as a PNG or a JPEG (`kind` 0 or 4), twice its size
-    /// to stay sharp, to paste into a chat or a document.
+    /// on the clipboard as a PNG, a JPEG or an SVG's words (`kind` 0, 4 or
+    /// 3), at the size its panel last said, to paste into a chat or a
+    /// document; anything else as a PNG.
     pub(in crate::studio) fn copy_board(&mut self, kind: u8, whole: bool) {
-        let kind = if kind == 4 { 4 } else { 0 };
+        let kind = if matches!(kind, 3 | 4) { kind } else { 0 };
         let (bytes, ending, _) = match self.board_picture(kind, whole) {
             Ok(picture) => picture,
             Err(error) => return self.say(error),
         };
         let what = if whole || self.chosen().is_empty() { "Board" } else { "Selection" };
-        let said = format!("{what} copied as {}", if kind == 4 { "JPG" } else { "PNG" });
+        let mut said = format!("{what} copied as {}", match kind {
+            4 => "JPG",
+            3 => "SVG",
+            _ => "PNG",
+        });
+        if self.ground_lost(kind) {
+            said += ", on white";
+        }
         // Under test, kept to be looked at, and nothing started nor
         // written where hotshot keeps its things.
         if cfg!(test) {
@@ -175,16 +331,31 @@ impl Studio {
         }
     }
 
-    /// The board, a frame of it, or what is picked out, as the bytes of a
-    /// picture of a kind, its ending and its name; of the whole board,
-    /// however much is picked out, when `whole`.
-    fn board_picture(&mut self, kind: u8, whole: bool) -> Result<(Vec<u8>, &'static str, String), String> {
+    /// What is exported, and the part of the board it is in; of the whole
+    /// board, however much is picked out, when `whole`.
+    pub(in crate::studio) fn export_whole_or_part(&mut self, whole: bool) -> Option<(Vec<Layer>, (f32, f32, f32, f32), String)> {
         let kept = whole.then(|| std::mem::take(&mut self.selected));
         let part = self.export_part();
         if let Some(kept) = kept {
             self.selected = kept;
         }
-        let Some((layers, part, name)) = part else { return Err("Nothing to export".into()) };
+        part
+    }
+
+    /// How many times its size a part so wide and high is drawn: as many
+    /// as the panel last said on a board, a frame as it is; either smaller
+    /// where that would be too large to draw.
+    pub(in crate::studio) fn part_times(&self, w: f32, h: f32) -> f32 {
+        let wanted = if self.on_board() { f32::from(self.board.choices.times) } else { 1.0 };
+        export_times(wanted, w, h)
+    }
+
+    /// The board, a frame of it, or what is picked out, as the bytes of a
+    /// picture of a kind, its ending and its name; of the whole board,
+    /// however much is picked out, when `whole`. A PNG has what it shows
+    /// inside it as well, where the panel last said to keep it.
+    fn board_picture(&mut self, kind: u8, whole: bool) -> Result<(Vec<u8>, &'static str, String), String> {
+        let Some((layers, part, name)) = self.export_whole_or_part(whole) else { return Err("Nothing to export".into()) };
         Ok(match kind {
             3 => (self.board_svg(&layers, part).into_bytes(), "svg", name),
             _ => {
@@ -194,25 +365,108 @@ impl Studio {
                     4 => Format::Jpeg,
                     _ => Format::Png,
                 };
-                let sheet = self.part_sheet(&layers, part);
-                // A board twice its size, to stay sharp; a frame as it is;
-                // either smaller where that would be too large to draw.
-                let wanted = if self.on_board() { 2.0 } else { 1.0 };
-                let times = export_times(wanted, part.2, part.3);
+                let mut sheet = self.part_sheet(&layers, part);
+                sheet.background = self.export_ground(kind).map_or(Fill::None, Fill::Color);
+                let times = self.part_times(part.2, part.3);
                 let (w, h, pixels) = sheet.render(times, &mut self.text);
                 let clear = pixels.iter().any(|pixel| pixel >> 24 != 255);
                 let encoded = crate::convert::encode(w as u32, h as u32, &pixels, clear, None, format, &self.convert).map_err(|error| error.to_string())?;
-                (encoded.bytes, format.ending(), name)
+                let bytes = match format == Format::Png && self.board.choices.keep && self.on_board() {
+                    true => crate::output::with_board(encoded.bytes, &self.board_inside(&layers)),
+                    false => encoded.bytes,
+                };
+                (bytes, format.ending(), name)
             }
         })
+    }
+
+    /// Some layers of the board as a file of the canvas of one board, to go
+    /// inside a PNG of them: in the board's look, with the boxes that hold
+    /// others among them still holding them; its lines as they are, or
+    /// where it has pictures, the whole of it as base64.
+    pub(in crate::studio) fn board_inside(&self, layers: &[Layer]) -> String {
+        let ids: Vec<u32> = layers.iter().map(stacks::layer_id).collect();
+        let shown = &self.pages[self.page];
+        let mut page = Page::new(shown.name.clone(), Vec::new());
+        (page.board, page.styled, page.look, page.ground, page.font, page.px) = (true, true, shown.look, shown.ground, shown.font, shown.px);
+        page.loose.layers = layers.to_vec();
+        page.loose.stacks = self.doc.stacks.iter().filter(|stack| stack.holder.is_some_and(|holder| ids.contains(&holder)) && stack.members.iter().all(|member| ids.contains(member))).cloned().collect();
+        String::from_utf8(write_pages(&[page])).unwrap_or_else(|error| base64(error.as_bytes()))
+    }
+
+    /// A PNG with a board inside it, pasted or dropped on a board: what is
+    /// inside it put back as the shapes it was, each called something of
+    /// its own, as far apart as they were, in the middle of where a
+    /// picture would go; picked out, as one step to undo. Whether it had
+    /// a board inside it.
+    pub(in crate::studio) fn bring_board_png(&mut self, png: &[u8], at: Option<(i32, i32)>) -> bool {
+        let Some(words) = crate::output::board_of(png) else { return false };
+        let bytes = match words.starts_with("HOTSHOT CANVAS") {
+            true => Some(words.into_bytes()),
+            false => unbase64(&words),
+        };
+        let Some(page) = bytes.as_deref().and_then(read_pages).and_then(|pages| pages.into_iter().find(|page| page.board)) else { return false };
+        let (mut layers, mut nests) = (page.loose.layers, page.loose.stacks);
+        let boxes: Vec<(f32, f32, f32, f32)> = layers.iter().map(|layer| layer.bounds(&mut self.text)).collect();
+        let Some((x, y, w, h)) = actions::union(&boxes) else { return false };
+        self.commit_text();
+        self.checkpoint();
+        let at = at.filter(|&at| self.over_page(at)).unwrap_or_else(|| self.open_area().center());
+        self.work_at(at);
+        let middle = self.to_doc(at);
+        let by = ((middle.0 - (x + w / 2.0)).round(), (middle.1 - (y + h / 2.0)).round());
+        // Each called something of its own, what its ends were stuck to
+        // kept, to be stuck to the same again by its new name.
+        let mut names: Vec<(u32, u32)> = Vec::new();
+        for layer in &mut layers {
+            let was = stacks::layer_id(layer);
+            match &mut layer.kind {
+                Kind::Picture(picture) => picture.id = shapes::fresh_id(),
+                Kind::Shape(shape) => {
+                    let stuck = shape.stuck;
+                    *shape = shape.copied();
+                    shape.stuck = stuck;
+                }
+            }
+            layer.translate(by.0, by.1);
+            names.push((was, stacks::layer_id(layer)));
+        }
+        let renamed = |id: u32| names.iter().find(|(was, _)| *was == id).map(|&(_, now)| now);
+        for layer in &mut layers {
+            if let Kind::Shape(shape) = &mut layer.kind {
+                shape.stuck = shape.stuck.map(|end| end.and_then(|(id, u, v)| Some((renamed(id)?, u, v))));
+            }
+        }
+        // And the boxes holding others hold their copies.
+        nests.retain_mut(|stack| {
+            let members: Option<Vec<u32>> = stack.members.iter().map(|&member| renamed(member)).collect();
+            match (members, stack.holder.and_then(renamed)) {
+                (Some(members), Some(holder)) => {
+                    (stack.id, stack.members, stack.holder, stack.seen) = (shapes::fresh_id(), members, Some(holder), Vec::new());
+                    (stack.x, stack.y) = (stack.x + by.0, stack.y + by.1);
+                    true
+                }
+                _ => false,
+            }
+        });
+        let said = counted(&layers);
+        let start = self.doc.layers.len();
+        self.doc.layers.extend(layers);
+        self.doc.stacks.extend(nests);
+        self.selected = (start..self.doc.layers.len()).collect();
+        self.tool = Tool::Select;
+        self.changed();
+        self.say(format!("Opened as shapes: {said}"));
+        true
     }
 
     /// Some layers of the board as an SVG, the part given its whole: each
     /// shape as its hand drew it, words as words, the rest as pictures.
     pub(in crate::studio) fn board_svg(&mut self, layers: &[Layer], (x, y, w, h): (f32, f32, f32, f32)) -> String {
+        // Sharp at any size, so at its own; on what the panel last said.
         let mut out = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w:.0}\" height=\"{h:.0}\" viewBox=\"{x:.1} {y:.1} {w:.1} {h:.1}\">\n");
-        if self.on_board() {
-            out += &format!("  <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" fill=\"{}\"/>\n", hex(self.board_ground()));
+        if let Some(ground) = self.export_ground(3) {
+            out += &format!("  <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" fill=\"{}\"/>\n", hex(ground));
         }
         for layer in layers {
             match &layer.kind {
@@ -386,8 +640,8 @@ mod tests {
         for want in ["Paste here", "Copy board as", "Export board as", "Theme", "Paper"] {
             assert!(offered.contains(&want.to_owned()), "{want} in {offered:?}");
         }
-        assert_eq!(says(&mut studio, MenuKind::CopyAs), ["PNG", "JPEG"]);
-        assert_eq!(says(&mut studio, MenuKind::ExportAs), ["PNG", "JPEG", "AVIF", "JPEG XL", "SVG"]);
+        assert_eq!(says(&mut studio, MenuKind::CopyAs), ["PNG", "JPEG", "SVG", "-", "Options\u{2026}"]);
+        assert_eq!(says(&mut studio, MenuKind::ExportAs), ["PNG", "JPEG", "AVIF", "JPEG XL", "SVG", "-", "Options\u{2026}"]);
         // A box picked out: that, and the whole board after it, in each.
         studio.selected = vec![0];
         let offered = says(&mut studio, MenuKind::Context);
@@ -397,7 +651,7 @@ mod tests {
         for gone in ["Copy frame as PNG", "Add auto layout", "Export frame", "Apply style", "Show / hide"] {
             assert!(!offered.contains(&gone.to_owned()), "no {gone} on a board: {offered:?}");
         }
-        assert_eq!(says(&mut studio, MenuKind::CopyAs), ["[SELECTION]", "PNG", "JPEG", "[WHOLE BOARD]", "PNG", "JPEG"]);
+        assert_eq!(says(&mut studio, MenuKind::CopyAs), ["[SELECTION]", "PNG", "JPEG", "SVG", "[WHOLE BOARD]", "PNG", "JPEG", "SVG", "-", "Options\u{2026}"]);
         // Copied: Ctrl+Shift+C, the box alone as a PNG; and the whole
         // board as a JPG, wider.
         press_key(&mut studio, Key::Char('C'), Mods { ctrl: true, shift: true, ..Mods::default() });
@@ -490,5 +744,118 @@ mod tests {
         assert_eq!((w, pixels[0] & 0xFF_FFFF), (400, shapes::PAPER));
         assert_eq!(base64(b"Man"), "TWFu");
         assert_eq!(base64(b"Ma"), "TWE=");
+        for bytes in [&b"Man"[..], b"Ma", b"M", b"", b"\x00\xFF\x80hotshot"] {
+            assert_eq!(unbase64(&base64(bytes)).as_deref(), Some(bytes));
+        }
+        assert_eq!(unbase64("not base64!"), None);
+    }
+
+    /// A board of two boxes with words, joined by an arrow.
+    fn joined() -> Studio {
+        let mut studio = board();
+        for (from, to, words) in [((100.0, 300.0), (260.0, 372.0), "Proxy"), ((500.0, 300.0), (660.0, 372.0), "Auth")] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, to, Mods::default());
+            type_in(&mut studio, words);
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+        }
+        studio.join(0, 1);
+        studio.selected.clear();
+        studio
+    }
+
+    #[test]
+    fn a_board_copied_as_a_png_has_the_board_in_it_and_pastes_back_as_its_shapes() {
+        let mut studio = joined();
+        studio.copy_board(0, true);
+        let png = studio.copied_picture.take().unwrap();
+        assert!(crate::output::board_of(&png).is_some_and(|inside| inside.starts_with("HOTSHOT CANVAS")), "the board in it, as its file's lines");
+        // Pasted: the same three shapes again, each its own, the arrow
+        // joining the new boxes, picked out, in the middle of the view.
+        let (before, undos) = (studio.doc.layers.len(), studio.undo.len());
+        studio.pasted(Some(png.clone()), None);
+        assert_eq!(studio.doc.layers.len(), before + 3);
+        assert_eq!(studio.selected, vec![3, 4, 5]);
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Opened as shapes: 2 boxes, 1 arrow"));
+        let (old, new): (Vec<Shape>, Vec<Shape>) = ((0..3).map(|at| shape(&studio, at)).collect(), (3..6).map(|at| shape(&studio, at)).collect());
+        assert!(new.iter().all(|copy| old.iter().all(|was| was.id != copy.id)), "called something of its own");
+        assert_eq!(new[2].stuck.map(|end| end.map(|(id, ..)| id)), [Some(new[0].id), Some(new[1].id)], "the arrow joins the new boxes");
+        assert_eq!((new[0].text.as_str(), new[1].text.as_str()), ("Proxy", "Auth"));
+        let by = (new[0].frame().0 - old[0].frame().0, new[0].frame().1 - old[0].frame().1);
+        for (was, copy) in old.iter().zip(&new) {
+            let (a, b) = (was.frame(), copy.frame());
+            assert!((b.0 - a.0 - by.0).abs() < 0.5 && (b.1 - a.1 - by.1).abs() < 0.5 && (b.2 - a.2).abs() < 0.5 && (b.3 - a.3).abs() < 0.5, "as far apart: {a:?} {b:?}");
+        }
+        let boxes: Vec<(f32, f32, f32, f32)> = (3..6).map(|at| studio.doc.layers[at].bounds(&mut studio.text)).collect();
+        let (x, y, w, h) = actions::union(&boxes).unwrap();
+        let middle = studio.to_doc(studio.open_area().center());
+        assert!((x + w / 2.0 - middle.0).abs() <= 1.0 && (y + h / 2.0 - middle.1).abs() <= 1.0, "in the middle of the view");
+        // One step to undo.
+        assert_eq!(studio.undo.len(), undos + 1);
+        studio.undo();
+        assert_eq!(studio.doc.layers.len(), before);
+        // Dropped from a file manager: the same, where it was dropped.
+        let at = studio.to_window_page((900.0, 700.0));
+        studio.drop_file(&png, "Board 1", Some(at));
+        assert_eq!(studio.doc.layers.len(), before + 3);
+        let boxes: Vec<(f32, f32, f32, f32)> = (3..6).map(|at| studio.doc.layers[at].bounds(&mut studio.text)).collect();
+        let (x, y, w, h) = actions::union(&boxes).unwrap();
+        assert!((x + w / 2.0 - 900.0).abs() <= 1.0 && (y + h / 2.0 - 700.0).abs() <= 1.0, "where it was dropped");
+        studio.undo();
+        // Asked for as a picture, Ctrl+Shift+V, it is one.
+        let ctrl_shift = Mods { ctrl: true, shift: true, ..Mods::default() };
+        assert_eq!(studio.key(Key::Char('V'), ctrl_shift, true), Outcome::Paste);
+        studio.key(Key::Char('V'), ctrl_shift, false);
+        studio.pasted(Some(png), None);
+        assert!(matches!(studio.doc.layers.last().map(|layer| &layer.kind), Some(Kind::Picture(_))));
+        studio.undo();
+        // Not kept in it, or a JPEG: a picture.
+        studio.board.choices.keep = false;
+        studio.copy_board(0, true);
+        let plain = studio.copied_picture.take().unwrap();
+        assert_eq!(crate::output::board_of(&plain), None);
+        studio.board.choices.keep = true;
+        studio.copy_board(4, true);
+        let jpeg = studio.copied_picture.take().unwrap();
+        for picture in [plain, jpeg] {
+            studio.pasted(Some(picture), None);
+            assert_eq!(studio.doc.layers.len(), before + 1);
+            assert!(matches!(studio.doc.layers[before].kind, Kind::Picture(_)));
+            studio.undo();
+        }
+        // Into a page of frames: a picture, as it shows.
+        studio.copy_board(0, true);
+        let png = studio.copied_picture.take().unwrap();
+        studio.set_mode(false);
+        let count = studio.doc.layers.len();
+        studio.pasted(Some(png), None);
+        assert!(studio.doc.layers.len() == count + 1 && matches!(studio.doc.layers[count].kind, Kind::Picture(_)));
+    }
+
+    #[test]
+    fn a_picture_in_a_box_goes_with_the_board_in_its_png_and_is_in_the_box_pasted_back() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (280.0, 200.0), Mods::default());
+        type_in(&mut studio, "Backend");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let image = Arc::new(Image::new(120, 60, vec![0xFF3E_63DD; 120 * 60]));
+        studio.doc.layers.push(Layer::picture(Picture::new(image, "Screenshot".into(), (600.0, 150.0))));
+        studio.changed();
+        pull(&mut studio, (600.0, 150.0), (200.0, 170.0), Mods::default());
+        let held = studio.id_of(1);
+        assert_eq!(studio.holder_of(held), Some(studio.id_of(0)), "in the box");
+        studio.selected = vec![0];
+        studio.copy_board(0, false);
+        let png = studio.copied_picture.take().unwrap();
+        assert!(crate::output::board_of(&png).is_some_and(|inside| !inside.starts_with("HOTSHOT")), "with a picture, as base64");
+        studio.pasted(Some(png), None);
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Opened as shapes: 1 box, 1 picture"));
+        let (boxed, picture) = (studio.id_of(2), studio.id_of(3));
+        assert!(matches!(&studio.doc.layers[3].kind, Kind::Picture(picture) if picture.image.width() == 120 && picture.image.levels[0].2[0] & 0xFF_FFFF == 0x3E63DD));
+        assert_eq!(studio.holder_of(picture), Some(boxed), "the picture in the new box");
+        assert_eq!(studio.holder_of(held), Some(studio.id_of(0)), "and the first still in its own");
     }
 }

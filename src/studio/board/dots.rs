@@ -131,6 +131,9 @@ impl Studio {
     /// The pointer moved with nothing held on a board: the box whose dots
     /// show, the one it is over or still near, or the one picked out.
     pub(in crate::studio) fn board_hover(&mut self, at: (i32, i32), over_control: bool) {
+        if self.exporting_slide(at.0) {
+            return;
+        }
         if self.board.history.as_ref().is_some_and(|history| history.sliding) {
             return self.history_at(at.0);
         }
@@ -662,6 +665,7 @@ impl Studio {
     /// After a drag on a board is let go, as a board has it: an arrow's
     /// end let go on a box stuck to it as a whole.
     pub(in crate::studio) fn board_after_release(&mut self, drag: Drag) {
+        self.exporting_released();
         if let Some(history) = &mut self.board.history {
             history.sliding = false;
         }

@@ -770,6 +770,21 @@ its words as words in its lettering, and anything else, a picture or a
 counter, as a picture in its place. On a page of frames, `Ctrl+K`
 exports what is picked out as a PNG, AVIF or JPEG XL of its own.
 
+`Ctrl+Shift+E`, or Options… at the end of Copy as and Export as in the
+right click, opens the board's export options: a small picture of what
+will be written, over its format (PNG, JPEG, SVG or AVIF), its size (1×,
+2× or 3×), what it is on (the board's paper, white, or nothing, which a
+JPEG can't be and goes on white), the room round it, and whether a PNG
+keeps the board in it. Copy (`Ctrl+Shift+C`) or Export… (`Ctrl+E`).
+What is chosen is how `Ctrl+Shift+C`, `Ctrl+E` and the right click copy
+and export after, and is kept for the next time.
+
+A PNG of a board, copied or exported, has the board in it, pictures
+and all, as Excalidraw's do: pasted or dropped on a board, it opens as
+the shapes it was, joined as they were, picked out, in one step to
+undo. Any other program shows it as the picture it is. `Ctrl+Shift+V`
+pastes it as a picture instead.
+
 ## Pinning
 
 `Ctrl+P`, the pin button, or `--pin` keeps the screenshot on screen in a

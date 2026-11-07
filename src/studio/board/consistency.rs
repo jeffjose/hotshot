@@ -479,3 +479,83 @@ fn a_key_does_what_the_panel_or_the_menu_does_for_it() {
         assert!(by_key.is_some() && by_key == studio.copied_picture, "look {look}: the same picture copied");
     }
 }
+
+#[test]
+fn in_each_look_each_export_choice_changes_the_picture_as_it_says_and_nothing_on_the_board() {
+    for look in 0..=look::DIAGRAM {
+        let (mut studio, _) = furnished(look);
+        let (file, undos) = (write_pages(&studio.gathered()), studio.undo.len());
+        let copy = |studio: &mut Studio| {
+            studio.copy_board(0, true);
+            let png = studio.copied_picture.take().expect("copied");
+            let picture = crate::convert::decode(&png).expect("a PNG");
+            (picture.width, picture.height, picture.pixels[0], crate::output::board_of(&png))
+        };
+        let (w, h, corner, inside) = copy(&mut studio);
+        assert!(inside.is_some(), "look {look}: the board in it");
+        // Each choice: what it changes of the picture; the board in it
+        // the same throughout.
+        let changes: [(&str, fn(&mut export::Choices)); 5] = [
+            ("1x", |choices| choices.times = 1),
+            ("white", |choices| choices.ground = 1),
+            ("none", |choices| choices.ground = 2),
+            ("room", |choices| choices.room = 64),
+            ("not kept", |choices| choices.keep = false),
+        ];
+        for (name, change) in changes {
+            let was = studio.board.choices;
+            change(&mut studio.board.choices);
+            let (cw, ch, ccorner, cinside) = copy(&mut studio);
+            let size = match name {
+                "1x" => (w / 2, h / 2),
+                "room" => (w + 2 * 2 * 32, h + 2 * 2 * 32),
+                _ => (w, h),
+            };
+            assert!((cw - size.0).abs() <= 1 && (ch - size.1).abs() <= 1, "look {look}, {name}: {cw}x{ch}, not {size:?}");
+            let ground = match name {
+                "white" => 0xFFFF_FFFF,
+                "none" => 0,
+                _ => corner,
+            };
+            assert_eq!(ccorner, ground, "look {look}, {name}: its ground");
+            assert_eq!(cinside.is_some(), name != "not kept", "look {look}, {name}: the board in it or not");
+            if let (Some(a), Some(b)) = (&inside, &cinside) {
+                assert!(a == b, "look {look}, {name}: the same board in it");
+            }
+            studio.board.choices = was;
+        }
+        assert!(write_pages(&studio.gathered()) == file && studio.undo.len() == undos, "look {look}: nothing on the board changed");
+    }
+}
+
+#[test]
+fn in_each_look_a_board_copied_as_a_png_pastes_back_as_the_same_shapes_in_one_step() {
+    for look in 0..=look::DIAGRAM {
+        let (mut studio, _) = furnished(look);
+        let was = all(&studio);
+        let count = studio.doc.layers.len();
+        press_key(&mut studio, Key::Char('C'), Mods { ctrl: true, shift: true, ..Mods::default() });
+        let png = studio.copied_picture.take().unwrap_or_else(|| panic!("look {look}: copied"));
+        // Pasted where the view is, moved well off it, so that nothing
+        // pasted is in the way of an arrow already there.
+        studio.pan.0 -= 3000.0;
+        let undos = studio.undo.len();
+        studio.pasted(Some(png), None);
+        assert_eq!((studio.doc.layers.len(), studio.undo.len()), (count * 2, undos + 1), "look {look}: all of it again, one step to undo");
+        assert_eq!(all(&studio)[..was.len()], was[..], "look {look}: what was there as it was");
+        // The same shapes, joined the same, moved together: what differs
+        // is where, by one step across and down for all.
+        let pasted = all_of(&studio.doc.layers[count..]);
+        let frame = |print: &[(&'static str, String)]| print.iter().find(|(name, _)| *name == "frame").map(|(_, frame)| frame.split(' ').map(|v| v.parse::<f32>().unwrap()).collect::<Vec<_>>()).unwrap();
+        let by = (frame(&pasted[0])[0] - frame(&was[0])[0], frame(&pasted[0])[1] - frame(&was[0])[1]);
+        for (at, (a, b)) in was.iter().zip(&pasted).enumerate() {
+            let differ: Vec<&str> = changed(a, b).into_iter().filter(|name| !matches!(*name, "frame" | "points")).collect();
+            assert!(differ.is_empty(), "look {look}, shape {at}: {differ:?}");
+            let (fa, fb) = (frame(a), frame(b));
+            assert!((fb[0] - fa[0] - by.0).abs() <= 0.5 && (fb[1] - fa[1] - by.1).abs() <= 0.5 && fa[2..] == fb[2..], "look {look}, shape {at}: moved with the rest {fa:?} {fb:?}");
+        }
+        assert_eq!(studio.selected, (count..count * 2).collect::<Vec<_>>(), "look {look}: picked out");
+        studio.undo();
+        assert_eq!(all(&studio), was, "look {look}: undone, as it was");
+    }
+}
