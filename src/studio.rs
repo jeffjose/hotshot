@@ -3635,6 +3635,11 @@ impl Studio {
             return self.fine_moved(x, y);
         }
         self.pointer_cursor = self.pointer_shape();
+        // Over a button or a panel floating on the page, the pointer, not
+        // the tool in hand: a click there presses it rather than drawing.
+        if self.drag == Drag::None && self.pointer_cursor.is_none() && self.control_at((x, y)).is_some_and(|control| !matches!(control, Control::Frame(_))) {
+            self.pointer_cursor = Some(Cursor::Arrow);
+        }
         let at = self.to_doc((x, y));
         match self.drag {
             Drag::Picker { part, rect } => self.pick_at(part, rect, (x, y), false),

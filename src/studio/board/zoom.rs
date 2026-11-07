@@ -108,6 +108,21 @@ mod tests {
     }
 
     #[test]
+    fn over_the_pill_the_bar_or_the_panel_the_pointer_is_an_arrow_whatever_tool_is_in_hand() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        let pill = studio.control_rect(Control::Home).unwrap();
+        studio.pointer_moved(pill.center().0, pill.center().1, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Arrow, "over the pill");
+        let dock = studio.layout().dock;
+        studio.pointer_moved(dock.center().0, dock.center().1, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Arrow, "over the bar of tools");
+        // On the board, the tool's.
+        studio.pointer_moved(700, 400, Mods::default());
+        assert_eq!(studio.cursor(), Cursor::Crosshair, "drawing a box");
+    }
+
+    #[test]
     fn the_logo_s_menu_on_a_board_has_its_theme_paper_guessing_and_keys() {
         let mut studio = board();
         open_menu(&mut studio);

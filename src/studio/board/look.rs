@@ -58,17 +58,18 @@ pub(in crate::studio) fn figjam(color: u32) -> u32 {
         (0x7048E8, 0x743EE4),
         (0xC2255C, 0xC7317A),
         (0x868E96, 0x757575),
-        // Tints.
-        (0xFFE3E3, 0xFCF2F2),
-        (0xFFE8CC, 0xFEF7EE),
-        (0xFFF3BF, 0xFCF3CC),
-        (0xD3F9D8, 0xEFFDF6),
-        (0xC5F6FA, 0xEDFBFB),
-        (0xD0EBFF, 0xEBF2FE),
-        (0xE5DBFF, 0xF5F3FE),
-        (0xFFDEEB, 0xFDF0F6),
-        (0xF1F3F5, 0xF5F5F5),
-        (0xE9ECEF, 0xF0F0F0),
+        // Tints: FigJam's light ones, as its shapes are filled, not the
+        // near white of its sections, which a box in would read as white.
+        (0xFFE3E3, 0xFFC7C2),
+        (0xFFE8CC, 0xFFE0C2),
+        (0xFFF3BF, 0xFFECBD),
+        (0xD3F9D8, 0xCDF4D3),
+        (0xC5F6FA, 0xC6FAF6),
+        (0xD0EBFF, 0xC2E5FF),
+        (0xE5DBFF, 0xDCCCFF),
+        (0xFFDEEB, 0xFFBDF2),
+        (0xF1F3F5, 0xE6E6E6),
+        (0xE9ECEF, 0xE6E6E6),
         // Mermaid's own.
         (0x74C0FC, 0x3662E3),
         (0xB197FC, 0x743EE4),
@@ -513,7 +514,7 @@ pub(in crate::studio) mod tests {
     #[test]
     fn diagram_colors_are_figjam_s() {
         assert_eq!(figjam(0x1971C2), 0x3662E3);
-        assert_eq!(figjam(0xD0EBFF), 0xEBF2FE);
+        assert_eq!(figjam(0xD0EBFF), 0xC2E5FF, "light blue, not near white");
         assert_eq!(figjam(0xE03131), 0xCA3A31);
         assert_eq!(figjam(0x123456), 0x123456, "anything else as it is");
         assert_eq!(paper_of(DIAGRAM, 0), (DIAGRAM_PAPER, DIAGRAM_PAPER));
@@ -931,6 +932,30 @@ pub(in crate::studio) mod tests {
             studio.draw(&mut out);
             eprintln!("look {look} ground {ground}: drop {:?}", studio.board.drop.map(|drop| drop.split));
             std::fs::write(to.join(format!("drop-{look}-{ground}.png")), crate::output::encode(studio.width as u32, studio.height as u32, &out, false).unwrap()).unwrap();
+        }
+    }
+
+    /// The panel of styles beside a box, in Rounded and in Diagram:
+    ///
+    ///     HOTSHOT_SNAPSHOTS=shots cargo test palette_snapshot -- --ignored
+    #[test]
+    #[ignore]
+    fn palette_snapshot() {
+        let Some(to) = std::env::var_os("HOTSHOT_SNAPSHOTS") else { return };
+        let to = std::path::PathBuf::from(to);
+        std::fs::create_dir_all(&to).unwrap();
+        for look in [0u8, DIAGRAM] {
+            let mut studio = board();
+            studio.set_look(Some(look), None);
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (900.0, 300.0), (1060.0, 372.0), Mods::default());
+            type_in(&mut studio, "Proxy");
+            press_key(&mut studio, Key::Escape, Mods::default());
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            studio.draw(&mut out);
+            let (x, y, w, h) = (860, 40, 540, 460);
+            let crop: Vec<u32> = (y..y + h).flat_map(|row| out[(row * studio.width + x) as usize..(row * studio.width + x + w) as usize].to_vec()).collect();
+            std::fs::write(to.join(format!("palette-{look}.png")), crate::output::encode(w as u32, h as u32, &crop, false).unwrap()).unwrap();
         }
     }
 
