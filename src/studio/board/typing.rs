@@ -126,7 +126,7 @@ impl Studio {
     /// What a drag on a board let go of did, where it is a board's own: a
     /// shape drawn, typed into at once; an arrow pulled out of a side.
     pub(in crate::studio) fn board_released(&mut self, drag: Drag) -> bool {
-        if self.beam_released() {
+        if self.beam_released() || self.erase_or_lasso_released() {
             return true;
         }
         match drag {
@@ -394,12 +394,16 @@ impl Studio {
     /// a key colors; and a letter takes up one of the board's tools.
     /// Nothing, for what is not a board's.
     pub(in crate::studio) fn board_key(&mut self, key: Key, lower: Key, mods: Mods) -> Option<Outcome> {
+        // Esc with the eraser held, or a lasso drawn: all kept as it was.
+        if key == Key::Escape && self.erase_or_lasso_cancelled() {
+            return Some(Outcome::Continue);
+        }
         if key == Key::Escape && self.board.focus.take().is_some() {
             self.dirty = true;
             return Some(Outcome::Continue);
         }
-        // Esc puts the laser down, the pointer back in hand.
-        if key == Key::Escape && self.board.laser_tool {
+        // Esc puts the laser or the eraser down, the pointer back in hand.
+        if key == Key::Escape && (self.board.laser_tool || self.board.eraser_tool) {
             return Some(self.take_board_tool(SELECT));
         }
         if mods.ctrl || mods.alt {
@@ -472,7 +476,7 @@ impl Studio {
         }
         if letter == 'c' {
             self.board.coloring = true;
-            self.say("Color: 1\u{2013}0 a color, Q no fill, W paper, E tint, R hatched");
+            self.say("Color: 1\u{2013}0 a color, Q no fill, W paper, E tint, R hatched, T crossed, Y dotted");
             return Some(Outcome::Continue);
         }
         let which = TOOLS.iter().position(|(_, key)| *key == letter)?;
@@ -490,13 +494,14 @@ impl Studio {
 }
 
 /// What C and a key colors with: 1 to 9 and 0 a color by name, its line
-/// and its tint; Q no fill, W the paper, E a tint, R hatched; X no fill.
+/// and its tint; Q no fill, W the paper, E a tint, R hatched, T crossed,
+/// Y dotted; X no fill.
 fn color_key(key: Key) -> Option<Ctl> {
     let Key::Char(letter) = key else { return None };
     if let Some(at) = "1234567890".find(letter) {
         return Some(Ctl::Color(at as u8));
     }
-    if let Some(kind) = "qwer".find(letter) {
+    if let Some(kind) = "qwerty".find(letter) {
         return Some(Ctl::FillKind(kind as u8));
     }
     (letter == 'x').then_some(Ctl::FillKind(0))

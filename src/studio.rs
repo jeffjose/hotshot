@@ -3607,6 +3607,10 @@ impl Studio {
         if !self.over_page(self.pointer) {
             return Cursor::Arrow;
         }
+        // The eraser, its ring drawn round the pointer; a lasso drawn.
+        if self.on_board() && (self.board.eraser_tool || self.board.lasso.is_some()) {
+            return Cursor::Crosshair;
+        }
         if self.framing || self.eyedropping {
             return Cursor::Crosshair;
         }
@@ -3631,7 +3635,7 @@ impl Studio {
         self.crop_window();
         let mods = self.steady_mods(mods);
         (self.pointer, self.mods) = ((x, y), mods);
-        if self.on_board() && self.drag == Drag::None && self.laser_moved((x, y)) {
+        if self.on_board() && self.drag == Drag::None && (self.laser_moved((x, y)) || self.erase_or_lasso_moved((x, y))) {
             return;
         }
         if self.fine.is_some() && self.drag == Drag::None {
@@ -3940,6 +3944,11 @@ impl Studio {
         self.board.typed = None;
         (self.palette, self.flyout) = (None, None);
         let off_everything = self.frame_at(self.to_page(at_window)).is_none() && self.page_layer_at(self.to_page(at_window)).is_none() && !self.near_selection(at_window);
+        // On a board, the eraser; and Alt on empty board a lasso, rather
+        // than the hand, which Space is.
+        if self.on_board() && self.erase_or_lasso_press(at_window, off_everything) {
+            return Outcome::Continue;
+        }
         if self.space || self.tool == Tool::Select && self.mods.alt && off_everything {
             self.drag = Drag::Pan { from: at_window, origin: self.pan };
             return Outcome::Continue;
@@ -4627,9 +4636,9 @@ impl Studio {
     fn set_tool(&mut self, tool: Tool) {
         self.commit_text();
         self.cropping = None;
-        let changed = (self.tool, self.framing) != (tool, false) || self.board.laser_tool;
+        let changed = (self.tool, self.framing) != (tool, false) || self.board.laser_tool || self.board.eraser_tool;
         (self.tool, self.framing) = (tool, false);
-        self.board.laser_tool = false;
+        (self.board.laser_tool, self.board.eraser_tool) = (false, false);
         if tool != Tool::Select {
             self.frame_picked = false;
         }

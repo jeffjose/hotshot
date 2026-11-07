@@ -20,6 +20,10 @@ impl Studio {
         Some(match ctl {
             Ctl::Tool(which) => TOOLS.get(usize::from(which)).map(|(name, key)| format!("{name}  {}", key.to_ascii_uppercase()))?,
             Ctl::Arrange(at) => bar::ARRANGE.get(usize::from(at))?.1.to_owned(),
+            // What each fill is, how loosely by hand, and the slider.
+            Ctl::FillKind(kind) => bar::FILL_SAYS.get(usize::from(kind))?.to_string(),
+            Ctl::Rough(kind) => bar::ROUGH_SAYS.get(usize::from(kind))?.to_string(),
+            Ctl::Opacity => "Opacity: drag, 10% to 100%".to_owned(),
             _ => return None,
         })
     }

@@ -13,6 +13,8 @@ pub(in crate::studio) const LOOKS: [&str; 4] = ["Rounded", "Sketchy", "Clean", "
 /// The look drawn as a diagram tool draws, FigJam's way: by where it is
 /// among `LOOKS`.
 pub(in crate::studio) const DIAGRAM: u8 = 3;
+/// The first of the looks not drawn by hand.
+pub(in crate::studio) const CLEAN: u8 = 2;
 /// The light ground under the Diagram look: flat gray, no dots.
 pub(in crate::studio) const DIAGRAM_PAPER: u32 = 0xF5F5F5;
 
@@ -207,6 +209,18 @@ pub(in crate::studio) fn first_look(page: &mut Page) {
 /// A shape as a board of a look, on a ground, draws it: drawn `times` its
 /// size, as an export does.
 pub(in crate::studio) fn dress(shape: &mut Shape, look: u8, ground: u8, times: f32) {
+    // A highlighter: in the bright ink of its color, a little uneven by
+    // hand in Rounded and Sketchy and even in Clean and Diagram, as wide in
+    // each; on the dark, laid over rather than deepening.
+    if shape.tool == Tool::Marker {
+        (shape.highlighter, shape.color) = (true, board::highlight_ink(shape.color));
+        shape.sketch &= look <= 1;
+        if ground > 0 {
+            shape.paper = paper_of(look, ground).0.max(1);
+        }
+        shape.touch();
+        return;
+    }
     let boxy = matches!(shape.tool, Tool::Rect | Tool::Ellipse);
     match look {
         0 => {
@@ -1210,6 +1224,11 @@ pub(in crate::studio) mod tests {
         }).collect();
         studio.board_dress(&mut pen);
         studio.doc.layers.push(Layer::shape(pen));
+        // A highlighter across the words of the oval and the diamond.
+        let mut marker = Shape::new(Tool::Marker, INK, LINE, (30.0, 230.0));
+        marker.points = (0..=30).map(|step| (30.0 + step as f32 * 9.0, 229.0 + (step as f32 * 0.4).sin() * 2.0)).collect();
+        studio.board_dress(&mut marker);
+        studio.doc.layers.push(Layer::shape(marker));
         studio.selected.clear();
         for (look, name) in LOOKS.iter().enumerate() {
             for (ground, paper) in GROUNDS.iter().enumerate() {
@@ -1221,6 +1240,139 @@ pub(in crate::studio) mod tests {
                 let file = format!("{}-{}.png", name.to_lowercase(), paper.to_lowercase().replace(' ', "-"));
                 std::fs::write(to.join(file), crate::output::encode(pw as u32, ph as u32, &pixels, false).unwrap()).unwrap();
             }
+        }
+    }
+
+    /// Each fill, hatched, crossed and dotted, at each roughness, with an
+    /// arrow and an oval drawn so, and highlighters over words, in each
+    /// look; and in the window the eraser dragged across, a lasso drawn
+    /// and the panel with its new rows:
+    ///
+    ///     HOTSHOT_SNAPSHOTS=shots cargo test drawing_snapshots -- --ignored
+    #[test]
+    #[ignore]
+    fn drawing_snapshots() {
+        let Some(to) = std::env::var_os("HOTSHOT_SNAPSHOTS") else { return };
+        let to = std::path::PathBuf::from(to);
+        std::fs::create_dir_all(&to).unwrap();
+        let write = |name: &str, (w, h, pixels): (i32, i32, Vec<u32>)| std::fs::write(to.join(name), crate::output::encode(w as u32, h as u32, &pixels, false).unwrap()).unwrap();
+        for (look, name) in LOOKS.iter().enumerate() {
+            for ground in [0u8, 1] {
+                let mut studio = board();
+                (studio.pages[0].look, studio.pages[0].ground) = (look as u8, ground);
+                // Rows: hatched, crossed, dotted, a tint; columns: neat,
+                // normal, loose.
+                for (row, (hatch, pattern, swatch)) in [(true, shapes::PATTERN_LINES, 7usize), (true, shapes::PATTERN_CROSS, 2), (true, shapes::PATTERN_DOTS, 5), (false, 0, 8)].into_iter().enumerate() {
+                    for rough in 0..3u8 {
+                        let (x, y) = (30.0 + f32::from(rough) * 250.0, 30.0 + row as f32 * 100.0);
+                        let mut shape = Shape::new(Tool::Rect, INK, LINE, (x, y));
+                        shape.points[1] = (x + 140.0, y + 70.0);
+                        studio.board_dress(&mut shape);
+                        (shape.color, shape.fill, shape.hatch, shape.pattern, shape.rough) = (SWATCHES[swatch].0, SWATCHES[swatch].1, hatch, pattern, rough);
+                        shape.text = ["Neat", "Normal", "Loose"][usize::from(rough)].into();
+                        studio.doc.layers.push(Layer::shape(shape));
+                        let mut oval = Shape::new(Tool::Ellipse, INK, LINE, (x + 160.0, y + 10.0));
+                        oval.points[1] = (x + 220.0, y + 60.0);
+                        studio.board_dress(&mut oval);
+                        (oval.color, oval.fill, oval.hatch, oval.pattern, oval.rough) = (SWATCHES[swatch].0, SWATCHES[swatch].1, hatch, pattern, rough);
+                        studio.doc.layers.push(Layer::shape(oval));
+                    }
+                }
+                for rough in 0..3u8 {
+                    let x = 30.0 + f32::from(rough) * 250.0;
+                    let mut arrow = Shape::new(Tool::Arrow, INK, LINE, (x, 440.0));
+                    arrow.points[1] = (x + 210.0, 470.0);
+                    studio.board_dress(&mut arrow);
+                    arrow.rough = rough;
+                    studio.doc.layers.push(Layer::shape(arrow));
+                }
+                // Words gone over with each color of highlighter, half
+                // as opaque the last.
+                for (at, swatch) in [4usize, 5, 2, 7].into_iter().enumerate() {
+                    let y = 520.0 + at as f32 * 34.0;
+                    let mut words = Shape::new(Tool::Text, INK, LINE, (40.0, y - 10.0));
+                    studio.board_dress(&mut words);
+                    words.text = "Words under a highlighter still read".into();
+                    studio.doc.layers.push(Layer::shape(words));
+                    let mut marker = Shape::new(Tool::Marker, INK, LINE, (30.0, y));
+                    marker.points = (0..=40).map(|step| (30.0 + step as f32 * 8.0, y + 2.0 + (step as f32 * 0.3).sin() * 1.5)).collect();
+                    studio.board_dress(&mut marker);
+                    marker.color = SWATCHES[swatch].0;
+                    if at == 3 {
+                        marker.opacity = 128;
+                    }
+                    studio.doc.layers.push(Layer::shape(marker));
+                }
+                studio.changed();
+                let layers = studio.doc.layers.clone();
+                let sheet = studio.part_sheet(&layers, (10.0, 10.0, 780.0, 680.0));
+                write(&format!("fills-{}-{ground}.png", name.to_lowercase()), sheet.render(1.0, &mut studio.text));
+            }
+            // In the window: the eraser held across two boxes, a lasso being
+            // drawn, and the panel over a box with its new rows.
+            let mut studio = board();
+            studio.set_look(Some(look as u8), None);
+            for (from, till, words) in [((300.0, 200.0), (460.0, 272.0), "Proxy"), ((300.0, 400.0), (460.0, 472.0), "Auth"), ((700.0, 300.0), (860.0, 372.0), "Cache")] {
+                press_key(&mut studio, Key::Char('r'), Mods::default());
+                pull(&mut studio, from, till, Mods::default());
+                type_in(&mut studio, words);
+                press_key(&mut studio, Key::Escape, Mods::default());
+                press_key(&mut studio, Key::Escape, Mods::default());
+            }
+            studio.join(0, 2);
+            studio.selected.clear();
+            let mut out = vec![0u32; (studio.width * studio.height) as usize];
+            press_key(&mut studio, Key::Char('e'), Mods::default());
+            let start = studio.to_window_page((380.0, 160.0));
+            studio.pointer_moved(start.0, start.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for step in 1..=30 {
+                let t = step as f32 / 30.0;
+                let at = studio.to_window_page((380.0 + (t * 6.0).sin() * 30.0, 160.0 + t * 300.0));
+                studio.pointer_moved(at.0, at.1, Mods::default());
+            }
+            studio.draw(&mut out);
+            write(&format!("eraser-{}.png", name.to_lowercase()), (studio.width, studio.height, out.clone()));
+            press_key(&mut studio, Key::Escape, Mods::default());
+            studio.released();
+            press_key(&mut studio, Key::Escape, Mods::default());
+            let alt = Mods { alt: true, ..Mods::default() };
+            let middle = studio.to_window_page((580.0, 330.0));
+            studio.pointer_moved(middle.0, middle.1 + 220, alt);
+            studio.mods = alt;
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for step in 0..=26 {
+                let angle = std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * step as f32 / 30.0;
+                let wobble = 1.0 + (angle * 3.0).sin() * 0.05;
+                studio.pointer_moved(middle.0 + (360.0 * wobble * angle.cos()) as i32, middle.1 + (220.0 * wobble * angle.sin()) as i32, alt);
+            }
+            studio.draw(&mut out);
+            write(&format!("lasso-{}.png", name.to_lowercase()), (studio.width, studio.height, out.clone()));
+            studio.released();
+            studio.selected = vec![0];
+            let fill = studio.control_rect(Control::Board(Ctl::FillKind(4))).unwrap();
+            studio.pointer_moved(fill.center().0, fill.center().1, Mods::default());
+            studio.draw(&mut out);
+            let (x, y, w, h) = (860, 40, 540, 640);
+            let crop: Vec<u32> = (y..y + h).flat_map(|row| out[(row * studio.width + x) as usize..(row * studio.width + x + w) as usize].to_vec()).collect();
+            write(&format!("panel-{}.png", name.to_lowercase()), (w, h, crop));
+            // The highlighter in hand: its panel, and a stroke over words.
+            studio.selected.clear();
+            press_key(&mut studio, Key::Char('m'), Mods::default());
+            let way: Vec<(i32, i32)> = (0..=20).map(|step| studio.to_window_page((290.0 + step as f32 * 9.0, 238.0 + (step as f32 * 0.5).sin() * 2.0))).collect();
+            studio.pointer_moved(way[0].0, way[0].1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for &(x, y) in &way[1..] {
+                studio.pointer_moved(x, y, Mods::default());
+            }
+            studio.released();
+            studio.draw(&mut out);
+            let (x, y, w, h) = (240, 40, 1160, 460);
+            let crop: Vec<u32> = (y..y + h).flat_map(|row| out[(row * studio.width + x) as usize..(row * studio.width + x + w) as usize].to_vec()).collect();
+            write(&format!("highlighter-{}.png", name.to_lowercase()), (w, h, crop));
         }
     }
 }

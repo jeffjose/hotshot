@@ -623,7 +623,8 @@ impl Studio {
         self.draw_pick(canvas);
         self.draw_drop(canvas);
         self.draw_laser(canvas);
-        if self.drag == Drag::None && self.board_tool() != LASER_TOOL {
+        self.draw_erase_and_lasso(canvas);
+        if self.drag == Drag::None && !matches!(self.board_tool(), LASER_TOOL | ERASER) && self.board.lasso.is_none() {
             if let Some(index) = self.dots_now(self.pointer, self.hover_shown.is_some()) {
                 for spot in self.dot_spots(index) {
                     canvas.disc(spot.0, spot.1, 6, ACCENT, 220);

@@ -55,7 +55,7 @@ impl Studio {
         if !self.board.neaten {
             return;
         }
-        let Some(Layer { kind: Kind::Shape(stroke), .. }) = self.doc.layers.get(index) else { return };
+        let Some(Layer { kind: Kind::Shape(stroke), .. }) = self.doc.layers.get(index).filter(|layer| matches!(&layer.kind, Kind::Shape(shape) if shape.tool == Tool::Pen)) else { return };
         let points = stroke.points.clone();
         let Some(meant) = seen(&points) else { return };
         let (left, top) = (points.iter().map(|p| p.0).fold(f32::MAX, f32::min), points.iter().map(|p| p.1).fold(f32::MAX, f32::min));
