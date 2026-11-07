@@ -136,7 +136,9 @@ impl Studio {
             y += GAP + 2;
         }
         y += SPLIT - GAP - 2;
-        if boxes {
+        // A block of code is dark whatever its fill: none to choose alone.
+        let filled = styled.iter().any(|&index| self.is_box(index) && !matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.form == shapes::FORM_CODE));
+        if boxes && (filled || styled.is_empty()) {
             heading(layout, &mut y, "Fill");
             row(layout, &mut y, &[Ctl::FillKind(0), Ctl::FillKind(1), Ctl::FillKind(2), Ctl::FillKind(3)], ROW);
             y += SPLIT;
@@ -181,6 +183,18 @@ impl Studio {
         if !last.is_empty() {
             y += GAP;
             row(layout, &mut y, &last, ROW);
+        }
+        // What is picked out: its exact size and place, and the board's
+        // dots snapped to.
+        if !styled.is_empty() {
+            y += SPLIT;
+            layout.rules.push(Rect::new(x, y - SPLIT / 2, PANEL_W, 1));
+            y += SPLIT / 2;
+            row(layout, &mut y, &[Ctl::Exact(0), Ctl::Exact(1)], ROW);
+            y += GAP;
+            row(layout, &mut y, &[Ctl::Exact(2), Ctl::Exact(3)], ROW);
+            y += GAP;
+            row(layout, &mut y, &[Ctl::Snap], ROW);
         }
         y += PANEL_PAD;
         let panel = Rect::new(x, top, PANEL_W, y - top);

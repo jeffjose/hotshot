@@ -427,6 +427,10 @@ impl Studio {
     /// as wide as a box grows and to twice as tall as it was drawn; sized
     /// by hand, it stays the size it was made, the words fitted to it.
     pub(in crate::studio) fn fit_words(&mut self, index: usize, grow: bool) {
+        // A block of code or a table is as large as all of it, unwrapped.
+        if self.is_block(index) {
+            return self.fit_block(index, !grow);
+        }
         let before = self.box_frames();
         let Kind::Shape(shape) = &self.doc.layers[index].kind else { return };
         let (x, y, w, h) = shape.frame();
@@ -475,6 +479,9 @@ impl Studio {
     pub(in crate::studio) fn grow_for_words(&mut self, index: usize) {
         if !self.is_box(index) {
             return;
+        }
+        if self.is_block(index) {
+            return self.fit_block(index, false);
         }
         // Words whose size is the board's own: fitted, as large as they are
         // meant to be or smaller to stay inside.

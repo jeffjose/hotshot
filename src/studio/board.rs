@@ -55,8 +55,8 @@ pub(super) const STICKY: (f32, f32) = (150.0, 150.0);
 
 /// The tools along the bottom of a board, each with its key: the pointer,
 /// the hand, a box, an oval, a diamond, an arrow, a line, the pen, text, a
-/// sticky note, a picture, and the laser.
-pub(super) const TOOLS: [(&str, char); 12] = [("Select", 'v'), ("Hand", 'h'), ("Box", 'r'), ("Oval", 'o'), ("Diamond", 'd'), ("Arrow", 'a'), ("Line", 'l'), ("Pen", 'p'), ("Text", 't'), ("Sticky note", 's'), ("Picture", 'i'), ("Laser", 'k')];
+/// sticky note, a picture, the laser, and the library of pieces.
+pub(super) const TOOLS: [(&str, char); 13] = [("Select", 'v'), ("Hand", 'h'), ("Box", 'r'), ("Oval", 'o'), ("Diamond", 'd'), ("Arrow", 'a'), ("Line", 'l'), ("Pen", 'p'), ("Text", 't'), ("Sticky note", 's'), ("Picture", 'i'), ("Laser", 'k'), ("Library", 'j')];
 pub(super) const SELECT: u8 = 0;
 pub(super) const HAND: u8 = 1;
 pub(super) const BOX_TOOL: u8 = 2;
@@ -69,6 +69,7 @@ pub(super) const TEXT: u8 = 8;
 pub(super) const STICKY_TOOL: u8 = 9;
 pub(super) const PICTURE: u8 = 10;
 pub(super) const LASER_TOOL: u8 = 11;
+pub(super) const LIBRARY: u8 = 12;
 
 /// What on a board is clicked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,6 +110,14 @@ pub(super) enum Ctl {
     /// which a click closes it on.
     Sheet,
     Scrim,
+    /// A piece of the library, by where it is among its own and then those
+    /// kept; and the button that keeps what is picked out as one.
+    Piece(u16),
+    SavePiece,
+    /// The width, height, left or top of what is picked out, a number to
+    /// type into; and whether the board snaps to its dots.
+    Exact(u8),
+    Snap,
 }
 
 /// What a board keeps of its own, in the window rather than the file.
@@ -207,11 +216,23 @@ pub(super) struct Board {
     /// How far the wheel has gone over that number toward the next step,
     /// and when it last stepped, for a run of it to be one step to undo.
     pub wheeled: (f32, Option<std::time::Instant>),
+    /// Where on the board its right click was, for what its list puts down
+    /// to go there.
+    pub dropped_at: Option<(f32, f32)>,
+    /// Whether the library of pieces is open; the pieces kept in it, once
+    /// read; and where a piece taken from it was pressed, for a click with
+    /// no drag to put it in the middle of what is seen.
+    pub shelf: bool,
+    pub pieces: Option<Vec<shelf::Piece>>,
+    pub placing: Option<(i32, i32)>,
+    /// Which of the width, height, left and top of what is picked out is
+    /// being typed into the panel, and what has been typed.
+    pub exact_typed: Option<(u8, String)>,
 }
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None) }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None), dropped_at: None, shelf: false, pieces: None, placing: None, exact_typed: None }
     }
 }
 
@@ -231,6 +252,9 @@ mod mermaid;
 mod neaten;
 mod zoom;
 mod keys;
+mod blocks;
+mod shelf;
+mod exact;
 #[cfg(test)]
 mod consistency;
 /// Whether a frame is the one a new page of frames begins with, as it
@@ -424,11 +448,14 @@ impl Studio {
     /// The bar of a board's tools, along the bottom as Design's is.
     pub(super) fn board_toolbar(&mut self, layout: &mut Layout) {
         let (side, gap, pad) = (36, 2, 5);
-        let wide = TOOLS.len() as i32 * (side + gap) - gap + 2 * pad;
+        // The library a little apart from the tools, past a rule.
+        let apart = 9;
+        let wide = TOOLS.len() as i32 * (side + gap) - gap + 2 * pad + apart;
         let open = self.open_area();
         let dock = Rect::new(open.x + (open.w - wide) / 2, self.height - 20 - side - 2 * pad, wide, side + 2 * pad);
         for at in 0..TOOLS.len() {
-            layout.controls.push((Rect::new(dock.x + pad + at as i32 * (side + gap), dock.y + pad, side, side), Control::Board(Ctl::Tool(at as u8))));
+            let past = if at as u8 >= LIBRARY { apart } else { 0 };
+            layout.controls.push((Rect::new(dock.x + pad + at as i32 * (side + gap) + past, dock.y + pad, side, side), Control::Board(Ctl::Tool(at as u8))));
         }
         layout.controls.push((dock, Control::Panel));
         layout.dock = dock;
@@ -474,6 +501,12 @@ impl Studio {
                 self.board.laser_tool = true;
                 return Outcome::Continue;
             }
+            // The library: open over the bar, or shut, the tool in hand
+            // left as it was.
+            LIBRARY => {
+                self.toggle_shelf();
+                return Outcome::Continue;
+            }
             BOX_TOOL => (Tool::Rect, shapes::FORM_BOX),
             DIAMOND => (Tool::Rect, shapes::FORM_DIAMOND),
             STICKY_TOOL => (Tool::Rect, shapes::FORM_STICKY),
@@ -505,6 +538,8 @@ impl Studio {
             Ctl::Now => self.history_now(),
             Ctl::Sheet | Ctl::Scrim => self.press_zoom(ctl),
             Ctl::Arrange(at) => return self.act(bar::ARRANGE[usize::from(at).min(bar::ARRANGE.len() - 1)].0),
+            Ctl::Piece(_) | Ctl::SavePiece => self.press_shelf(ctl),
+            Ctl::Exact(_) | Ctl::Snap => self.press_exact(ctl),
             other => self.press_style(other),
         }
         Outcome::Continue
@@ -606,7 +641,11 @@ impl Studio {
         match ctl {
             Ctl::Arrange(at) => self.draw_arrange(canvas, rect, at, hovered),
             Ctl::Tool(which) => {
-                let on = self.board_tool() == which;
+                let on = self.board_tool() == which || which == LIBRARY && self.board.shelf;
+                // The library apart from the tools that draw.
+                if which == LIBRARY {
+                    canvas.fill(rect.x - 6, rect.y + 8, 1, rect.h - 16, HOVER_COLOR);
+                }
                 if on {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, ACCENT, 256);
                 } else if hovered {
@@ -630,7 +669,18 @@ impl Studio {
                     LASER_TOOL => icons::SPOTLIGHT,
                     _ => icons::SELECT,
                 };
-                self.text.draw_centered(canvas, cx, cy, 17, color, icon);
+                match which {
+                    // The library: a box, a round and a drum, pieces on a
+                    // shelf, in the line of the rest; the font has none.
+                    LIBRARY => {
+                        canvas.round_outline(cx - 8, cy - 7, 7, 7, 2, 1, color);
+                        canvas.disc(cx + 4, cy - 4, 4, color, 256);
+                        canvas.disc(cx + 4, cy - 4, 3, if on { ACCENT } else if hovered { HOVER_COLOR } else { PANEL_COLOR }, 256);
+                        canvas.round_outline(cx - 8, cy + 2, 16, 5, 2, 1, color);
+                        canvas.fill(cx - 9, cy + 9, 18, 1, color);
+                    }
+                    _ => self.text.draw_centered(canvas, cx, cy, 17, color, icon),
+                }
                 // Its key, small, in its corner, while it is hovered.
                 if hovered {
                     let key = TOOLS[usize::from(which)].1.to_ascii_uppercase().to_string();
@@ -638,6 +688,9 @@ impl Studio {
                 }
             }
             Ctl::HistoryTrack | Ctl::Branch | Ctl::Now => self.draw_history_control(canvas, rect, ctl, hovered),
+            Ctl::Exact(_) | Ctl::Snap => self.draw_exact_control(canvas, rect, ctl, hovered),
+            // The library draws its own.
+            Ctl::Piece(_) | Ctl::SavePiece => {}
             Ctl::Present => {
                 soft_shadow(canvas, rect, 9);
                 canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, if hovered { HOVER_COLOR } else { PANEL_COLOR }, 256);

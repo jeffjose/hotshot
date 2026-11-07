@@ -53,6 +53,17 @@ pub(in crate::studio) enum Act {
     /// as one of `export::KINDS`, PNG or JPEG; and all of the board so.
     CopyAs(u8),
     CopyBoard(u8),
+    /// A block of code put down, and a table; one of `shapes::STAMPS` put
+    /// on the boxes picked out, or taken off.
+    InsertCode,
+    InsertTable,
+    Stamp(u8),
+    /// The board's library of pieces, open or shut; what is picked out kept
+    /// in it as a piece of its own.
+    Library,
+    SavePiece,
+    /// Drawing, moving and sizing on the board's dots, or anywhere.
+    Snap,
 }
 
 impl Studio {
@@ -64,6 +75,10 @@ impl Studio {
             ("Insert a 2\u{d7}2".to_owned(), "", Act::Template(0)),
             ("Insert Now / Next / Later lanes".to_owned(), "", Act::Template(1)),
             ("Insert Before / After".to_owned(), "", Act::Template(2)),
+            ("Insert code block".to_owned(), "Ctrl+`", Act::InsertCode),
+            ("Insert table".to_owned(), "", Act::InsertTable),
+            ("Library of pieces".to_owned(), "J", Act::Library),
+            (if self.pages[self.page].snap { "Stop snapping to the dots" } else { "Snap to the dots" }.to_owned(), "Ctrl+'", Act::Snap),
             (if self.board.guessing { "Stop guessing what comes next" } else { "Guess what comes next" }.to_owned(), "", Act::Guessing),
         ];
         acts.push(("Copy as PNG".to_owned(), "Ctrl+Shift+C", Act::CopyAs(0)));
@@ -108,6 +123,12 @@ impl Studio {
             for (at, name) in ["No status", "Status: red", "Status: amber", "Status: green"].iter().enumerate() {
                 acts.push(((*name).to_owned(), "", Act::Status(at as u8)));
             }
+            for (at, (name, _)) in shapes::STAMPS.iter().enumerate() {
+                acts.push((format!("Stamp: {name}"), if at == 0 { "Shift+E" } else { "" }, Act::Stamp(at as u8)));
+            }
+        }
+        if !self.chosen().is_empty() {
+            acts.push(("Save selection to the library".to_owned(), "", Act::SavePiece));
         }
         acts
     }
@@ -139,6 +160,18 @@ impl Studio {
             Act::Words(larger) => self.step_words(larger),
             Act::Ground(ground) => self.set_look(None, Some(ground)),
             Act::Font(font) => self.set_font(usize::from(font)),
+            Act::InsertCode => {
+                let at = self.board.dropped_at.take();
+                self.insert_code(at);
+            }
+            Act::InsertTable => {
+                let at = self.board.dropped_at.take();
+                self.insert_table(at);
+            }
+            Act::Stamp(kind) => self.stamp(kind),
+            Act::Library => self.toggle_shelf(),
+            Act::SavePiece => self.save_piece(),
+            Act::Snap => self.toggle_snap(),
             Act::Status(status) => {
                 self.restyle_shapes(|shape| {
                     if matches!(shape.tool, Tool::Rect | Tool::Ellipse) {

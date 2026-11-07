@@ -1062,6 +1062,10 @@ fn file_lines(pages: &[Page]) -> (String, Vec<Arc<Image>>) {
         if page.canvas != 0 {
             out += &format!("canvas {}\n", page.canvas);
         }
+        // Whether a board snaps to its dots, when it does.
+        if page.snap {
+            out += "board-snap\n";
+        }
         if !page.board && page.frames.is_empty() {
             // A board made a page of frames again before it had any.
             out += "no-frames\n";
@@ -1124,6 +1128,10 @@ pub fn read_pages(bytes: &[u8]) -> Option<Vec<Page>> {
         let page = pages.last_mut()?;
         if line == "board" && page.frames.is_empty() && !own {
             page.board = true;
+            continue;
+        }
+        if line == "board-snap" && page.frames.is_empty() && !own {
+            page.snap = true;
             continue;
         }
         if let Some(which) = line.strip_prefix("canvas ").filter(|_| page.frames.is_empty() && !own) {
@@ -1229,11 +1237,13 @@ pub struct Page {
     pub px: u32,
     /// What a page of frames is on: one of `CANVASES`.
     pub canvas: u8,
+    /// Whether what is drawn, moved and sized on a board lands on its dots.
+    pub snap: bool,
 }
 
 impl Page {
     pub fn new(name: impl Into<String>, frames: Vec<Doc>) -> Page {
-        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false, font: board::LETTERING, px: board::WORDS_PX, canvas: 0 }
+        Page { name: name.into(), frames, loose: Doc::for_page(), seen: Vec::new(), board: false, look: 0, ground: 0, styled: false, font: board::LETTERING, px: board::WORDS_PX, canvas: 0, snap: false }
     }
 }
 
@@ -2224,6 +2234,8 @@ struct Layout {
     board_bar: Option<Rect>,
     /// The bar over two or more picked out on a board, to line them up.
     arrange_bar: Option<Rect>,
+    /// A board's library of pieces, while it is open.
+    shelf: Option<Rect>,
 }
 
 /// The whole file as it was, to come back to with undo: its pages, the
@@ -3035,6 +3047,7 @@ impl Studio {
         self.layout_search(&mut layout);
         if self.on_board() {
             self.layout_style_bar(&mut layout);
+            self.layout_shelf(&mut layout);
             self.layout_arrange(&mut layout);
             self.layout_history(&mut layout);
             self.layout_keys(&mut layout);
@@ -3755,7 +3768,12 @@ impl Studio {
                 // On a board, a soft settle: near enough is level, with no
                 // guides drawn; with Alt, exactly where it is.
                 let free = mods.ctrl || (self.on_board() && mods.alt);
-                let (mut dx, mut dy) = if free { (dx.round(), dy.round()) } else { self.snap(dx.round(), dy.round()) };
+                // A board snapping to its dots: its top left on one.
+                let (mut dx, mut dy) = match (free, self.snap_on()) {
+                    (true, _) => (dx.round(), dy.round()),
+                    (false, true) => self.dots_by(dx, dy),
+                    (false, false) => self.snap(dx.round(), dy.round()),
+                };
                 if self.on_board() {
                     self.guides.clear();
                     self.gaps.clear();
@@ -3784,17 +3802,27 @@ impl Studio {
             }
             Drag::Scale { pull, from } => {
                 self.scale_to(pull, from, at, mods);
+                // On a board snapping to its dots, the sides pulled on them.
+                if self.snap_on() && pull.0 != END {
+                    self.snap_pulled(pull);
+                }
                 if let (END, true, Some(index)) = (pull.0, self.on_board(), self.picked()) {
                     self.bind_live(index, pull.1 as usize, at);
                 }
             }
             Drag::Turn { about, began } => self.drag_turn(about, began, at, mods.shift),
             Drag::Draw { from } => {
+                // On a board snapping to its dots, from one to another.
+                let snapping = self.snap_on() && matches!(self.doc.layers.last().map(|layer| &layer.kind), Some(Kind::Shape(shape)) if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow));
+                let (from, at) = if snapping { (self.to_dots(from), self.to_dots(at)) } else { (from, at) };
                 let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.last_mut() else { return };
                 match shape.tool {
                     Tool::Pen | Tool::Marker => shape.points.push(at),
                     tool => {
                         let to = if mods.shift { shapes::constrained(tool, from, at) } else { at };
+                        if snapping {
+                            shape.points[0] = from;
+                        }
                         shape.points[1] = to;
                         // A zoom's lens beside what it is of, as capture
                         // mode puts it.
@@ -3863,6 +3891,10 @@ impl Studio {
         if self.library.is_some() && button <= 7 && self.library_press(button) {
             return Outcome::Continue;
         }
+        // So with a board's library of pieces, but for the wheel.
+        if self.on_board() && matches!(button, 1..=3) && self.shelf_press() {
+            return Outcome::Continue;
+        }
         let at_window = self.pointer;
         let double =time.wrapping_sub(self.last_press.0) < 400 && (at_window.0 - self.last_press.1 .0).abs().max((at_window.1 - self.last_press.1 .1).abs()) <= 3;
         self.last_press = (time, at_window);
@@ -3893,6 +3925,9 @@ impl Studio {
         }
         if self.board.px_typed.is_some() && self.control_at(at_window) != Some(Control::Board(board::Ctl::Words(1))) {
             self.commit_px();
+        }
+        if self.board.exact_typed.as_ref().map(|(which, _)| *which).is_some_and(|which| self.control_at(at_window) != Some(Control::Board(board::Ctl::Exact(which)))) {
+            self.commit_exact();
         }
         // Another layer clicked in the list ends the typing of text first,
         // so that what is typed next goes nowhere it should not.
@@ -5555,6 +5590,14 @@ impl Studio {
         if let Some(image) = picture.as_deref().and_then(Image::open) {
             return self.add_picture(image, "Pasted");
         }
+        // On a board, into the block of code or the table typed into, at
+        // its caret; or, into nothing, a spreadsheet's rows a table and
+        // what reads as code a block of it.
+        if let Some(words) = text.as_deref().filter(|words| self.on_board() && !words.trim().is_empty()) {
+            if self.paste_into_block(words) || self.editing.is_none() && self.paste_block(words) {
+                return;
+            }
+        }
         if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
             if let Some(index) = self.editing {
                 if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
@@ -5792,9 +5835,25 @@ impl Studio {
             }
             return Outcome::Continue;
         }
-        // The size of the words typed into a board's bar.
-        if self.px_typed_key(key, mods) {
+        // The size of the words typed into a board's bar, or the size and
+        // place of what is picked out.
+        if self.px_typed_key(key, mods) || self.exact_key(key, mods) {
             return Outcome::Continue;
+        }
+        // Ctrl+` a block of code on a board, Ctrl+' its dots snapped to or
+        // not, typing or not.
+        if self.on_board() && mods.ctrl && !mods.alt {
+            match key {
+                Key::Char('`' | '~') => {
+                    self.insert_code(None);
+                    return Outcome::Continue;
+                }
+                Key::Char('\'' | '"') => {
+                    self.toggle_snap();
+                    return Outcome::Continue;
+                }
+                _ => {}
+            }
         }
         // Ctrl+Shift+> and <, as Figma and Google Docs have them: the words
         // picked out, or typed, a size larger or smaller; typing or not.
@@ -6697,7 +6756,7 @@ impl Studio {
             canvas.round_fill(panel.x, panel.y, panel.w, panel.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(panel.x, panel.y, panel.w, panel.h, 12, 1, EDGE_COLOR);
         }
-        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.arrange_bar].into_iter().flatten() {
+        for place in [Some(layout.dock).filter(|dock| dock.w > 0), layout.flyout, layout.popover, layout.styles, layout.library, layout.search, layout.crop_bar, layout.exported, layout.board_bar, layout.arrange_bar, layout.shelf].into_iter().flatten() {
             soft_shadow(canvas, place, 12);
             canvas.round_fill(place.x, place.y, place.w, place.h, 12, PANEL_COLOR, 256);
             canvas.round_outline(place.x, place.y, place.w, place.h, 12, 1, EDGE_COLOR);
@@ -6713,6 +6772,9 @@ impl Studio {
         }
         if let Some(place) = layout.library {
             self.draw_library(canvas, layout, place, hover);
+        }
+        if let Some(place) = layout.shelf {
+            self.draw_shelf(canvas, layout, place, hover);
         }
         if let Some(place) = layout.search {
             self.draw_search(canvas, place, hover);

@@ -29,6 +29,8 @@ pub(super) enum MenuKind {
     Lineup,
     Matching,
     ExportAs,
+    /// The stamps a box on a board can be given.
+    Stamps,
     /// Over and under the rest.
     Order,
     /// Everything, from the logo; and each part of it.
@@ -92,6 +94,8 @@ pub(super) enum Look {
     /// its grounds.
     Board(u8),
     Ground(u8),
+    /// One of a board's stamps, as a box wears it.
+    Stamp(u8),
 }
 
 /// What choosing an entry does.
@@ -438,6 +442,12 @@ impl Studio {
                 items.push(Item::entry("Pack down", "", MenuAct::Act(Action::Pack(1))));
                 items
             }
+            MenuKind::Stamps => {
+                use super::board::Act;
+                let mut items = vec![Item::Heading("STAMPS")];
+                items.extend(shapes::STAMPS.iter().enumerate().map(|(at, (says, _))| Item::entry(*says, ["1", "2", "3", "4", "5"][at], MenuAct::Board(Act::Stamp(at as u8))).on(self.stamped(at as u8)).look(Look::Stamp(at as u8))));
+                items
+            }
             MenuKind::Matching => vec![
                 Item::Heading("TO THE FIRST PICKED"),
                 Item::entry("Match width", "", MenuAct::Act(Action::Match(0))),
@@ -467,7 +477,11 @@ impl Studio {
                             items.push(Item::Rule);
                         }
                         items.push(Item::sub("Order", MenuKind::Order));
+                        if self.chosen().iter().any(|&index| self.is_box(index)) {
+                            items.push(Item::sub("Stamp", MenuKind::Stamps));
+                        }
                         items.push(Item::entry("Gather into a group", "G", MenuAct::Board(Act::Group)));
+                        items.push(Item::entry("Save to library", "", MenuAct::Board(Act::SavePiece)));
                         if self.board.svg.as_ref().is_some_and(|svg| self.chosen().iter().all(|&index| svg.ids.contains(&self.id_of(index)))) {
                             items.push(Item::entry("Keep as picture", "", MenuAct::Board(Act::KeepPicture)));
                         }
@@ -490,6 +504,10 @@ impl Studio {
                             items.push(do_("Paste picture", "Ctrl Shift V", Command::PastePicture));
                         }
                         items.push(do_("Select all", "Ctrl A", Command::SelectAll));
+                        items.push(Item::Rule);
+                        items.push(Item::entry("Insert table", "", MenuAct::Board(Act::InsertTable)));
+                        items.push(Item::entry("Insert code block", "Ctrl `", MenuAct::Board(Act::InsertCode)));
+                        items.push(Item::entry("Library", "J", MenuAct::Board(Act::Library)));
                         items.push(Item::Rule);
                         items.push(Item::sub("Copy board as", MenuKind::CopyAs));
                         items.push(Item::sub("Export board as", MenuKind::ExportAs));
@@ -805,6 +823,10 @@ impl Studio {
                                 canvas.disc(x + 8, mid, 8, paper, 256);
                                 x += 28;
                             }
+                            Look::Stamp(kind) => {
+                                shapes::draw_stamp(canvas, *kind, (x as f32 + 8.0, mid as f32), 8.5, 256, None);
+                                x += 28;
+                            }
                             Look::Plain => {}
                         }
                         if x < place.x + place.w {
@@ -863,6 +885,8 @@ impl Studio {
             return Outcome::Continue;
         }
         let act = *act;
+        // Where a right click on a board was, for what it puts down there.
+        self.board.dropped_at = (menu.kind == MenuKind::Context && self.on_board()).then(|| self.to_doc(menu.at));
         self.menu = None;
         self.dirty = true;
         self.run_menu(act)
@@ -884,6 +908,14 @@ impl Studio {
         let place = row.and_then(|row| rows.iter().position(|&at| at == row));
         match key {
             Key::Escape => (self.menu, self.menu_row) = (None, None),
+            // The stamps by their numbers, as the list says them.
+            Key::Char(digit @ '1'..='5') if kind == MenuKind::Stamps => {
+                let at = digit as usize - '1' as usize;
+                if let Some(&row) = rows.get(at) {
+                    self.menu_row = None;
+                    return self.press_menu(level, row as u16);
+                }
+            }
             Key::Down | Key::Up if !rows.is_empty() => {
                 let next = match (place, key == Key::Down) {
                     (None, true) => 0,

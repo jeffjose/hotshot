@@ -129,6 +129,8 @@ impl Studio {
         if self.beam_released() {
             return true;
         }
+        // A piece of the library let go where it was pressed: in the middle.
+        self.piece_let_go();
         match drag {
             Drag::Draw { from } => {
                 self.board_drawn(from);
@@ -234,6 +236,17 @@ impl Studio {
                 }
             }
         }
+        // Snapping to the dots, a box clicked out has its corners on them.
+        if self.snap_on() {
+            if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) {
+                let (x, y, w, h) = shape.frame();
+                let (a, b) = (self.to_dots((x, y)), self.to_dots((x + w, y + h)));
+                if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
+                    shape.points = vec![a, (b.0.max(a.0 + DOT_STEP), b.1.max(a.1 + DOT_STEP))];
+                    shape.touch();
+                }
+            }
+        }
         let (_, _, w, h) = self.box_frame(index);
         if let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get_mut(index) {
             shape.base = (w, h);
@@ -315,6 +328,10 @@ impl Studio {
     /// to hold them. Nothing for the rest, which are typed as text is.
     pub(in crate::studio) fn board_typing_key(&mut self, key: Key, mods: Mods) -> Option<Outcome> {
         let index = self.editing?;
+        // A block of code and a table take their own keys first.
+        if self.block_key(index, key, mods) {
+            return Some(Outcome::Continue);
+        }
         let Some(Layer { kind: Kind::Shape(shape), .. }) = self.doc.layers.get(index) else { return None };
         // An indented list, Ctrl+Enter: a map of it.
         if shape.tool == Tool::Text && mods.ctrl && key == Key::Enter {
@@ -398,9 +415,15 @@ impl Studio {
             self.dirty = true;
             return Some(Outcome::Continue);
         }
-        // Esc puts the laser down, the pointer back in hand.
+        // Esc puts the laser down, the pointer back in hand; and shuts the
+        // library.
         if key == Key::Escape && self.board.laser_tool {
             return Some(self.take_board_tool(SELECT));
+        }
+        if key == Key::Escape && self.board.shelf {
+            self.board.shelf = false;
+            self.dirty = true;
+            return Some(Outcome::Continue);
         }
         if mods.ctrl || mods.alt {
             return None;
@@ -444,6 +467,11 @@ impl Studio {
                 self.reshape(None);
                 return Some(Outcome::Continue);
             }
+            // Shift+E, the stamps, by the box picked out.
+            Key::Char('E' | 'e') if mods.shift && self.chosen().iter().any(|&index| self.is_box(index)) => {
+                self.open_stamps();
+                return Some(Outcome::Continue);
+            }
             // F lights it and what it is joined to, or the paths between two;
             // G gathers several into a box; D votes on a note.
             Key::Char('f') if !mods.shift && (self.board.focus.is_some() || self.chosen().iter().any(|&index| self.is_box(index))) => {
@@ -481,11 +509,11 @@ impl Studio {
 
     /// Whether a letter pressed with a box picked out does what it does,
     /// rather than typing over its words: C colors, F lights what it is
-    /// joined to, D votes on a note, Shift+S makes it another shape and
-    /// Shift+L tidies the map it is in.
+    /// joined to, D votes on a note, Shift+S makes it another shape, Shift+E
+    /// stamps it and Shift+L tidies the map it is in.
     fn keeps_key(&self, index: usize, letter: char) -> bool {
         let note = matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.form == shapes::FORM_STICKY);
-        matches!(letter, 'c' | 'f' | 'S' | 'L') || (letter == 'd' && note) || (letter == 'D' && note)
+        matches!(letter, 'c' | 'f' | 'S' | 'L' | 'E') || (letter == 'd' && note) || (letter == 'D' && note)
     }
 }
 

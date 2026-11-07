@@ -195,7 +195,10 @@ mod tests {
                 studio.board_tick();
             }
             let which = at as u8;
-            if which != PICTURE {
+            // The library is no tool in hand, but open over the bar.
+            if which == LIBRARY {
+                assert!(studio.board.shelf && studio.board_tool() == SELECT, "{name} on {key}");
+            } else if which != PICTURE {
                 assert_eq!(studio.board_tool(), which, "{name} on {key}");
             }
         }
