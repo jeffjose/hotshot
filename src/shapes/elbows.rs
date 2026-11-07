@@ -239,62 +239,94 @@ pub fn simplified(path: Vec<Point>) -> Vec<Point> {
 /// stretches either side of it, out of the sides' stubs, and clear of
 /// what is near.
 fn centre(path: &mut [Point], blocks: &[Block], stub: f32) {
+    for at in 1..path.len().saturating_sub(2) {
+        if let Some((low, high, upright)) = room(path, at, blocks, stub) {
+            put(path, at, upright, (low + high) / 2.0);
+        }
+    }
+}
+
+/// The stretch of a way round corners nearest a point it was pulled to go
+/// by, slid to it, as far as the room it has lets it: the way across
+/// where it is upright, down where it is level.
+pub fn slide_to(path: &mut [Point], to: Point, blocks: &[Block], stub: f32) {
+    let near = (1..path.len().saturating_sub(2)).filter_map(|at| {
+        let (low, high, upright) = room(path, at, blocks, stub)?;
+        let (a, b) = (path[at], path[at + 1]);
+        // How far the point is from the stretch, along it and across it.
+        let off = match upright {
+            true => (to.0 - a.0).abs() + (to.1 - to.1.clamp(a.1.min(b.1), a.1.max(b.1))).abs(),
+            false => (to.1 - a.1).abs() + (to.0 - to.0.clamp(a.0.min(b.0), a.0.max(b.0))).abs(),
+        };
+        Some((off, at, low, high, upright))
+    }).min_by(|x, y| x.0.total_cmp(&y.0));
+    if let Some((_, at, low, high, upright)) = near {
+        let want = if upright { to.0 } else { to.1 };
+        put(path, at, upright, want.clamp(low, high));
+    }
+}
+
+/// A stretch between two turns, upright or level, moved across to `to`.
+fn put(path: &mut [Point], at: usize, upright: bool, to: f32) {
+    for point in [at, at + 1] {
+        match upright {
+            true => path[point].0 = to,
+            false => path[point].1 = to,
+        }
+    }
+}
+
+/// The room a stretch between two turns that go on the same way has to
+/// slide across in: between the stretches either side of it, out of the
+/// sides' stubs, and clear of what is near; and whether it is upright.
+/// None for one at an end, or one whose turns go opposite ways.
+fn room(path: &[Point], at: usize, blocks: &[Block], stub: f32) -> Option<(f32, f32, bool)> {
     let count = path.len();
-    if count < 4 {
-        return;
+    if count < 4 || at == 0 || at + 2 >= count {
+        return None;
     }
-    for at in 1..count - 2 {
-        let (before, a, b, after) = (path[at - 1], path[at], path[at + 1], path[at + 2]);
-        let upright = (a.0 - b.0).abs() < 1e-3;
-        // Along the axis it slides on: where it is, and where the two
-        // stretches either side of it begin and end.
-        let pick = |p: Point| if upright { p.0 } else { p.1 };
-        let span = |p: Point| if upright { p.1 } else { p.0 };
-        let (here, from, to) = (pick(a), pick(before), pick(after));
-        let (back, on) = (here - from, to - here);
-        if back * on <= 0.0 {
-            continue;
+    let (before, a, b, after) = (path[at - 1], path[at], path[at + 1], path[at + 2]);
+    let upright = (a.0 - b.0).abs() < 1e-3;
+    // Along the axis it slides on: where it is, and where the two
+    // stretches either side of it begin and end.
+    let pick = |p: Point| if upright { p.0 } else { p.1 };
+    let span = |p: Point| if upright { p.1 } else { p.0 };
+    let (here, from, to) = (pick(a), pick(before), pick(after));
+    let (back, on) = (here - from, to - here);
+    if back * on <= 0.0 {
+        return None;
+    }
+    let sign = back.signum();
+    let first = if at == 1 { from + sign * stub } else { from };
+    let last = if at + 2 == count - 1 { to - sign * stub } else { to };
+    let (mut low, mut high) = (first.min(last).min(here), first.max(last).max(here));
+    let (top, bottom) = (span(a).min(span(b)), span(a).max(span(b)));
+    for r in blocks {
+        let (near, far, s0, s1) = if upright { (r[0], r[2], r[1], r[3]) } else { (r[1], r[3], r[0], r[2]) };
+        // Across what it spans, it keeps a stub away from a block,
+        // unless it is nearer already; along the stretches either
+        // side, they may not run into one.
+        let mut blocked = Vec::new();
+        if s1 + PAD > top && s0 - PAD < bottom {
+            blocked.push(match here > near - stub && here < far + stub {
+                true => (near - PAD, far + PAD),
+                false => (near - stub, far + stub),
+            });
         }
-        let sign = back.signum();
-        let first = if at == 1 { from + sign * stub } else { from };
-        let last = if at + 2 == count - 1 { to - sign * stub } else { to };
-        let (mut low, mut high) = (first.min(last).min(here), first.max(last).max(here));
-        let (top, bottom) = (span(a).min(span(b)), span(a).max(span(b)));
-        for r in blocks {
-            let (near, far, s0, s1) = if upright { (r[0], r[2], r[1], r[3]) } else { (r[1], r[3], r[0], r[2]) };
-            // Across what it spans, it keeps a stub away from a block,
-            // unless it is nearer already; along the stretches either
-            // side, they may not run into one.
-            let mut blocked = Vec::new();
-            if s1 + PAD > top && s0 - PAD < bottom {
-                blocked.push(match here > near - stub && here < far + stub {
-                    true => (near - PAD, far + PAD),
-                    false => (near - stub, far + stub),
-                });
-            }
-            for line in [span(a), span(b)] {
-                if line > s0 - PAD && line < s1 + PAD {
-                    blocked.push((near - PAD, far + PAD));
-                }
-            }
-            for (u0, u1) in blocked {
-                if u1 <= here + 1e-3 {
-                    low = low.max(u1);
-                } else if u0 >= here - 1e-3 {
-                    high = high.min(u0);
-                }
+        for line in [span(a), span(b)] {
+            if line > s0 - PAD && line < s1 + PAD {
+                blocked.push((near - PAD, far + PAD));
             }
         }
-        if low < high {
-            let middle = (low + high) / 2.0;
-            for point in [at, at + 1] {
-                match upright {
-                    true => path[point].0 = middle,
-                    false => path[point].1 = middle,
-                }
+        for (u0, u1) in blocked {
+            if u1 <= here + 1e-3 {
+                low = low.max(u1);
+            } else if u0 >= here - 1e-3 {
+                high = high.min(u0);
             }
         }
     }
+    (low < high).then_some((low, high, upright))
 }
 
 #[cfg(test)]

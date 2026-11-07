@@ -591,6 +591,41 @@ pub(in crate::studio) mod tests {
     }
 
     #[test]
+    fn the_middle_of_an_arrow_round_corners_pulled_slides_its_step_and_it_stays_round_corners() {
+        let mut studio = board();
+        studio.set_look(Some(DIAGRAM), None);
+        for (from, to) in [((100.0, 100.0), (260.0, 172.0)), ((700.0, 250.0), (860.0, 322.0))] {
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, from, to, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+        }
+        let arrow = studio.join(0, 1);
+        let upright = |shape: &Shape| shape.points[2..].windows(2).find(|pair| (pair[0].0 - pair[1].0).abs() < 0.5).map(|pair| pair[0].0);
+        let before = upright(&shape(&studio, arrow)).expect("a step down between them");
+        // Picked out, its middle knob pulled to the left.
+        studio.selected = vec![arrow];
+        let knob = studio.to_window(shape(&studio, arrow).middle());
+        studio.pointer_moved(knob.0, knob.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        assert!(matches!(studio.drag, Drag::Scale { pull: (crate::studio::BEND, 0), .. }), "{:?}", studio.drag);
+        let to = studio.to_window((360.0, 200.0));
+        studio.pointer_moved(to.0, to.1, Mods::default());
+        studio.released();
+        let pulled = shape(&studio, arrow);
+        assert!(pulled.elbow && !pulled.routed, "still round corners");
+        let after = upright(&pulled).expect("still a step");
+        assert!((after - 360.0).abs() < 2.0, "its step slid from {before} to the pointer: {after}");
+        // And kept so as a box it joins moves, and in the file.
+        studio.selected = vec![1];
+        studio.doc.layers[1].translate(0.0, 20.0);
+        studio.changed();
+        assert!((upright(&shape(&studio, arrow)).unwrap() - 360.0).abs() < 2.0, "kept as it moves");
+        assert_eq!(Shape::read(&shape(&studio, arrow).write()).unwrap().step, shape(&studio, arrow).step);
+    }
+
+    #[test]
     fn diagram_colors_are_figjam_s() {
         assert_eq!(figjam(0x1971C2), 0x3662E3);
         assert_eq!(figjam(0xD0EBFF), 0xC2E5FF, "light blue, not near white");

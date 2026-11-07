@@ -333,7 +333,12 @@ impl Studio {
                 let made = shapes::Anchor { id: u32::MAX, middle, half: (a.2 / 2.0, a.3 / 2.0), angle: 0.0, round: false, pointed: false };
                 arrow.points[1] = middle;
                 arrow.stuck = [Some((start.id, shapes::WHOLE, shapes::WHOLE)), Some((made.id, shapes::WHOLE, shapes::WHOLE))];
-                shapes::route(&mut arrow, &start, &made);
+                // Laid out as letting go lays it out, round corners in the
+                // Diagram look and curved in the others, rather than always
+                // curved until let go.
+                let mut anchors = self.anchors();
+                anchors.push(made);
+                shapes::follow(std::iter::once(&mut arrow), &anchors);
             }
         }
         Some(arrow)
@@ -772,6 +777,39 @@ mod preview_tests {
             let (low, high) = middles.iter().fold((f32::MAX, f32::MIN), |(l, h), &m| (l.min(m), h.max(m)));
             assert_eq!(high - low < 0.6, clean, "look {look}: its middle from {low} to {high}");
             studio.released();
+        }
+    }
+
+    #[test]
+    fn an_arrow_pulled_out_into_the_open_is_shown_laid_out_as_it_will_be_once_let_go() {
+        // Down and to the right of the box, in Diagram: round corners while
+        // pulled, as once let go; and curved in Rounded the same way.
+        for look in [crate::studio::board::look::DIAGRAM, 0] {
+            let mut studio = board();
+            studio.set_look(Some(look), None);
+            press_key(&mut studio, Key::Char('r'), Mods::default());
+            pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            press_key(&mut studio, Key::Escape, Mods::default());
+            studio.selected.clear();
+            let over = studio.to_window_page((180.0, 136.0));
+            studio.pointer_moved(over.0, over.1, Mods::default());
+            let right = studio.dot_spots(0)[1];
+            studio.pointer_moved(right.0, right.1, Mods::default());
+            studio.last_press.0 = 0;
+            studio.pressed(1, 100_000);
+            for step in 1..=20 {
+                studio.pointer_moved(right.0 + step * 18, right.1 + step * 12, Mods::default());
+            }
+            let ghost = studio.pulled_arrow(0, None).expect("a ghost");
+            studio.released();
+            let made = studio.doc.layers.iter().rev().find_map(|layer| match &layer.kind {
+                Kind::Shape(shape) if shape.tool == Tool::Arrow => Some(shape.clone()),
+                _ => None,
+            }).expect("an arrow made");
+            assert_eq!((ghost.elbow, ghost.routed), (made.elbow, made.routed), "look {look}");
+            let near = |a: &[(f32, f32)], b: &[(f32, f32)]| a.len() == b.len() && a.iter().zip(b).all(|(p, q)| (p.0 - q.0).abs() < 2.0 && (p.1 - q.1).abs() < 2.0);
+            assert!(near(&ghost.path(), &made.path()), "look {look}: the ghost {:?} as made {:?}", ghost.points, made.points);
         }
     }
 }

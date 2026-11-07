@@ -4871,6 +4871,13 @@ impl Studio {
             // The middle of a line through the pointer, its ends as they
             // are: a curve of the user's own, kept as it is rather than
             // routed again as what it joins moves.
+            // One round corners keeps them: the stretch between its turns
+            // slid to go by the pointer, as FigJam's is, and kept so as
+            // what it joins moves.
+            Kind::Shape(shape) if pull.0 == BEND && shape.elbow => {
+                shape.step = Some(at);
+                shape.touch();
+            }
             Kind::Shape(shape) if pull.0 == BEND => {
                 shape.points.truncate(2);
                 shape.points.push(at);

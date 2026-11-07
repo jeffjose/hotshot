@@ -134,6 +134,10 @@ pub struct Shape {
     /// Whether its fill is crossed by fine lines on a slant in its line's
     /// color, as a sketch marks a part planned or outside.
     pub hatch: bool,
+    /// Where an arrow round corners was pulled to go by its middle: the
+    /// stretch between its turns slid there, within the room it has,
+    /// rather than half way; none, half way.
+    pub step: Option<Point>,
     /// Whether a rectangle or an oval has a border. One that has none is
     /// filled, or there would be nothing of it.
     pub border: bool,
@@ -431,7 +435,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, step: None, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -451,7 +455,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -481,7 +485,8 @@ impl Shape {
                 u8::from(self.heading),
                 self.region,
                 u8::from(self.hatch),
-                self.nominal
+                self.nominal,
+                self.step.map_or("-".to_owned(), |(x, y)| format!("{x}:{y}"))
             ),
             self.fill,
             self.number,
@@ -560,6 +565,9 @@ impl Shape {
         // And the size its words are meant to be, fitted to its box, which a
         // file from before has not: they are as large as they are.
         shape.nominal = more.next().and_then(|word| word.parse::<u32>().ok()).unwrap_or(0).min(999);
+        // And where an arrow round corners was pulled to go, which a file
+        // from before has not.
+        shape.step = more.next().and_then(|word| word.split_once(':')).and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))).filter(|(x, y)| x.is_finite() && y.is_finite());
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -1622,10 +1630,14 @@ fn route_elbow(shape: &mut Shape, anchors: &[Anchor], given: [Option<(usize, Poi
         let near: Vec<elbows::Block> = blocks.iter().enumerate().filter(|&(index, r)| index < 2 || overlaps(r, &room)).map(|(_, &r)| r).collect();
         let clear = |path: &[Point]| path.windows(2).all(|pair| elbows::clear(pair[0], pair[1], &blocks[2..]));
         let (starts, goals) = &ends;
-        let (start, goal, path) = elbows::orthogonal(starts, goals, &near, stub)
+        let (start, goal, mut path) = elbows::orthogonal(starts, goals, &near, stub)
             .filter(|(.., path)| near.len() == blocks.len() || clear(path))
             .or_else(|| elbows::orthogonal(starts, goals, &blocks, stub).filter(|_| near.len() < blocks.len()))
             .or_else(|| elbows::orthogonal(starts, goals, &blocks[..2], stub))?;
+        // Its middle where it was pulled to go, as far as that is clear.
+        if let Some(to) = shape.step {
+            elbows::slide_to(&mut path, to, &blocks, stub);
+        }
         Some(([starts[start].1, goals[goal].1], path))
     })();
     match way {
@@ -3846,7 +3858,7 @@ mod tests {
         assert_eq!(Shape::read(&boxed.write()).unwrap().nominal, 22);
         // And one from before either has neither.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0,-\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
         assert_eq!((back.edge, back.shadow), (CENTER, None));
