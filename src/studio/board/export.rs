@@ -529,10 +529,34 @@ impl Studio {
                         let clip = format!("hatch{}", shape.id);
                         out += &format!("  <clipPath id=\"{clip}\">\n  {}  </clipPath>\n  <g clip-path=\"url(#{clip})\" stroke=\"{ink}\" stroke-width=\"1.6\" opacity=\"{:.2}\">\n", body.trim_start(), opacity * 150.0 / 256.0);
                         let every = 8.0 * std::f32::consts::SQRT_2;
-                        let mut along = x + y;
-                        while along <= x + w + y + h {
-                            out += &format!("    <line x1=\"{:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{:.1}\"/>\n", along - y, along - (y + h), y + h);
-                            along += every;
+                        match shape.pattern {
+                            // Dots in rows, every other row half along.
+                            shapes::PATTERN_DOTS => {
+                                let step = 8.0 * 0.85;
+                                for (row, down) in (0..=(h / step) as i32 + 1).map(|row| (row, y + row as f32 * step + step / 2.0)) {
+                                    let shift = if row % 2 == 1 { step / 2.0 } else { 0.0 };
+                                    let mut across = x - step + shift + step / 2.0;
+                                    while across <= x + w + step {
+                                        out += &format!("    <circle cx=\"{across:.1}\" cy=\"{down:.1}\" r=\"1.15\" fill=\"{ink}\" stroke=\"none\"/>\n");
+                                        across += step;
+                                    }
+                                }
+                            }
+                            pattern => {
+                                let mut along = x + y;
+                                while along <= x + w + y + h {
+                                    out += &format!("    <line x1=\"{:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{:.1}\"/>\n", along - y, along - (y + h), y + h);
+                                    along += every;
+                                }
+                                // Crossed: the lines down to the right as well.
+                                if pattern == shapes::PATTERN_CROSS {
+                                    let mut along = x - (y + h);
+                                    while along <= x + w - y {
+                                        out += &format!("    <line x1=\"{:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{:.1}\"/>\n", along + y, along + y + h, y + h);
+                                        along += every;
+                                    }
+                                }
+                            }
                         }
                         out += "  </g>\n";
                     }

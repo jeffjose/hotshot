@@ -42,6 +42,19 @@ const GAP: i32 = 4;
 const SPLIT: i32 = 12;
 /// How wide − and + are.
 const STEP: i32 = 28;
+/// How high the opacity slider is; how far in from its right its track
+/// ends, for how much it is to be said there; and how opaque it goes from
+/// and to, in hundredths.
+const SLIDER: i32 = 22;
+const SLIDER_SAYS: i32 = 40;
+const LEAST_OPAQUE: f32 = 10.0;
+
+/// The kinds of fill: none, the paper, a tint, and the tint hatched,
+/// crossed or dotted; and what each is said as, chosen and as its tip.
+const FILL_KINDS: u8 = 6;
+pub(in crate::studio) const FILL_SAYS: [&str; 6] = ["No fill", "Filled with the paper", "Filled with a tint", "Hatched", "Cross-hatched", "Dotted"];
+/// What each of how loosely by hand is said as.
+pub(in crate::studio) const ROUGH_SAYS: [&str; 3] = ["Neat: nearly straight", "Normal: drawn by hand", "Loose: gone over twice"];
 
 /// What each button of the bar over two or more picked out does, in its
 /// order: lined up left, centers, right, top, middles, bottom; spaced
@@ -138,12 +151,31 @@ impl Studio {
         y += SPLIT - GAP - 2;
         if boxes {
             heading(layout, &mut y, "Fill");
-            row(layout, &mut y, &[Ctl::FillKind(0), Ctl::FillKind(1), Ctl::FillKind(2), Ctl::FillKind(3)], ROW);
+            row(layout, &mut y, &(0..FILL_KINDS).map(Ctl::FillKind).collect::<Vec<_>>(), ROW);
             y += SPLIT;
         }
-        heading(layout, &mut y, "Line");
-        row(layout, &mut y, &[Ctl::Dash(0), Ctl::Dash(1), Ctl::Dash(2)], ROW);
-        y += SPLIT;
+        // A highlighter alone has no line to break nor words to size.
+        let markers = match styled.is_empty() {
+            true => self.tool == Tool::Marker,
+            false => styled.iter().all(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.tool == Tool::Marker)),
+        };
+        if !markers {
+            heading(layout, &mut y, "Line");
+            row(layout, &mut y, &[Ctl::Dash(0), Ctl::Dash(1), Ctl::Dash(2)], ROW);
+            y += SPLIT;
+        }
+        // How loosely by hand, in the looks that draw by hand, for what they
+        // draw so.
+        let drawn = |tool: Tool| matches!(tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow);
+        let by_hand = self.pages[self.page].look < look::CLEAN && match styled.is_empty() {
+            true => drawn(self.tool),
+            false => styled.iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if drawn(shape.tool))),
+        };
+        if by_hand {
+            heading(layout, &mut y, "Roughness");
+            row(layout, &mut y, &[Ctl::Rough(0), Ctl::Rough(1), Ctl::Rough(2)], ROW);
+            y += SPLIT;
+        }
         // An arrow picked out: its heads, and the way it goes.
         let arrows = styled.iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if matches!(shape.tool, Tool::Line | Tool::Arrow))) || (styled.is_empty() && matches!(self.tool, Tool::Line | Tool::Arrow));
         if arrows {
@@ -156,8 +188,23 @@ impl Studio {
             row(layout, &mut y, &[Ctl::Route(0), Ctl::Route(1), Ctl::Route(2)], ROW);
             y += SPLIT;
         }
-        heading(layout, &mut y, "Size");
-        row(layout, &mut y, &[Ctl::Size(0), Ctl::Size(1), Ctl::Size(2), Ctl::Size(3)], ROW);
+        if !markers {
+            heading(layout, &mut y, "Size");
+            row(layout, &mut y, &[Ctl::Size(0), Ctl::Size(1), Ctl::Size(2), Ctl::Size(3)], ROW);
+            y += SPLIT;
+        }
+        // How opaque: a slider, with how much at its right. A highlighter
+        // alone has nothing more: no words, no status.
+        heading(layout, &mut y, "Opacity");
+        y -= 4;
+        row(layout, &mut y, &[Ctl::Opacity], SLIDER);
+        if markers {
+            y += PANEL_PAD - 2;
+            let panel = Rect::new(x, top, PANEL_W, y - top);
+            layout.controls.push((panel, Control::Panel));
+            layout.board_bar = Some(panel);
+            return;
+        }
         y += SPLIT;
         layout.rules.push(Rect::new(x, y - SPLIT / 2, PANEL_W, 1));
         y += SPLIT / 2;
@@ -258,7 +305,23 @@ impl Studio {
         });
         match first {
             Some(shape) => (shape.color, shape.filled.then_some(shape.fill), shape.sketch, shape.status, shape.hatch, if shape.dotted { 2 } else { u8::from(shape.dashed) }, shape.stroke),
-            None => (self.board.stroke, self.board.fill, self.board.sketch, 0, self.board.hatch, self.board.dash, self.board.width),
+            None => (if self.tool == Tool::Marker { self.board.marker } else { self.board.stroke }, self.board.fill, self.board.sketch, 0, self.board.hatch, self.board.dash, self.board.width),
+        }
+    }
+
+    /// What the panel shows of the rest: what a hatched fill is crossed
+    /// by, how loosely by hand, and how opaque out of 256; of the first
+    /// shape picked out, or of the next to be drawn. How loosely, of the
+    /// first that is drawn by hand.
+    fn shown_more(&self) -> (u8, u8, u32) {
+        let shapes: Vec<Shape> = self.bar_styled().into_iter().filter_map(|index| match &self.doc.layers[index].kind {
+            Kind::Shape(shape) => Some(shape.clone()),
+            Kind::Picture(_) => None,
+        }).collect();
+        let rough = shapes.iter().find(|shape| matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow)).map_or(self.board.rough, |shape| shape.rough);
+        match shapes.first() {
+            Some(shape) => (shape.pattern, rough, shape.opacity),
+            None => (self.board.pattern, self.board.rough, self.board.opacity),
         }
     }
 
@@ -400,6 +463,7 @@ impl Studio {
 
     pub(in crate::studio) fn draw_style_control(&mut self, canvas: &mut Canvas, rect: Rect, ctl: Ctl, hovered: bool) {
         let (stroke, fill, _, status, hatch, dash, _) = self.shown_style();
+        let (pattern, rough, opacity) = self.shown_more();
         let (cx, cy) = rect.center();
         let ring = |canvas: &mut Canvas, on: bool| {
             if on {
@@ -440,7 +504,7 @@ impl Studio {
                 let now = match (fill, hatch) {
                     (None, _) => 0,
                     (Some(0xFFFFFF), false) => 1,
-                    (Some(_), true) => 3,
+                    (Some(_), true) => 3 + pattern,
                     _ => 2,
                 };
                 choice(canvas, now == kind);
@@ -453,16 +517,30 @@ impl Studio {
                     1 => canvas.round_fill(swatch.x, swatch.y, swatch.w, swatch.h, 4, look::shade(0xFFFFFF, ground), 256),
                     _ => canvas.round_fill(swatch.x, swatch.y, swatch.w, swatch.h, 4, look::shade(tint, ground), 256),
                 }
-                if kind == 3 {
-                    // Lines up to the right, across the swatch.
-                    let pen = look::shade(pen, ground);
-                    for py in swatch.y + 1..swatch.bottom() - 1 {
-                        for px in swatch.x + 1..swatch.right() - 1 {
-                            if (px - swatch.x + py - swatch.y) % 5 == 0 {
-                                canvas.fill(px, py, 1, 1, pen);
+                let ink = look::shade(pen, ground);
+                match kind {
+                    // Lines up to the right, across the swatch; crossed, down
+                    // to the right as well.
+                    3 | 4 => {
+                        for py in swatch.y + 1..swatch.bottom() - 1 {
+                            for px in swatch.x + 1..swatch.right() - 1 {
+                                let (dx, dy) = (px - swatch.x, py - swatch.y);
+                                if (dx + dy) % 5 == 0 || (kind == 4 && (dx - dy).rem_euclid(5) == 0) {
+                                    canvas.fill(px, py, 1, 1, ink);
+                                }
                             }
                         }
                     }
+                    // Dots in rows, every other row half along.
+                    5 => {
+                        for (row, dy) in [3, 8, 13].into_iter().enumerate() {
+                            let shift = if row == 1 { 2 } else { 0 };
+                            for dx in [3 + shift, 8 + shift, 13 + shift].into_iter().filter(|&dx| dx < 15) {
+                                canvas.disc(swatch.x + dx, swatch.y + dy, 1, ink, 256);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 canvas.round_outline(swatch.x, swatch.y, swatch.w, swatch.h, 4, 1, if kind == 0 { DIM_TEXT_COLOR } else { look::shade(pen, ground) });
                 if kind == 0 {
@@ -486,6 +564,44 @@ impl Studio {
                         _ => 5,
                     };
                 }
+            }
+            // How loosely by hand: a line nearly straight, one that wanders,
+            // and one gone over twice wandering more.
+            Ctl::Rough(kind) => {
+                choice(canvas, rough == kind);
+                let (from, to) = ((rect.x + 9) as f32, (rect.right() - 9) as f32);
+                let wave = |amp: f32, phase: f32, lift: f32| -> Vec<(f32, f32)> {
+                    (0..=24).map(|step| {
+                        let t = step as f32 / 24.0;
+                        (from + (to - from) * t, cy as f32 + lift + amp * (t * 9.4 + phase).sin())
+                    }).collect()
+                };
+                match kind {
+                    0 => board::halo(canvas, &wave(0.0, 0.0, 0.0), 0.85, TEXT_COLOR, 256),
+                    1 => board::halo(canvas, &wave(1.6, 0.4, 0.0), 0.85, TEXT_COLOR, 256),
+                    _ => {
+                        board::halo(canvas, &wave(2.4, 0.2, -1.0), 0.8, TEXT_COLOR, 256);
+                        board::halo(canvas, &wave(2.0, 1.6, 1.2), 0.7, TEXT_COLOR, 200);
+                    }
+                }
+            }
+            // How opaque: a track filled in the accent as far as its knob,
+            // and how much, in hundredths, at its right.
+            Ctl::Opacity => {
+                let (left, right) = (rect.x + 7, rect.right() - SLIDER_SAYS);
+                let share = ((opacity as f32 / 2.56 - LEAST_OPAQUE) / (100.0 - LEAST_OPAQUE)).clamp(0.0, 1.0);
+                let knob = left + ((right - left) as f32 * share).round() as i32;
+                canvas.round_fill(left, cy - 2, right - left, 4, 2, FIELD_COLOR, 256);
+                canvas.round_fill(left, cy - 2, knob - left, 4, 2, ACCENT, 256);
+                let held = matches!(self.drag, Drag::Slide { field: Field::Opacity, .. });
+                if hovered || held {
+                    canvas.disc(knob, cy, 10, ACCENT, 60);
+                }
+                canvas.disc(knob, cy, 7, 0xFFFFFF, 256);
+                canvas.round_outline(knob - 7, cy - 7, 14, 14, 7, 1, if held { ACCENT } else { 0xBDBDBD });
+                let says = format!("{}%", (opacity as f32 / 2.56).round() as i32);
+                let wide = self.text.width(&says, 11);
+                self.text.draw(canvas, rect.right() - wide, cy - line_high / 2, 11, if hovered || held { TEXT_COLOR } else { DIM_TEXT_COLOR }, &says);
             }
             // A head, drawn on the end of a short arrow, lit as the first
             // arrow picked out has it.
@@ -624,9 +740,20 @@ impl Studio {
             // tint of it; a note, which keeps its quiet edge, its tint.
             Ctl::Color(at) => {
                 let (line, tint) = SWATCHES[usize::from(at)];
-                self.board.stroke = line;
-                if self.board.fill.is_some_and(|fill| fill != 0xFFFFFF) {
-                    self.board.fill = Some(tint);
+                // With the highlighter in hand, or highlighters alone picked
+                // out, the highlighter's color; else the next shape's.
+                let styled = self.bar_styled();
+                let markers = match styled.is_empty() {
+                    true => self.tool == Tool::Marker,
+                    false => styled.iter().all(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.tool == Tool::Marker)),
+                };
+                if markers {
+                    self.board.marker = line;
+                } else {
+                    self.board.stroke = line;
+                    if self.board.fill.is_some_and(|fill| fill != 0xFFFFFF) {
+                        self.board.fill = Some(tint);
+                    }
                 }
                 self.restyle_shapes(|shape| {
                     let tinted = shape.filled && shape.fill != 0xFFFFFF && matches!(shape.tool, Tool::Rect | Tool::Ellipse);
@@ -650,7 +777,12 @@ impl Studio {
                     1 => Some(0xFFFFFF),
                     _ => Some(tint_of(self.board.stroke, self.board.fill)),
                 };
-                self.board.hatch = kind == 3;
+                // Hatched, crossed or dotted: the tint, and what crosses it.
+                let pattern = kind.saturating_sub(3).min(shapes::PATTERN_DOTS);
+                self.board.hatch = kind >= 3;
+                if kind >= 3 {
+                    self.board.pattern = pattern;
+                }
                 self.restyle_shapes(|shape| {
                     if !matches!(shape.tool, Tool::Rect | Tool::Ellipse) {
                         return;
@@ -659,10 +791,33 @@ impl Studio {
                     match kind {
                         0 => (shape.filled, shape.border, shape.hatch) = (false, true, false),
                         1 => (shape.filled, shape.fill, shape.hatch) = (true, 0xFFFFFF, false),
-                        _ => (shape.filled, shape.fill, shape.hatch) = (true, tint, kind == 3),
+                        2 => (shape.filled, shape.fill, shape.hatch) = (true, tint, false),
+                        _ => (shape.filled, shape.fill, shape.hatch, shape.pattern) = (true, tint, true, pattern),
                     }
                 });
-                self.say(["No fill", "Filled with the paper", "Filled with a tint", "Hatched"][usize::from(kind)]);
+                self.say(FILL_SAYS[usize::from(kind.min(FILL_KINDS - 1))]);
+            }
+            // How loosely what is drawn by hand wanders: the shapes picked
+            // out, and the next.
+            Ctl::Rough(kind) => {
+                let kind = kind.min(shapes::ROUGH_LOOSE);
+                self.board.rough = kind;
+                self.restyle_shapes(|shape| {
+                    if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow) {
+                        shape.rough = kind;
+                    }
+                });
+                self.say(ROUGH_SAYS[usize::from(kind)]);
+            }
+            // The slider pressed: as opaque as where it is pressed, and then
+            // as it is dragged; one step to undo, all of it.
+            Ctl::Opacity => {
+                let place = self.control_rect(Control::Board(ctl)).unwrap_or_default();
+                let (left, wide) = (place.x + 7, (place.w - 7 - SLIDER_SAYS).max(20));
+                self.board.opacity_step = true;
+                self.drag = Drag::Slide { field: Field::Opacity, left, wide };
+                let x = self.pointer.0;
+                self.slide_opacity(left, wide, x);
             }
             // A head at an end of the arrows picked out, or none.
             Ctl::Head(end, at) => {
@@ -789,6 +944,30 @@ impl Studio {
         self.dirty = true;
     }
 
+    /// The opacity slider at a point across its track: what is picked out
+    /// and the next shape as opaque as that, from 10% to 100% in whole
+    /// hundredths; a step to undo the first time it changes anything.
+    pub(in crate::studio) fn slide_opacity(&mut self, left: i32, wide: i32, x: i32) {
+        let along = ((x - left) as f32 / wide.max(1) as f32).clamp(0.0, 1.0);
+        let percent = (LEAST_OPAQUE + along * (100.0 - LEAST_OPAQUE)).round();
+        let opacity = ((percent * 2.56).round() as u32).min(256);
+        self.board.opacity = opacity;
+        let styled = self.bar_styled();
+        let differs = styled.iter().any(|&index| matches!(&self.doc.layers[index].kind, Kind::Shape(shape) if shape.opacity != opacity));
+        if differs {
+            if std::mem::take(&mut self.board.opacity_step) {
+                self.checkpoint();
+            }
+            for &index in &styled {
+                if let Kind::Shape(shape) = &mut self.doc.layers[index].kind {
+                    shape.opacity = opacity;
+                }
+            }
+            self.changed_layers(&styled);
+        }
+        self.dirty = true;
+    }
+
     /// Each shape picked out changed, as one step to undo.
     pub(in crate::studio) fn restyle_shapes(&mut self, change: impl Fn(&mut Shape)) {
         self.restyle(|layer| {
@@ -830,6 +1009,70 @@ mod tests {
         press_key(&mut studio, Key::Char('r'), Mods::default());
         pull(&mut studio, (100.0, 600.0), (260.0, 672.0), Mods::default());
         assert_eq!(shape(&studio, studio.doc.layers.len() - 1).stroke, LINE);
+    }
+
+    #[test]
+    fn the_panel_crosses_or_dots_a_fill_draws_neat_or_loose_and_fades_and_the_next_box_is_drawn_so() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (260.0, 172.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.layout();
+        // Six fills in one row, as wide each, inside the panel.
+        let fills: Vec<Rect> = (0..6).map(|kind| studio.control_rect(Control::Board(Ctl::FillKind(kind))).expect("each fill")).collect();
+        let panel = studio.layout().board_bar.unwrap();
+        assert!(fills.iter().all(|rect| rect.y == fills[0].y && rect.h == fills[0].h && rect.x >= panel.x && rect.right() <= panel.right()));
+        assert!(fills.windows(2).all(|pair| pair[1].x > pair[0].right() && (pair[1].w - pair[0].w).abs() <= 2));
+        // Crossed, then dotted: the box's tint so, and said so.
+        click(&mut studio, fills[4].center());
+        let boxed = shape(&studio, 0);
+        assert_eq!((boxed.filled, boxed.hatch, boxed.pattern), (true, true, shapes::PATTERN_CROSS));
+        assert_eq!(studio.note.as_ref().map(|(says, _)| says.as_str()), Some("Cross-hatched"));
+        click(&mut studio, fills[5].center());
+        assert_eq!(shape(&studio, 0).pattern, shapes::PATTERN_DOTS);
+        // Loose, by its row, which Rounded and Sketchy have.
+        let loose = studio.control_rect(Control::Board(Ctl::Rough(2))).expect("roughness in Rounded");
+        click(&mut studio, loose.center());
+        assert_eq!(shape(&studio, 0).rough, shapes::ROUGH_LOOSE);
+        // The slider, pressed at its far left: 10%; dragged to its right,
+        // all of it, as one step to undo.
+        let undo = studio.undo.len();
+        let slider = studio.control_rect(Control::Board(Ctl::Opacity)).expect("the opacity slider");
+        studio.pointer_moved(slider.x, slider.center().1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        assert_eq!(shape(&studio, 0).opacity, 26, "10%, the least");
+        for x in [slider.x + 40, slider.x + 80, slider.right() + 30] {
+            studio.pointer_moved(x, slider.center().1, Mods::default());
+        }
+        assert_eq!(shape(&studio, 0).opacity, 256);
+        studio.pointer_moved(slider.x + (slider.w - SLIDER_SAYS) / 2, slider.center().1, Mods::default());
+        studio.released();
+        let half = shape(&studio, 0).opacity;
+        assert!((130..=150).contains(&half), "about half: {half}");
+        assert_eq!(studio.undo.len(), undo + 1, "one step");
+        // Each with a tip that says what it is.
+        assert_eq!(studio.board_tip(Ctl::FillKind(4)).as_deref(), Some("Cross-hatched"));
+        assert_eq!(studio.board_tip(Ctl::Rough(2)).as_deref(), Some("Loose: gone over twice"));
+        assert!(studio.board_tip(Ctl::Opacity).is_some_and(|tip| tip.starts_with("Opacity")));
+        // The next box drawn as the panel last set: dotted, loose, as faint.
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 300.0), (260.0, 372.0), Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let next = shape(&studio, 1);
+        assert_eq!((next.hatch, next.pattern, next.rough, next.opacity), (true, shapes::PATTERN_DOTS, shapes::ROUGH_LOOSE, half));
+        // Both picked out: each set at once, as one step.
+        studio.selected = vec![0, 1];
+        let undo = studio.undo.len();
+        studio.press_style(Ctl::Rough(0));
+        assert_eq!((shape(&studio, 0).rough, shape(&studio, 1).rough, studio.undo.len()), (shapes::ROUGH_NEAT, shapes::ROUGH_NEAT, undo + 1));
+        // Roughness is not offered where nothing is drawn by hand.
+        for look in [look::CLEAN, look::DIAGRAM] {
+            studio.set_look(Some(look), None);
+            studio.layout();
+            assert!(studio.control_rect(Control::Board(Ctl::Rough(0))).is_none(), "look {look}");
+            assert!(studio.control_rect(Control::Board(Ctl::Opacity)).is_some());
+        }
     }
 
     /// Where −, the number or + of the size of the words is.

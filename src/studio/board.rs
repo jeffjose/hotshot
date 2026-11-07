@@ -28,6 +28,18 @@ pub(super) const SWATCHES: [(u32, u32); 10] = [
     (0x7048E8, 0xE5DBFF),
     (0xC2255C, 0xFFDEEB),
 ];
+/// The bright ink a highlighter in each of those colors is, as a felt tip
+/// is a lighter, livelier color than a pen of the same name.
+const HIGHLIGHTS: [u32; 10] = [0xADB5BD, 0xCED4DA, 0xFFA8A8, 0xFFC078, 0xFFE066, 0x8CE99A, 0x66D9E8, 0x74C0FC, 0xB197FC, 0xFAA2C1];
+/// The color a highlighter is in until another is chosen: yellow.
+pub(super) const HIGHLIGHTER: u32 = SWATCHES[4].0;
+
+/// What a highlighter in a color is drawn in: the bright ink of a color
+/// the board picks by name; any other as it is.
+pub(super) fn highlight_ink(color: u32) -> u32 {
+    SWATCHES.iter().position(|(line, _)| *line == color & 0xFF_FFFF).map_or(color, |at| HIGHLIGHTS[at])
+}
+
 /// The names of the colors, as the panel says them.
 pub(super) const SWATCH_NAMES: [&str; 10] = ["Black", "Gray", "Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Violet", "Pink"];
 /// The four sizes, S M L XL: how wide a line is and how large its words.
@@ -54,9 +66,9 @@ pub(super) const BOX: (f32, f32) = (160.0, 72.0);
 pub(super) const STICKY: (f32, f32) = (150.0, 150.0);
 
 /// The tools along the bottom of a board, each with its key: the pointer,
-/// the hand, a box, an oval, a diamond, an arrow, a line, the pen, text, a
-/// sticky note, a picture, and the laser.
-pub(super) const TOOLS: [(&str, char); 12] = [("Select", 'v'), ("Hand", 'h'), ("Box", 'r'), ("Oval", 'o'), ("Diamond", 'd'), ("Arrow", 'a'), ("Line", 'l'), ("Pen", 'p'), ("Text", 't'), ("Sticky note", 's'), ("Picture", 'i'), ("Laser", 'k')];
+/// the hand, a box, an oval, a diamond, an arrow, a line, the pen, the
+/// highlighter, text, a sticky note, a picture, the eraser, and the laser.
+pub(super) const TOOLS: [(&str, char); 14] = [("Select", 'v'), ("Hand", 'h'), ("Box", 'r'), ("Oval", 'o'), ("Diamond", 'd'), ("Arrow", 'a'), ("Line", 'l'), ("Pen", 'p'), ("Highlighter", 'm'), ("Text", 't'), ("Sticky note", 's'), ("Picture", 'i'), ("Eraser", 'e'), ("Laser", 'k')];
 pub(super) const SELECT: u8 = 0;
 pub(super) const HAND: u8 = 1;
 pub(super) const BOX_TOOL: u8 = 2;
@@ -65,10 +77,12 @@ pub(super) const DIAMOND: u8 = 4;
 pub(super) const ARROW: u8 = 5;
 pub(super) const LINE_TOOL: u8 = 6;
 pub(super) const PEN: u8 = 7;
-pub(super) const TEXT: u8 = 8;
-pub(super) const STICKY_TOOL: u8 = 9;
-pub(super) const PICTURE: u8 = 10;
-pub(super) const LASER_TOOL: u8 = 11;
+pub(super) const HIGHLIGHTER_TOOL: u8 = 8;
+pub(super) const TEXT: u8 = 9;
+pub(super) const STICKY_TOOL: u8 = 10;
+pub(super) const PICTURE: u8 = 11;
+pub(super) const ERASER: u8 = 12;
+pub(super) const LASER_TOOL: u8 = 13;
 
 /// What on a board is clicked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -79,12 +93,16 @@ pub(super) enum Ctl {
     /// A tool of the board's bar.
     Tool(u8),
     /// The style panel: a color by name, which colors a line and its fill;
-    /// what a fill is (none, paper, a tint or hatched); a line whole,
-    /// dashed or dotted; a size, S M L XL; the look, the size of the
-    /// words, guessing on or off, and the status dot.
+    /// what a fill is (none, paper, a tint, hatched, crossed or dotted); a
+    /// line whole, dashed or dotted; a size, S M L XL; the look, the size
+    /// of the words, guessing on or off, and the status dot.
     Color(u8),
     FillKind(u8),
     Dash(u8),
+    /// How loosely a line by hand is drawn: neat, normal or loose; and how
+    /// opaque, a slider from 10% to 100%.
+    Rough(u8),
+    Opacity,
     Size(u8),
     /// A selected arrow's head at its start (0) or its end (1), one of
     /// `HEAD_CHOICES`; and the way it goes: curved, straight or elbowed.
@@ -157,6 +175,23 @@ pub(super) struct Board {
     /// How the next shape's fill and line are drawn: hatched, and whole,
     /// dashed or dotted.
     pub hatch: bool,
+    /// What its hatched fill is crossed by, how loosely it is drawn by
+    /// hand and how opaque it is, out of 256; and the color the
+    /// highlighter is in, yellow until another is chosen with it in hand.
+    pub pattern: u8,
+    pub rough: u8,
+    pub opacity: u32,
+    pub marker: u32,
+    /// The eraser is the tool in hand; and what it is going over, while
+    /// its button is held.
+    pub eraser_tool: bool,
+    pub erasing: Option<erase::Erasing>,
+    /// The opacity slider is held, and what it changes is not yet a step
+    /// to undo, which it becomes once it changes anything.
+    pub opacity_step: bool,
+    /// A lasso being drawn round what is to be picked out, by Alt and a
+    /// drag on empty board: the points it has gone through.
+    pub lasso: Option<Vec<(f32, f32)>>,
     /// The key of the tool in hand typed first into the box it drew, by
     /// that box's name: taken out if the next thing done is another box.
     pub tool_letter: Option<(u32, char)>,
@@ -251,7 +286,7 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(_board: bool) -> Board {
-        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None), choices: export::last_choices(), exporting: None, paste_plain: false, ctrl: None, glide: None, find: None, linking: None, link_card: None, opened: None, copied_link: None }
+        Board { stroke: INK, fill: Some(FILLS[2]), sketch: true, width: LINE, making: shapes::FORM_BOX, sizes: Vec::new(), left: false, guessing: true, dots_of: None, coloring: false, hatch: false, pattern: shapes::PATTERN_LINES, rough: shapes::ROUGH_NORMAL, opacity: 256, marker: HIGHLIGHTER, eraser_tool: false, erasing: None, opacity_step: false, lasso: None, tool_letter: None, dash: 0, route: None, carried: Vec::new(), letting_go: false, ghost: None, branching: None, history: None, focus: None, present: None, laser: None, trail: Vec::new(), strokes: 0, glow: None, laser_tool: false, beam: false, keys: false, pick: None, drop: None, svg: None, level: 80.0, neaten: false, bind: None, ports: Vec::new(), type_step: false, typed: None, caret: None, anchor: None, stepping: None, px_typed: None, wheeled: (0.0, None), choices: export::last_choices(), exporting: None, paste_plain: false, ctrl: None, glide: None, find: None, linking: None, link_card: None, opened: None, copied_link: None }
     }
 }
 
@@ -270,6 +305,7 @@ pub(super) mod export;
 mod exporting;
 mod mermaid;
 mod neaten;
+mod erase;
 mod zoom;
 mod keys;
 mod flow;
@@ -491,9 +527,11 @@ impl Studio {
             Tool::Ellipse => OVAL,
             Tool::Arrow => ARROW,
             Tool::Line => LINE_TOOL,
-            Tool::Pen | Tool::Marker => PEN,
+            Tool::Pen => PEN,
+            Tool::Marker => HIGHLIGHTER_TOOL,
             Tool::Text => TEXT,
             Tool::Select if self.board.laser_tool => LASER_TOOL,
+            Tool::Select if self.board.eraser_tool => ERASER,
             _ => SELECT,
         }
     }
@@ -519,6 +557,16 @@ impl Studio {
                 self.board.laser_tool = true;
                 return Outcome::Continue;
             }
+            // The eraser: a drag fades what it goes over, gone once let go;
+            // nothing is picked out while it is in hand.
+            ERASER => {
+                self.set_tool(Tool::Select);
+                self.selected.clear();
+                self.board.eraser_tool = true;
+                self.say("Eraser: drag over what is to go, or click it");
+                return Outcome::Continue;
+            }
+            HIGHLIGHTER_TOOL => (Tool::Marker, self.board.making),
             BOX_TOOL => (Tool::Rect, shapes::FORM_BOX),
             DIAMOND => (Tool::Rect, shapes::FORM_DIAMOND),
             STICKY_TOOL => (Tool::Rect, shapes::FORM_STICKY),
@@ -584,11 +632,14 @@ impl Studio {
         if matches!(shape.tool, Tool::Rect | Tool::Ellipse | Tool::Arrow | Tool::Line) {
             (shape.dashed, shape.dotted) = (board.dash == 1, board.dash == 2);
         }
+        // How loosely it is drawn and how opaque, as last chosen.
+        (shape.rough, shape.opacity) = (board.rough, board.opacity);
         match shape.tool {
             Tool::Rect | Tool::Ellipse => {
                 (shape.sketch, shape.border, shape.radius) = (board.sketch, true, 6.0);
                 (shape.filled, shape.fill) = (board.fill.is_some(), board.fill.unwrap_or(0xFFFFFF));
                 shape.hatch = board.hatch && shape.filled;
+                shape.pattern = board.pattern;
                 // Its words fitted to it, at the board's size or smaller.
                 shape.nominal = shape.font_px;
                 if shape.tool == Tool::Rect {
@@ -611,6 +662,9 @@ impl Studio {
             Tool::Text => shape.color = INK,
             // The pen smooth, a little thinner at either end.
             Tool::Pen => shape.sketch = board.sketch,
+            // The highlighter wide, about 15 pixels across at 100%, in its
+            // own color: yellow, until another is chosen with it in hand.
+            Tool::Marker => (shape.sketch, shape.color, shape.stroke) = (board.sketch, board.marker, 3.0 * by),
             _ => {}
         }
     }
@@ -661,9 +715,17 @@ impl Studio {
                     canvas.round_fill(rect.x, rect.y, rect.w, rect.h, 9, HOVER_COLOR, 256);
                 }
                 let color = if on { 0xFFFFFF } else { TEXT_COLOR };
+                // The eraser and the highlighter, which the font has none of:
+                // drawn in the line its icons are drawn in.
+                match which {
+                    ERASER => erase::draw_eraser_icon(canvas, (cx as f32, cy as f32), color),
+                    HIGHLIGHTER_TOOL => erase::draw_highlighter_icon(canvas, (cx as f32, cy as f32), color),
+                    _ => {}
+                }
                 // Each from the icon font, drawn in the same line as the
                 // rest of hotshot's icons.
                 let icon = match which {
+                    ERASER | HIGHLIGHTER_TOOL => "",
                     HAND => icons::HAND,
                     BOX_TOOL => icons::RECT,
                     OVAL => icons::ELLIPSE,
@@ -866,6 +928,73 @@ pub(super) mod tests {
         // Undone, the switch is too.
         studio.undo();
         assert!(studio.on_board());
+    }
+
+    /// A drag through some points of the board.
+    fn stroke(studio: &mut Studio, points: &[(f32, f32)]) {
+        let first = studio.to_window_page(points[0]);
+        studio.pointer_moved(first.0, first.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        for &point in &points[1..] {
+            let at = studio.to_window_page(point);
+            studio.pointer_moved(at.0, at.1, Mods::default());
+        }
+        studio.released();
+    }
+
+    #[test]
+    fn the_highlighter_on_m_draws_a_wide_yellow_stroke_the_words_under_it_still_read_through() {
+        let mut studio = board();
+        press_key(&mut studio, Key::Char('r'), Mods::default());
+        pull(&mut studio, (100.0, 100.0), (400.0, 172.0), Mods::default());
+        type_in(&mut studio, "Highlight me");
+        press_key(&mut studio, Key::Escape, Mods::default());
+        press_key(&mut studio, Key::Escape, Mods::default());
+        studio.selected.clear();
+        // The darkest of its words, and the paper beside the box, before.
+        let mut before = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut before);
+        let at = |studio: &Studio, x: f32, y: f32| {
+            let (x, y) = studio.to_window_page((x, y));
+            (y * studio.width + x) as usize
+        };
+        let dark = (180..330).flat_map(|x| (126..146).map(move |y| (x as f32, y as f32))).map(|(x, y)| at(&studio, x, y)).min_by_key(|&spot| before[spot] & 0xFF).unwrap();
+        assert!(before[dark] & 0xFF < 0x60, "a letter: {:06X}", before[dark] & 0xFF_FFFF);
+        let paper = at(&studio, 80.0, 137.0);
+        // M: the highlighter, its button on the bar with the marker's icon.
+        press_key(&mut studio, Key::Char('m'), Mods::default());
+        assert_eq!((studio.board_tool(), TOOLS[usize::from(HIGHLIGHTER_TOOL)]), (HIGHLIGHTER_TOOL, ("Highlighter", 'm')));
+        // Its panel: its color and how opaque, nothing it has not.
+        studio.layout();
+        assert!(studio.control_rect(Control::Board(Ctl::Color(4))).is_some() && studio.control_rect(Control::Board(Ctl::Opacity)).is_some());
+        assert!([Ctl::Dash(0), Ctl::Size(1), Ctl::Font, Ctl::Rough(1)].iter().all(|&ctl| studio.control_rect(Control::Board(ctl)).is_none()));
+        let way: Vec<(f32, f32)> = (0..=16).map(|step| (60.0 + step as f32 * 22.0, 137.0 + (step as f32 * 0.7).sin() * 2.0)).collect();
+        stroke(&mut studio, &way);
+        let marker = shape(&studio, studio.doc.layers.len() - 1);
+        assert_eq!((marker.tool, marker.color), (Tool::Marker, HIGHLIGHTER), "yellow until another is chosen");
+        assert!((14.0..=16.0).contains(&(marker.stroke * 3.0 + 6.0)), "about 15 pixels wide: {}", marker.stroke);
+        assert_eq!(studio.board_tool(), HIGHLIGHTER_TOOL, "kept in hand for the next");
+        let mut after = vec![0u32; before.len()];
+        studio.draw(&mut after);
+        // The paper under it yellow; the words as dark as they were.
+        let (was, now) = (before[paper] & 0xFF_FFFF, after[paper] & 0xFF_FFFF);
+        assert!((now >> 16) > 0xE8 && (now & 0xFF) + 60 < (was & 0xFF), "yellow: {was:06X} to {now:06X}");
+        assert!(after[dark] & 0xFF <= (before[dark] & 0xFF) + 4 && (after[dark] >> 8 & 0xFF) < 0x70, "the letter still dark: {:06X}", after[dark] & 0xFF_FFFF);
+        // A little uneven by hand in Rounded; even in Clean.
+        let even = |studio: &Studio| {
+            let mut seen = shape(studio, studio.doc.layers.len() - 1);
+            look::dress(&mut seen, studio.pages[0].look, 0, 1.0);
+            let ink = seen.marker_ink();
+            ink.halves.iter().all(|&half| (half - ink.halves[0]).abs() < 1e-3)
+        };
+        assert!(!even(&studio));
+        studio.set_look(Some(2), None);
+        assert!(even(&studio));
+        // Another color chosen with it in hand is the highlighter's, not the
+        // next box's.
+        studio.press_style(Ctl::Color(5));
+        assert_eq!((studio.board.marker, studio.board.stroke), (SWATCHES[5].0, INK));
     }
 
     #[test]

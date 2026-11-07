@@ -421,6 +421,10 @@ impl Studio {
 
     /// A slider set to where along it the pointer is.
     pub(super) fn slide_to(&mut self, field: Field, left: i32, wide: i32, x: i32) {
+        // A board's opacity slider, from 10% to 100%.
+        if self.on_board() && field == Field::Opacity {
+            return self.slide_opacity(left, wide, x);
+        }
         let along = ((x - left) as f32 / wide as f32).clamp(0.0, 1.0);
         self.set_field(field, along * 200.0 - 100.0);
     }

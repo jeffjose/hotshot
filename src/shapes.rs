@@ -73,6 +73,10 @@ pub type Point = (f32, f32);
 /// How opaque a marker's stroke is, out of 256: what is under it is
 /// still to be read.
 const MARKER_OPACITY: u32 = 104;
+/// How strongly a board's highlighter is laid down, out of 256: over light
+/// paper, deepening it; over dark, over it.
+const HIGHLIGHTER_OPACITY: u32 = 230;
+const HIGHLIGHTER_DARK: u32 = 96;
 /// How near a click has to come to a shape to be on it, in pixels.
 const REACH: i32 = 4;
 
@@ -134,6 +138,17 @@ pub struct Shape {
     /// Whether its fill is crossed by fine lines on a slant in its line's
     /// color, as a sketch marks a part planned or outside.
     pub hatch: bool,
+    /// What a hatched fill is crossed by: lines on a slant, those and the
+    /// other slant as well, or dots; one of the `PATTERN_` numbers.
+    pub pattern: u8,
+    /// How much a line drawn by hand wanders: nearly straight, as a hand
+    /// does, or loosely and gone over twice; one of the `ROUGH_` numbers.
+    pub rough: u8,
+    /// Whether a marker is drawn as a board's highlighter: smooth, and
+    /// laid over what it crosses as ink is, deepening it rather than
+    /// covering it, so that words under it still read. Given it as it is
+    /// drawn, never kept.
+    pub highlighter: bool,
     /// Where an arrow round corners was pulled to go by its middle: the
     /// stretch between its turns slid there, within the room it has,
     /// rather than half way; none, half way.
@@ -400,6 +415,18 @@ pub const ONE_MANY_HEAD: u8 = 11;
 pub const ZERO_MANY_HEAD: u8 = 12;
 const HEAD_KINDS: u8 = 13;
 
+/// What a hatched fill is crossed by: fine lines up to the right, those
+/// crossed by lines down to the right, or dots in rows.
+pub const PATTERN_LINES: u8 = 0;
+pub const PATTERN_CROSS: u8 = 1;
+pub const PATTERN_DOTS: u8 = 2;
+
+/// How loosely a line is drawn by hand: nearly straight; as it always
+/// was; or loosely and gone over a second time, as a cartoonist does.
+pub const ROUGH_NEAT: u8 = 0;
+pub const ROUGH_NORMAL: u8 = 1;
+pub const ROUGH_LOOSE: u8 = 2;
+
 /// What a highlight is the color of, and how opaque out of 256.
 const HIGHLIGHT_COLOR: (u32, u32) = (0xFFE629, 150);
 
@@ -439,7 +466,7 @@ impl Shape {
             Tool::Zoom => vec![at, at, at, at],
             _ => vec![at, at],
         };
-        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, step: None, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, link: String::new(), mask: RefCell::new(None), inside: RefCell::new(None) }
+        Shape { tool, color, stroke, filled: false, radius: 0.0, corners: None, gradient: None, points, text: String::new(), font_px: 16, nominal: 0, words: 0, section: false, face: 0, heads: [false, tool == Tool::Arrow], ends: [FILLED_HEAD; 2], dashed: false, dotted: false, halo: false, elbow: false, sketch: false, fill: 0xFFFFFF, hatch: false, pattern: PATTERN_LINES, rough: ROUGH_NORMAL, highlighter: false, link: String::new(), step: None, border: true, opacity: 256, style: 0, number: 0, angle: 0.0, id: fresh_id(), stuck: [None; 2], align: 0, edge: CENTER, shadow: None, editing: false, form: FORM_BOX, titled: false, heading: false, region: 0, status: 0, votes: 0, routed: false, base: (0.0, 0.0), rounded: false, paper: 0, scale: 1.0, mask: RefCell::new(None), inside: RefCell::new(None) }
     }
 
     /// The shape as a line of a file, to be read back by `read`: its
@@ -459,7 +486,7 @@ impl Shape {
             u8::from(self.heads[0]),
             u8::from(self.heads[1]),
             format_args!(
-                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{}{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}:{},{},{},{},{},{},{},{},{}",
                 u8::from(self.dashed),
                 self.opacity,
                 self.style,
@@ -491,7 +518,9 @@ impl Shape {
                 u8::from(self.hatch),
                 self.nominal,
                 self.step.map_or("-".to_owned(), |(x, y)| format!("{x}:{y}")),
-                link_word(&self.link)
+                link_word(&self.link),
+                self.pattern,
+                self.rough
             ),
             self.fill,
             self.number,
@@ -575,6 +604,11 @@ impl Shape {
         shape.step = more.next().and_then(|word| word.split_once(':')).and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))).filter(|(x, y)| x.is_finite() && y.is_finite());
         // And where it links to, which a file from before has not.
         shape.link = more.next().map(link_read).unwrap_or_default();
+        // And what a hatched fill is crossed by and how loosely it is drawn
+        // by hand, which a file from before has not: lines, as it always
+        // was, as loosely as it always was.
+        shape.pattern = more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(PATTERN_LINES).min(PATTERN_DOTS);
+        shape.rough = more.next().and_then(|word| word.parse::<u8>().ok()).unwrap_or(ROUGH_NORMAL).min(ROUGH_LOOSE);
         // The text has its new lines and its backslashes said in two
         // letters each: put back one at a time, in order.
         let mut letters = text.chars();
@@ -2144,6 +2178,7 @@ impl Shape {
                 }
                 mask
             }
+            Tool::Marker if self.highlighter => lay_inks(bounds, &[self.marker_ink()]),
             Tool::Pen | Tool::Marker => {
                 let mut mask = Mask { bounds, alpha: vec![0; bounds.w as usize * bounds.h as usize] };
                 let half = self.line_width() / 2.0;
@@ -2245,8 +2280,9 @@ impl Shape {
         let (_, _, w, h) = self.frame();
         // So far either side: a couple of pixels at its own size, less for
         // a thin line or a small shape, more in the Sketchy look.
+        // Neat, hardly at all; loose, twice as far.
         let most = if self.rounded { 1.5 } else { 2.2 };
-        let amp = (half * 1.4).max(0.8 * scale).min(most * scale).min(w.max(h).max(1.0) * 0.03 + 0.3 * scale);
+        let amp = (half * 1.4).max(0.8 * scale).min(most * scale).min(w.max(h).max(1.0) * 0.03 + 0.3 * scale) * self.wander();
         let total = length_of(&line);
         let mut points = Vec::with_capacity(line.len());
         let mut halves = Vec::with_capacity(line.len());
@@ -2291,16 +2327,39 @@ impl Shape {
     pub(super) fn nudge(&self, most: f32) -> f32 {
         let scale = self.scale.max(1e-3);
         let (_, _, w, h) = self.frame();
-        (most * scale).min(w.min(h) * 0.06).max(0.0)
+        let wander = self.wander();
+        (most * scale * wander).min(w.min(h) * 0.06 * wander.max(1.0)).max(0.0)
+    }
+
+    /// How far its hand wanders against the usual: a fraction of it neat,
+    /// twice it loose.
+    pub(super) fn wander(&self) -> f32 {
+        match self.rough {
+            ROUGH_NEAT => 0.3,
+            ROUGH_LOOSE => 2.0,
+            _ => 1.0,
+        }
+    }
+
+    /// Whether it is drawn loosely, each line gone over a second time a
+    /// little off the first, as a cartoonist does.
+    pub(super) fn twice(&self) -> bool {
+        self.rough == ROUGH_LOOSE
     }
 
     /// The corners a hand drawing a box goes through, each a little off
     /// where it is; and the corners rounded off by so much in the Rounded
     /// look.
     fn box_corners(&self) -> ([Point; 4], f32) {
+        self.box_corners_by(0)
+    }
+
+    /// The same, the wobble from another salt: the corners a second time
+    /// round goes through.
+    fn box_corners_by(&self, salt: u32) -> ([Point; 4], f32) {
         let scale = self.scale.max(1e-3);
         let (left, top, width, height) = self.frame();
-        let mut wobble = self.wobbler(0);
+        let mut wobble = self.wobbler(salt);
         let nudge = self.nudge(if self.rounded { 1.2 } else { 2.0 });
         let corners = [(left, top), (left + width, top), (left + width, top + height), (left, top + height)];
         let set = corners.map(|(x, y)| (x + wobble(nudge), y + wobble(nudge)));
@@ -2345,7 +2404,14 @@ impl Shape {
         let mut strokes: Vec<Ink> = Vec::new();
         let (left, top, width, height) = self.frame();
         match self.tool {
-            Tool::Rect => strokes.extend(self.broken(self.ink(&self.box_path(), true, half, BOX_SALT))),
+            Tool::Rect => {
+                strokes.extend(self.broken(self.ink(&self.box_path(), true, half, BOX_SALT)));
+                // Loose: round again, its corners elsewhere, a little finer.
+                if self.twice() {
+                    let (corners, radius) = self.box_corners_by(AGAIN_SALT);
+                    strokes.extend(self.broken(self.ink(&round_corners(&corners, radius), true, half * 0.8, BOX_SALT ^ AGAIN_SALT)));
+                }
+            }
             Tool::Ellipse => {
                 let (cx, cy, rx, ry) = (left + width / 2.0, top + height / 2.0, width / 2.0, height / 2.0);
                 let count = pieces(std::f32::consts::TAU * rx.max(ry)).max(48);
@@ -2362,6 +2428,21 @@ impl Shape {
                     })
                     .collect();
                 strokes.extend(self.broken(self.ink(&ring, true, half, BOX_SALT)));
+                // Loose: round again, a little rounder or flatter still and
+                // turned another way.
+                if self.twice() {
+                    let mut again = self.wobbler(AGAIN_SALT);
+                    let radii = (rx + again(nudge * 0.6), (ry + again(nudge * 0.6)).max(1.0));
+                    let (sin, cos) = again(3.0).to_radians().sin_cos();
+                    let ring: Vec<Point> = (0..count)
+                        .map(|step| {
+                            let angle = std::f32::consts::TAU * step as f32 / count as f32;
+                            let (x, y) = (radii.0 * angle.cos(), radii.1 * angle.sin());
+                            (cx + x * cos - y * sin, cy + x * sin + y * cos)
+                        })
+                        .collect();
+                    strokes.extend(self.broken(self.ink(&ring, true, half * 0.8, BOX_SALT ^ AGAIN_SALT)));
+                }
             }
             _ => {
                 let (a, b) = (self.points[0], self.points[self.far()]);
@@ -2372,7 +2453,7 @@ impl Shape {
                     None => {
                         let length = (b.0 - a.0).hypot(b.1 - a.1).max(1.0);
                         let (nx, ny) = (-(b.1 - a.1) / length, (b.0 - a.0) / length);
-                        let bow = (0.8 * scale + length * 0.012).min(3.0 * scale) * if wobble(1.0) < 0.0 { -1.0 } else { 1.0 };
+                        let bow = (0.8 * scale + length * 0.012).min(3.0 * scale) * self.wander() * if wobble(1.0) < 0.0 { -1.0 } else { 1.0 };
                         let count = pieces(length);
                         (0..=count)
                             .map(|step| {
@@ -2443,6 +2524,20 @@ impl Shape {
                     }
                 }
                 strokes.extend(self.broken(self.ink(&path, false, half, 0x51ED_270B)));
+                // Loose: drawn along a second time, a little to one side,
+                // wandering its own way.
+                if self.twice() && path.len() > 1 {
+                    let aside = (half * 0.8 + scale).min(2.5 * scale);
+                    let again: Vec<Point> = (0..path.len()).map(|at| {
+                        let (a, b) = (path[at.saturating_sub(1)], path[(at + 1).min(path.len() - 1)]);
+                        let long = distance(a, b).max(1e-6);
+                        let t = at as f32 / (path.len() - 1) as f32;
+                        // Off to the side most in its middle, back on at its ends.
+                        let off = aside * (std::f32::consts::PI * t).sin();
+                        (path[at].0 - (b.1 - a.1) / long * off, path[at].1 + (b.0 - a.0) / long * off)
+                    }).collect();
+                    strokes.extend(self.broken(self.ink(&again, false, half * 0.8, 0x51ED_270B ^ AGAIN_SALT)));
+                }
             }
         }
         strokes
@@ -2490,6 +2585,36 @@ impl Shape {
             strokes.push(ink);
         }
         strokes
+    }
+
+    /// A board's highlighter's stroke: smooth through the points it went
+    /// by, as wide all along; by hand, its middle a little either side of
+    /// where it went and its width swelling and thinning a little, on slow
+    /// waves, as a felt tip pressed unevenly is.
+    pub fn marker_ink(&self) -> Ink {
+        let scale = self.scale.max(1e-3);
+        let smooth = smooth_through(&self.points, 2.0 * scale);
+        let half = self.line_width() / 2.0;
+        if !self.sketch || smooth.len() < 2 {
+            return Ink::even(smooth, half, false);
+        }
+        let line = resample(&smooth, 3.0 * scale);
+        let mut wobble = self.wobbler(0x3C6E_F372);
+        let phases: [f32; 4] = std::array::from_fn(|_| wobble(std::f32::consts::PI));
+        let (mut points, mut halves, mut gone) = (Vec::with_capacity(line.len()), Vec::with_capacity(line.len()), 0.0);
+        for at in 0..line.len() {
+            if at > 0 {
+                gone += distance(line[at - 1], line[at]);
+            }
+            let d = gone / scale;
+            let (a, b) = (line[at.saturating_sub(1)], line[(at + 1).min(line.len() - 1)]);
+            let long = distance(a, b).max(1e-6);
+            let (nx, ny) = (-(b.1 - a.1) / long, (b.0 - a.0) / long);
+            let off = (0.6 * (d / 53.0 + phases[0]).sin() + 0.4 * (d / 19.0 + phases[1]).sin()) * 0.7 * scale * self.wander();
+            points.push((line[at].0 + nx * off, line[at].1 + ny * off));
+            halves.push(half * (1.0 + 0.07 * self.wander().min(1.5) * ((d / 37.0 + phases[2]).sin() + 0.5 * (d / 13.0 + phases[3]).sin())));
+        }
+        Ink { points, halves, filled: false }
     }
 
     /// A pen's line drawn by hand: smooth through the points it went by,
@@ -2662,6 +2787,11 @@ impl Shape {
                     }
                 }
             }
+            // A board's highlighter deepens what it is over, on light paper;
+            // on dark paper, where that would hide it, it is laid over it
+            // faintly instead.
+            Tool::Marker if self.highlighter && self.paper == 0 => canvas.mask_multiply(&self.mask(), self.color, HIGHLIGHTER_OPACITY * self.opacity / 256),
+            Tool::Marker if self.highlighter => canvas.mask(&self.mask(), self.color, HIGHLIGHTER_DARK * self.opacity / 256),
             Tool::Marker => canvas.mask(&self.mask(), self.color, MARKER_OPACITY * self.opacity / 256),
             // Its fill, and its border over that; or the one it has.
             Tool::Rect | Tool::Ellipse => {
@@ -2670,7 +2800,18 @@ impl Shape {
                     self.lay_fill(canvas, &inside);
                     if self.hatch {
                         let (x, y, _, _) = self.frame();
-                        canvas.mask(&hatched(&inside, self.scale, (x, y)), self.color, self.opacity * 150 / 256);
+                        let hand = self.sketched().then(|| self.seed());
+                        let mut lines = hatched(&inside, self.scale, (x, y), self.pattern, hand);
+                        // Kept clear of its words, a little round each line
+                        // of them, so that they read as on its tint alone.
+                        if !self.text.is_empty() && self.form != FORM_TABLE && !self.section {
+                            let (words, high) = self.label_lines(text);
+                            let room = (high / 4) as f32;
+                            for (_, left, top, wide) in words {
+                                clear_round(&mut lines, (left - room, top, wide as f32 + 2.0 * room, high as f32), room);
+                            }
+                        }
+                        canvas.mask(&lines, self.color, self.opacity * 150 / 256);
                     }
                 }
                 match self.border || self.placeholder() {
@@ -3323,30 +3464,104 @@ fn made(started: std::time::Instant, into: &Made, bounds: Rect) {
 /// right, so far apart and so wide at a shape's own size, from its corner
 /// so that they go with it as it moves: what a hatched fill lays in its
 /// line's color.
-pub(super) fn hatched(inside: &Mask, scale: f32, from: Point) -> Mask {
+///
+/// Crossed, the lines down to the right as well; dotted, a dot in each
+/// cell of a grid, every other row half a cell along. By hand, each line
+/// wanders a little on a slow wave of its own and each dot is a little
+/// off its place and its size, from `seed`, so that it moves with it.
+pub(super) fn hatched(inside: &Mask, scale: f32, from: Point, pattern: u8, hand: Option<u32>) -> Mask {
     let scale = scale.max(1e-3);
     let (every, half) = (8.0 * scale, (0.8 * scale).max(0.5));
     let bounds = inside.bounds;
     let mut alpha = inside.alpha.clone();
+    // A number from -1 to 1 for a line or a cell, the same each time.
+    let jitter = |a: i32, b: i32, salt: u32| {
+        let mut n = (a as u32).wrapping_mul(0x9E37_79B9) ^ (b as u32).wrapping_mul(0x85EB_CA6B) ^ salt ^ hand.unwrap_or(0);
+        n ^= n >> 15;
+        n = n.wrapping_mul(0x2C1B_3C6D);
+        n ^= n >> 13;
+        (n & 0xFFFF) as f32 / 32767.5 - 1.0
+    };
+    // How far a point is from the nearest of the lines across `across`,
+    // which run along `along`: wandering, by hand.
+    let to_line = |across: f32, along: f32, salt: u32| {
+        let line = (across / every).round();
+        let wave = match hand {
+            Some(_) => 0.55 * scale * (along / (13.0 * scale) + jitter(line as i32, 0, salt) * 3.1).sin() + 0.3 * scale * jitter(line as i32, 1, salt),
+            None => 0.0,
+        };
+        (across - line * every - wave).abs()
+    };
+    let dot = (1.15 * scale).max(0.7);
     for (row, y) in alpha.chunks_mut(bounds.w.max(1) as usize).zip(bounds.y..) {
         for (cover, x) in row.iter_mut().zip(bounds.x..) {
             if *cover == 0 {
                 continue;
             }
-            // Across the lines x + y = k, from the pixel's middle: how far
-            // to the nearest of them.
-            let across = (x as f32 + 0.5 - from.0 + y as f32 + 0.5 - from.1) / std::f32::consts::SQRT_2;
-            let off = across.rem_euclid(every);
-            let far = off.min(every - off) - half;
+            let (px, py) = (x as f32 + 0.5 - from.0, y as f32 + 0.5 - from.1);
+            let far = match pattern {
+                // A dot in each cell, the nearest of those round it.
+                PATTERN_DOTS => {
+                    let step = every * 0.85;
+                    let down = (py / step).floor() as i32;
+                    let mut far = f32::MAX;
+                    for row in down - 1..=down + 1 {
+                        let shift = if row.rem_euclid(2) == 1 { step / 2.0 } else { 0.0 };
+                        let across = ((px - shift) / step).floor() as i32;
+                        for column in across - 1..=across + 1 {
+                            let (mut cx, mut cy) = (column as f32 * step + shift + step / 2.0, row as f32 * step + step / 2.0);
+                            let mut size = dot;
+                            if hand.is_some() {
+                                (cx, cy) = (cx + jitter(column, row, 0x51) * step * 0.12, cy + jitter(column, row, 0x52) * step * 0.12);
+                                size *= 1.0 + 0.25 * jitter(column, row, 0x53);
+                            }
+                            far = far.min((px - cx).hypot(py - cy) - size);
+                        }
+                    }
+                    far
+                }
+                // Across the lines x + y = k, from the pixel's middle: how
+                // far to the nearest of them; crossed, or to the nearest of
+                // the lines x - y = k.
+                _ => {
+                    let (up, down) = ((px + py) / std::f32::consts::SQRT_2, (px - py) / std::f32::consts::SQRT_2);
+                    let far = to_line(up, down, 0x0A);
+                    let far = match pattern {
+                        PATTERN_CROSS => far.min(to_line(down, up, 0x0B)),
+                        _ => far,
+                    };
+                    far - half
+                }
+            };
             *cover = (f32::from(*cover) * (0.5 - far).clamp(0.0, 1.0)) as u8;
         }
     }
     Mask { bounds, alpha }
 }
 
+/// A rectangle with rounded corners taken out of a mask, its edge soft:
+/// what of a pattern is kept off the words over it.
+fn clear_round(mask: &mut Mask, (x, y, w, h): (f32, f32, f32, f32), radius: f32) {
+    let part = Rect::new(x.floor() as i32 - 1, y.floor() as i32 - 1, w.ceil() as i32 + 3, h.ceil() as i32 + 3).intersect(mask.bounds);
+    let (cx, cy, hw, hh) = (x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0);
+    let radius = radius.min(hw).min(hh).max(0.0);
+    for py in part.y..part.bottom() {
+        for px in part.x..part.right() {
+            // How far outside the rounded rectangle the pixel's middle is.
+            let (dx, dy) = (((px as f32 + 0.5 - cx).abs() - (hw - radius)).max(0.0), ((py as f32 + 0.5 - cy).abs() - (hh - radius)).max(0.0));
+            let out = dx.hypot(dy) - radius;
+            let cell = &mut mask.alpha[((py - mask.bounds.y) * mask.bounds.w + px - mask.bounds.x) as usize];
+            *cell = (f32::from(*cell) * (out + 0.5).clamp(0.0, 1.0)) as u8;
+        }
+    }
+}
+
 /// What a hand-drawn line's wobble is worked out from, for a box or an
 /// oval: the same each time, so that its fill follows its line.
 const BOX_SALT: u32 = 0x2C1B_3C6D;
+/// What the second time round a line drawn loosely wobbles from, against
+/// the first.
+pub(super) const AGAIN_SALT: u32 = 0x7F4A_7C15;
 
 /// A stroke drawn by hand: a run of points, with half the width of the
 /// line at each; and filled within, for a head.
@@ -3910,12 +4125,75 @@ mod tests {
             boxed.link = link.into();
             assert_eq!(Shape::read(&boxed.write()).unwrap().link, link);
         }
-        // And one from before any of them has none.
+        // And what its hatch is crossed by, and how loosely it is drawn.
+        (boxed.pattern, boxed.rough) = (PATTERN_DOTS, ROUGH_LOOSE);
+        let back = Shape::read(&boxed.write()).unwrap();
+        assert_eq!((back.pattern, back.rough), (PATTERN_DOTS, ROUGH_LOOSE));
+        // And one from before any of them has none of them: no link, lines,
+        // drawn as loosely as ever.
         let plain = Shape::new(Tool::Rect, 0x123456, 3.0, (1.0, 2.0)).write();
-        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0,-,-\t", "\t", 1);
+        let older = plain.replacen(",0,-,-,-,0,0,0,0,0,0:0,0,0,0,0,-,-,0,1\t", "\t", 1);
         assert_ne!(older, plain);
         let back = Shape::read(&older).unwrap();
-        assert_eq!((back.edge, back.shadow, back.link.as_str()), (CENTER, None, ""));
+        assert_eq!((back.edge, back.shadow, back.link.as_str(), back.pattern, back.rough), (CENTER, None, "", PATTERN_LINES, ROUGH_NORMAL));
+    }
+
+    #[test]
+    fn a_hatched_fill_is_crossed_one_way_or_both_or_dotted_and_wanders_a_little_by_hand() {
+        let inside = Mask { bounds: Rect::new(0, 0, 96, 96), alpha: vec![255; 96 * 96] };
+        let covered = |mask: &Mask| mask.alpha.iter().filter(|&&cover| cover > 128).count();
+        let (lines, cross, dots) = [PATTERN_LINES, PATTERN_CROSS, PATTERN_DOTS].map(|pattern| hatched(&inside, 1.0, (0.0, 0.0), pattern, None)).into();
+        // Lines up to the right: about a fifth of it. Crossed: those and
+        // as many more down to the right, every line of the first kept.
+        let share = |count: usize| count as f32 / (96.0 * 96.0);
+        assert!((0.15..0.25).contains(&share(covered(&lines))), "{}", share(covered(&lines)));
+        assert!(share(covered(&cross)) > share(covered(&lines)) * 1.7);
+        assert!(lines.alpha.iter().zip(&cross.alpha).all(|(line, both)| both >= line));
+        // Down to the right as well: along x - y = 0 crossed, not along it
+        // for lines alone.
+        assert!((10..80).all(|at| cross.alpha[at * 96 + at] > 128) && (10..80).filter(|&at| lines.alpha[at * 96 + at] > 128).count() < 30);
+        // Dots: a few in a hundred, none wider than a dot.
+        assert!((0.04..0.14).contains(&share(covered(&dots))), "{}", share(covered(&dots)));
+        let widest = dots.alpha.chunks(96).map(|row| row.split(|&cover| cover <= 128).map(<[u8]>::len).max().unwrap_or(0)).max().unwrap_or(0);
+        assert!((1..=3).contains(&widest), "{widest}");
+        // By hand, each a little off where it would be, about as much ink.
+        for (pattern, clean) in [(PATTERN_LINES, &lines), (PATTERN_CROSS, &cross), (PATTERN_DOTS, &dots)] {
+            let hand = hatched(&inside, 1.0, (0.0, 0.0), pattern, Some(0x1234_5678));
+            assert!(hand.alpha != clean.alpha, "pattern {pattern} wanders by hand");
+            assert!((covered(&hand) as f32 / covered(clean) as f32 - 1.0).abs() < 0.3, "pattern {pattern}: as much ink");
+        }
+        // Kept in the file: crossed, by hand, loosely.
+        let mut boxed = Shape::new(Tool::Rect, 0x1971C2, 2.0, (10.0, 10.0));
+        (boxed.points[1], boxed.filled, boxed.hatch, boxed.pattern) = ((90.0, 70.0), true, true, PATTERN_CROSS);
+        assert_eq!(Shape::read(&boxed.write()).unwrap().pattern, PATTERN_CROSS);
+    }
+
+    #[test]
+    fn neat_hardly_wanders_and_loose_wanders_further_and_goes_over_each_line_twice() {
+        // How far its ink strays either side of a straight line, and how
+        // many strokes it is, at each roughness.
+        let mut line = Shape::new(Tool::Line, 0x1E1E1E, 2.0, (20.0, 50.0));
+        (line.points[1], line.sketch) = ((420.0, 50.0), true);
+        let stray = |shape: &Shape| shape.sketch_strokes().iter().flat_map(|ink| ink.points.iter().map(|p| (p.1 - 50.0).abs())).fold(0.0f32, f32::max);
+        let strokes = |shape: &Shape| shape.sketch_strokes().len();
+        let mut at = |rough: u8| {
+            line.rough = rough;
+            line.touch();
+            (stray(&line), strokes(&line))
+        };
+        let (neat, normal, loose) = (at(ROUGH_NEAT), at(ROUGH_NORMAL), at(ROUGH_LOOSE));
+        assert!(neat.0 < normal.0 * 0.5, "neat {} against {}", neat.0, normal.0);
+        assert!(loose.0 > normal.0 * 1.5, "loose {} against {}", loose.0, normal.0);
+        assert_eq!((neat.1, normal.1, loose.1), (1, 1, 2), "loose, gone over twice");
+        // A box and an oval too, and a diamond, gone round twice loose.
+        for (tool, form) in [(Tool::Rect, FORM_BOX), (Tool::Ellipse, FORM_BOX), (Tool::Rect, FORM_DIAMOND)] {
+            let mut boxed = Shape::new(tool, 0x1E1E1E, 2.0, (20.0, 20.0));
+            (boxed.points[1], boxed.sketch, boxed.form) = ((220.0, 120.0), true, form);
+            let count = |shape: &Shape| if shape.has_form() { shape.form_strokes().len() } else { shape.sketch_strokes().len() };
+            let once = count(&boxed);
+            boxed.rough = ROUGH_LOOSE;
+            assert_eq!(count(&boxed), once * 2, "{tool:?} {form}");
+        }
     }
 
     #[test]

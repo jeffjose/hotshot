@@ -17,6 +17,9 @@ fn fingerprint(shape: &Shape) -> Vec<(&'static str, String)> {
         ("fill", format!("{:06X}", shape.fill)),
         ("filled", shape.filled.to_string()),
         ("hatch", shape.hatch.to_string()),
+        ("pattern", shape.pattern.to_string()),
+        ("rough", shape.rough.to_string()),
+        ("opacity", shape.opacity.to_string()),
         ("dashed", shape.dashed.to_string()),
         ("dotted", shape.dotted.to_string()),
         ("stroke", format!("{:.2}", shape.stroke)),
@@ -41,6 +44,19 @@ fn fingerprint(shape: &Shape) -> Vec<(&'static str, String)> {
 /// The names of what differs between two fingerprints.
 fn changed(before: &[(&'static str, String)], after: &[(&'static str, String)]) -> Vec<&'static str> {
     before.iter().zip(after).filter(|(a, b)| a.1 != b.1).map(|(a, _)| a.0).collect()
+}
+
+/// A part of the panel pressed, as a click on it does: the opacity slider
+/// a third of the way along, and let go.
+fn press_panel(studio: &mut Studio, ctl: Ctl) {
+    if ctl == Ctl::Opacity {
+        studio.layout();
+        let slider = studio.control_rect(Control::Board(Ctl::Opacity)).expect("the opacity slider");
+        studio.pointer = (slider.x + slider.w / 3, slider.center().1);
+    }
+    studio.press_style(ctl);
+    studio.board.stepping = None;
+    studio.drag = Drag::None;
 }
 
 /// Every shape on the board, fingerprinted, in order.
@@ -137,9 +153,14 @@ fn in_each_look_each_part_of_the_panel_sets_what_it_says_and_nothing_else() {
         (Ctl::Color(2), &["color", "fill"]),
         (Ctl::Color(5), &["color", "fill"]),
         (Ctl::FillKind(0), &["filled", "fill", "hatch"]),
-        (Ctl::FillKind(3), &["filled", "fill", "hatch"]),
+        (Ctl::FillKind(3), &["filled", "fill", "hatch", "pattern"]),
+        (Ctl::FillKind(4), &["filled", "fill", "hatch", "pattern"]),
+        (Ctl::FillKind(5), &["filled", "fill", "hatch", "pattern"]),
         (Ctl::Dash(1), &["dashed", "dotted"]),
         (Ctl::Dash(2), &["dashed", "dotted"]),
+        (Ctl::Rough(0), &["rough"]),
+        (Ctl::Rough(2), &["rough"]),
+        (Ctl::Opacity, &["opacity"]),
         (Ctl::Size(0), &["font_px", "nominal", "frame", "points"]),
         (Ctl::Size(3), &["font_px", "nominal", "frame", "points"]),
         (Ctl::Words(2), &["font_px", "nominal", "frame", "points"]),
@@ -147,6 +168,8 @@ fn in_each_look_each_part_of_the_panel_sets_what_it_says_and_nothing_else() {
     let for_arrow: Vec<(Ctl, &[&str])> = vec![
         (Ctl::Color(2), &["color", "fill"]),
         (Ctl::Dash(1), &["dashed", "dotted"]),
+        (Ctl::Rough(2), &["rough"]),
+        (Ctl::Opacity, &["opacity"]),
         (Ctl::Size(3), &["font_px", "nominal"]),
         (Ctl::Head(0, 2), &["heads", "ends"]),
         (Ctl::Head(1, 4), &["heads", "ends"]),
@@ -161,9 +184,12 @@ fn in_each_look_each_part_of_the_panel_sets_what_it_says_and_nothing_else() {
                 let index = if picked == usize::MAX { arrow } else { picked };
                 studio.selected = vec![index];
                 let before = all(&studio);
-                studio.press_style(ctl);
-                studio.board.stepping = None;
+                press_panel(&mut studio, ctl);
                 let after = all(&studio);
+                // Rough and Opacity change something, besides.
+                if matches!(ctl, Ctl::Rough(_) | Ctl::Opacity) {
+                    assert_ne!(after, before, "look {look}, {ctl:?} on layer {index}: something changed");
+                }
                 let shapes: Vec<usize> = (0..studio.doc.layers.len()).filter(|&at| matches!(studio.doc.layers[at].kind, Kind::Shape(_))).collect();
                 for (order, (was, now)) in before.iter().zip(&after).enumerate() {
                     let at = shapes[order];
@@ -247,6 +273,37 @@ fn each_thing_done_on_a_board_is_one_step_to_undo_and_kept_in_the_file() {
         ("matched", |studio, _| {
             studio.selected = vec![0, 3];
             let _ = studio.act(Action::Match(2));
+        }),
+        ("cross-hatched", |studio, _| {
+            studio.selected = vec![0, 1];
+            studio.press_style(Ctl::FillKind(4));
+        }),
+        ("dotted", |studio, _| {
+            studio.selected = vec![0];
+            studio.press_style(Ctl::FillKind(5));
+        }),
+        ("drawn loosely", |studio, arrow| {
+            studio.selected = vec![0, 1, arrow];
+            studio.press_style(Ctl::Rough(2));
+        }),
+        ("made fainter", |studio, arrow| {
+            studio.selected = vec![0, arrow];
+            press_panel(studio, Ctl::Opacity);
+            // Dragged along, and let go: still one step.
+            let slider = studio.control_rect(Control::Board(Ctl::Opacity)).unwrap();
+            studio.drag = Drag::Slide { field: Field::Opacity, left: slider.x + 7, wide: slider.w - 47 };
+            for x in [slider.x + 20, slider.x + 60, slider.x + 30] {
+                studio.pointer_moved(x, slider.center().1, Mods::default());
+            }
+            studio.released();
+        }),
+        ("highlighted", |studio, _| {
+            press_key(studio, Key::Char('m'), Mods::default());
+            pull(studio, (90.0, 330.0), (280.0, 345.0), Mods::default());
+        }),
+        ("erased", |studio, _| {
+            press_key(studio, Key::Char('e'), Mods::default());
+            pull(studio, (180.0, 300.0), (160.0, 640.0), Mods::default());
         }),
         ("on dark paper", |studio, _| studio.set_look(None, Some(1))),
         ("linked to the web", |studio, _| {
@@ -417,7 +474,7 @@ fn as_if_drawn_afresh(studio: &mut Studio, what: &str) {
 
 #[test]
 fn in_each_look_what_the_panel_changes_is_drawn_as_if_afresh() {
-    let controls = [Ctl::Color(4), Ctl::FillKind(3), Ctl::FillKind(0), Ctl::Dash(2), Ctl::Size(3), Ctl::Size(0), Ctl::Words(2), Ctl::Route(2), Ctl::Route(0), Ctl::Head(1, 3)];
+    let controls = [Ctl::Color(4), Ctl::FillKind(3), Ctl::FillKind(4), Ctl::FillKind(5), Ctl::FillKind(0), Ctl::Dash(2), Ctl::Rough(2), Ctl::Rough(0), Ctl::Opacity, Ctl::Size(3), Ctl::Size(0), Ctl::Words(2), Ctl::Route(2), Ctl::Route(0), Ctl::Head(1, 3)];
     for look in 0..=look::DIAGRAM {
         let (mut studio, arrow) = furnished(look);
         let mut out = vec![0u32; (studio.width * studio.height) as usize];
@@ -425,11 +482,59 @@ fn in_each_look_what_the_panel_changes_is_drawn_as_if_afresh() {
         for ctl in controls {
             for picked in [vec![0], vec![arrow], vec![0, 1, arrow]] {
                 studio.selected = picked.clone();
-                studio.press_style(ctl);
-                studio.board.stepping = None;
+                press_panel(&mut studio, ctl);
                 as_if_drawn_afresh(&mut studio, &format!("look {look}, {ctl:?} on {picked:?}"));
             }
         }
+    }
+}
+
+#[test]
+fn in_each_look_the_eraser_highlighter_and_lasso_are_drawn_as_if_afresh() {
+    // A highlighter stroke across a box's words, drawn on; the eraser
+    // dragged over the box and the oval, which fade; let go, gone; and a
+    // lasso drawn round the words: each as the window would be drawn from
+    // nothing, in every look.
+    for look in 0..=look::DIAGRAM {
+        let (mut studio, _) = furnished(look);
+        let mut out = vec![0u32; (studio.width * studio.height) as usize];
+        studio.draw(&mut out);
+        press_key(&mut studio, Key::Char('m'), Mods::default());
+        let (a, b) = (studio.to_window_page((90.0, 336.0)), studio.to_window_page((280.0, 340.0)));
+        studio.pointer_moved(a.0, a.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        for step in 1..=10 {
+            studio.pointer_moved(a.0 + (b.0 - a.0) * step / 10, a.1 + (b.1 - a.1) * step / 10, Mods::default());
+            as_if_drawn_afresh(&mut studio, &format!("look {look}, the highlighter at step {step}"));
+        }
+        studio.released();
+        as_if_drawn_afresh(&mut studio, &format!("look {look}, the highlighter let go"));
+        press_key(&mut studio, Key::Char('e'), Mods::default());
+        let (a, b) = (studio.to_window_page((180.0, 380.0)), studio.to_window_page((160.0, 640.0)));
+        studio.pointer_moved(a.0, a.1, Mods::default());
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        for step in 1..=10 {
+            studio.pointer_moved(a.0 + (b.0 - a.0) * step / 10, a.1 + (b.1 - a.1) * step / 10 - 40, Mods::default());
+            as_if_drawn_afresh(&mut studio, &format!("look {look}, the eraser at step {step}"));
+        }
+        studio.released();
+        as_if_drawn_afresh(&mut studio, &format!("look {look}, the eraser let go"));
+        press_key(&mut studio, Key::Escape, Mods::default());
+        let alt = Mods { alt: true, ..Mods::default() };
+        let middle = studio.to_window_page((680.0, 660.0));
+        studio.pointer_moved(middle.0 + 140, middle.1, alt);
+        studio.mods = alt;
+        studio.last_press.0 = 0;
+        studio.pressed(1, 100_000);
+        for step in 0..=24 {
+            let angle = std::f32::consts::TAU * step as f32 / 24.0;
+            studio.pointer_moved(middle.0 + (140.0 * angle.cos()) as i32, middle.1 + (50.0 * angle.sin()) as i32, alt);
+        }
+        as_if_drawn_afresh(&mut studio, &format!("look {look}, the lasso"));
+        studio.released();
+        as_if_drawn_afresh(&mut studio, &format!("look {look}, the lasso let go"));
     }
 }
 

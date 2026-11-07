@@ -362,6 +362,37 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// The same, the color laid over what is there as a highlighter's ink
+    /// is, each channel of it deepening that of the pixel rather than
+    /// covering it: dark words under it as dark, the paper its color.
+    pub fn mask_multiply(&mut self, mask: &Mask, color: u32, amount: u32) {
+        let part = mask.bounds.intersect(self.clip);
+        if part.is_empty() {
+            return;
+        }
+        let (width, across) = (self.width as usize, mask.bounds.w as usize);
+        let (left, skip) = (part.x as usize, (part.x - mask.bounds.x) as usize);
+        let first = (part.y - mask.bounds.y) as usize;
+        let amount = amount.min(256);
+        let times = |a: u32, b: u32| {
+            let channel = |shift: u32| (((a >> shift & 0xFF) * (b >> shift & 0xFF) + 127) / 255) << shift;
+            channel(16) | channel(8) | channel(0)
+        };
+        let draw = |(row, out): (usize, &mut [u32])| {
+            let alpha = &mask.alpha[(first + row) * across + skip..][..part.w as usize];
+            for (pixel, &cover) in out[left..left + part.w as usize].iter_mut().zip(alpha) {
+                if cover > 0 {
+                    *pixel = mix(*pixel, times(*pixel, color), ((u32::from(cover) + u32::from(cover >> 7)) * amount) >> 8);
+                }
+            }
+        };
+        let rows = &mut self.pixels[part.y as usize * width..part.bottom() as usize * width];
+        match part.w as usize * part.h as usize >= SHARE {
+            true => rows.par_chunks_exact_mut(width).enumerate().for_each(draw),
+            false => rows.chunks_exact_mut(width).enumerate().for_each(draw),
+        }
+    }
+
     /// The same, in a color that differs from pixel to pixel, as `paint`
     /// says for each, by where it is.
     pub fn mask_painted(&mut self, mask: &Mask, amount: u32, paint: impl Fn(i32, i32) -> u32 + Sync) {

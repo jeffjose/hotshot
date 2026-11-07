@@ -21,7 +21,7 @@ const EDITING: [(&str, &str); 18] = [
     ("Delete", "Delete"),
     ("Nudge, or by 10", "Arrows, Shift"),
     ("Bring forward, send back", "Ctrl ], Ctrl ["),
-    ("Color: a line, a fill, none", "C, then 1\u{2013}5, Q\u{2013}T, X"),
+    ("Color: a line, a fill, none", "C, then 1\u{2013}5, Q\u{2013}Y, X"),
     ("Words larger, smaller", "Ctrl Shift >, <"),
     ("Make a box another shape", "Shift S"),
     ("Gather notes into a box", "G"),
