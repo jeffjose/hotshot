@@ -381,6 +381,9 @@ fn in_each_look_a_box_let_go_on_an_arrow_does_what_it_said_it_would() {
 /// All of the window as drawn, against all of it drawn from nothing: the
 /// same, to a shade, the paper's dots apart.
 fn as_if_drawn_afresh(studio: &mut Studio, what: &str) {
+    // What is said for a moment fades by the clock between the two
+    // drawings: none, for them to be alike.
+    studio.note = None;
     let mut kept = vec![0u32; (studio.width * studio.height) as usize];
     studio.draw(&mut kept);
     let mut fresh = vec![0u32; kept.len()];

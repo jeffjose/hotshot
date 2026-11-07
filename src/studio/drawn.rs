@@ -386,6 +386,9 @@ mod tests {
             for step in 1..=60 {
                 let down = if step <= 40 { step * 14 } else { (80 - step) * 14 };
                 studio.pointer_moved(start.0 + step % 3, start.1 + down, none);
+                // What is said for a moment fades by the clock, between one
+                // drawing and the next: none, for the two to be alike.
+                studio.note = None;
                 studio.draw(&mut out);
                 board_as_if_whole(&mut studio);
                 // All of the window, what is drawn over the board too, as
