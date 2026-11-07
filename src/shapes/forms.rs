@@ -277,15 +277,25 @@ impl Shape {
     /// one stroke that breathes, the corners of a few straight sides each
     /// a little off where they are, rounded off in the Rounded look.
     pub fn form_strokes(&self) -> Vec<Ink> {
+        let mut strokes = self.form_strokes_by(0x68E3_1DA4, self.stroke / 2.0);
+        // Loose: gone round a second time, a little finer, its own way.
+        if self.twice() {
+            strokes.extend(self.form_strokes_by(0x68E3_1DA4 ^ AGAIN_SALT, self.stroke * 0.4));
+        }
+        strokes
+    }
+
+    /// The strokes of its outline once round, wobbling from a salt, so
+    /// wide across half.
+    fn form_strokes_by(&self, first: u32, half: f32) -> Vec<Ink> {
         let (closed, open) = self.form_paths();
-        let half = self.stroke / 2.0;
         let scale = self.scale.max(1e-3);
-        let mut wobble = self.wobbler(0x68E3_1DA4);
+        let mut wobble = self.wobbler(first);
         let nudge = self.nudge(if self.rounded { 1.2 } else { 1.8 });
         let (_, _, w, h) = self.frame();
         let mut strokes = Vec::new();
         for (at, (path, shut)) in closed.iter().map(|path| (path, true)).chain(open.iter().map(|path| (path, false))).enumerate() {
-            let salt = 0x68E3_1DA4 ^ (at as u32).wrapping_mul(0x9E37_79B9);
+            let salt = first ^ (at as u32).wrapping_mul(0x9E37_79B9);
             let path: Vec<Point> = match shut && path.len() > 2 && path.first() == path.last() {
                 true => path[..path.len() - 1].to_vec(),
                 false => path.clone(),
